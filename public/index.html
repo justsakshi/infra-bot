@@ -1,0 +1,1596 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Infra — Asset Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root[data-theme="dark"] {
+      --bg: #0c0c0e;
+      --bg2: #131316;
+      --bg3: #1a1a1f;
+      --border: #242429;
+      --border2: #2e2e35;
+      --text: #e8e8f0;
+      --text2: #8888a0;
+      --text3: #55556a;
+      --accent: #7c6dfa;
+      --accent2: #a594fc;
+      --green: #2dd4a0;
+      --red: #f05f6e;
+      --orange: #f5a623;
+      --yellow: #ffd166;
+      --card-bg: #131316;
+      --input-bg: #0c0c0e;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+      --modal-overlay: rgba(0,0,0,0.7);
+    }
+    :root[data-theme="light"] {
+      --bg: #f4f4f8;
+      --bg2: #ffffff;
+      --bg3: #ededf3;
+      --border: #dddde8;
+      --border2: #c8c8d8;
+      --text: #1a1a2e;
+      --text2: #5a5a7a;
+      --text3: #9898b8;
+      --accent: #6b5cf6;
+      --accent2: #8b7af8;
+      --green: #1db885;
+      --red: #e84057;
+      --orange: #e09010;
+      --yellow: #c8a000;
+      --card-bg: #ffffff;
+      --input-bg: #f4f4f8;
+      --shadow: 0 4px 24px rgba(0,0,0,0.08);
+      --modal-overlay: rgba(0,0,0,0.4);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Syne', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      transition: background 0.3s, color 0.3s;
+    }
+
+    /* ---- Layout ---- */
+    .shell { display: flex; min-height: 100vh; }
+
+    /* ---- Sidebar ---- */
+    .sidebar {
+      width: 220px;
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 24px 0;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      z-index: 100;
+    }
+    .sidebar-logo {
+      padding: 0 20px 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .sidebar-logo .wordmark {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: var(--text);
+    }
+    .sidebar-logo .sub {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--text3);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text2);
+      cursor: pointer;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .nav-item:hover { color: var(--text); background: var(--bg3); }
+    .nav-item.active {
+      color: var(--accent2);
+      border-left-color: var(--accent);
+      background: var(--bg3);
+    }
+    .nav-icon { font-size: 15px; width: 20px; text-align: center; }
+    .nav-count {
+      margin-left: auto;
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: 1px 7px;
+      color: var(--text3);
+    }
+    .nav-section {
+      font-family: 'DM Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text3);
+      padding: 16px 20px 6px;
+    }
+    .sidebar-bottom {
+      margin-top: auto;
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+    }
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text2);
+      cursor: pointer;
+      user-select: none;
+    }
+    .toggle-track {
+      width: 32px; height: 18px;
+      background: var(--border2);
+      border-radius: 99px;
+      position: relative;
+      transition: background 0.2s;
+    }
+    .toggle-track.on { background: var(--accent); }
+    .toggle-thumb {
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 14px; height: 14px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle-track.on .toggle-thumb { transform: translateX(14px); }
+
+    /* ---- Main ---- */
+    .main {
+      margin-left: 220px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---- Topbar ---- */
+    .topbar {
+      height: 56px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 28px;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .topbar-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .topbar-right { margin-left: auto; display: flex; gap: 8px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: 'Syne', sans-serif;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-primary:hover { background: var(--accent2); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text2);
+      border: 1px solid var(--border2);
+    }
+    .btn-ghost:hover { color: var(--text); background: var(--bg3); }
+    .btn-danger {
+      background: transparent;
+      color: var(--red);
+      border: 1px solid var(--red);
+    }
+    .btn-danger:hover { background: var(--red); color: white; }
+    .btn-sm { padding: 5px 10px; font-size: 11px; }
+
+    /* ---- Content ---- */
+    .content { padding: 28px; flex: 1; }
+
+    /* ---- Summary Cards ---- */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--border2); }
+    .card-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text3);
+      margin-bottom: 8px;
+    }
+    .card-value {
+      font-size: 32px;
+      font-weight: 800;
+      color: var(--text);
+      line-height: 1;
+    }
+    .card-sub {
+      font-size: 11px;
+      color: var(--text3);
+      margin-top: 4px;
+    }
+    .card-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 4px;
+    }
+
+    /* ---- Filters ---- */
+    .filters {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .search-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 200px;
+      max-width: 320px;
+    }
+    .search-wrap input {
+      width: 100%;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px 8px 32px;
+      font-size: 13px;
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-wrap input:focus { border-color: var(--accent); }
+    .search-wrap input::placeholder { color: var(--text3); }
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text3);
+      font-size: 13px;
+    }
+    .filter-select {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--text2);
+      font-family: 'Syne', sans-serif;
+      outline: none;
+      cursor: pointer;
+    }
+    .filter-select:focus { border-color: var(--accent); }
+
+    /* ---- Table ---- */
+    .table-wrap {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .table-header {
+      display: flex;
+      align-items: center;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+    }
+    .table-header-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .table-count {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--text3);
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: 2px 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text3);
+      padding: 10px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 12px 16px;
+      font-size: 12px;
+      color: var(--text2);
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--bg3); }
+    .td-name {
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      color: var(--text);
+      font-weight: 500;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 99px;
+      font-size: 10px;
+      font-weight: 600;
+      font-family: 'DM Mono', monospace;
+      white-space: nowrap;
+    }
+    .badge-green { background: rgba(45,212,160,0.12); color: var(--green); }
+    .badge-red { background: rgba(240,95,110,0.12); color: var(--red); }
+    .badge-orange { background: rgba(245,166,35,0.12); color: var(--orange); }
+    .badge-gray { background: var(--bg3); color: var(--text3); }
+    .badge-purple { background: rgba(124,109,250,0.12); color: var(--accent2); }
+
+    .days-cell {
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .days-red { color: var(--red); }
+    .days-orange { color: var(--orange); }
+    .days-green { color: var(--green); }
+
+    .row-actions {
+      display: flex;
+      gap: 6px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    tr:hover .row-actions { opacity: 1; }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text3);
+    }
+    .empty-state .empty-icon { font-size: 32px; margin-bottom: 12px; }
+    .empty-state p { font-size: 13px; }
+
+    /* ---- Pagination ---- */
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text3);
+    }
+    .page-btns { display: flex; gap: 4px; }
+    .page-btn {
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text2);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: 'DM Mono', monospace;
+      transition: all 0.15s;
+    }
+    .page-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .page-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+    .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* ---- Modal ---- */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--modal-overlay);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      backdrop-filter: blur(4px);
+    }
+    .modal-overlay.open { opacity: 1; pointer-events: all; }
+    .modal {
+      background: var(--bg2);
+      border: 1px solid var(--border2);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 560px;
+      max-height: 90vh;
+      overflow-y: auto;
+      transform: translateY(12px);
+      transition: transform 0.2s;
+      box-shadow: var(--shadow);
+    }
+    .modal-overlay.open .modal { transform: translateY(0); }
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg2);
+      z-index: 1;
+    }
+    .modal-title { font-size: 15px; font-weight: 700; }
+    .modal-close {
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 6px;
+      border: none;
+      background: var(--bg3);
+      color: var(--text2);
+      cursor: pointer;
+      font-size: 16px;
+      transition: all 0.15s;
+    }
+    .modal-close:hover { background: var(--border2); color: var(--text); }
+    .modal-body { padding: 24px; }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 16px 24px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ---- Form fields ---- */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-group.full { grid-column: 1 / -1; }
+    label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text3);
+    }
+    input, select, textarea {
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 13px;
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      outline: none;
+      transition: border-color 0.15s;
+      width: 100%;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    input::placeholder, textarea::placeholder { color: var(--text3); }
+    textarea { resize: vertical; min-height: 72px; }
+    select option { background: var(--bg2); }
+
+    /* ---- Detail panel (slide-in) ---- */
+    .detail-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--modal-overlay);
+      z-index: 200;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    .detail-overlay.open { opacity: 1; pointer-events: all; }
+    .detail-panel {
+      position: fixed;
+      top: 0; right: 0; bottom: 0;
+      width: 420px;
+      background: var(--bg2);
+      border-left: 1px solid var(--border2);
+      z-index: 201;
+      transform: translateX(100%);
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .detail-overlay.open .detail-panel { transform: translateX(0); }
+    .detail-head {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      background: var(--bg2);
+    }
+    .detail-name {
+      font-family: 'DM Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      word-break: break-all;
+    }
+    .detail-type { font-size: 11px; color: var(--text3); margin-top: 3px; }
+    .detail-body { padding: 20px 24px; flex: 1; }
+    .detail-section { margin-bottom: 20px; }
+    .detail-section-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text3);
+      margin-bottom: 10px;
+    }
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .detail-row:last-child { border-bottom: none; }
+    .detail-key { color: var(--text3); }
+    .detail-val { color: var(--text); font-weight: 500; text-align: right; max-width: 200px; word-break: break-all; }
+    .detail-footer {
+      padding: 16px 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+
+    /* ---- Toast ---- */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .toast {
+      background: var(--bg2);
+      border: 1px solid var(--border2);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--text);
+      box-shadow: var(--shadow);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      animation: toast-in 0.2s ease;
+      max-width: 320px;
+    }
+    .toast.success { border-color: var(--green); }
+    .toast.error { border-color: var(--red); }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ---- Upload zone ---- */
+    .upload-zone {
+      border: 2px dashed var(--border2);
+      border-radius: 12px;
+      padding: 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative;
+      margin-bottom: 16px;
+    }
+    .upload-zone:hover, .upload-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(124,109,250,0.04);
+    }
+    .upload-zone input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    .upload-text { font-size: 13px; color: var(--text2); }
+    .upload-sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
+    .upload-file-name { font-size: 12px; color: var(--accent2); margin-top: 8px; font-family: 'DM Mono', monospace; }
+
+    /* ---- Loading ---- */
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid var(--border2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-row td { text-align: center; padding: 48px; color: var(--text3); }
+
+    /* ---- Confirm dialog ---- */
+    .confirm-text { font-size: 13px; color: var(--text2); line-height: 1.6; }
+    .confirm-name {
+      font-family: 'DM Mono', monospace;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--bg3);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin: 12px 0;
+      word-break: break-all;
+    }
+
+    /* ---- Tabs ---- */
+    .tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .tab {
+      padding: 10px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text3);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all 0.15s;
+    }
+    .tab:hover { color: var(--text2); }
+    .tab.active { color: var(--accent2); border-bottom-color: var(--accent); }
+
+    /* ---- Responsive ---- */
+    @media (max-width: 900px) {
+      .cards { grid-template-columns: repeat(2, 1fr); }
+      .detail-panel { width: 100%; }
+    }
+    @media (max-width: 600px) {
+      .sidebar { display: none; }
+      .main { margin-left: 0; }
+      .cards { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="wordmark">INFRA</div>
+      <div class="sub">Asset Dashboard</div>
+    </div>
+    <div class="nav-section">Overview</div>
+    <div class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+      <span class="nav-icon">◈</span> Dashboard
+    </div>
+    <div class="nav-section">Assets</div>
+    <div class="nav-item" data-page="domains" onclick="navigate('domains')">
+      <span class="nav-icon">⊡</span> Domains
+      <span class="nav-count" id="nav-domains">—</span>
+    </div>
+    <div class="nav-item" data-page="inboxes" onclick="navigate('inboxes')">
+      <span class="nav-icon">✉</span> Inboxes
+      <span class="nav-count" id="nav-inboxes">—</span>
+    </div>
+    <div class="nav-section">Tools</div>
+    <div class="nav-item" data-page="upload" onclick="navigate('upload')">
+      <span class="nav-icon">↑</span> Import CSV
+    </div>
+    <div class="sidebar-bottom">
+      <div class="theme-toggle" onclick="toggleTheme()">
+        <div class="toggle-track" id="themeTrack">
+          <div class="toggle-thumb"></div>
+        </div>
+        <span id="themeLabel">Light mode</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="topbar">
+      <span class="topbar-title" id="topbar-title">Dashboard</span>
+      <div class="topbar-right" id="topbar-actions"></div>
+    </div>
+    <div class="content" id="page-content">
+      <div class="loading-row"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Panel -->
+<div class="detail-overlay" id="detailOverlay" onclick="closeDetail(event)">
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-head">
+      <div>
+        <div class="detail-name" id="detail-name"></div>
+        <div class="detail-type" id="detail-type"></div>
+      </div>
+      <button class="modal-close" onclick="closeDetailPanel()">✕</button>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+    <div class="detail-footer" id="detail-footer"></div>
+  </div>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="assetModal">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title" id="modal-title">Add Asset</span>
+      <button class="modal-close" onclick="closeModal('assetModal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <form id="assetForm" onsubmit="submitAsset(event)">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Type</label>
+            <select id="f-type" onchange="updateFormForType()" required>
+              <option value="DOMAIN">Domain</option>
+              <option value="INBOX">Inbox</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Name</label>
+            <input id="f-name" type="text" placeholder="e.g. example.com" required />
+          </div>
+          <div class="form-group">
+            <label>Client</label>
+            <input id="f-client" type="text" placeholder="Client name" />
+          </div>
+          <div class="form-group">
+            <label>Provider</label>
+            <input id="f-provider" type="text" placeholder="e.g. Zapmail, GoDaddy" />
+          </div>
+          <div class="form-group">
+            <label>Workspace</label>
+            <input id="f-workspace" type="text" placeholder="e.g. Google, Outlook" />
+          </div>
+          <div class="form-group">
+            <label>Campaign</label>
+            <input id="f-campaign" type="text" placeholder="Campaign name" />
+          </div>
+          <div class="form-group">
+            <label>Purchase Date (DD/MM/YYYY)</label>
+            <input id="f-purchaseDate" type="text" placeholder="e.g. 01/03/2026" />
+          </div>
+          <div class="form-group">
+            <label>Expiry Date (DD/MM/YYYY)</label>
+            <input id="f-expiryDate" type="text" placeholder="Leave blank to auto-calc" />
+          </div>
+          <div class="form-group">
+            <label>Status</label>
+            <select id="f-status">
+              <option value="Active">Active</option>
+              <option value="Inactive">Inactive</option>
+              <option value="Not In Use">Not In Use</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Branded / Pre-warmed</label>
+            <select id="f-brandedPrewarmed">
+              <option value="">—</option>
+              <option value="Branded">Branded</option>
+              <option value="Pre-warmed">Pre-warmed</option>
+              <option value="No">No</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label id="cost-label">Yearly Cost</label>
+            <input id="f-cost" type="text" placeholder="e.g. 12.99" />
+          </div>
+          <div class="form-group">
+            <label>Currency</label>
+            <select id="f-currency">
+              <option value="USD">USD</option>
+              <option value="INR">INR</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Primary Owner</label>
+            <input id="f-primaryOwner" type="text" placeholder="e.g. Anjali, Varsha..." />
+          </div>
+          <div class="form-group full">
+            <label>Notes</label>
+            <textarea id="f-notes" placeholder="Any additional info..."></textarea>
+          </div>
+        </div>
+        <input type="hidden" id="f-editId" />
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('assetModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAsset()">Save Asset</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-head">
+      <span class="modal-title" id="confirm-title">Confirm</span>
+      <button class="modal-close" onclick="closeModal('confirmModal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="confirm-text" id="confirm-text"></div>
+      <div class="confirm-name" id="confirm-name"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('confirmModal')">Cancel</button>
+      <button class="btn btn-danger" id="confirm-action-btn">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal-overlay" id="uploadModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-head">
+      <span class="modal-title">Import CSV</span>
+      <button class="modal-close" onclick="closeModal('uploadModal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group" style="margin-bottom:16px">
+        <label>Asset Type</label>
+        <select id="upload-type">
+          <option value="domain">Domains</option>
+          <option value="inbox">Inboxes</option>
+        </select>
+      </div>
+      <div class="upload-zone" id="uploadZone">
+        <input type="file" id="uploadFile" accept=".csv" onchange="onFileSelect()" />
+        <div style="font-size:24px;margin-bottom:8px">📂</div>
+        <div class="upload-text">Click or drag & drop your CSV</div>
+        <div class="upload-sub">Must match the Infra template format</div>
+        <div class="upload-file-name" id="upload-file-name"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('uploadModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitUpload()" id="upload-btn">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ===== State =====
+let allAssets = [];
+let currentPage = 'dashboard';
+let currentFilter = { search: '', status: '', client: '', type: '' };
+let tableAssets = [];
+let tablePage = 1;
+const PAGE_SIZE = 25;
+let confirmCallback = null;
+
+// ===== Theme =====
+function toggleTheme() {
+  const html = document.documentElement;
+  const isDark = html.dataset.theme === 'dark';
+  html.dataset.theme = isDark ? 'light' : 'dark';
+  const track = document.getElementById('themeTrack');
+  const label = document.getElementById('themeLabel');
+  track.classList.toggle('on', !isDark);
+  label.textContent = isDark ? 'Dark mode' : 'Light mode';
+  localStorage.setItem('theme', html.dataset.theme);
+}
+function initTheme() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  document.documentElement.dataset.theme = saved;
+  const track = document.getElementById('themeTrack');
+  const label = document.getElementById('themeLabel');
+  track.classList.toggle('on', saved === 'light');
+  label.textContent = saved === 'light' ? 'Dark mode' : 'Light mode';
+}
+
+// ===== API =====
+async function fetchAssets() {
+  const res = await fetch('/api/assets');
+  const data = await res.json();
+  allAssets = data.assets || [];
+  updateNavCounts();
+  return allAssets;
+}
+
+async function deleteAsset(name) {
+  const res = await fetch('/api/assets/' + encodeURIComponent(name), { method: 'DELETE' });
+  return res.json();
+}
+
+async function renewAsset(name) {
+  const res = await fetch('/api/assets/' + encodeURIComponent(name) + '/renew', { method: 'POST' });
+  return res.json();
+}
+
+async function saveAsset(data, isEdit) {
+  const url = isEdit ? '/api/assets/' + encodeURIComponent(data.editId) : '/api/assets';
+  const method = isEdit ? 'PUT' : 'POST';
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  return res.json();
+}
+
+// ===== Nav =====
+function updateNavCounts() {
+  document.getElementById('nav-domains').textContent = allAssets.filter(a => a.type === 'DOMAIN').length;
+  document.getElementById('nav-inboxes').textContent = allAssets.filter(a => a.type === 'INBOX').length;
+}
+
+function navigate(page) {
+  currentPage = page;
+  tablePage = 1;
+  currentFilter = { search: '', status: '', client: '', type: '' };
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+  const titles = { dashboard: 'Dashboard', domains: 'Domains', inboxes: 'Inboxes', upload: 'Import CSV' };
+  document.getElementById('topbar-title').textContent = titles[page] || page;
+  renderPage(page);
+}
+
+// ===== Pages =====
+async function renderPage(page) {
+  const content = document.getElementById('page-content');
+  const actions = document.getElementById('topbar-actions');
+  actions.innerHTML = '';
+
+  await fetchAssets();
+
+  if (page === 'dashboard') renderDashboard(content, actions);
+  else if (page === 'domains') renderTable(content, actions, 'DOMAIN');
+  else if (page === 'inboxes') renderTable(content, actions, 'INBOX');
+  else if (page === 'upload') renderUploadPage(content, actions);
+}
+
+// ===== Dashboard =====
+function renderDashboard(content, actions) {
+  const domains = allAssets.filter(a => a.type === 'DOMAIN');
+  const inboxes = allAssets.filter(a => a.type === 'INBOX');
+  const expiringIn3 = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= 3);
+  const expiringIn1 = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= 1);
+  const expiringSoon = expiringIn3;
+  const expired = allAssets.filter(a => a.daysLeft !== null && a.daysLeft < 0 && a.status === 'Active');
+
+  actions.innerHTML = `<button class="btn btn-primary" onclick="openAddModal()">+ Add Asset</button>`;
+
+  content.innerHTML = `
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">Total Domains</div>
+        <div class="card-value">${domains.length}</div>
+        <div class="card-sub">${domains.filter(d => d.status === 'Active').length} active</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Total Inboxes</div>
+        <div class="card-value">${inboxes.length}</div>
+        <div class="card-sub">${inboxes.filter(i => i.status === 'Active').length} active</div>
+      </div>
+      <div class="card" style="border-color:${expiringIn3.length > 0 ? 'var(--orange)' : 'var(--border)'}">
+        <div class="card-label">Expiring in 3 days</div>
+        <div class="card-value" style="color:${expiringIn3.length > 0 ? 'var(--orange)' : 'var(--text)'}">${expiringIn3.length}</div>
+        <div class="card-sub">Needs renewal soon</div>
+      </div>
+      <div class="card" style="border-color:${expiringIn1.length > 0 ? 'var(--red)' : 'var(--border)'}">
+        <div class="card-label">Expiring in 1 day</div>
+        <div class="card-value" style="color:${expiringIn1.length > 0 ? 'var(--red)' : 'var(--text)'}">${expiringIn1.length}</div>
+        <div class="card-sub">Action needed today</div>
+      </div>
+      <div class="card" style="border-color:${expired.length > 0 ? 'var(--red)' : 'var(--border)'}">
+        <div class="card-label">Expired & Active</div>
+        <div class="card-value" style="color:${expired.length > 0 ? 'var(--red)' : 'var(--text)'}">${expired.length}</div>
+        <div class="card-sub">Review required</div>
+      </div>
+    </div>
+
+    ${expiringSoon.length > 0 ? `
+    <div class="table-wrap" style="margin-bottom:20px">
+      <div class="table-header">
+        <span class="table-header-title">Expiring Soon</span>
+        <span class="table-count">${expiringSoon.length}</span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Days Left</th><th></th>
+        </tr></thead>
+        <tbody>${expiringSoon.sort((a,b) => a.daysLeft - b.daysLeft).map(a => assetRow(a)).join('')}</tbody>
+      </table>
+    </div>` : ''}
+
+    ${expired.length > 0 ? `
+    <div class="table-wrap" style="margin-bottom:20px">
+      <div class="table-header">
+        <span class="table-header-title" style="color:var(--red)">Expired & Still Active</span>
+        <span class="table-count">${expired.length}</span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Overdue</th><th></th>
+        </tr></thead>
+        <tbody>${expired.sort((a,b) => a.daysLeft - b.daysLeft).map(a => assetRow(a)).join('')}</tbody>
+      </table>
+    </div>` : ''}
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="table-wrap">
+        <div class="table-header">
+          <span class="table-header-title">Recent Domains</span>
+          <span class="table-count">${domains.length}</span>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="navigate('domains')">View all</button>
+        </div>
+        <table>
+          <thead><tr><th>Domain</th><th>Client</th><th>Days Left</th></tr></thead>
+          <tbody>${domains.slice(0,6).map(a => `
+            <tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+              <td><div class="td-name">${esc(a.name)}</div></td>
+              <td>${esc(a.client||'—')}</td>
+              <td><span class="${daysClass(a.daysLeft)}">${daysLabel(a.daysLeft)}</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <div class="table-header">
+          <span class="table-header-title">Recent Inboxes</span>
+          <span class="table-count">${inboxes.length}</span>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="navigate('inboxes')">View all</button>
+        </div>
+        <table>
+          <thead><tr><th>Inbox</th><th>Client</th><th>Days Left</th></tr></thead>
+          <tbody>${inboxes.slice(0,6).map(a => `
+            <tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+              <td><div class="td-name">${esc(a.name)}</div></td>
+              <td>${esc(a.client||'—')}</td>
+              <td><span class="${daysClass(a.daysLeft)}">${daysLabel(a.daysLeft)}</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ===== Table Page =====
+function renderTable(content, actions, type) {
+  const clients = [...new Set(allAssets.filter(a => a.type === type && a.client).map(a => a.client))].sort();
+  actions.innerHTML = `
+    <button class="btn btn-ghost" onclick="exportCSV('${type}')">↓ Export CSV</button>
+    <button class="btn btn-primary" onclick="openAddModal('${type}')">+ Add ${type === 'DOMAIN' ? 'Domain' : 'Inbox'}</button>
+  `;
+
+  content.innerHTML = `
+    <div class="filters">
+      <div class="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input type="text" placeholder="Search..." oninput="onSearch(this.value)" />
+      </div>
+      <select class="filter-select" onchange="onFilterStatus(this.value)">
+        <option value="">All Status</option>
+        <option value="Active">Active</option>
+        <option value="Inactive">Inactive</option>
+        <option value="Not In Use">Not In Use</option>
+      </select>
+      <select class="filter-select" onchange="onFilterClient(this.value)">
+        <option value="">All Clients</option>
+        ${clients.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="table-wrap">
+      <div class="table-header">
+        <span class="table-header-title">${type === 'DOMAIN' ? 'Domains' : 'Inboxes'}</span>
+        <span class="table-count" id="table-count">—</span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>${type === 'DOMAIN' ? 'Domain' : 'Inbox'}</th>
+          <th>Client</th>
+          <th>Provider</th>
+          <th>Campaign</th>
+          <th>Status</th>
+          <th>Expiry</th>
+          <th>Days Left</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="table-body"><tr class="loading-row"><td colspan="8"><div class="spinner"></div></td></tr></tbody>
+      </table>
+      <div class="pagination" id="table-pagination"></div>
+    </div>
+  `;
+
+  tableAssets = allAssets.filter(a => a.type === type);
+  renderTableBody();
+}
+
+function applyFilters() {
+  let filtered = tableAssets;
+  if (currentFilter.search) {
+    const q = currentFilter.search.toLowerCase();
+    filtered = filtered.filter(a =>
+      a.name.toLowerCase().includes(q) ||
+      (a.client||'').toLowerCase().includes(q) ||
+      (a.provider||'').toLowerCase().includes(q) ||
+      (a.campaign||'').toLowerCase().includes(q)
+    );
+  }
+  if (currentFilter.status) filtered = filtered.filter(a => a.status === currentFilter.status);
+  if (currentFilter.client) filtered = filtered.filter(a => a.client === currentFilter.client);
+  return filtered;
+}
+
+function renderTableBody() {
+  const filtered = applyFilters();
+  const total = filtered.length;
+  const start = (tablePage - 1) * PAGE_SIZE;
+  const page = filtered.slice(start, start + PAGE_SIZE);
+
+  const countEl = document.getElementById('table-count');
+  if (countEl) countEl.textContent = total;
+
+  const body = document.getElementById('table-body');
+  if (!body) return;
+
+  if (page.length === 0) {
+    body.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">○</div><p>No assets found</p></div></td></tr>`;
+  } else {
+    body.innerHTML = page.map(a => assetRow(a, true)).join('');
+  }
+
+  renderPagination(total, start);
+}
+
+function assetRow(a, showAll = false) {
+  const expiry = a.expiryDate ? new Date(a.expiryDate).toLocaleDateString('en-GB') : '—';
+  return `<tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+    <td><div class="td-name">${esc(a.name)}</div></td>
+    <td>${esc(a.client||'—')}</td>
+    ${showAll ? `<td>${esc(a.provider||'—')}</td><td>${esc(a.campaign||'—')}</td>` : ''}
+    <td>${statusBadge(a.status)}</td>
+    ${showAll ? `<td style="font-family:'DM Mono',monospace;font-size:11px">${expiry}</td>` : ''}
+    <td><span class="${daysClass(a.daysLeft)} days-cell">${daysLabel(a.daysLeft)}</span></td>
+    <td onclick="event.stopPropagation()">
+      <div class="row-actions">
+        <button class="btn btn-ghost btn-sm" onclick="openRenewConfirm('${esc(a.name)}')">Renew</button>
+        <button class="btn btn-danger btn-sm" onclick="openDeleteConfirm('${esc(a.name)}')">Delete</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function renderPagination(total, start) {
+  const el = document.getElementById('table-pagination');
+  if (!el) return;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+  let pages = '';
+  for (let i = 1; i <= totalPages; i++) {
+    pages += `<button class="page-btn ${i === tablePage ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
+  }
+  el.innerHTML = `
+    <span>${start + 1}–${Math.min(start + PAGE_SIZE, total)} of ${total}</span>
+    <div class="page-btns">
+      <button class="page-btn" onclick="goPage(${tablePage - 1})" ${tablePage === 1 ? 'disabled' : ''}>‹</button>
+      ${pages}
+      <button class="page-btn" onclick="goPage(${tablePage + 1})" ${tablePage === totalPages ? 'disabled' : ''}>›</button>
+    </div>
+  `;
+}
+
+function goPage(p) { tablePage = p; renderTableBody(); }
+function onSearch(v) { currentFilter.search = v; tablePage = 1; renderTableBody(); }
+function onFilterStatus(v) { currentFilter.status = v; tablePage = 1; renderTableBody(); }
+function onFilterClient(v) { currentFilter.client = v; tablePage = 1; renderTableBody(); }
+
+// ===== Upload Page =====
+function renderUploadPage(content, actions) {
+  content.innerHTML = `
+    <div style="max-width:520px;margin:0 auto">
+      <div class="form-group" style="margin-bottom:16px">
+        <label>Asset Type</label>
+        <select id="up-type">
+          <option value="domain">Domains</option>
+          <option value="inbox">Inboxes</option>
+        </select>
+      </div>
+      <div class="upload-zone" id="uploadZone2">
+        <input type="file" id="uploadFile2" accept=".csv" onchange="onFileSelect2()" />
+        <div style="font-size:28px;margin-bottom:8px">📂</div>
+        <div class="upload-text">Click or drag & drop your CSV here</div>
+        <div class="upload-sub">Filename must contain "domain" or "inbox"</div>
+        <div class="upload-file-name" id="upload-file-name2"></div>
+      </div>
+      <button class="btn btn-primary" style="width:100%" onclick="submitUpload2()">Import</button>
+      <div id="upload-result" style="margin-top:16px"></div>
+    </div>
+  `;
+}
+
+// ===== Detail Panel =====
+function openDetail(name) {
+  const a = allAssets.find(x => x.name === name);
+  if (!a) return;
+
+  document.getElementById('detail-name').textContent = a.name;
+  document.getElementById('detail-type').textContent = a.type;
+
+  const expiry = a.expiryDate ? new Date(a.expiryDate).toLocaleDateString('en-GB') : 'Auto-calculated';
+  const purchase = a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString('en-GB') : '—';
+
+  const fields = [
+    ['Client', a.client],
+    ['Provider', a.provider],
+    ['Workspace', a.workspace],
+    ['Campaign', a.campaign],
+    ['Status', a.status],
+    ['Branded / Pre-warmed', a.brandedPrewarmed],
+    ['Purchase Date', purchase],
+    ['Expiry Date', expiry],
+    ['Days Left', daysLabel(a.daysLeft)],
+    a.type === 'DOMAIN' ? ['Yearly Cost', a.yearlyCost ? `${a.currency||'USD'} ${a.yearlyCost}` : null] : ['Monthly Cost', a.monthlyCost ? `${a.currency||'USD'} ${a.monthlyCost}` : null],
+    ['Notes', a.notes],
+  ].filter(([,v]) => v);
+
+  document.getElementById('detail-body').innerHTML = `
+    <div class="detail-section">
+      <div class="detail-section-label">Asset Info</div>
+      ${fields.map(([k, v]) => `
+        <div class="detail-row">
+          <span class="detail-key">${k}</span>
+          <span class="detail-val">${esc(String(v))}</span>
+        </div>`).join('')}
+    </div>
+  `;
+
+  document.getElementById('detail-footer').innerHTML = `
+    <button class="btn btn-ghost" style="flex:1" onclick="openEditFromDetail('${esc(name)}')">Edit</button>
+    <button class="btn btn-ghost" style="flex:1" onclick="openRenewConfirm('${esc(name)}')">Renew</button>
+    <button class="btn btn-danger" style="flex:1" onclick="openDeleteConfirm('${esc(name)}')">Delete</button>
+  `;
+
+  document.getElementById('detailOverlay').classList.add('open');
+}
+
+function closeDetail(e) {
+  if (e.target === document.getElementById('detailOverlay')) closeDetailPanel();
+}
+function closeDetailPanel() {
+  document.getElementById('detailOverlay').classList.remove('open');
+}
+
+// ===== Add / Edit Modal =====
+function openAddModal(type = 'DOMAIN') {
+  document.getElementById('modal-title').textContent = 'Add Asset';
+  document.getElementById('assetForm').reset();
+  document.getElementById('f-editId').value = '';
+  document.getElementById('f-type').value = type;
+  updateFormForType();
+  openModal('assetModal');
+}
+
+function openEditFromDetail(name) {
+  const a = allAssets.find(x => x.name === name);
+  if (!a) return;
+  closeDetailPanel();
+
+  document.getElementById('modal-title').textContent = 'Edit Asset';
+  document.getElementById('f-editId').value = a.name;
+  document.getElementById('f-type').value = a.type;
+  document.getElementById('f-name').value = a.name;
+  document.getElementById('f-client').value = a.client || '';
+  document.getElementById('f-provider').value = a.provider || '';
+  document.getElementById('f-workspace').value = a.workspace || '';
+  document.getElementById('f-campaign').value = a.campaign || '';
+  document.getElementById('f-purchaseDate').value = a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString('en-GB') : '';
+  document.getElementById('f-expiryDate').value = a.expiryDate ? new Date(a.expiryDate).toLocaleDateString('en-GB') : '';
+  document.getElementById('f-status').value = a.status || 'Active';
+  document.getElementById('f-brandedPrewarmed').value = a.brandedPrewarmed || '';
+  document.getElementById('f-cost').value = a.type === 'DOMAIN' ? (a.yearlyCost || '') : (a.monthlyCost || '');
+  document.getElementById('f-currency').value = a.currency || 'USD';
+  document.getElementById('f-notes').value = a.notes || '';
+  updateFormForType();
+  openModal('assetModal');
+}
+
+function updateFormForType() {
+  const type = document.getElementById('f-type').value;
+  document.getElementById('cost-label').textContent = type === 'DOMAIN' ? 'Yearly Cost' : 'Monthly Cost';
+}
+
+async function submitAsset() {
+  const editId = document.getElementById('f-editId').value;
+  const type = document.getElementById('f-type').value;
+  const data = {
+    type,
+    name: document.getElementById('f-name').value.trim().toLowerCase(),
+    client: document.getElementById('f-client').value.trim() || null,
+    provider: document.getElementById('f-provider').value.trim() || null,
+    workspace: document.getElementById('f-workspace').value.trim() || null,
+    campaign: document.getElementById('f-campaign').value.trim() || null,
+    purchaseDate: document.getElementById('f-purchaseDate').value || null,
+    expiryDate: document.getElementById('f-expiryDate').value || null,
+    status: document.getElementById('f-status').value,
+    brandedPrewarmed: document.getElementById('f-brandedPrewarmed').value || null,
+    cost: document.getElementById('f-cost').value || null,
+    currency: document.getElementById('f-currency').value,
+    primaryOwner: document.getElementById('f-primaryOwner').value.trim() || null,
+    notes: document.getElementById('f-notes').value.trim() || null,
+    editId: editId || null
+  };
+
+  if (!data.name) return toast('Name is required', 'error');
+
+  try {
+    const res = await saveAsset(data, !!editId);
+    if (res.ok) {
+      toast(editId ? 'Asset updated' : 'Asset added', 'success');
+      closeModal('assetModal');
+      renderPage(currentPage);
+    } else {
+      toast(res.error || 'Error saving asset', 'error');
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ===== Confirm / Delete / Renew =====
+function openDeleteConfirm(name) {
+  closeDetailPanel();
+  document.getElementById('confirm-title').textContent = 'Delete Asset';
+  document.getElementById('confirm-text').textContent = 'This will permanently delete this asset and remove it from Google Sheets.';
+  document.getElementById('confirm-name').textContent = name;
+  document.getElementById('confirm-action-btn').textContent = 'Delete';
+  confirmCallback = async () => {
+    const res = await deleteAsset(name);
+    if (res.ok) {
+      toast('Asset deleted', 'success');
+      closeModal('confirmModal');
+      renderPage(currentPage);
+    } else {
+      toast(res.error || 'Error deleting', 'error');
+    }
+  };
+  openModal('confirmModal');
+  document.getElementById('confirm-action-btn').onclick = confirmCallback;
+}
+
+function openRenewConfirm(name) {
+  closeDetailPanel();
+  document.getElementById('confirm-title').textContent = 'Renew Asset';
+  document.getElementById('confirm-text').textContent = 'This will set the purchase date to today and auto-calculate the new expiry date.';
+  document.getElementById('confirm-name').textContent = name;
+  document.getElementById('confirm-action-btn').textContent = 'Renew';
+  document.getElementById('confirm-action-btn').className = 'btn btn-primary';
+  confirmCallback = async () => {
+    const res = await renewAsset(name);
+    if (res.ok) {
+      toast('Asset renewed', 'success');
+      closeModal('confirmModal');
+      renderPage(currentPage);
+    } else {
+      toast(res.error || 'Error renewing', 'error');
+    }
+  };
+  openModal('confirmModal');
+  document.getElementById('confirm-action-btn').onclick = confirmCallback;
+}
+
+// ===== Upload =====
+function onFileSelect() {
+  const f = document.getElementById('uploadFile').files[0];
+  document.getElementById('upload-file-name').textContent = f ? '✓ ' + f.name : '';
+}
+function onFileSelect2() {
+  const f = document.getElementById('uploadFile2').files[0];
+  document.getElementById('upload-file-name2').textContent = f ? '✓ ' + f.name : '';
+}
+
+async function submitUpload() {
+  const type = document.getElementById('upload-type').value;
+  const file = document.getElementById('uploadFile').files[0];
+  if (!file) return toast('Please select a file', 'error');
+
+  const btn = document.getElementById('upload-btn');
+  btn.innerHTML = '<span class="spinner"></span>';
+  btn.disabled = true;
+
+  const fd = new FormData();
+  fd.append('type', type);
+  fd.append('csv', file);
+
+  try {
+    const res = await fetch('/upload-csv', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (res.ok) {
+      toast(`Imported ${data.total} assets (${data.inserted} new, ${data.updated} updated)`, 'success');
+      closeModal('uploadModal');
+      renderPage(currentPage);
+    } else {
+      toast(data.error || 'Import failed', 'error');
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    btn.innerHTML = 'Import';
+    btn.disabled = false;
+  }
+}
+
+async function submitUpload2() {
+  const type = document.getElementById('up-type').value;
+  const file = document.getElementById('uploadFile2').files[0];
+  if (!file) return toast('Please select a file', 'error');
+
+  const fd = new FormData();
+  fd.append('type', type);
+  fd.append('csv', file);
+
+  const result = document.getElementById('upload-result');
+  result.innerHTML = '<span class="spinner"></span>';
+
+  try {
+    const res = await fetch('/upload-csv', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (res.ok) {
+      result.innerHTML = `<div class="toast success" style="display:flex">✓ Imported ${data.total} assets — ${data.inserted} new, ${data.updated} updated. Sheets synced.</div>`;
+      fetchAssets();
+    } else {
+      result.innerHTML = `<div class="toast error" style="display:flex">✕ ${data.error}</div>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<div class="toast error" style="display:flex">✕ ${e.message}</div>`;
+  }
+}
+
+// ===== Export =====
+function exportCSV(type) {
+  const assets = allAssets.filter(a => a.type === type);
+  const headers = type === 'DOMAIN'
+    ? ['Domain','Client','Provider','Workspace','Campaign','Purchase Date','Expiry Date','Status','Branded/Pre-warmed','Primary Owner','Yearly Cost','Currency','Notes']
+    : ['Inbox','Client','Provider','Workspace','Domain','Campaign','Purchase Date','Expiry Date','Status','Branded/Pre-warmed','Primary Owner','Monthly Cost','Currency','Notes'];
+
+  const rows = assets.map(a => {
+    const purchase = a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString('en-GB') : '';
+    const expiry = a.expiryDate ? new Date(a.expiryDate).toLocaleDateString('en-GB') : '';
+    return type === 'DOMAIN'
+      ? [a.name, a.client, a.provider, a.workspace, a.campaign, purchase, expiry, a.status, a.brandedPrewarmed, a.primaryOwner, a.yearlyCost, a.currency, a.notes]
+      : [a.name, a.client, a.provider, a.workspace, a.domain, a.campaign, purchase, expiry, a.status, a.brandedPrewarmed, a.primaryOwner, a.monthlyCost, a.currency, a.notes];
+  });
+
+  const csv = [headers, ...rows].map(r => r.map(v => `"${(v||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${type.toLowerCase()}s-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('CSV exported', 'success');
+}
+
+// ===== Helpers =====
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+function statusBadge(s) {
+  const map = { 'Active': 'badge-green', 'Inactive': 'badge-gray', 'Not In Use': 'badge-orange' };
+  return `<span class="badge ${map[s]||'badge-gray'}">${s||'—'}</span>`;
+}
+
+function daysLabel(d) {
+  if (d === null || d === undefined) return '—';
+  if (d < 0) return `${Math.abs(d)}d overdue`;
+  if (d === 0) return 'Today';
+  return `${d}d`;
+}
+
+function daysClass(d) {
+  if (d === null || d === undefined) return 'days-cell';
+  if (d < 0) return 'days-cell days-red';
+  if (d <= 3) return 'days-cell days-red';
+  if (d <= 7) return 'days-cell days-orange';
+  return 'days-cell days-green';
+}
+
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span>${type === 'success' ? '✓' : '✕'}</span> ${esc(msg)}`;
+  document.getElementById('toastContainer').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// Close modals on overlay click
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) overlay.classList.remove('open');
+  });
+});
+
+// ===== Init =====
+initTheme();
+navigate('dashboard');
+</script>
+</body>
+</html>
