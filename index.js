@@ -388,15 +388,25 @@ expressApp.delete('/api/assets/:name', async (req, res) => {
   }
 });
 
-// POST renew asset
+// POST renew asset — FIX #1: Inboxes set expiry to next month same day
 expressApp.post('/api/assets/:name/renew', async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
     const existing = await Asset.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
     if (!existing) return res.status(404).json({ ok: false, error: 'Not found' });
+    
+    const today = dayjs().startOf('day');
+    let newExpiryDate = null;
+    
+    // For INBOX: set expiry to same day next month
+    if (existing.type === 'INBOX') {
+      newExpiryDate = today.add(1, 'month').toDate();
+    }
+    // For DOMAIN: leave expiryDate as null so it auto-calculates to 365 days from today
+    
     await Asset.findOneAndUpdate({ name: existing.name }, {
-      purchaseDate: dayjs().startOf('day').toDate(),
-      expiryDate: null,
+      purchaseDate: today.toDate(),
+      expiryDate: newExpiryDate,
       remindersSent: [],
       updatedAt: new Date()
     });
@@ -1179,9 +1189,15 @@ app.message(async ({ message, client }) => {
       for (const name of names) {
         const existing = await Asset.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
         if (!existing) { notFound++; continue; }
+        
+        let newExpiryDate = null;
+        if (existing.type === 'INBOX') {
+          newExpiryDate = today.add(1, 'month').toDate();
+        }
+        
         await Asset.findOneAndUpdate({ name: existing.name }, {
           purchaseDate: today.toDate(),
-          expiryDate: null,
+          expiryDate: newExpiryDate,
           remindersSent: [],
           updatedAt: new Date()
         });

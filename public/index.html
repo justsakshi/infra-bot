@@ -1219,9 +1219,7 @@ function assetRow(a, showAll = false) {
   return `<tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
     <td><div class="td-name">${esc(a.name)}</div></td>
     <td>${esc(a.client||'—')}</td>
-    ${showAll ? `<td>${esc(a.provider||'—')}</td><td>${esc(a.campaign||'—')}</td>` : ''}
-    <td>${statusBadge(a.status)}</td>
-    ${showAll ? `<td style="font-family:'DM Mono',monospace;font-size:11px">${expiry}</td>` : ''}
+    ${showAll ? `<td>${esc(a.provider||'—')}</td><td>${esc(a.campaign||'—')}</td><td style="font-family:'DM Mono',monospace;font-size:11px">${expiry}</td>` : '<td></td>'}
     <td><span class="${daysClass(a.daysLeft)} days-cell">${daysLabel(a.daysLeft)}</span></td>
     <td onclick="event.stopPropagation()">
       <div class="row-actions">
