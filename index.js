@@ -1540,7 +1540,7 @@ async function runDailySummary() {
   }
 }
 
-/* -------------------- Startup -------------------- */
+/* -------------------- Startup -------------------- 
 async function start() {
   try {
     await mongoose.connect(process.env.MONGO_URI);
@@ -1569,8 +1569,50 @@ async function start() {
     console.error('❌ Error during startup:', error);
     process.exit(1);
   }
-}
+}*/
 
+
+/* -------------------- Startup -------------------- */
+async function start() {
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log('✅ MongoDB connected');
+
+    const allAssets = await Asset.find();
+    await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
+    console.log('✅ Google Sheets synced on startup');
+
+    await app.start();
+    console.log('✅ Slack bot running in socket mode');
+
+    // Start HTTP server for CSV upload UI
+    expressApp.listen(PORT, () => {
+      console.log(`✅ Upload UI running at http://localhost:${PORT}`);
+    });
+
+    // Schedule inbox/domain reminder at 12 PM IST
+    // 12:00 PM IST = 6:30 AM UTC
+    cron.schedule('30 6 * * *', async () => {
+      try {
+        await app.client.chat.postMessage({
+          token: process.env.SLACK_BOT_TOKEN,
+          channel: 'C0AGVSUNEFP', 
+          text: 'Please check for expiring inboxes/domains : https://infra-bot.onrender.com/'
+        });
+
+        console.log('✅ 12 PM reminder sent successfully');
+      } catch (error) {
+        console.error('❌ Error sending 12 PM reminder:', error);
+      }
+    });
+
+    console.log('✅ 12 PM inbox/domain reminder scheduled');
+
+  } catch (error) {
+    console.error('❌ Error during startup:', error);
+    process.exit(1);
+  }
+}
 start();
 
 process.on('SIGINT', async () => {
