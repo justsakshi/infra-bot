@@ -388,22 +388,25 @@ expressApp.delete('/api/assets/:name', async (req, res) => {
   }
 });
 
-// POST renew asset — FIX #1: Inboxes set expiry to next month same day
+// POST renew asset
+// FIX: INBOXes now get expiryDate set to exactly 1 month from today (not null),
+// so they don't show as nearly-expired immediately after renewal.
+// DOMAINs stay null so computeDaysLeft auto-calculates 365 days from purchaseDate.
 expressApp.post('/api/assets/:name/renew', async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
     const existing = await Asset.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
     if (!existing) return res.status(404).json({ ok: false, error: 'Not found' });
-    
+
     const today = dayjs().startOf('day');
     let newExpiryDate = null;
-    
-    // For INBOX: set expiry to same day next month
+
+    // For INBOX: set expiry to exactly 1 month from today
     if (existing.type === 'INBOX') {
       newExpiryDate = today.add(1, 'month').toDate();
     }
-    // For DOMAIN: leave expiryDate as null so it auto-calculates to 365 days from today
-    
+    // For DOMAIN: leave expiryDate null → computeDaysLeft auto-calcs 365 days from purchaseDate
+
     await Asset.findOneAndUpdate({ name: existing.name }, {
       purchaseDate: today.toDate(),
       expiryDate: newExpiryDate,
@@ -1157,8 +1160,6 @@ app.message(async ({ message, client }) => {
     const command = lines[0].toLowerCase();
     if (command !== 'delete' && command !== 'renew') return;
 
-
-
     // Slack auto-formats emails as <mailto:email|email> — strip that
     const names = lines.slice(1).map(l => {
       const mailtoMatch = l.match(/<mailto:[^|]+\|([^>]+)>/);
@@ -1189,12 +1190,13 @@ app.message(async ({ message, client }) => {
       for (const name of names) {
         const existing = await Asset.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
         if (!existing) { notFound++; continue; }
-        
+
+        // FIX: same logic as REST endpoint — INBOXes get 1 month, DOMAINs stay null
         let newExpiryDate = null;
         if (existing.type === 'INBOX') {
           newExpiryDate = today.add(1, 'month').toDate();
         }
-        
+
         await Asset.findOneAndUpdate({ name: existing.name }, {
           purchaseDate: today.toDate(),
           expiryDate: newExpiryDate,
@@ -1341,16 +1343,11 @@ app.view('RENEW_ASSET_MODAL', async ({ ack, body, view, client }) => {
 
     await client.chat.postMessage({
       channel: body.user.id,
-      text: `✅ *${name}* renewed successfully!
-` +
-            `• New Purchase Date: ${newPurchaseDate ? dayjs(newPurchaseDate).format('DD/MM/YYYY') : 'Unchanged'}
-` +
-            `• New Expiry Date: ${updates.expiryDate ? dayjs(updates.expiryDate).format('DD/MM/YYYY') : 'Auto-calculated'}
-` +
-            `• Days until expiry: ${daysLeft !== null ? daysLeft : 'N/A'}
-` +
-            `• Reminder history cleared ✓
-` +
+      text: `✅ *${name}* renewed successfully!\n` +
+            `• New Purchase Date: ${newPurchaseDate ? dayjs(newPurchaseDate).format('DD/MM/YYYY') : 'Unchanged'}\n` +
+            `• New Expiry Date: ${updates.expiryDate ? dayjs(updates.expiryDate).format('DD/MM/YYYY') : 'Auto-calculated'}\n` +
+            `• Days until expiry: ${daysLeft !== null ? daysLeft : 'N/A'}\n` +
+            `• Reminder history cleared ✓\n` +
             `• Google Sheets synced ✓`
     });
 
@@ -1433,7 +1430,6 @@ async function runDailySummary() {
         }
       ];
 
-      // Store detail text per daysLeft key so button handler can retrieve it
       const detailMap = {};
 
       for (const daysLeft of Object.keys(byDay).sort((a, b) => Number(a) - Number(b))) {
@@ -1447,7 +1443,6 @@ async function runDailySummary() {
         if (inboxes.length) parts.push(`${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}`);
         const summary = `${parts.join(' and ')} expire${items.length === 1 ? 's' : ''} ${label}`;
 
-        // Build detail grouped by client
         const byClient = {};
         for (const { asset } of items) {
           const c = asset.client || 'No Client';

@@ -58,10 +58,8 @@
       transition: background 0.3s, color 0.3s;
     }
 
-    /* ---- Layout ---- */
     .shell { display: flex; min-height: 100vh; }
 
-    /* ---- Sidebar ---- */
     .sidebar {
       width: 220px;
       background: var(--bg2);
@@ -162,7 +160,6 @@
     }
     .toggle-track.on .toggle-thumb { transform: translateX(14px); }
 
-    /* ---- Main ---- */
     .main {
       margin-left: 220px;
       flex: 1;
@@ -170,7 +167,6 @@
       flex-direction: column;
     }
 
-    /* ---- Topbar ---- */
     .topbar {
       height: 56px;
       background: var(--bg2);
@@ -202,10 +198,7 @@
       border: none;
       transition: all 0.15s;
     }
-    .btn-primary {
-      background: var(--accent);
-      color: white;
-    }
+    .btn-primary { background: var(--accent); color: white; }
     .btn-primary:hover { background: var(--accent2); }
     .btn-ghost {
       background: transparent;
@@ -221,10 +214,8 @@
     .btn-danger:hover { background: var(--red); color: white; }
     .btn-sm { padding: 5px 10px; font-size: 11px; }
 
-    /* ---- Content ---- */
     .content { padding: 28px; flex: 1; }
 
-    /* ---- Summary Cards ---- */
     .cards {
       display: grid;
       grid-template-columns: repeat(5, 1fr);
@@ -253,19 +244,8 @@
       color: var(--text);
       line-height: 1;
     }
-    .card-sub {
-      font-size: 11px;
-      color: var(--text3);
-      margin-top: 4px;
-    }
-    .card-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      display: inline-block;
-      margin-right: 4px;
-    }
+    .card-sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
 
-    /* ---- Filters ---- */
     .filters {
       display: flex;
       gap: 10px;
@@ -314,7 +294,6 @@
     }
     .filter-select:focus { border-color: var(--accent); }
 
-    /* ---- Table ---- */
     .table-wrap {
       background: var(--card-bg);
       border: 1px solid var(--border);
@@ -328,11 +307,7 @@
       border-bottom: 1px solid var(--border);
       gap: 12px;
     }
-    .table-header-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text);
-    }
+    .table-header-title { font-size: 13px; font-weight: 700; color: var(--text); }
     .table-count {
       font-family: 'DM Mono', monospace;
       font-size: 11px;
@@ -342,10 +317,7 @@
       border-radius: 99px;
       padding: 2px 8px;
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
+    table { width: 100%; border-collapse: collapse; }
     th {
       font-family: 'DM Mono', monospace;
       font-size: 10px;
@@ -393,32 +365,18 @@
     .badge-gray { background: var(--bg3); color: var(--text3); }
     .badge-purple { background: rgba(124,109,250,0.12); color: var(--accent2); }
 
-    .days-cell {
-      font-family: 'DM Mono', monospace;
-      font-size: 12px;
-      font-weight: 500;
-    }
+    .days-cell { font-family: 'DM Mono', monospace; font-size: 12px; font-weight: 500; }
     .days-red { color: var(--red); }
     .days-orange { color: var(--orange); }
     .days-green { color: var(--green); }
 
-    .row-actions {
-      display: flex;
-      gap: 6px;
-      opacity: 0;
-      transition: opacity 0.15s;
-    }
+    .row-actions { display: flex; gap: 6px; opacity: 0; transition: opacity 0.15s; }
     tr:hover .row-actions { opacity: 1; }
 
-    .empty-state {
-      text-align: center;
-      padding: 60px 20px;
-      color: var(--text3);
-    }
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--text3); }
     .empty-state .empty-icon { font-size: 32px; margin-bottom: 12px; }
     .empty-state p { font-size: 13px; }
 
-    /* ---- Pagination ---- */
     .pagination {
       display: flex;
       align-items: center;
@@ -445,7 +403,6 @@
     .page-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
     .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
-    /* ---- Modal ---- */
     .modal-overlay {
       position: fixed;
       inset: 0;
@@ -507,7 +464,6 @@
       border-top: 1px solid var(--border);
     }
 
-    /* ---- Form fields ---- */
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
     .form-group { display: flex; flex-direction: column; gap: 6px; }
     .form-group.full { grid-column: 1 / -1; }
@@ -535,7 +491,6 @@
     textarea { resize: vertical; min-height: 72px; }
     select option { background: var(--bg2); }
 
-    /* ---- Detail panel (slide-in) ---- */
     .detail-overlay {
       position: fixed;
       inset: 0;
@@ -607,7 +562,6 @@
       gap: 8px;
     }
 
-    /* ---- Toast ---- */
     .toast-container {
       position: fixed;
       bottom: 24px;
@@ -638,7 +592,6 @@
       to { opacity: 1; transform: translateY(0); }
     }
 
-    /* ---- Upload zone ---- */
     .upload-zone {
       border: 2px dashed var(--border2);
       border-radius: 12px;
@@ -653,17 +606,11 @@
       border-color: var(--accent);
       background: rgba(124,109,250,0.04);
     }
-    .upload-zone input {
-      position: absolute;
-      inset: 0;
-      opacity: 0;
-      cursor: pointer;
-    }
+    .upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
     .upload-text { font-size: 13px; color: var(--text2); }
     .upload-sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
     .upload-file-name { font-size: 12px; color: var(--accent2); margin-top: 8px; font-family: 'DM Mono', monospace; }
 
-    /* ---- Loading ---- */
     .spinner {
       width: 16px; height: 16px;
       border: 2px solid var(--border2);
@@ -673,10 +620,8 @@
       display: inline-block;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-
     .loading-row td { text-align: center; padding: 48px; color: var(--text3); }
 
-    /* ---- Confirm dialog ---- */
     .confirm-text { font-size: 13px; color: var(--text2); line-height: 1.6; }
     .confirm-name {
       font-family: 'DM Mono', monospace;
@@ -689,27 +634,6 @@
       word-break: break-all;
     }
 
-    /* ---- Tabs ---- */
-    .tabs {
-      display: flex;
-      gap: 0;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 20px;
-    }
-    .tab {
-      padding: 10px 18px;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text3);
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      margin-bottom: -1px;
-      transition: all 0.15s;
-    }
-    .tab:hover { color: var(--text2); }
-    .tab.active { color: var(--accent2); border-bottom-color: var(--accent); }
-
-    /* ---- Responsive ---- */
     @media (max-width: 900px) {
       .cards { grid-template-columns: repeat(2, 1fr); }
       .detail-panel { width: 100%; }
@@ -724,7 +648,6 @@
 <body>
 <div class="shell">
 
-  <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-logo">
       <div class="wordmark">INFRA</div>
@@ -749,15 +672,12 @@
     </div>
     <div class="sidebar-bottom">
       <div class="theme-toggle" onclick="toggleTheme()">
-        <div class="toggle-track" id="themeTrack">
-          <div class="toggle-thumb"></div>
-        </div>
+        <div class="toggle-track" id="themeTrack"><div class="toggle-thumb"></div></div>
         <span id="themeLabel">Light mode</span>
       </div>
     </div>
   </aside>
 
-  <!-- Main -->
   <div class="main">
     <div class="topbar">
       <span class="topbar-title" id="topbar-title">Dashboard</span>
@@ -792,7 +712,7 @@
       <button class="modal-close" onclick="closeModal('assetModal')">✕</button>
     </div>
     <div class="modal-body">
-      <form id="assetForm" onsubmit="submitAsset(event)">
+      <form id="assetForm" onsubmit="return false;">
         <div class="form-grid">
           <div class="form-group">
             <label>Type</label>
@@ -926,18 +846,16 @@
   </div>
 </div>
 
-<!-- Toast container -->
 <div class="toast-container" id="toastContainer"></div>
 
 <script>
 // ===== State =====
 let allAssets = [];
 let currentPage = 'dashboard';
-let currentFilter = { search: '', status: '', client: '', type: '' };
+let currentFilter = { search: '', status: '', client: '' };
 let tableAssets = [];
 let tablePage = 1;
 const PAGE_SIZE = 25;
-let confirmCallback = null;
 
 // ===== Theme =====
 function toggleTheme() {
@@ -967,17 +885,14 @@ async function fetchAssets() {
   updateNavCounts();
   return allAssets;
 }
-
 async function deleteAsset(name) {
   const res = await fetch('/api/assets/' + encodeURIComponent(name), { method: 'DELETE' });
   return res.json();
 }
-
 async function renewAsset(name) {
   const res = await fetch('/api/assets/' + encodeURIComponent(name) + '/renew', { method: 'POST' });
   return res.json();
 }
-
 async function saveAsset(data, isEdit) {
   const url = isEdit ? '/api/assets/' + encodeURIComponent(data.editId) : '/api/assets';
   const method = isEdit ? 'PUT' : 'POST';
@@ -994,11 +909,10 @@ function updateNavCounts() {
   document.getElementById('nav-domains').textContent = allAssets.filter(a => a.type === 'DOMAIN').length;
   document.getElementById('nav-inboxes').textContent = allAssets.filter(a => a.type === 'INBOX').length;
 }
-
 function navigate(page) {
   currentPage = page;
   tablePage = 1;
-  currentFilter = { search: '', status: '', client: '', type: '' };
+  currentFilter = { search: '', status: '', client: '' };
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
   const titles = { dashboard: 'Dashboard', domains: 'Domains', inboxes: 'Inboxes', upload: 'Import CSV' };
   document.getElementById('topbar-title').textContent = titles[page] || page;
@@ -1010,13 +924,34 @@ async function renderPage(page) {
   const content = document.getElementById('page-content');
   const actions = document.getElementById('topbar-actions');
   actions.innerHTML = '';
-
   await fetchAssets();
-
   if (page === 'dashboard') renderDashboard(content, actions);
   else if (page === 'domains') renderTable(content, actions, 'DOMAIN');
   else if (page === 'inboxes') renderTable(content, actions, 'INBOX');
   else if (page === 'upload') renderUploadPage(content, actions);
+}
+
+// ===== Computed expiry display =====
+// Mirrors server-side computeDaysLeft logic so the expiry column always shows
+// a meaningful date even after renewing (when expiryDate is null in the DB).
+// The " *" suffix indicates the date is auto-calculated, not stored.
+function getComputedExpiryDisplay(a) {
+  if (a.expiryDate) return new Date(a.expiryDate).toLocaleDateString('en-GB');
+  if (!a.purchaseDate) return '—';
+  const purchaseDate = new Date(a.purchaseDate);
+  if (a.type === 'DOMAIN') {
+    const d = new Date(purchaseDate);
+    d.setFullYear(d.getFullYear() + 1);
+    return d.toLocaleDateString('en-GB') + ' *';
+  } else {
+    // INBOX: next occurrence of the purchase day-of-month
+    const purchaseDay = purchaseDate.getDate();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let candidate = new Date(today.getFullYear(), today.getMonth(), purchaseDay);
+    if (candidate <= today) candidate.setMonth(candidate.getMonth() + 1);
+    return candidate.toLocaleDateString('en-GB') + ' *';
+  }
 }
 
 // ===== Dashboard =====
@@ -1052,10 +987,10 @@ function renderDashboard(content, actions) {
         <div class="card-value" style="color:${expiringIn1.length > 0 ? 'var(--red)' : 'var(--text)'}">${expiringIn1.length}</div>
         <div class="card-sub">Action needed today</div>
       </div>
-      <div class="card" style="border-color:${expired.length > 0 ? 'var(--red)' : 'var(--border)'}">
+      <div class="card" style="border-color:${expired.length > 0 ? 'var(--red)' : 'var(--border)'}; ${expired.length > 0 ? 'cursor:pointer;' : ''}" onclick="${expired.length > 0 ? "document.getElementById('expired-section').scrollIntoView({behavior:'smooth'})" : ''}">
         <div class="card-label">Expired & Active</div>
         <div class="card-value" style="color:${expired.length > 0 ? 'var(--red)' : 'var(--text)'}">${expired.length}</div>
-        <div class="card-sub">Review required</div>
+        <div class="card-sub">${expired.length > 0 ? '↓ Click to view list' : 'Review required'}</div>
       </div>
     </div>
 
@@ -1069,12 +1004,12 @@ function renderDashboard(content, actions) {
         <thead><tr>
           <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Days Left</th><th></th>
         </tr></thead>
-        <tbody>${expiringSoon.sort((a,b) => a.daysLeft - b.daysLeft).map(a => assetRow(a)).join('')}</tbody>
+        <tbody>${expiringSoon.sort((a,b) => a.daysLeft - b.daysLeft).map(a => dashboardRow(a)).join('')}</tbody>
       </table>
     </div>` : ''}
 
     ${expired.length > 0 ? `
-    <div class="table-wrap" style="margin-bottom:20px">
+    <div class="table-wrap" id="expired-section" style="margin-bottom:20px">
       <div class="table-header">
         <span class="table-header-title" style="color:var(--red)">Expired & Still Active</span>
         <span class="table-count">${expired.length}</span>
@@ -1083,7 +1018,7 @@ function renderDashboard(content, actions) {
         <thead><tr>
           <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Overdue</th><th></th>
         </tr></thead>
-        <tbody>${expired.sort((a,b) => a.daysLeft - b.daysLeft).map(a => assetRow(a)).join('')}</tbody>
+        <tbody>${expired.sort((a,b) => a.daysLeft - b.daysLeft).map(a => dashboardRow(a)).join('')}</tbody>
       </table>
     </div>` : ''}
 
@@ -1126,6 +1061,25 @@ function renderDashboard(content, actions) {
   `;
 }
 
+// ===== Dashboard row (6 cols: Asset, Client, Type, Provider, Days Left, Actions) =====
+// Used ONLY in the Expiring Soon and Expired tables on the dashboard.
+function dashboardRow(a) {
+  const typeLabel = a.type === 'DOMAIN' ? 'Domain' : 'Inbox';
+  return `<tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+    <td><div class="td-name">${esc(a.name)}</div></td>
+    <td>${esc(a.client||'—')}</td>
+    <td><span class="badge badge-purple">${typeLabel}</span></td>
+    <td>${esc(a.provider||'—')}</td>
+    <td><span class="${daysClass(a.daysLeft)} days-cell">${daysLabel(a.daysLeft)}</span></td>
+    <td onclick="event.stopPropagation()">
+      <div class="row-actions" style="opacity:1">
+        <button class="btn btn-ghost btn-sm" onclick="openRenewConfirm('${esc(a.name)}')">Renew</button>
+        <button class="btn btn-danger btn-sm" onclick="openDeleteConfirm('${esc(a.name)}')">Delete</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
 // ===== Table Page =====
 function renderTable(content, actions, type) {
   const clients = [...new Set(allAssets.filter(a => a.type === type && a.client).map(a => a.client))].sort();
@@ -1133,7 +1087,6 @@ function renderTable(content, actions, type) {
     <button class="btn btn-ghost" onclick="exportCSV('${type}')">↓ Export CSV</button>
     <button class="btn btn-primary" onclick="openAddModal('${type}')">+ Add ${type === 'DOMAIN' ? 'Domain' : 'Inbox'}</button>
   `;
-
   content.innerHTML = `
     <div class="filters">
       <div class="search-wrap">
@@ -1165,14 +1118,14 @@ function renderTable(content, actions, type) {
           <th>Status</th>
           <th>Expiry</th>
           <th>Days Left</th>
+          <th>${type === 'DOMAIN' ? 'Yearly Cost' : 'Monthly Cost'}</th>
           <th></th>
         </tr></thead>
-        <tbody id="table-body"><tr class="loading-row"><td colspan="8"><div class="spinner"></div></td></tr></tbody>
+        <tbody id="table-body"><tr class="loading-row"><td colspan="9"><div class="spinner"></div></td></tr></tbody>
       </table>
       <div class="pagination" id="table-pagination"></div>
     </div>
   `;
-
   tableAssets = allAssets.filter(a => a.type === type);
   renderTableBody();
 }
@@ -1198,29 +1151,34 @@ function renderTableBody() {
   const total = filtered.length;
   const start = (tablePage - 1) * PAGE_SIZE;
   const page = filtered.slice(start, start + PAGE_SIZE);
-
   const countEl = document.getElementById('table-count');
   if (countEl) countEl.textContent = total;
-
   const body = document.getElementById('table-body');
   if (!body) return;
-
   if (page.length === 0) {
-    body.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">○</div><p>No assets found</p></div></td></tr>`;
+    body.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">○</div><p>No assets found</p></div></td></tr>`;
   } else {
-    body.innerHTML = page.map(a => assetRow(a, true)).join('');
+    body.innerHTML = page.map(a => assetRow(a)).join('');
   }
-
   renderPagination(total, start);
 }
 
-function assetRow(a, showAll = false) {
-  const expiry = a.expiryDate ? new Date(a.expiryDate).toLocaleDateString('en-GB') : '—';
+// ===== Full table row (9 cols: Name, Client, Provider, Campaign, Status, Expiry, Days Left, Cost, Actions) =====
+// Used on the Domains and Inboxes pages. Shows computed expiry even when expiryDate is null.
+function assetRow(a) {
+  const expiry = getComputedExpiryDisplay(a);
+  const cost = a.type === 'DOMAIN'
+    ? (a.yearlyCost ? `${a.currency||'USD'} ${a.yearlyCost}` : '—')
+    : (a.monthlyCost ? `${a.currency||'USD'} ${a.monthlyCost}` : '—');
   return `<tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
     <td><div class="td-name">${esc(a.name)}</div></td>
     <td>${esc(a.client||'—')}</td>
-    ${showAll ? `<td>${esc(a.provider||'—')}</td><td>${esc(a.campaign||'—')}</td><td style="font-family:'DM Mono',monospace;font-size:11px">${expiry}</td>` : '<td></td>'}
+    <td>${esc(a.provider||'—')}</td>
+    <td>${esc(a.campaign||'—')}</td>
+    <td>${statusBadge(a.status)}</td>
+    <td style="font-family:'DM Mono',monospace;font-size:11px">${expiry}</td>
     <td><span class="${daysClass(a.daysLeft)} days-cell">${daysLabel(a.daysLeft)}</span></td>
+    <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text2)">${esc(cost)}</td>
     <td onclick="event.stopPropagation()">
       <div class="row-actions">
         <button class="btn btn-ghost btn-sm" onclick="openRenewConfirm('${esc(a.name)}')">Renew</button>
@@ -1235,7 +1193,6 @@ function renderPagination(total, start) {
   if (!el) return;
   const totalPages = Math.ceil(total / PAGE_SIZE);
   if (totalPages <= 1) { el.innerHTML = ''; return; }
-
   let pages = '';
   for (let i = 1; i <= totalPages; i++) {
     pages += `<button class="page-btn ${i === tablePage ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
@@ -1283,11 +1240,11 @@ function renderUploadPage(content, actions) {
 function openDetail(name) {
   const a = allAssets.find(x => x.name === name);
   if (!a) return;
-
   document.getElementById('detail-name').textContent = a.name;
   document.getElementById('detail-type').textContent = a.type;
 
-  const expiry = a.expiryDate ? new Date(a.expiryDate).toLocaleDateString('en-GB') : 'Auto-calculated';
+  // FIX: use getComputedExpiryDisplay so it shows correct date after renewing
+  const expiry = getComputedExpiryDisplay(a);
   const purchase = a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString('en-GB') : '—';
 
   const fields = [
@@ -1300,9 +1257,11 @@ function openDetail(name) {
     ['Purchase Date', purchase],
     ['Expiry Date', expiry],
     ['Days Left', daysLabel(a.daysLeft)],
-    a.type === 'DOMAIN' ? ['Yearly Cost', a.yearlyCost ? `${a.currency||'USD'} ${a.yearlyCost}` : null] : ['Monthly Cost', a.monthlyCost ? `${a.currency||'USD'} ${a.monthlyCost}` : null],
+    a.type === 'DOMAIN'
+      ? ['Yearly Cost', a.yearlyCost ? `${a.currency||'USD'} ${a.yearlyCost}` : null]
+      : ['Monthly Cost', a.monthlyCost ? `${a.currency||'USD'} ${a.monthlyCost}` : null],
     ['Notes', a.notes],
-  ].filter(([,v]) => v);
+  ].filter(([, v]) => v);
 
   document.getElementById('detail-body').innerHTML = `
     <div class="detail-section">
@@ -1314,13 +1273,11 @@ function openDetail(name) {
         </div>`).join('')}
     </div>
   `;
-
   document.getElementById('detail-footer').innerHTML = `
     <button class="btn btn-ghost" style="flex:1" onclick="openEditFromDetail('${esc(name)}')">Edit</button>
     <button class="btn btn-ghost" style="flex:1" onclick="openRenewConfirm('${esc(name)}')">Renew</button>
     <button class="btn btn-danger" style="flex:1" onclick="openDeleteConfirm('${esc(name)}')">Delete</button>
   `;
-
   document.getElementById('detailOverlay').classList.add('open');
 }
 
@@ -1345,7 +1302,6 @@ function openEditFromDetail(name) {
   const a = allAssets.find(x => x.name === name);
   if (!a) return;
   closeDetailPanel();
-
   document.getElementById('modal-title').textContent = 'Edit Asset';
   document.getElementById('f-editId').value = a.name;
   document.getElementById('f-type').value = a.type;
@@ -1360,6 +1316,7 @@ function openEditFromDetail(name) {
   document.getElementById('f-brandedPrewarmed').value = a.brandedPrewarmed || '';
   document.getElementById('f-cost').value = a.type === 'DOMAIN' ? (a.yearlyCost || '') : (a.monthlyCost || '');
   document.getElementById('f-currency').value = a.currency || 'USD';
+  document.getElementById('f-primaryOwner').value = a.primaryOwner || '';
   document.getElementById('f-notes').value = a.notes || '';
   updateFormForType();
   openModal('assetModal');
@@ -1390,9 +1347,7 @@ async function submitAsset() {
     notes: document.getElementById('f-notes').value.trim() || null,
     editId: editId || null
   };
-
   if (!data.name) return toast('Name is required', 'error');
-
   try {
     const res = await saveAsset(data, !!editId);
     if (res.ok) {
@@ -1413,8 +1368,10 @@ function openDeleteConfirm(name) {
   document.getElementById('confirm-title').textContent = 'Delete Asset';
   document.getElementById('confirm-text').textContent = 'This will permanently delete this asset and remove it from Google Sheets.';
   document.getElementById('confirm-name').textContent = name;
-  document.getElementById('confirm-action-btn').textContent = 'Delete';
-  confirmCallback = async () => {
+  const btn = document.getElementById('confirm-action-btn');
+  btn.textContent = 'Delete';
+  btn.className = 'btn btn-danger';
+  btn.onclick = async () => {
     const res = await deleteAsset(name);
     if (res.ok) {
       toast('Asset deleted', 'success');
@@ -1425,17 +1382,19 @@ function openDeleteConfirm(name) {
     }
   };
   openModal('confirmModal');
-  document.getElementById('confirm-action-btn').onclick = confirmCallback;
 }
 
 function openRenewConfirm(name) {
   closeDetailPanel();
+  const a = allAssets.find(x => x.name === name);
+  const typeLabel = a ? (a.type === 'INBOX' ? 'monthly' : 'yearly') : '';
   document.getElementById('confirm-title').textContent = 'Renew Asset';
-  document.getElementById('confirm-text').textContent = 'This will set the purchase date to today and auto-calculate the new expiry date.';
+  document.getElementById('confirm-text').textContent = `This will set the purchase date to today and auto-calculate the new ${typeLabel} expiry date.`;
   document.getElementById('confirm-name').textContent = name;
-  document.getElementById('confirm-action-btn').textContent = 'Renew';
-  document.getElementById('confirm-action-btn').className = 'btn btn-primary';
-  confirmCallback = async () => {
+  const btn = document.getElementById('confirm-action-btn');
+  btn.textContent = 'Renew';
+  btn.className = 'btn btn-primary';
+  btn.onclick = async () => {
     const res = await renewAsset(name);
     if (res.ok) {
       toast('Asset renewed', 'success');
@@ -1446,7 +1405,6 @@ function openRenewConfirm(name) {
     }
   };
   openModal('confirmModal');
-  document.getElementById('confirm-action-btn').onclick = confirmCallback;
 }
 
 // ===== Upload =====
@@ -1463,15 +1421,12 @@ async function submitUpload() {
   const type = document.getElementById('upload-type').value;
   const file = document.getElementById('uploadFile').files[0];
   if (!file) return toast('Please select a file', 'error');
-
   const btn = document.getElementById('upload-btn');
   btn.innerHTML = '<span class="spinner"></span>';
   btn.disabled = true;
-
   const fd = new FormData();
   fd.append('type', type);
   fd.append('csv', file);
-
   try {
     const res = await fetch('/upload-csv', { method: 'POST', body: fd });
     const data = await res.json();
@@ -1494,14 +1449,11 @@ async function submitUpload2() {
   const type = document.getElementById('up-type').value;
   const file = document.getElementById('uploadFile2').files[0];
   if (!file) return toast('Please select a file', 'error');
-
   const fd = new FormData();
   fd.append('type', type);
   fd.append('csv', file);
-
   const result = document.getElementById('upload-result');
   result.innerHTML = '<span class="spinner"></span>';
-
   try {
     const res = await fetch('/upload-csv', { method: 'POST', body: fd });
     const data = await res.json();
@@ -1522,7 +1474,6 @@ function exportCSV(type) {
   const headers = type === 'DOMAIN'
     ? ['Domain','Client','Provider','Workspace','Campaign','Purchase Date','Expiry Date','Status','Branded/Pre-warmed','Primary Owner','Yearly Cost','Currency','Notes']
     : ['Inbox','Client','Provider','Workspace','Domain','Campaign','Purchase Date','Expiry Date','Status','Branded/Pre-warmed','Primary Owner','Monthly Cost','Currency','Notes'];
-
   const rows = assets.map(a => {
     const purchase = a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString('en-GB') : '';
     const expiry = a.expiryDate ? new Date(a.expiryDate).toLocaleDateString('en-GB') : '';
@@ -1530,7 +1481,6 @@ function exportCSV(type) {
       ? [a.name, a.client, a.provider, a.workspace, a.campaign, purchase, expiry, a.status, a.brandedPrewarmed, a.primaryOwner, a.yearlyCost, a.currency, a.notes]
       : [a.name, a.client, a.provider, a.workspace, a.domain, a.campaign, purchase, expiry, a.status, a.brandedPrewarmed, a.primaryOwner, a.monthlyCost, a.currency, a.notes];
   });
-
   const csv = [headers, ...rows].map(r => r.map(v => `"${(v||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -1547,19 +1497,16 @@ function esc(s) {
   if (!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
-
 function statusBadge(s) {
   const map = { 'Active': 'badge-green', 'Inactive': 'badge-gray', 'Not In Use': 'badge-orange' };
   return `<span class="badge ${map[s]||'badge-gray'}">${s||'—'}</span>`;
 }
-
 function daysLabel(d) {
   if (d === null || d === undefined) return '—';
   if (d < 0) return `${Math.abs(d)}d overdue`;
   if (d === 0) return 'Today';
   return `${d}d`;
 }
-
 function daysClass(d) {
   if (d === null || d === undefined) return 'days-cell';
   if (d < 0) return 'days-cell days-red';
@@ -1567,10 +1514,8 @@ function daysClass(d) {
   if (d <= 7) return 'days-cell days-orange';
   return 'days-cell days-green';
 }
-
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-
 function toast(msg, type = 'success') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -1579,7 +1524,6 @@ function toast(msg, type = 'success') {
   setTimeout(() => el.remove(), 3500);
 }
 
-// Close modals on overlay click
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => {
     if (e.target === overlay) overlay.classList.remove('open');
