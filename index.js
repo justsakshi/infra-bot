@@ -436,6 +436,18 @@ expressApp.post('/upload-csv', upload.single('csv'), async (req, res) => {
   }
 });
 
+// Manual trigger for noon summary (for testing or missed cron)
+// Hit GET /trigger-summary to fire it immediately
+expressApp.get('/trigger-summary', async (req, res) => {
+  try {
+    console.log('Manual trigger: runNoonSummary');
+    await runNoonSummary();
+    res.json({ ok: true, message: 'Noon summary triggered successfully' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 expressApp.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -1401,11 +1413,17 @@ async function start() {
 
     // Schedule structured noon summary at 12 PM IST (6:30 AM UTC), Mon-Fri only
     cron.schedule('30 6 * * 1-5', async () => {
-      console.log('Executing scheduled noon summary...');
+      const now = new Date().toISOString();
+      console.log(`[CRON] Noon summary firing at ${now}`);
       await runNoonSummary();
+    }, {
+      timezone: 'Asia/Kolkata'  // ensures cron runs at 12:00 PM IST regardless of server timezone
     });
 
-    console.log('✅ 12 PM IST noon summary scheduled');
+    // Log current server time on startup so timezone issues are obvious
+    const nowUtc = new Date().toISOString();
+    const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    console.log(`✅ 12 PM IST noon summary scheduled (server UTC: ${nowUtc} | IST: ${nowIst})`);
 
   } catch (error) {
     console.error('❌ Error during startup:', error);
