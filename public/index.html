@@ -328,17 +328,21 @@
     .bulk-bar {
       display: none;
       align-items: center;
-      gap: 10px;
-      background: var(--bg3);
-      border: 1px solid var(--border2);
+      gap: 12px;
+      background: rgba(124,109,250,0.1);
+      border: 1.5px solid var(--accent);
       border-radius: 10px;
-      padding: 8px 14px;
+      padding: 10px 16px;
       margin-bottom: 12px;
       font-size: 13px;
       color: var(--text2);
+      position: sticky;
+      top: 64px;
+      z-index: 40;
+      backdrop-filter: blur(8px);
     }
     .bulk-bar.visible { display: flex; }
-    .bulk-bar-count { font-weight: 700; color: var(--text); }
+    .bulk-bar-count { font-weight: 800; font-size: 18px; color: var(--accent2); font-family: 'DM Mono', monospace; }
     .bulk-bar-actions { margin-left: auto; display: flex; gap: 8px; }
 
     .table-wrap {
@@ -1066,6 +1070,15 @@ function renderDashboard(content, actions) {
     </div>
 
     ${expiringIn3.length > 0 ? `
+    <div id="dash-bulk-bar" class="bulk-bar" style="margin-bottom:10px">
+      <span style="font-size:13px;color:var(--text2)">
+        <span class="bulk-bar-count" id="dash-bulk-count">0</span> selected
+      </span>
+      <div class="bulk-bar-actions">
+        <button class="btn btn-warning btn-sm" onclick="bulkRenewDash()">\u2713 Renew Selected</button>
+        <button class="btn btn-danger btn-sm" onclick="bulkDeleteDash()">\u2715 Delete Selected</button>
+      </div>
+    </div>
     <div class="table-wrap" style="margin-bottom:20px">
       <div class="table-header">
         <span class="table-header-title">Expiring Soon</span>
@@ -1078,13 +1091,6 @@ function renderDashboard(content, actions) {
         </tr></thead>
         <tbody id="dash-expiring-body">${expiringIn3.sort((a,b) => a.daysLeft - b.daysLeft).map(a => dashboardRow(a)).join('')}</tbody>
       </table>
-      <div id="dash-bulk-bar" class="bulk-bar" style="margin:8px 14px 12px">
-        <span class="bulk-bar-count" id="dash-bulk-count">0 selected</span>
-        <div class="bulk-bar-actions">
-          <button class="btn btn-warning btn-sm" onclick="bulkRenewDash()">Renew Selected</button>
-          <button class="btn btn-danger btn-sm" onclick="bulkDeleteDash()">Delete Selected</button>
-        </div>
-      </div>
     </div>` : ''}
 
     ${expired.length > 0 ? `
@@ -1379,9 +1385,9 @@ function updateDashBulkBar() {
   const bar = document.getElementById('dash-bulk-bar');
   const cnt = document.getElementById('dash-bulk-count');
   if (!bar) return;
+  if (cnt) cnt.textContent = selectedRows.size;
   if (selectedRows.size > 0) {
     bar.classList.add('visible');
-    cnt.textContent = `${selectedRows.size} selected`;
   } else {
     bar.classList.remove('visible');
   }

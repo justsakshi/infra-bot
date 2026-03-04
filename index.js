@@ -1201,31 +1201,115 @@ async function runDailySummary() {
 
 /* -------------------- 12 PM IST Summary (Structured) -------------------- */
 /**
- * Sends a structured daily summary to the main channel at 12 PM IST.
- * Shows counts for expiring today, in 1 day, and in 3 days — separately for
- * inboxes and domains — with a "Read more" button that posts details in-thread.
+ * Sends a structured daily summary to the main channel at 12 PM IST (Mon–Fri only).
+ *
+ * Uses working-day logic so that assets expiring on weekends are caught on Thursday:
+ *   - "Today"     → expiry date is today (daysLeft === 0)
+ *   - "Tomorrow"  → expiry date is exactly 1 working day ahead
+ *   - "In 3 days" → expiry date is exactly 3 working days ahead
+ *   - On Thursday → also catches Saturday and Sunday expiries so nothing is missed
+ *
+ * The cron is scheduled Mon–Fri only (no weekend runs).
  */
 async function runNoonSummary() {
   try {
     const CHANNEL = 'C0AGVSUNEFP';
     const assets = await Asset.find();
     const prepared = prepareAssetsForSheet(assets);
+    const todayDate = dayjs().startOf('day');
+    const dayOfWeek = todayDate.day(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
 
-    const today = prepared.filter(a => a.daysLeft !== null && a.daysLeft === 0 && a.status === 'Active');
-    const in1 = prepared.filter(a => a.daysLeft !== null && a.daysLeft === 1 && a.status === 'Active');
-    const in3 = prepared.filter(a => a.daysLeft !== null && a.daysLeft > 1 && a.daysLeft <= 3 && a.status === 'Active');
+    // Resolve an asset's effective expiry date string (YYYY-MM-DD)
+    const getExpiryStr = (a) => {
+      if (a.expiryDate) return dayjs(a.expiryDate).format('YYYY-MM-DD');
+      if (!a.purchaseDate) return null;
+      if (a.type === 'DOMAIN') {
+        return dayjs(a.purchaseDate).add(365, 'day').format('YYYY-MM-DD');
+      }
+      // INBOX: next occurrence of purchase day-of-month
+      const purchaseDay = dayjs(a.purchaseDate).date();
+      let candidate = todayDate.date(purchaseDay);
+      if (!candidate.isAfter(todayDate)) candidate = candidate.add(1, 'month');
+      return candidate.format('YYYY-MM-DD');
+    };
 
-    const todayDomains = today.filter(a => a.type === 'DOMAIN');
-    const todayInboxes = today.filter(a => a.type === 'INBOX');
-    const in1Domains = in1.filter(a => a.type === 'DOMAIN');
-    const in1Inboxes = in1.filter(a => a.type === 'INBOX');
-    const in3Domains = in3.filter(a => a.type === 'DOMAIN');
-    const in3Inboxes = in3.filter(a => a.type === 'INBOX');
+    // Build the working-day target sets with human-readable labels
+    // Each entry: { dateStr, label, icon, key }
+    const addWorkingDays = (from, n) => {
+      let d = from;
+      let added = 0;
+      while (added < n) {
+        d = d.add(1, 'day');
+        if (d.day() !== 0 && d.day() !== 6) added++;
+      }
+      return d;
+    };
 
-    // Only send if there's something worth alerting about
-    const totalExpiring = today.length + in1.length + in3.length;
+    const wd1 = addWorkingDays(todayDate, 1); // 1 working day ahead
+    const wd3 = addWorkingDays(todayDate, 3); // 3 working days ahead
+
+    // Target groups: each has a set of dates it captures + display info
+    // Group 0: expiring today
+    // Group 1: expiring on the next working day (label varies by day)
+    // Group 3: expiring in 3 working days (label varies by day)
+    // Thursday special: also capture Sat + Sun under the "3 working days" group
+    //   so they don't fall through the weekend gap
+
+    const wd1Label = wd1.day() === 1 ? 'this Monday' // Thursday → Friday is wd1, but Mon is wd3 — handled below
+      : wd1.format('dddd');                           // e.g. "Tuesday", "Wednesday"
+
+    // Build groups as: { dates: Set<string>, label, icon, key }
+    const groups = [
+      {
+        dates: new Set([todayDate.format('YYYY-MM-DD')]),
+        label: 'Today',
+        icon: '🔴',
+        key: 'noon_0'
+      },
+      {
+        dates: new Set([wd1.format('YYYY-MM-DD')]),
+        label: `Tomorrow (${wd1.format('ddd DD MMM')})`,
+        icon: '🟠',
+        key: 'noon_1'
+      },
+      {
+        // 3 working days group — on Thursday, also scoop in Sat & Sun
+        dates: (() => {
+          const s = new Set([wd3.format('YYYY-MM-DD')]);
+          if (dayOfWeek === 4) { // Thursday
+            s.add(todayDate.add(2, 'day').format('YYYY-MM-DD')); // Saturday
+            s.add(todayDate.add(3, 'day').format('YYYY-MM-DD')); // Sunday
+          }
+          return s;
+        })(),
+        label: dayOfWeek === 4
+          ? `This weekend / Monday (${wd3.format('ddd DD MMM')})`
+          : `In 3 working days (${wd3.format('ddd DD MMM')})`,
+        icon: '🟡',
+        key: 'noon_3'
+      }
+    ];
+
+    // Bucket each active asset into the appropriate group by its expiry date
+    const bucketedGroups = groups.map(g => ({
+      ...g,
+      assets: prepared.filter(a => {
+        if (a.status !== 'Active') return false;
+        const expiryStr = getExpiryStr(a);
+        return expiryStr && g.dates.has(expiryStr);
+      })
+    }));
+
+    // Split each group into domains and inboxes
+    const groupData = bucketedGroups.map(g => ({
+      ...g,
+      domains: g.assets.filter(a => a.type === 'DOMAIN'),
+      inboxes: g.assets.filter(a => a.type === 'INBOX')
+    }));
+
+    const totalExpiring = groupData.reduce((sum, g) => sum + g.assets.length, 0);
     if (totalExpiring === 0) {
-      console.log('✅ No expiring assets for noon summary, skipping.');
+      console.log('\u2705 No expiring assets for noon summary, skipping.');
       return;
     }
 
@@ -1233,20 +1317,19 @@ async function runNoonSummary() {
     const blocks = [
       {
         type: 'header',
-        text: { type: 'plain_text', text: `⏰ Daily Renewal Check — ${dayjs().format('DD MMM YYYY')}` }
+        text: { type: 'plain_text', text: `\u23f0 Daily Renewal Check \u2014 ${dayjs().format('DD MMM YYYY')}` }
       }
     ];
 
-    // Helper to build a summary line + detail for a group
-    const makeGroup = (label, icon, domains, inboxes, dayKey) => {
-      if (domains.length === 0 && inboxes.length === 0) return;
+    for (const g of groupData) {
+      const { label, icon, key, domains, inboxes } = g;
+      if (domains.length === 0 && inboxes.length === 0) continue;
 
       const parts = [];
       if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
       if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
       const summaryText = `${icon}  ${parts.join(' and ')} expire${(domains.length + inboxes.length) === 1 ? 's' : ''} *${label}*`;
 
-      // Detail: grouped by client, show name + provider
       const allItems = [...domains, ...inboxes];
       const byClient = {};
       for (const a of allItems) {
@@ -1259,8 +1342,8 @@ async function runNoonSummary() {
       for (const [client, items] of Object.entries(byClient)) {
         detail += `*${client}*\n`;
         for (const a of items) {
-          const providerPart = a.provider ? ` · ${a.provider}` : '';
-          const typeIcon = a.type === 'DOMAIN' ? '🌐' : '📧';
+          const providerPart = a.provider ? ` \u00b7 ${a.provider}` : '';
+          const typeIcon = a.type === 'DOMAIN' ? '\ud83c\udf10' : '\ud83d\udce7';
           detail += `  ${typeIcon} ${a.name}${providerPart}\n`;
         }
       }
@@ -1271,22 +1354,18 @@ async function runNoonSummary() {
         accessory: {
           type: 'button',
           text: { type: 'plain_text', text: 'Read more' },
-          action_id: `view_details_${dayKey}`,
+          action_id: `view_details_${key}`,
           value: JSON.stringify({ detail: detail.trim(), channel: CHANNEL })
         }
       });
       blocks.push({ type: 'divider' });
-    };
-
-    makeGroup('Today', '🔴', todayDomains, todayInboxes, 'noon_0');
-    makeGroup('Tomorrow', '🟠', in1Domains, in1Inboxes, 'noon_1');
-    makeGroup('in 2–3 days', '🟡', in3Domains, in3Inboxes, 'noon_3');
+    }
 
     blocks.push({
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `🔗 <https://infra-bot.onrender.com/|Open dashboard> to renew or delete inboxes/domains`
+        text: `🔗 <https://infra-bot.onrender.com/|Open dashboard> to renew or manage assets in bulk`
       }]
     });
 
@@ -1320,8 +1399,8 @@ async function start() {
       console.log(`✅ Upload UI running at http://localhost:${PORT}`);
     });
 
-    // Schedule structured noon summary at 12 PM IST (6:30 AM UTC)
-    cron.schedule('30 6 * * *', async () => {
+    // Schedule structured noon summary at 12 PM IST (6:30 AM UTC), Mon-Fri only
+    cron.schedule('30 6 * * 1-5', async () => {
       console.log('Executing scheduled noon summary...');
       await runNoonSummary();
     });
