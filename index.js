@@ -1443,8 +1443,8 @@ async function start() {
       console.log(`✅ Upload UI running at http://localhost:${PORT}`);
     });
 
-    // Schedule daily summary at 1:30 PM IST, Mon–Fri only
-    cron.schedule('30 13 * * 1-5', async () => {
+    // Schedule daily summary at 4:00 PM IST, Mon–Fri only
+    cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Daily summary firing at ${now}`);
       await runNoonSummary();
@@ -1455,7 +1455,7 @@ async function start() {
     // Log server time on startup so timezone issues are immediately visible
     const nowUtc = new Date().toISOString();
     const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    console.log(`✅ 1:30 PM IST daily summary scheduled (server UTC: ${nowUtc} | IST: ${nowIst})`);
+    console.log(`✅ 4:00 PM IST daily summary scheduled (server UTC: ${nowUtc} | IST: ${nowIst})`);
 
   } catch (error) {
     console.error('❌ Error during startup:', error);
