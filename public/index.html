@@ -1306,17 +1306,16 @@ async function bulkRenewFiltered() {
   if (selectedRows.size === 0) return;
   const names = [...selectedRows];
   openBulkConfirm('Renew', names, async () => {
-    let ok = 0;
+    let ok = 0, fail = 0;
     for (const name of names) {
-      const res = await renewAsset(name);
-      if (res.ok) ok++;
+      try { const res = await renewAsset(name); if (res.ok) ok++; else fail++; } catch(e) { fail++; }
     }
-    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
     closeModal('confirmModal');
     selectedRows.clear();
     await fetchAssets();
     tableAssets = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= currentFilter.daysFilter);
     renderFilteredBody();
+    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}${fail > 0 ? `, ${fail} failed` : ''}`, ok > 0 ? 'success' : 'error');
   });
 }
 
@@ -1324,17 +1323,16 @@ async function bulkDeleteFiltered() {
   if (selectedRows.size === 0) return;
   const names = [...selectedRows];
   openBulkConfirm('Delete', names, async () => {
-    let ok = 0;
+    let ok = 0, fail = 0;
     for (const name of names) {
-      const res = await deleteAsset(name);
-      if (res.ok) ok++;
+      try { const res = await deleteAsset(name); if (res.ok) ok++; else fail++; } catch(e) { fail++; }
     }
-    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
     closeModal('confirmModal');
     selectedRows.clear();
     await fetchAssets();
     tableAssets = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= currentFilter.daysFilter);
     renderFilteredBody();
+    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}${fail > 0 ? `, ${fail} failed` : ''}`, ok > 0 ? 'success' : 'error');
   });
 }
 
@@ -1397,15 +1395,17 @@ async function bulkRenewDash() {
   if (selectedRows.size === 0) return;
   const names = [...selectedRows];
   openBulkConfirm('Renew', names, async () => {
-    let ok = 0;
+    let ok = 0, fail = 0;
     for (const name of names) {
-      const res = await renewAsset(name);
-      if (res.ok) ok++;
+      try {
+        const res = await renewAsset(name);
+        if (res.ok) ok++; else fail++;
+      } catch(e) { fail++; }
     }
-    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
     closeModal('confirmModal');
     selectedRows.clear();
-    renderPage('dashboard');
+    await renderPage('dashboard');
+    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}${fail > 0 ? `, ${fail} failed` : ''}`, ok > 0 ? 'success' : 'error');
   });
 }
 
@@ -1413,15 +1413,17 @@ async function bulkDeleteDash() {
   if (selectedRows.size === 0) return;
   const names = [...selectedRows];
   openBulkConfirm('Delete', names, async () => {
-    let ok = 0;
+    let ok = 0, fail = 0;
     for (const name of names) {
-      const res = await deleteAsset(name);
-      if (res.ok) ok++;
+      try {
+        const res = await deleteAsset(name);
+        if (res.ok) ok++; else fail++;
+      } catch(e) { fail++; }
     }
-    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
     closeModal('confirmModal');
     selectedRows.clear();
-    renderPage('dashboard');
+    await renderPage('dashboard');
+    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}${fail > 0 ? `, ${fail} failed` : ''}`, ok > 0 ? 'success' : 'error');
   });
 }
 
@@ -1656,15 +1658,14 @@ async function bulkRenewTable() {
   if (selectedRows.size === 0) return;
   const names = [...selectedRows];
   openBulkConfirm('Renew', names, async () => {
-    let ok = 0;
+    let ok = 0, fail = 0;
     for (const name of names) {
-      const res = await renewAsset(name);
-      if (res.ok) ok++;
+      try { const res = await renewAsset(name); if (res.ok) ok++; else fail++; } catch(e) { fail++; }
     }
-    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
     closeModal('confirmModal');
     selectedRows.clear();
-    renderPage(currentPage);
+    await renderPage(currentPage);
+    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}${fail > 0 ? `, ${fail} failed` : ''}`, ok > 0 ? 'success' : 'error');
   });
 }
 
@@ -1672,15 +1673,14 @@ async function bulkDeleteTable() {
   if (selectedRows.size === 0) return;
   const names = [...selectedRows];
   openBulkConfirm('Delete', names, async () => {
-    let ok = 0;
+    let ok = 0, fail = 0;
     for (const name of names) {
-      const res = await deleteAsset(name);
-      if (res.ok) ok++;
+      try { const res = await deleteAsset(name); if (res.ok) ok++; else fail++; } catch(e) { fail++; }
     }
-    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
     closeModal('confirmModal');
     selectedRows.clear();
-    renderPage(currentPage);
+    await renderPage(currentPage);
+    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}${fail > 0 ? `, ${fail} failed` : ''}`, ok > 0 ? 'success' : 'error');
   });
 }
 
@@ -1688,12 +1688,25 @@ async function bulkDeleteTable() {
 function openBulkConfirm(action, names, onConfirm) {
   document.getElementById('confirm-title').textContent = `${action} ${names.length} Asset${names.length !== 1 ? 's' : ''}`;
   document.getElementById('confirm-text').textContent = `This will ${action.toLowerCase()} the following ${names.length} asset${names.length !== 1 ? 's' : ''}:`;
-  const preview = names.slice(0, 8).join('\n') + (names.length > 8 ? `\n…and ${names.length - 8} more` : '');
-  document.getElementById('confirm-name').textContent = preview;
+  // Show each name on its own line
+  const nameEl = document.getElementById('confirm-name');
+  nameEl.innerHTML = names.slice(0, 8).map(n => `<div style="padding:2px 0;border-bottom:1px solid var(--border);font-size:11px">${n}</div>`).join('')
+    + (names.length > 8 ? `<div style="color:var(--text3);margin-top:4px">…and ${names.length - 8} more</div>` : '');
   const btn = document.getElementById('confirm-action-btn');
   btn.textContent = action;
   btn.className = action === 'Delete' ? 'btn btn-danger' : 'btn btn-warning';
-  btn.onclick = onConfirm;
+  btn.onclick = async () => {
+    // Show loading state
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await onConfirm();
+    } catch (e) {
+      toast('Error: ' + e.message, 'error');
+      btn.disabled = false;
+      btn.textContent = action;
+    }
+  };
   openModal('confirmModal');
 }
 
@@ -1730,6 +1743,49 @@ function onFilterClient(v) { currentFilter.client = v; tablePage = 1; if (curren
 function renderUploadPage(content, actions) {
   content.innerHTML = `
     <div style="max-width:520px;margin:0 auto">
+
+      <div style="
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+        background:var(--card-bg);
+        border:1px solid var(--border);
+        border-radius:10px;
+        padding:14px 18px;
+        margin-bottom:20px;
+      ">
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:3px">📋 CSV Template</div>
+          <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">Use this template to ensure the correct column schema</div>
+        </div>
+        <a
+          href="https://docs.google.com/spreadsheets/d/1bqWFTowhSPB7niGKpW5sGOerunRpZ8oqBFYCIxsbBxk/edit?usp=sharing"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="
+            display:inline-flex;
+            align-items:center;
+            gap:6px;
+            background:var(--accent);
+            color:white;
+            border-radius:8px;
+            padding:8px 14px;
+            font-size:12px;
+            font-weight:700;
+            font-family:'Syne',sans-serif;
+            text-decoration:none;
+            white-space:nowrap;
+            flex-shrink:0;
+            transition:background 0.15s;
+          "
+          onmouseover="this.style.background='var(--accent2)'"
+          onmouseout="this.style.background='var(--accent)'"
+        >
+          ↗ Open Template
+        </a>
+      </div>
+
       <div class="form-group" style="margin-bottom:16px">
         <label>Asset Type</label>
         <select id="up-type">
