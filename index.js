@@ -36,11 +36,10 @@ const OWNER_MAP = {
 function resolveOwner(value) {
   if (!value) return null;
   const trimmed = value.trim();
-  // Already a Slack ID
   if (trimmed.startsWith('U') && trimmed.length > 5) return trimmed;
-  // Look up by name (case-insensitive)
   return OWNER_MAP[trimmed.toLowerCase()] || null;
 }
+
 const PORT = process.env.PORT || 3000;
 
 /* -------------------- MongoDB -------------------- */
@@ -58,7 +57,6 @@ const AssetSchema = new mongoose.Schema({
   type: { type: String, enum: ['DOMAIN', 'INBOX'], required: true },
   name: { type: String, required: true, unique: true },
 
-  // Common fields
   client: String,
   provider: String,
   workspace: String,
@@ -74,10 +72,8 @@ const AssetSchema = new mongoose.Schema({
   currency: String,
   notes: String,
 
-  // Inbox-specific
   domain: String,
 
-  // Tracking
   remindersSent: [{ daysBefore: Number, sentAt: Date }],
   createdBy: String,
   createdAt: { type: Date, default: Date.now },
@@ -437,7 +433,6 @@ expressApp.post('/upload-csv', upload.single('csv'), async (req, res) => {
 });
 
 // Manual trigger for noon summary (for testing or missed cron)
-// Hit GET /trigger-summary to fire it immediately
 expressApp.get('/trigger-summary', async (req, res) => {
   try {
     console.log('Manual trigger: runNoonSummary');
@@ -709,7 +704,6 @@ app.message(async ({ message, client }) => {
   try {
     if (message.subtype) return;
 
-    // ---- File upload handler ----
     if (message.files && message.files.length > 0) {
       for (const file of message.files) {
         if (!file.mimetype?.includes('csv') && !file.name?.endsWith('.csv')) continue;
@@ -812,7 +806,6 @@ app.message(async ({ message, client }) => {
       return;
     }
 
-    // ---- Text command handler (delete / renew) ----
     if (!message.text) return;
 
     const lines = message.text.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -1087,13 +1080,11 @@ async function runDailySummary() {
         const inboxes = items.filter(i => i.asset.type === 'INBOX');
         const label = daysLeft === '0' ? 'today' : daysLeft === '1' ? 'tomorrow' : `in ${daysLeft} days`;
 
-        // Build compact summary lines: "X domains and Y inboxes expire <label>"
         const parts = [];
         if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
         if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
         const summaryText = `${parts.join(' and ')} expire${items.length === 1 ? 's' : ''} ${label}`;
 
-        // Build the thread detail: name, client, provider
         const byClient = {};
         for (const { asset } of items) {
           const c = asset.client || 'No Client';
@@ -1126,7 +1117,6 @@ async function runDailySummary() {
         blocks.push({ type: 'divider' });
       }
 
-      // Add link to dashboard
       blocks.push({
         type: 'context',
         elements: [{
@@ -1211,28 +1201,24 @@ async function runDailySummary() {
   }
 }
 
-/* -------------------- 12 PM IST Summary (Structured) -------------------- */
+/* -------------------- 1:30 PM IST Summary (Structured) -------------------- */
 /**
- * Sends a structured daily summary to the main channel at 12 PM IST (Mon-Fri only).
- * Uses daysLeft (already computed by prepareAssetsForSheet/computeDaysLeft) to bucket assets.
- * On Thursday, also captures daysLeft=2 (Sat) and daysLeft=3 (Sun) so weekends are never missed.
+ * Sends a structured daily summary to the main channel at 1:30 PM IST (Mon-Fri only).
+ * Always sends — even when no assets are expiring — so you can confirm the bot is alive.
+ * On Thursday, also captures daysLeft=2 (Sat) and daysLeft=3 (Sun/Mon) so weekends are never missed.
  */
 async function runNoonSummary() {
   try {
     const CHANNEL = 'C0AGVSUNEFP';
     const assets = await Asset.find();
     const prepared = prepareAssetsForSheet(assets);
-    const dayOfWeek = dayjs().day(); // 0=Sun,1=Mon,...,4=Thu,5=Fri,6=Sat
+    const dayOfWeek = dayjs().day(); // 0=Sun, 1=Mon, ..., 4=Thu, 5=Fri, 6=Sat
 
     console.log(`[runNoonSummary] ${assets.length} total assets, dayOfWeek=${dayOfWeek}`);
 
-    // Working-day daysLeft targets:
-    // Mon/Tue/Wed/Fri: today(0), tomorrow(1), 3 working days ahead
-    // Thursday:        today(0), tomorrow(1), Mon(3) + Sat(2) + Sun(3 — already covered by Mon)
-    // On Thursday wd3=Mon=3 calendar days, Sat=2, Sun=3 — so capture daysLeft 2 and 3
     const isThursday = dayOfWeek === 4;
 
-    // Compute what calendar daysLeft equals "3 working days from today"
+    // Compute calendar days equivalent of N working days from today
     const addWorkingDays = (n) => {
       let d = dayjs().startOf('day');
       let added = 0;
@@ -1240,36 +1226,36 @@ async function runNoonSummary() {
         d = d.add(1, 'day');
         if (d.day() !== 0 && d.day() !== 6) added++;
       }
-      return d.diff(dayjs().startOf('day'), 'day'); // returns calendar days
+      return d.diff(dayjs().startOf('day'), 'day');
     };
-    const wd1CalDays = addWorkingDays(1); // always 1 on Mon-Thu, 3 on Fri (skips weekend)
+
+    const wd1CalDays = addWorkingDays(1); // 1 on Mon–Thu, 3 on Fri
     const wd3CalDays = addWorkingDays(3); // varies by day
 
     console.log(`[runNoonSummary] wd1=${wd1CalDays} cal days, wd3=${wd3CalDays} cal days, isThursday=${isThursday}`);
 
-    // Build groups using daysLeft
     const active = prepared.filter(a => a.status === 'Active' && a.daysLeft !== null);
+    console.log(`[runNoonSummary] active assets with daysLeft: ${active.length}`);
 
-    // Log sample daysLeft values for debugging
-    const sample = active.slice(0, 5).map(a => `${a.name}(daysLeft=${a.daysLeft})`).join(', ');
-    console.log(`[runNoonSummary] sample active assets: ${sample}`);
+    // Log ALL daysLeft values for debugging
+    const allDaysLeft = active.map(a => `${a.name}=${a.daysLeft}`).join(', ');
+    console.log(`[runNoonSummary] all active daysLeft: ${allDaysLeft}`);
 
     const groups = [
       {
         assets: active.filter(a => a.daysLeft === 0),
         label: 'Today',
-        icon: '\uD83D\uDD34',
+        icon: '🔴',
         key: 'noon_0'
       },
       {
         assets: active.filter(a => a.daysLeft === wd1CalDays),
         label: `Tomorrow (${dayjs().add(wd1CalDays, 'day').format('ddd DD MMM')})`,
-        icon: '\uD83D\uDFE0',
+        icon: '🟠',
         key: 'noon_1'
       },
       {
-        // On Thursday: capture Sat (daysLeft=2), Sun (daysLeft=3), Mon (daysLeft=3 = wd3CalDays)
-        // Other days: capture exactly wd3CalDays
+        // Thursday: also capture Sat (daysLeft=2) and Sun (daysLeft=3)
         assets: active.filter(a => {
           if (isThursday) return a.daysLeft === 2 || a.daysLeft === 3;
           return a.daysLeft === wd3CalDays;
@@ -1277,7 +1263,7 @@ async function runNoonSummary() {
         label: isThursday
           ? `This weekend & Monday (${dayjs().add(3, 'day').format('ddd DD MMM')})`
           : `In ${wd3CalDays} days (${dayjs().add(wd3CalDays, 'day').format('ddd DD MMM')})`,
-        icon: '\uD83D\uDFE1',
+        icon: '🟡',
         key: 'noon_3'
       }
     ];
@@ -1289,67 +1275,72 @@ async function runNoonSummary() {
     const totalExpiring = groups.reduce((sum, g) => sum + g.assets.length, 0);
     console.log(`[runNoonSummary] totalExpiring: ${totalExpiring}`);
 
-    if (totalExpiring === 0) {
-      console.log('No expiring assets for noon summary, skipping.');
-      return;
-    }
-
-    // Build Slack Block Kit message
+    // Always build and send a message — even when nothing is expiring
     const blocks = [
       {
         type: 'header',
-        text: { type: 'plain_text', text: `\u23F0 Daily Renewal Check \u2014 ${dayjs().format('DD MMM YYYY')}` }
+        text: { type: 'plain_text', text: `⏰ Daily Renewal Check — ${dayjs().format('DD MMM YYYY')}` }
       }
     ];
 
-    for (const g of groups) {
-      const { label, icon, key, assets: gAssets } = g;
-      if (gAssets.length === 0) continue;
-
-      const domains = gAssets.filter(a => a.type === 'DOMAIN');
-      const inboxes = gAssets.filter(a => a.type === 'INBOX');
-
-      const parts = [];
-      if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
-      if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
-      const summaryText = `${icon}  ${parts.join(' and ')} expire${gAssets.length === 1 ? 's' : ''} *${label}*`;
-
-      // Thread detail grouped by client
-      const byClient = {};
-      for (const a of gAssets) {
-        const c = a.client || 'No Client';
-        if (!byClient[c]) byClient[c] = [];
-        byClient[c].push(a);
-      }
-      let detail = `*Expiring ${label}*\n`;
-      detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
-      for (const [client, items] of Object.entries(byClient)) {
-        detail += `*${client}*\n`;
-        for (const a of items) {
-          const providerPart = a.provider ? ` \u00B7 ${a.provider}` : '';
-          const typeIcon = a.type === 'DOMAIN' ? '\uD83C\uDF10' : '\uD83D\uDCE7';
-          detail += `  ${typeIcon} ${a.name}${providerPart}\n`;
-        }
-      }
-
+    if (totalExpiring === 0) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: summaryText },
-        accessory: {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Read more' },
-          action_id: `view_details_${key}`,
-          value: JSON.stringify({ detail: detail.trim(), channel: CHANNEL })
+        text: {
+          type: 'mrkdwn',
+          text: `✅ No assets expiring today, tomorrow, or in the next 3 working days. All clear!`
         }
       });
-      blocks.push({ type: 'divider' });
+    } else {
+      for (const g of groups) {
+        const { label, icon, key, assets: gAssets } = g;
+        if (gAssets.length === 0) continue;
+
+        const domains = gAssets.filter(a => a.type === 'DOMAIN');
+        const inboxes = gAssets.filter(a => a.type === 'INBOX');
+
+        const parts = [];
+        if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
+        if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
+        const summaryText = `${icon}  ${parts.join(' and ')} expire${gAssets.length === 1 ? 's' : ''} *${label}*`;
+
+        // Thread detail grouped by client
+        const byClient = {};
+        for (const a of gAssets) {
+          const c = a.client || 'No Client';
+          if (!byClient[c]) byClient[c] = [];
+          byClient[c].push(a);
+        }
+        let detail = `*Expiring ${label}*\n`;
+        detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
+        for (const [client, items] of Object.entries(byClient)) {
+          detail += `*${client}*\n`;
+          for (const a of items) {
+            const providerPart = a.provider ? ` · ${a.provider}` : '';
+            const typeIcon = a.type === 'DOMAIN' ? '🌐' : '📧';
+            detail += `  ${typeIcon} ${a.name}${providerPart}\n`;
+          }
+        }
+
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: summaryText },
+          accessory: {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Read more' },
+            action_id: `view_details_${key}`,
+            value: JSON.stringify({ detail: detail.trim(), channel: CHANNEL })
+          }
+        });
+        blocks.push({ type: 'divider' });
+      }
     }
 
     blocks.push({
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `\uD83D\uDD17 <https://infra-bot.onrender.com/|Open dashboard> to renew or manage assets in bulk`
+        text: `🔗 <https://infra-bot.onrender.com/|Open dashboard> to renew or manage assets`
       }]
     });
 
@@ -1357,14 +1348,18 @@ async function runNoonSummary() {
     const result = await app.client.chat.postMessage({
       token: process.env.SLACK_BOT_TOKEN,
       channel: CHANNEL,
-      text: `Daily Renewal Check \u2014 ${dayjs().format('DD MMM YYYY')}`,
+      text: `Daily Renewal Check — ${dayjs().format('DD MMM YYYY')}`,
       blocks
     });
-    console.log(`\u2705 Noon summary sent, ts: ${result.ts}`);
+    console.log(`✅ Noon summary sent, ts: ${result.ts}`);
+
   } catch (error) {
-    console.error('\u274C Error sending noon summary:', error);
+    console.error('❌ Error sending noon summary:', error);
+    // Log full Slack API error details if available
+    if (error.data) console.error('Slack error data:', JSON.stringify(error.data));
   }
 }
+
 /* -------------------- Startup -------------------- */
 async function start() {
   try {
@@ -1382,19 +1377,19 @@ async function start() {
       console.log(`✅ Upload UI running at http://localhost:${PORT}`);
     });
 
-    // Schedule structured noon summary at 12 PM IST (6:30 AM UTC), Mon-Fri only
-    cron.schedule('30 7 * * 1-5', async () => {
+    // Schedule daily summary at 1:30 PM IST, Mon–Fri only
+    cron.schedule('30 13 * * 1-5', async () => {
       const now = new Date().toISOString();
-      console.log(`[CRON] Noon summary firing at ${now}`);
+      console.log(`[CRON] Daily summary firing at ${now}`);
       await runNoonSummary();
     }, {
-      timezone: 'Asia/Kolkata'  // ensures cron runs at 12:00 PM IST regardless of server timezone
+      timezone: 'Asia/Kolkata'
     });
 
-    // Log current server time on startup so timezone issues are obvious
+    // Log server time on startup so timezone issues are immediately visible
     const nowUtc = new Date().toISOString();
     const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    console.log(`✅ 12 PM IST noon summary scheduled (server UTC: ${nowUtc} | IST: ${nowIst})`);
+    console.log(`✅ 1:30 PM IST daily summary scheduled (server UTC: ${nowUtc} | IST: ${nowIst})`);
 
   } catch (error) {
     console.error('❌ Error during startup:', error);
