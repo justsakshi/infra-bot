@@ -213,6 +213,12 @@
     }
     .btn-danger:hover { background: var(--red); color: white; }
     .btn-sm { padding: 5px 10px; font-size: 11px; }
+    .btn-warning {
+      background: var(--orange);
+      color: white;
+      border: none;
+    }
+    .btn-warning:hover { opacity: 0.85; }
 
     .content { padding: 28px; flex: 1; }
 
@@ -230,6 +236,9 @@
       transition: border-color 0.2s;
     }
     .card:hover { border-color: var(--border2); }
+    .card.clickable { cursor: pointer; }
+    .card.clickable:hover { border-color: var(--accent); }
+    .card.card-active-filter { border-color: var(--accent) !important; box-shadow: 0 0 0 2px rgba(124,109,250,0.2); }
     .card-label {
       font-family: 'DM Mono', monospace;
       font-size: 10px;
@@ -294,6 +303,44 @@
     }
     .filter-select:focus { border-color: var(--accent); }
 
+    /* Active filter tag */
+    .filter-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(124,109,250,0.15);
+      border: 1px solid var(--accent);
+      color: var(--accent2);
+      border-radius: 99px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .filter-tag-close {
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      color: var(--accent2);
+    }
+    .filter-tag-close:hover { color: var(--red); }
+
+    /* Bulk action bar */
+    .bulk-bar {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg3);
+      border: 1px solid var(--border2);
+      border-radius: 10px;
+      padding: 8px 14px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: var(--text2);
+    }
+    .bulk-bar.visible { display: flex; }
+    .bulk-bar-count { font-weight: 700; color: var(--text); }
+    .bulk-bar-actions { margin-left: auto; display: flex; gap: 8px; }
+
     .table-wrap {
       background: var(--card-bg);
       border: 1px solid var(--border);
@@ -329,6 +376,14 @@
       border-bottom: 1px solid var(--border);
       white-space: nowrap;
     }
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.15s;
+    }
+    th.sortable:hover { color: var(--text2); }
+    th.sort-active { color: var(--accent2); }
+    .sort-arrow { margin-left: 4px; font-size: 9px; }
     td {
       padding: 12px 16px;
       font-size: 12px;
@@ -338,12 +393,13 @@
     }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: var(--bg3); }
+    tr.row-selected td { background: rgba(124,109,250,0.07); }
     .td-name {
       font-family: 'DM Mono', monospace;
       font-size: 12px;
       color: var(--text);
       font-weight: 500;
-      max-width: 220px;
+      max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -372,6 +428,20 @@
 
     .row-actions { display: flex; gap: 6px; opacity: 0; transition: opacity 0.15s; }
     tr:hover .row-actions { opacity: 1; }
+
+    /* Checkbox styling */
+    .cb-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      accent-color: var(--accent);
+      cursor: pointer;
+      border-radius: 3px;
+    }
 
     .empty-state { text-align: center; padding: 60px 20px; color: var(--text3); }
     .empty-state .empty-icon { font-size: 32px; margin-bottom: 12px; }
@@ -852,10 +922,13 @@
 // ===== State =====
 let allAssets = [];
 let currentPage = 'dashboard';
-let currentFilter = { search: '', status: '', client: '' };
+let currentFilter = { search: '', status: '', client: '', daysFilter: null };
 let tableAssets = [];
 let tablePage = 1;
 const PAGE_SIZE = 25;
+let selectedRows = new Set(); // stores asset names
+let sortField = null;
+let sortDir = 'asc';
 
 // ===== Theme =====
 function toggleTheme() {
@@ -909,10 +982,13 @@ function updateNavCounts() {
   document.getElementById('nav-domains').textContent = allAssets.filter(a => a.type === 'DOMAIN').length;
   document.getElementById('nav-inboxes').textContent = allAssets.filter(a => a.type === 'INBOX').length;
 }
-function navigate(page) {
+function navigate(page, opts = {}) {
   currentPage = page;
   tablePage = 1;
-  currentFilter = { search: '', status: '', client: '' };
+  selectedRows.clear();
+  sortField = null;
+  sortDir = 'asc';
+  currentFilter = { search: '', status: '', client: '', daysFilter: opts.daysFilter || null };
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
   const titles = { dashboard: 'Dashboard', domains: 'Domains', inboxes: 'Inboxes', upload: 'Import CSV' };
   document.getElementById('topbar-title').textContent = titles[page] || page;
@@ -932,9 +1008,6 @@ async function renderPage(page) {
 }
 
 // ===== Computed expiry display =====
-// Mirrors server-side computeDaysLeft logic so the expiry column always shows
-// a meaningful date even after renewing (when expiryDate is null in the DB).
-// The " *" suffix indicates the date is auto-calculated, not stored.
 function getComputedExpiryDisplay(a) {
   if (a.expiryDate) return new Date(a.expiryDate).toLocaleDateString('en-GB');
   if (!a.purchaseDate) return '—';
@@ -944,7 +1017,6 @@ function getComputedExpiryDisplay(a) {
     d.setFullYear(d.getFullYear() + 1);
     return d.toLocaleDateString('en-GB') + ' *';
   } else {
-    // INBOX: next occurrence of the purchase day-of-month
     const purchaseDay = purchaseDate.getDate();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -960,7 +1032,6 @@ function renderDashboard(content, actions) {
   const inboxes = allAssets.filter(a => a.type === 'INBOX');
   const expiringIn3 = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= 3);
   const expiringIn1 = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= 1);
-  const expiringSoon = expiringIn3;
   const expired = allAssets.filter(a => a.daysLeft !== null && a.daysLeft < 0 && a.status === 'Active');
 
   actions.innerHTML = `<button class="btn btn-primary" onclick="openAddModal()">+ Add Asset</button>`;
@@ -977,15 +1048,15 @@ function renderDashboard(content, actions) {
         <div class="card-value">${inboxes.length}</div>
         <div class="card-sub">${inboxes.filter(i => i.status === 'Active').length} active</div>
       </div>
-      <div class="card" style="border-color:${expiringIn3.length > 0 ? 'var(--orange)' : 'var(--border)'}">
+      <div class="card clickable" id="card-3days" style="border-color:${expiringIn3.length > 0 ? 'var(--orange)' : 'var(--border)'}" onclick="navigateWithDaysFilter(3)" title="Click to filter assets expiring in 3 days">
         <div class="card-label">Expiring in 3 days</div>
         <div class="card-value" style="color:${expiringIn3.length > 0 ? 'var(--orange)' : 'var(--text)'}">${expiringIn3.length}</div>
-        <div class="card-sub">Needs renewal soon</div>
+        <div class="card-sub">↗ Click to view & act</div>
       </div>
-      <div class="card" style="border-color:${expiringIn1.length > 0 ? 'var(--red)' : 'var(--border)'}">
+      <div class="card clickable" id="card-1day" style="border-color:${expiringIn1.length > 0 ? 'var(--red)' : 'var(--border)'}" onclick="navigateWithDaysFilter(1)" title="Click to filter assets expiring today or tomorrow">
         <div class="card-label">Expiring in 1 day</div>
         <div class="card-value" style="color:${expiringIn1.length > 0 ? 'var(--red)' : 'var(--text)'}">${expiringIn1.length}</div>
-        <div class="card-sub">Action needed today</div>
+        <div class="card-sub">↗ Click to view & act</div>
       </div>
       <div class="card" style="border-color:${expired.length > 0 ? 'var(--red)' : 'var(--border)'}; ${expired.length > 0 ? 'cursor:pointer;' : ''}" onclick="${expired.length > 0 ? "document.getElementById('expired-section').scrollIntoView({behavior:'smooth'})" : ''}">
         <div class="card-label">Expired & Active</div>
@@ -994,18 +1065,26 @@ function renderDashboard(content, actions) {
       </div>
     </div>
 
-    ${expiringSoon.length > 0 ? `
+    ${expiringIn3.length > 0 ? `
     <div class="table-wrap" style="margin-bottom:20px">
       <div class="table-header">
         <span class="table-header-title">Expiring Soon</span>
-        <span class="table-count">${expiringSoon.length}</span>
+        <span class="table-count">${expiringIn3.length}</span>
       </div>
       <table>
         <thead><tr>
-          <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Days Left</th><th></th>
+          <th style="width:36px"><input type="checkbox" id="dash-select-all" onchange="dashSelectAll(this)" title="Select all" /></th>
+          <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Workspace</th><th>Days Left</th><th></th>
         </tr></thead>
-        <tbody>${expiringSoon.sort((a,b) => a.daysLeft - b.daysLeft).map(a => dashboardRow(a)).join('')}</tbody>
+        <tbody id="dash-expiring-body">${expiringIn3.sort((a,b) => a.daysLeft - b.daysLeft).map(a => dashboardRow(a)).join('')}</tbody>
       </table>
+      <div id="dash-bulk-bar" class="bulk-bar" style="margin:8px 14px 12px">
+        <span class="bulk-bar-count" id="dash-bulk-count">0 selected</span>
+        <div class="bulk-bar-actions">
+          <button class="btn btn-warning btn-sm" onclick="bulkRenewDash()">Renew Selected</button>
+          <button class="btn btn-danger btn-sm" onclick="bulkDeleteDash()">Delete Selected</button>
+        </div>
+      </div>
     </div>` : ''}
 
     ${expired.length > 0 ? `
@@ -1016,9 +1095,10 @@ function renderDashboard(content, actions) {
       </div>
       <table>
         <thead><tr>
-          <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Overdue</th><th></th>
+          <th style="width:36px"></th>
+          <th>Asset</th><th>Client</th><th>Type</th><th>Provider</th><th>Workspace</th><th>Overdue</th><th></th>
         </tr></thead>
-        <tbody>${expired.sort((a,b) => a.daysLeft - b.daysLeft).map(a => dashboardRow(a)).join('')}</tbody>
+        <tbody>${expired.sort((a,b) => a.daysLeft - b.daysLeft).map(a => dashboardRow(a, 'expired')).join('')}</tbody>
       </table>
     </div>` : ''}
 
@@ -1061,15 +1141,128 @@ function renderDashboard(content, actions) {
   `;
 }
 
-// ===== Dashboard row (6 cols: Asset, Client, Type, Provider, Days Left, Actions) =====
-// Used ONLY in the Expiring Soon and Expired tables on the dashboard.
-function dashboardRow(a) {
+// Navigate to inboxes/domains page with a days filter pre-applied
+function navigateWithDaysFilter(days) {
+  // Show a unified filter page showing both domains and inboxes
+  // Instead: navigate to domains and inboxes separately
+  // We'll use a special "filter" page that shows all assets
+  currentPage = 'filtered';
+  selectedRows.clear();
+  sortField = null;
+  sortDir = 'asc';
+  currentFilter = { search: '', status: '', client: '', daysFilter: days };
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('topbar-title').textContent = `Expiring in ${days} day${days > 1 ? 's' : ''}`;
+  renderFilteredPage(days);
+}
+
+async function renderFilteredPage(days) {
+  const content = document.getElementById('page-content');
+  const actions = document.getElementById('topbar-actions');
+  actions.innerHTML = `<button class="btn btn-ghost" onclick="navigate('dashboard')">← Back to Dashboard</button>`;
+  await fetchAssets();
+
+  const filtered = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= days);
+  tableAssets = filtered;
+  selectedRows.clear();
+
+  const clients = [...new Set(filtered.filter(a => a.client).map(a => a.client))].sort();
+
+  content.innerHTML = `
+    <div style="margin-bottom:12px;display:flex;align-items:center;gap:10px">
+      <span class="filter-tag">
+        Expiring in ≤ ${days} day${days > 1 ? 's' : ''}
+        <span class="filter-tag-close" onclick="navigate('dashboard')">✕</span>
+      </span>
+      <span style="font-size:12px;color:var(--text3)">${filtered.length} assets</span>
+    </div>
+    <div class="filters">
+      <div class="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input type="text" placeholder="Search..." oninput="onSearch(this.value)" />
+      </div>
+      <select class="filter-select" onchange="onFilterClient(this.value)">
+        <option value="">All Clients</option>
+        ${clients.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+      </select>
+    </div>
+
+    <div id="filtered-bulk-bar" class="bulk-bar">
+      <span class="bulk-bar-count" id="filtered-bulk-count">0 selected</span>
+      <div class="bulk-bar-actions">
+        <button class="btn btn-warning btn-sm" onclick="bulkRenewFiltered()">Renew Selected</button>
+        <button class="btn btn-danger btn-sm" onclick="bulkDeleteFiltered()">Delete Selected</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-header">
+        <span class="table-header-title">Expiring in ≤ ${days} day${days > 1 ? 's' : ''}</span>
+        <span class="table-count" id="table-count">${filtered.length}</span>
+      </div>
+      <table>
+        <thead><tr>
+          <th style="width:36px"><input type="checkbox" id="filtered-select-all" onchange="filteredSelectAll(this)" /></th>
+          <th>Asset</th>
+          <th>Client</th>
+          <th>Type</th>
+          <th>Provider</th>
+          <th>Workspace</th>
+          <th>Days Left</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+      <div class="pagination" id="table-pagination"></div>
+    </div>
+  `;
+  renderFilteredBody();
+}
+
+function applyFilteredFilters() {
+  let f = tableAssets;
+  if (currentFilter.search) {
+    const q = currentFilter.search.toLowerCase();
+    f = f.filter(a =>
+      a.name.toLowerCase().includes(q) ||
+      (a.client||'').toLowerCase().includes(q) ||
+      (a.provider||'').toLowerCase().includes(q)
+    );
+  }
+  if (currentFilter.client) f = f.filter(a => a.client === currentFilter.client);
+  return f;
+}
+
+function renderFilteredBody() {
+  const filtered = applyFilteredFilters();
+  const total = filtered.length;
+  const start = (tablePage - 1) * PAGE_SIZE;
+  const page = filtered.slice(start, start + PAGE_SIZE);
+  const countEl = document.getElementById('table-count');
+  if (countEl) countEl.textContent = total;
+  const body = document.getElementById('table-body');
+  if (!body) return;
+  if (page.length === 0) {
+    body.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">○</div><p>No assets found</p></div></td></tr>`;
+  } else {
+    body.innerHTML = page.map(a => filteredRow(a)).join('');
+  }
+  renderPaginationEl('table-pagination', total, start, renderFilteredBody);
+  updateFilteredBulkBar();
+}
+
+function filteredRow(a) {
   const typeLabel = a.type === 'DOMAIN' ? 'Domain' : 'Inbox';
-  return `<tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+  const checked = selectedRows.has(a.name) ? 'checked' : '';
+  return `<tr class="${selectedRows.has(a.name) ? 'row-selected' : ''}" onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+    <td onclick="event.stopPropagation()">
+      <div class="cb-wrap"><input type="checkbox" ${checked} onchange="toggleRow('${esc(a.name)}', this, 'filtered')" /></div>
+    </td>
     <td><div class="td-name">${esc(a.name)}</div></td>
     <td>${esc(a.client||'—')}</td>
     <td><span class="badge badge-purple">${typeLabel}</span></td>
     <td>${esc(a.provider||'—')}</td>
+    <td>${esc(a.workspace||'—')}</td>
     <td><span class="${daysClass(a.daysLeft)} days-cell">${daysLabel(a.daysLeft)}</span></td>
     <td onclick="event.stopPropagation()">
       <div class="row-actions" style="opacity:1">
@@ -1080,6 +1273,164 @@ function dashboardRow(a) {
   </tr>`;
 }
 
+function filteredSelectAll(cb) {
+  const filtered = applyFilteredFilters();
+  const start = (tablePage - 1) * PAGE_SIZE;
+  const page = filtered.slice(start, start + PAGE_SIZE);
+  page.forEach(a => {
+    if (cb.checked) selectedRows.add(a.name);
+    else selectedRows.delete(a.name);
+  });
+  renderFilteredBody();
+}
+
+function updateFilteredBulkBar() {
+  const bar = document.getElementById('filtered-bulk-bar');
+  const cnt = document.getElementById('filtered-bulk-count');
+  if (!bar) return;
+  if (selectedRows.size > 0) {
+    bar.classList.add('visible');
+    cnt.textContent = `${selectedRows.size} selected`;
+  } else {
+    bar.classList.remove('visible');
+  }
+}
+
+async function bulkRenewFiltered() {
+  if (selectedRows.size === 0) return;
+  const names = [...selectedRows];
+  openBulkConfirm('Renew', names, async () => {
+    let ok = 0;
+    for (const name of names) {
+      const res = await renewAsset(name);
+      if (res.ok) ok++;
+    }
+    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
+    closeModal('confirmModal');
+    selectedRows.clear();
+    await fetchAssets();
+    tableAssets = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= currentFilter.daysFilter);
+    renderFilteredBody();
+  });
+}
+
+async function bulkDeleteFiltered() {
+  if (selectedRows.size === 0) return;
+  const names = [...selectedRows];
+  openBulkConfirm('Delete', names, async () => {
+    let ok = 0;
+    for (const name of names) {
+      const res = await deleteAsset(name);
+      if (res.ok) ok++;
+    }
+    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
+    closeModal('confirmModal');
+    selectedRows.clear();
+    await fetchAssets();
+    tableAssets = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= currentFilter.daysFilter);
+    renderFilteredBody();
+  });
+}
+
+// ===== Dashboard row =====
+function dashboardRow(a, context = 'expiring') {
+  const typeLabel = a.type === 'DOMAIN' ? 'Domain' : 'Inbox';
+  const cbId = `dash-cb-${context}-${a.name.replace(/[^a-z0-9]/gi, '_')}`;
+  const checked = selectedRows.has(a.name) ? 'checked' : '';
+  return `<tr class="${selectedRows.has(a.name) ? 'row-selected' : ''}" onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+    <td onclick="event.stopPropagation()">
+      <div class="cb-wrap"><input type="checkbox" id="${cbId}" ${checked} onchange="toggleRow('${esc(a.name)}', this, 'dash')" /></div>
+    </td>
+    <td><div class="td-name">${esc(a.name)}</div></td>
+    <td>${esc(a.client||'—')}</td>
+    <td><span class="badge badge-purple">${typeLabel}</span></td>
+    <td>${esc(a.provider||'—')}</td>
+    <td>${esc(a.workspace||'—')}</td>
+    <td><span class="${daysClass(a.daysLeft)} days-cell">${daysLabel(a.daysLeft)}</span></td>
+    <td onclick="event.stopPropagation()">
+      <div class="row-actions" style="opacity:1">
+        <button class="btn btn-ghost btn-sm" onclick="openRenewConfirm('${esc(a.name)}')">Renew</button>
+        <button class="btn btn-danger btn-sm" onclick="openDeleteConfirm('${esc(a.name)}')">Delete</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function dashSelectAll(cb) {
+  const expiringIn3 = allAssets.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= 3);
+  expiringIn3.forEach(a => {
+    if (cb.checked) selectedRows.add(a.name);
+    else selectedRows.delete(a.name);
+  });
+  // Re-render checkboxes
+  expiringIn3.forEach(a => {
+    const cbId = `dash-cb-expiring-${a.name.replace(/[^a-z0-9]/gi, '_')}`;
+    const el = document.getElementById(cbId);
+    if (el) el.checked = cb.checked;
+  });
+  updateDashBulkBar();
+  // Highlight rows
+  document.querySelectorAll('#dash-expiring-body tr').forEach(tr => {
+    tr.classList.toggle('row-selected', cb.checked);
+  });
+}
+
+function updateDashBulkBar() {
+  const bar = document.getElementById('dash-bulk-bar');
+  const cnt = document.getElementById('dash-bulk-count');
+  if (!bar) return;
+  if (selectedRows.size > 0) {
+    bar.classList.add('visible');
+    cnt.textContent = `${selectedRows.size} selected`;
+  } else {
+    bar.classList.remove('visible');
+  }
+}
+
+async function bulkRenewDash() {
+  if (selectedRows.size === 0) return;
+  const names = [...selectedRows];
+  openBulkConfirm('Renew', names, async () => {
+    let ok = 0;
+    for (const name of names) {
+      const res = await renewAsset(name);
+      if (res.ok) ok++;
+    }
+    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
+    closeModal('confirmModal');
+    selectedRows.clear();
+    renderPage('dashboard');
+  });
+}
+
+async function bulkDeleteDash() {
+  if (selectedRows.size === 0) return;
+  const names = [...selectedRows];
+  openBulkConfirm('Delete', names, async () => {
+    let ok = 0;
+    for (const name of names) {
+      const res = await deleteAsset(name);
+      if (res.ok) ok++;
+    }
+    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
+    closeModal('confirmModal');
+    selectedRows.clear();
+    renderPage('dashboard');
+  });
+}
+
+function toggleRow(name, cb, context) {
+  if (cb.checked) selectedRows.add(name);
+  else selectedRows.delete(name);
+
+  // Update row highlight
+  cb.closest('tr').classList.toggle('row-selected', cb.checked);
+
+  if (context === 'dash') updateDashBulkBar();
+  else if (context === 'filtered') updateFilteredBulkBar();
+  else updateTableBulkBar();
+}
+
 // ===== Table Page =====
 function renderTable(content, actions, type) {
   const clients = [...new Set(allAssets.filter(a => a.type === type && a.client).map(a => a.client))].sort();
@@ -1087,7 +1438,19 @@ function renderTable(content, actions, type) {
     <button class="btn btn-ghost" onclick="exportCSV('${type}')">↓ Export CSV</button>
     <button class="btn btn-primary" onclick="openAddModal('${type}')">+ Add ${type === 'DOMAIN' ? 'Domain' : 'Inbox'}</button>
   `;
+
+  // Build active filter tag if daysFilter is set
+  const filterTag = currentFilter.daysFilter
+    ? `<div style="margin-bottom:12px;display:flex;align-items:center;gap:10px">
+        <span class="filter-tag">
+          Expiring in ≤ ${currentFilter.daysFilter} day${currentFilter.daysFilter > 1 ? 's' : ''}
+          <span class="filter-tag-close" onclick="clearDaysFilter()">✕</span>
+        </span>
+      </div>`
+    : '';
+
   content.innerHTML = `
+    ${filterTag}
     <div class="filters">
       <div class="search-wrap">
         <span class="search-icon">⌕</span>
@@ -1103,7 +1466,23 @@ function renderTable(content, actions, type) {
         <option value="">All Clients</option>
         ${clients.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
       </select>
+      <select class="filter-select" onchange="onSortChange(this.value)">
+        <option value="">Sort by...</option>
+        <option value="expiry_asc">Earliest to renew</option>
+        <option value="expiry_desc">Latest to renew</option>
+        <option value="name_asc">Name A→Z</option>
+        <option value="name_desc">Name Z→A</option>
+      </select>
     </div>
+
+    <div id="table-bulk-bar" class="bulk-bar">
+      <span class="bulk-bar-count" id="table-bulk-count">0 selected</span>
+      <div class="bulk-bar-actions">
+        <button class="btn btn-warning btn-sm" onclick="bulkRenewTable()">Renew Selected</button>
+        <button class="btn btn-danger btn-sm" onclick="bulkDeleteTable()">Delete Selected</button>
+      </div>
+    </div>
+
     <div class="table-wrap">
       <div class="table-header">
         <span class="table-header-title">${type === 'DOMAIN' ? 'Domains' : 'Inboxes'}</span>
@@ -1111,17 +1490,22 @@ function renderTable(content, actions, type) {
       </div>
       <table>
         <thead><tr>
+          <th style="width:36px"><input type="checkbox" id="table-select-all" onchange="tableSelectAll(this)" /></th>
           <th>${type === 'DOMAIN' ? 'Domain' : 'Inbox'}</th>
           <th>Client</th>
           <th>Provider</th>
-          <th>Campaign</th>
+          <th>Workspace</th>
           <th>Status</th>
-          <th>Expiry</th>
-          <th>Days Left</th>
+          <th class="sortable ${sortField === 'expiry' ? 'sort-active' : ''}" onclick="toggleSort('expiry')">
+            Expiry <span class="sort-arrow">${sortField === 'expiry' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}</span>
+          </th>
+          <th class="sortable ${sortField === 'daysLeft' ? 'sort-active' : ''}" onclick="toggleSort('daysLeft')">
+            Days Left <span class="sort-arrow">${sortField === 'daysLeft' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}</span>
+          </th>
           <th>${type === 'DOMAIN' ? 'Yearly Cost' : 'Monthly Cost'}</th>
           <th></th>
         </tr></thead>
-        <tbody id="table-body"><tr class="loading-row"><td colspan="9"><div class="spinner"></div></td></tr></tbody>
+        <tbody id="table-body"><tr class="loading-row"><td colspan="10"><div class="spinner"></div></td></tr></tbody>
       </table>
       <div class="pagination" id="table-pagination"></div>
     </div>
@@ -1130,8 +1514,41 @@ function renderTable(content, actions, type) {
   renderTableBody();
 }
 
+function clearDaysFilter() {
+  currentFilter.daysFilter = null;
+  renderPage(currentPage);
+}
+
+function onSortChange(val) {
+  if (!val) { sortField = null; sortDir = 'asc'; }
+  else if (val === 'expiry_asc') { sortField = 'daysLeft'; sortDir = 'asc'; }
+  else if (val === 'expiry_desc') { sortField = 'daysLeft'; sortDir = 'desc'; }
+  else if (val === 'name_asc') { sortField = 'name'; sortDir = 'asc'; }
+  else if (val === 'name_desc') { sortField = 'name'; sortDir = 'desc'; }
+  tablePage = 1;
+  renderTableBody();
+}
+
+function toggleSort(field) {
+  if (sortField === field) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  else { sortField = field; sortDir = 'asc'; }
+  tablePage = 1;
+  // Re-render just the table body without full re-render
+  renderTableBody();
+  // Update sort arrow headers
+  document.querySelectorAll('th.sortable').forEach(th => {
+    const f = th.getAttribute('onclick').match(/toggleSort\('(\w+)'\)/)?.[1];
+    th.classList.toggle('sort-active', f === sortField);
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.textContent = f === sortField ? (sortDir === 'asc' ? '▲' : '▼') : '↕';
+  });
+}
+
 function applyFilters() {
   let filtered = tableAssets;
+  if (currentFilter.daysFilter !== null && currentFilter.daysFilter !== undefined) {
+    filtered = filtered.filter(a => a.daysLeft !== null && a.daysLeft >= 0 && a.daysLeft <= currentFilter.daysFilter);
+  }
   if (currentFilter.search) {
     const q = currentFilter.search.toLowerCase();
     filtered = filtered.filter(a =>
@@ -1143,6 +1560,21 @@ function applyFilters() {
   }
   if (currentFilter.status) filtered = filtered.filter(a => a.status === currentFilter.status);
   if (currentFilter.client) filtered = filtered.filter(a => a.client === currentFilter.client);
+
+  // Sort
+  if (sortField) {
+    filtered = [...filtered].sort((a, b) => {
+      let av = a[sortField], bv = b[sortField];
+      if (sortField === 'daysLeft') {
+        av = av === null ? 999999 : av;
+        bv = bv === null ? 999999 : bv;
+        return sortDir === 'asc' ? av - bv : bv - av;
+      }
+      av = (av || '').toString().toLowerCase();
+      bv = (bv || '').toString().toLowerCase();
+      return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+  }
   return filtered;
 }
 
@@ -1156,25 +1588,28 @@ function renderTableBody() {
   const body = document.getElementById('table-body');
   if (!body) return;
   if (page.length === 0) {
-    body.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">○</div><p>No assets found</p></div></td></tr>`;
+    body.innerHTML = `<tr><td colspan="10"><div class="empty-state"><div class="empty-icon">○</div><p>No assets found</p></div></td></tr>`;
   } else {
     body.innerHTML = page.map(a => assetRow(a)).join('');
   }
-  renderPagination(total, start);
+  renderPaginationEl('table-pagination', total, start, renderTableBody);
+  updateTableBulkBar();
 }
 
-// ===== Full table row (9 cols: Name, Client, Provider, Campaign, Status, Expiry, Days Left, Cost, Actions) =====
-// Used on the Domains and Inboxes pages. Shows computed expiry even when expiryDate is null.
 function assetRow(a) {
   const expiry = getComputedExpiryDisplay(a);
   const cost = a.type === 'DOMAIN'
     ? (a.yearlyCost ? `${a.currency||'USD'} ${a.yearlyCost}` : '—')
     : (a.monthlyCost ? `${a.currency||'USD'} ${a.monthlyCost}` : '—');
-  return `<tr onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+  const checked = selectedRows.has(a.name) ? 'checked' : '';
+  return `<tr class="${selectedRows.has(a.name) ? 'row-selected' : ''}" onclick="openDetail('${esc(a.name)}')" style="cursor:pointer">
+    <td onclick="event.stopPropagation()">
+      <div class="cb-wrap"><input type="checkbox" ${checked} onchange="toggleRow('${esc(a.name)}', this, 'table')" /></div>
+    </td>
     <td><div class="td-name">${esc(a.name)}</div></td>
     <td>${esc(a.client||'—')}</td>
     <td>${esc(a.provider||'—')}</td>
-    <td>${esc(a.campaign||'—')}</td>
+    <td>${esc(a.workspace||'—')}</td>
     <td>${statusBadge(a.status)}</td>
     <td style="font-family:'DM Mono',monospace;font-size:11px">${expiry}</td>
     <td><span class="${daysClass(a.daysLeft)} days-cell">${daysLabel(a.daysLeft)}</span></td>
@@ -1188,8 +1623,76 @@ function assetRow(a) {
   </tr>`;
 }
 
-function renderPagination(total, start) {
-  const el = document.getElementById('table-pagination');
+function tableSelectAll(cb) {
+  const filtered = applyFilters();
+  const start = (tablePage - 1) * PAGE_SIZE;
+  const page = filtered.slice(start, start + PAGE_SIZE);
+  page.forEach(a => {
+    if (cb.checked) selectedRows.add(a.name);
+    else selectedRows.delete(a.name);
+  });
+  renderTableBody();
+}
+
+function updateTableBulkBar() {
+  const bar = document.getElementById('table-bulk-bar');
+  const cnt = document.getElementById('table-bulk-count');
+  if (!bar) return;
+  if (selectedRows.size > 0) {
+    bar.classList.add('visible');
+    cnt.textContent = `${selectedRows.size} selected`;
+  } else {
+    bar.classList.remove('visible');
+  }
+}
+
+async function bulkRenewTable() {
+  if (selectedRows.size === 0) return;
+  const names = [...selectedRows];
+  openBulkConfirm('Renew', names, async () => {
+    let ok = 0;
+    for (const name of names) {
+      const res = await renewAsset(name);
+      if (res.ok) ok++;
+    }
+    toast(`Renewed ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
+    closeModal('confirmModal');
+    selectedRows.clear();
+    renderPage(currentPage);
+  });
+}
+
+async function bulkDeleteTable() {
+  if (selectedRows.size === 0) return;
+  const names = [...selectedRows];
+  openBulkConfirm('Delete', names, async () => {
+    let ok = 0;
+    for (const name of names) {
+      const res = await deleteAsset(name);
+      if (res.ok) ok++;
+    }
+    toast(`Deleted ${ok} asset${ok !== 1 ? 's' : ''}`, 'success');
+    closeModal('confirmModal');
+    selectedRows.clear();
+    renderPage(currentPage);
+  });
+}
+
+// Bulk confirm modal
+function openBulkConfirm(action, names, onConfirm) {
+  document.getElementById('confirm-title').textContent = `${action} ${names.length} Asset${names.length !== 1 ? 's' : ''}`;
+  document.getElementById('confirm-text').textContent = `This will ${action.toLowerCase()} the following ${names.length} asset${names.length !== 1 ? 's' : ''}:`;
+  const preview = names.slice(0, 8).join('\n') + (names.length > 8 ? `\n…and ${names.length - 8} more` : '');
+  document.getElementById('confirm-name').textContent = preview;
+  const btn = document.getElementById('confirm-action-btn');
+  btn.textContent = action;
+  btn.className = action === 'Delete' ? 'btn btn-danger' : 'btn btn-warning';
+  btn.onclick = onConfirm;
+  openModal('confirmModal');
+}
+
+function renderPaginationEl(elId, total, start, renderFn) {
+  const el = document.getElementById(elId);
   if (!el) return;
   const totalPages = Math.ceil(total / PAGE_SIZE);
   if (totalPages <= 1) { el.innerHTML = ''; return; }
@@ -1207,10 +1710,15 @@ function renderPagination(total, start) {
   `;
 }
 
-function goPage(p) { tablePage = p; renderTableBody(); }
-function onSearch(v) { currentFilter.search = v; tablePage = 1; renderTableBody(); }
+function goPage(p) {
+  tablePage = p;
+  selectedRows.clear();
+  if (currentPage === 'filtered') renderFilteredBody();
+  else renderTableBody();
+}
+function onSearch(v) { currentFilter.search = v; tablePage = 1; if (currentPage === 'filtered') renderFilteredBody(); else renderTableBody(); }
 function onFilterStatus(v) { currentFilter.status = v; tablePage = 1; renderTableBody(); }
-function onFilterClient(v) { currentFilter.client = v; tablePage = 1; renderTableBody(); }
+function onFilterClient(v) { currentFilter.client = v; tablePage = 1; if (currentPage === 'filtered') renderFilteredBody(); else renderTableBody(); }
 
 // ===== Upload Page =====
 function renderUploadPage(content, actions) {
@@ -1243,7 +1751,6 @@ function openDetail(name) {
   document.getElementById('detail-name').textContent = a.name;
   document.getElementById('detail-type').textContent = a.type;
 
-  // FIX: use getComputedExpiryDisplay so it shows correct date after renewing
   const expiry = getComputedExpiryDisplay(a);
   const purchase = a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString('en-GB') : '—';
 

@@ -56,26 +56,26 @@ const app = new App({
 /* -------------------- Asset Schema -------------------- */
 const AssetSchema = new mongoose.Schema({
   type: { type: String, enum: ['DOMAIN', 'INBOX'], required: true },
-  name: { type: String, required: true, unique: true }, // Domain or Inbox email
+  name: { type: String, required: true, unique: true },
 
   // Common fields
   client: String,
-  provider: String,         // Provider (e.g. Zapmail, Google) — replaces registrar/inboxProvider
-  workspace: String,        // NEW: Workspace (e.g. Google, Outlook)
-  campaign: String,         // replaces purposeCampaign
+  provider: String,
+  workspace: String,
+  campaign: String,
   purchaseDate: Date,
   expiryDate: Date,
-  status: String,           // Active, Inactive, Not In Use
-  brandedPrewarmed: String, // NEW: Branded/Pre-warmed
-  primaryOwner: String,     // Slack User ID
-  visibilityChannel: String,// Slack Channel ID
-  yearlyCost: Number,       // For DOMAIN only
-  monthlyCost: Number,      // For INBOX only
+  status: String,
+  brandedPrewarmed: String,
+  primaryOwner: String,
+  visibilityChannel: String,
+  yearlyCost: Number,
+  monthlyCost: Number,
   currency: String,
   notes: String,
 
   // Inbox-specific
-  domain: String,           // For INBOX only (the domain part of the email)
+  domain: String,
 
   // Tracking
   remindersSent: [{ daysBefore: Number, sentAt: Date }],
@@ -95,16 +95,12 @@ const Asset = mongoose.model('Asset', AssetSchema);
 
 function parseDate(dateString) {
   if (!dateString || dateString.trim() === '') return null;
-  // DD/MM/YYYY
   const p1 = dayjs(dateString, 'DD/MM/YYYY', true);
   if (p1.isValid()) return p1.toDate();
-  // YYYY-MM-DD
   const p2 = dayjs(dateString, 'YYYY-MM-DD', true);
   if (p2.isValid()) return p2.toDate();
-  // DD MMM YYYY (e.g. 27 Feb 2026)
   const p3 = dayjs(dateString, 'DD MMM YYYY', true);
   if (p3.isValid()) return p3.toDate();
-  // D MMM YYYY (e.g. 7 Feb 2026)
   const p4 = dayjs(dateString, 'D MMM YYYY', true);
   if (p4.isValid()) return p4.toDate();
   return null;
@@ -123,7 +119,6 @@ function computeDaysLeft(asset) {
         .year(dayjs().year())
         .month(dayjs().month())
         .date(purchaseDay.date());
-      // Use isSameOrBefore so that if purchase date == today, expiry moves to next month
       if (!nextExpiry.isAfter(today)) nextExpiry = nextExpiry.add(1, 'month');
       expiryDate = nextExpiry.toDate();
     }
@@ -146,28 +141,21 @@ function parseCurrency(value) {
   const v = value.trim();
   const symbolMap = { '$': 'USD', '₹': 'INR', '€': 'EUR', '£': 'GBP' };
   if (symbolMap[v]) return symbolMap[v];
-  return v.toUpperCase(); // already USD, INR, etc.
+  return v.toUpperCase();
 }
 
-/**
- * Given today, return the next N working days (Mon-Fri) ahead.
- * e.g. getWorkingDayTargets() returns the dates that are 1 and 3 working days from today.
- * On Thursday: 1 working day = Friday, 3 working days = Tuesday next week.
- * BUT: anything expiring Sat/Sun also gets caught on Thursday (as 1 working day ahead).
- */
 function getWorkingDayTargets() {
   const today = dayjs().startOf('day');
-  const dayOfWeek = today.day(); // 0=Sun,1=Mon,...,5=Fri,6=Sat
+  const dayOfWeek = today.day();
 
   const targets = new Set();
 
-  // Calculate what date is N working days from today
   const addWorkingDays = (from, n) => {
     let date = from;
     let added = 0;
     while (added < n) {
       date = date.add(1, 'day');
-      if (date.day() !== 0 && date.day() !== 6) added++; // skip weekends
+      if (date.day() !== 0 && date.day() !== 6) added++;
     }
     return date;
   };
@@ -178,10 +166,9 @@ function getWorkingDayTargets() {
   targets.add(oneWD.format('YYYY-MM-DD'));
   targets.add(threeWD.format('YYYY-MM-DD'));
 
-  // On Thursday: also include Saturday and Sunday so nothing is missed over the weekend
-  if (dayOfWeek === 4) { // Thursday
-    targets.add(today.add(2, 'day').format('YYYY-MM-DD')); // Saturday
-    targets.add(today.add(3, 'day').format('YYYY-MM-DD')); // Sunday
+  if (dayOfWeek === 4) {
+    targets.add(today.add(2, 'day').format('YYYY-MM-DD'));
+    targets.add(today.add(3, 'day').format('YYYY-MM-DD'));
   }
 
   return targets;
@@ -201,10 +188,6 @@ function prepareAssetsForSheet(assets) {
 
 /* -------------------- CSV Parsing -------------------- */
 
-/**
- * Parse a CSV buffer (domain or inbox) and return asset objects.
- * Skips instruction/example rows (first data row where Domain/Inbox cell is empty).
- */
 function parseCSVBuffer(buffer, type) {
   return new Promise((resolve, reject) => {
     const assets = [];
@@ -214,7 +197,6 @@ function parseCSVBuffer(buffer, type) {
       .pipe(csv())
       .on('data', (row) => {
         if (type === 'DOMAIN') {
-          // Skip empty/example rows
           const name = row['Domain'] ? row['Domain'].trim() : '';
           if (!name || name.startsWith('(')) return;
 
@@ -263,7 +245,6 @@ function parseCSVBuffer(buffer, type) {
             updatedAt: new Date()
           };
 
-          // Auto-extract domain from inbox email if not set
           if (!inboxAsset.domain && inboxAsset.name.includes('@')) {
             inboxAsset.domain = inboxAsset.name.split('@')[1];
           }
@@ -276,19 +257,17 @@ function parseCSVBuffer(buffer, type) {
   });
 }
 
-/* -------------------- Express HTTP Server (CSV Upload) -------------------- */
+/* -------------------- Express HTTP Server -------------------- */
 
 const expressApp = express();
 const upload = multer({ storage: multer.memoryStorage() });
 const path = require('path');
 
-// Serve frontend
 expressApp.use(express.json());
 expressApp.use(express.static(path.join(__dirname, 'public')));
 
 /* -------------------- REST API -------------------- */
 
-// GET all assets
 expressApp.get('/api/assets', async (req, res) => {
   try {
     const assets = await Asset.find().sort({ type: 1, name: 1 });
@@ -299,7 +278,6 @@ expressApp.get('/api/assets', async (req, res) => {
   }
 });
 
-// POST create asset
 expressApp.post('/api/assets', async (req, res) => {
   try {
     const body = req.body;
@@ -335,7 +313,6 @@ expressApp.post('/api/assets', async (req, res) => {
   }
 });
 
-// PUT update asset
 expressApp.put('/api/assets/:name', async (req, res) => {
   try {
     const body = req.body;
@@ -374,7 +351,6 @@ expressApp.put('/api/assets/:name', async (req, res) => {
   }
 });
 
-// DELETE asset
 expressApp.delete('/api/assets/:name', async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
@@ -388,10 +364,6 @@ expressApp.delete('/api/assets/:name', async (req, res) => {
   }
 });
 
-// POST renew asset
-// FIX: INBOXes now get expiryDate set to exactly 1 month from today (not null),
-// so they don't show as nearly-expired immediately after renewal.
-// DOMAINs stay null so computeDaysLeft auto-calculates 365 days from purchaseDate.
 expressApp.post('/api/assets/:name/renew', async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
@@ -401,11 +373,9 @@ expressApp.post('/api/assets/:name/renew', async (req, res) => {
     const today = dayjs().startOf('day');
     let newExpiryDate = null;
 
-    // For INBOX: set expiry to exactly 1 month from today
     if (existing.type === 'INBOX') {
       newExpiryDate = today.add(1, 'month').toDate();
     }
-    // For DOMAIN: leave expiryDate null → computeDaysLeft auto-calcs 365 days from purchaseDate
 
     await Asset.findOneAndUpdate({ name: existing.name }, {
       purchaseDate: today.toDate(),
@@ -421,331 +391,13 @@ expressApp.post('/api/assets/:name/renew', async (req, res) => {
   }
 });
 
-// Serve the upload UI (legacy redirect to frontend)
 expressApp.get('/upload', (req, res) => {
   res.redirect('/');
 });
 
-// Old upload UI replaced — keep the route but point to new frontend
-expressApp.get('/old-upload', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Infra Bot — CSV Upload</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0f0f0f;
-      color: #e0e0e0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-    }
-
-    .card {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 16px;
-      padding: 40px;
-      width: 100%;
-      max-width: 520px;
-      box-shadow: 0 24px 48px rgba(0,0,0,0.4);
-    }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 28px;
-    }
-
-    .logo-icon {
-      width: 36px;
-      height: 36px;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
-    }
-
-    h1 {
-      font-size: 20px;
-      font-weight: 600;
-      color: #fff;
-    }
-
-    .subtitle {
-      font-size: 13px;
-      color: #666;
-      margin-top: 2px;
-    }
-
-    .divider {
-      height: 1px;
-      background: #2a2a2a;
-      margin: 28px 0;
-    }
-
-    label.field-label {
-      display: block;
-      font-size: 12px;
-      font-weight: 500;
-      color: #888;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 8px;
-    }
-
-    select {
-      width: 100%;
-      background: #111;
-      border: 1px solid #2e2e2e;
-      border-radius: 8px;
-      color: #e0e0e0;
-      padding: 10px 14px;
-      font-size: 14px;
-      margin-bottom: 20px;
-      appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23666' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 14px center;
-      cursor: pointer;
-    }
-
-    select:focus { outline: none; border-color: #6366f1; }
-
-    .drop-zone {
-      border: 2px dashed #2e2e2e;
-      border-radius: 12px;
-      padding: 36px 24px;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
-      position: relative;
-      margin-bottom: 20px;
-    }
-
-    .drop-zone:hover, .drop-zone.dragover {
-      border-color: #6366f1;
-      background: rgba(99,102,241,0.05);
-    }
-
-    .drop-zone input[type="file"] {
-      position: absolute;
-      inset: 0;
-      opacity: 0;
-      cursor: pointer;
-      width: 100%;
-      height: 100%;
-    }
-
-    .drop-icon { font-size: 32px; margin-bottom: 10px; }
-
-    .drop-text {
-      font-size: 14px;
-      color: #888;
-    }
-
-    .drop-text strong { color: #aaa; }
-
-    .file-selected {
-      margin-top: 8px;
-      font-size: 13px;
-      color: #6366f1;
-      font-weight: 500;
-    }
-
-    .schema-hint {
-      background: #111;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-      padding: 12px 14px;
-      font-size: 12px;
-      color: #666;
-      margin-bottom: 20px;
-      line-height: 1.6;
-    }
-
-    .schema-hint strong { color: #888; }
-
-    button[type="submit"] {
-      width: 100%;
-      padding: 12px;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.2s;
-    }
-
-    button[type="submit"]:hover { opacity: 0.9; }
-    button[type="submit"]:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    #result {
-      margin-top: 20px;
-      padding: 14px;
-      border-radius: 8px;
-      font-size: 13px;
-      display: none;
-    }
-
-    #result.success {
-      background: rgba(34,197,94,0.1);
-      border: 1px solid rgba(34,197,94,0.3);
-      color: #4ade80;
-    }
-
-    #result.error {
-      background: rgba(239,68,68,0.1);
-      border: 1px solid rgba(239,68,68,0.3);
-      color: #f87171;
-    }
-
-    .spinner {
-      display: inline-block;
-      width: 14px;
-      height: 14px;
-      border: 2px solid rgba(255,255,255,0.3);
-      border-top-color: #fff;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      vertical-align: middle;
-      margin-right: 8px;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="logo">
-      <div class="logo-icon">🤖</div>
-      <div>
-        <h1>Infra Bot</h1>
-        <div class="subtitle">CSV Asset Upload</div>
-      </div>
-    </div>
-
-    <form id="uploadForm">
-      <label class="field-label">Asset Type</label>
-      <select id="assetType" name="type" required>
-        <option value="">— Select type —</option>
-        <option value="domain">Domains</option>
-        <option value="inbox">Inboxes</option>
-      </select>
-
-      <label class="field-label">CSV File</label>
-      <div class="drop-zone" id="dropZone">
-        <input type="file" id="csvFile" name="csv" accept=".csv" required />
-        <div class="drop-icon">📂</div>
-        <div class="drop-text"><strong>Click to browse</strong> or drag & drop your CSV</div>
-        <div class="file-selected" id="fileName"></div>
-      </div>
-
-      <div class="schema-hint" id="schemaHint">
-        Select an asset type above to see the expected column order.
-      </div>
-
-      <button type="submit" id="submitBtn">Upload & Import</button>
-    </form>
-
-    <div id="result"></div>
-  </div>
-
-  <script>
-    const domainSchema = 'Domain, Client, Provider, Workspace, Campaign, Purchase Date, Expiry Date, Status, Branded/Pre-warmed, Primary Owner, Visibility Channel, Yearly Cost, Currency, Notes';
-    const inboxSchema  = 'Inbox, Client, Provider, Workspace, Domain, Campaign, Purchase Date, Expiry Date, Status, Branded/Pre-warmed, Primary Owner, Visibility Channel, Monthly Cost, Currency, Notes';
-
-    document.getElementById('assetType').addEventListener('change', function () {
-      const hint = document.getElementById('schemaHint');
-      if (this.value === 'domain') {
-        hint.innerHTML = '<strong>Expected columns:</strong><br>' + domainSchema;
-      } else if (this.value === 'inbox') {
-        hint.innerHTML = '<strong>Expected columns:</strong><br>' + inboxSchema;
-      } else {
-        hint.innerHTML = 'Select an asset type above to see the expected column order.';
-      }
-    });
-
-    document.getElementById('csvFile').addEventListener('change', function () {
-      document.getElementById('fileName').textContent = this.files[0] ? '✓ ' + this.files[0].name : '';
-    });
-
-    const dropZone = document.getElementById('dropZone');
-    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-    dropZone.addEventListener('drop', e => {
-      e.preventDefault();
-      dropZone.classList.remove('dragover');
-      const file = e.dataTransfer.files[0];
-      if (file) {
-        const input = document.getElementById('csvFile');
-        const dt = new DataTransfer();
-        dt.items.add(file);
-        input.files = dt.files;
-        document.getElementById('fileName').textContent = '✓ ' + file.name;
-      }
-    });
-
-    document.getElementById('uploadForm').addEventListener('submit', async function (e) {
-      e.preventDefault();
-      const btn = document.getElementById('submitBtn');
-      const result = document.getElementById('result');
-      const type = document.getElementById('assetType').value;
-      const file = document.getElementById('csvFile').files[0];
-
-      if (!type || !file) return;
-
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span>Importing...';
-      result.style.display = 'none';
-
-      const formData = new FormData();
-      formData.append('type', type);
-      formData.append('csv', file);
-
-      try {
-        const res = await fetch('/upload-csv', { method: 'POST', body: formData });
-        const data = await res.json();
-
-        result.style.display = 'block';
-        if (res.ok) {
-          result.className = 'success';
-          result.innerHTML = '✅ <strong>Import successful!</strong><br>' +
-            'Inserted: ' + data.inserted + ' &nbsp;|&nbsp; Updated: ' + data.updated + ' &nbsp;|&nbsp; Total: ' + data.total;
-        } else {
-          result.className = 'error';
-          result.innerHTML = '❌ <strong>Error:</strong> ' + (data.error || 'Unknown error');
-        }
-      } catch (err) {
-        result.style.display = 'block';
-        result.className = 'error';
-        result.innerHTML = '❌ <strong>Network error:</strong> ' + err.message;
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = 'Upload & Import';
-      }
-    });
-  </script>
-</body>
-</html>`);
-});
-
-// CSV upload endpoint
 expressApp.post('/upload-csv', upload.single('csv'), async (req, res) => {
   try {
-    const type = req.body.type; // 'domain' or 'inbox'
+    const type = req.body.type;
     if (!type || !['domain', 'inbox'].includes(type)) {
       return res.status(400).json({ error: 'Invalid type. Must be "domain" or "inbox".' });
     }
@@ -774,7 +426,6 @@ expressApp.post('/upload-csv', upload.single('csv'), async (req, res) => {
       }
     }
 
-    // Sync to Google Sheets
     const allAssets = await Asset.find();
     await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
 
@@ -785,7 +436,6 @@ expressApp.post('/upload-csv', upload.single('csv'), async (req, res) => {
   }
 });
 
-// Catch-all — serve frontend for any unmatched GET route
 expressApp.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -1160,7 +810,6 @@ app.message(async ({ message, client }) => {
     const command = lines[0].toLowerCase();
     if (command !== 'delete' && command !== 'renew') return;
 
-    // Slack auto-formats emails as <mailto:email|email> — strip that
     const names = lines.slice(1).map(l => {
       const mailtoMatch = l.match(/<mailto:[^|]+\|([^>]+)>/);
       if (mailtoMatch) return mailtoMatch[1].trim().toLowerCase();
@@ -1191,7 +840,6 @@ app.message(async ({ message, client }) => {
         const existing = await Asset.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
         if (!existing) { notFound++; continue; }
 
-        // FIX: same logic as REST endpoint — INBOXes get 1 month, DOMAINs stay null
         let newExpiryDate = null;
         if (existing.type === 'INBOX') {
           newExpiryDate = today.add(1, 'month').toDate();
@@ -1280,7 +928,6 @@ app.view('ADD_ASSET_MODAL', async ({ ack, body, view, client }) => {
     updatedAt: new Date()
   };
 
-  // Auto-extract domain from inbox email
   if (type === 'INBOX' && asset.name.includes('@')) {
     asset.domain = asset.name.split('@')[1];
   }
@@ -1326,11 +973,9 @@ app.view('RENEW_ASSET_MODAL', async ({ ack, body, view, client }) => {
       return;
     }
 
-    // Only update date fields — leave everything else untouched
     const updates = { updatedAt: new Date(), remindersSent: [] };
     if (newPurchaseDate) updates.purchaseDate = newPurchaseDate;
     if (newExpiryDate) updates.expiryDate = newExpiryDate;
-    // If only purchase date given, clear old expiry so it auto-calculates
     if (newPurchaseDate && !newExpiryDate) updates.expiryDate = null;
 
     await Asset.findOneAndUpdate({ name }, updates);
@@ -1365,8 +1010,6 @@ async function runDailySummary() {
   console.log('Running daily summary...');
   const assets = await Asset.find();
 
-  // Buckets: keyed by destination (owner ID or channel ID)
-  // Each entry: { expiring: [], expired: [] }
   const buckets = {};
 
   const addToBucket = (dest, asset, daysLeft, isExpired) => {
@@ -1382,7 +1025,6 @@ async function runDailySummary() {
 
     const isExpired = daysLeft < 0 && asset.status === 'Active';
 
-    // Use working day targets instead of fixed day counts
     const expiryDateStr = (() => {
       let expiry = asset.expiryDate;
       if (!expiry && asset.purchaseDate) {
@@ -1403,10 +1045,8 @@ async function runDailySummary() {
 
     if (!isExpired && !isReminderDay) continue;
 
-    // Send to primary owner DM
     addToBucket(asset.primaryOwner, asset, daysLeft, isExpired);
 
-    // Also post to visibility channel if set
     if (asset.visibilityChannel) {
       addToBucket(asset.visibilityChannel, asset, daysLeft, isExpired);
     }
@@ -1414,7 +1054,6 @@ async function runDailySummary() {
 
   for (const [dest, { expiring, expired }] of Object.entries(buckets)) {
 
-    // ---- Expiring: one summary line per daysLeft group + "View Details" button ----
     if (expiring.length > 0) {
       const byDay = {};
       for (const item of expiring) {
@@ -1430,47 +1069,59 @@ async function runDailySummary() {
         }
       ];
 
-      const detailMap = {};
-
       for (const daysLeft of Object.keys(byDay).sort((a, b) => Number(a) - Number(b))) {
         const items = byDay[daysLeft];
         const domains = items.filter(i => i.asset.type === 'DOMAIN');
         const inboxes = items.filter(i => i.asset.type === 'INBOX');
-        const label = daysLeft === '1' ? 'tomorrow' : `in ${daysLeft} days`;
+        const label = daysLeft === '0' ? 'today' : daysLeft === '1' ? 'tomorrow' : `in ${daysLeft} days`;
 
+        // Build compact summary lines: "X domains and Y inboxes expire <label>"
         const parts = [];
-        if (domains.length) parts.push(`${domains.length} domain${domains.length !== 1 ? 's' : ''}`);
-        if (inboxes.length) parts.push(`${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}`);
-        const summary = `${parts.join(' and ')} expire${items.length === 1 ? 's' : ''} ${label}`;
+        if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
+        if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
+        const summaryText = `${parts.join(' and ')} expire${items.length === 1 ? 's' : ''} ${label}`;
 
+        // Build the thread detail: name, client, provider
         const byClient = {};
         for (const { asset } of items) {
           const c = asset.client || 'No Client';
           if (!byClient[c]) byClient[c] = [];
           byClient[c].push(asset);
         }
-        let detail = `*Expiring ${label.charAt(0).toUpperCase() + label.slice(1)}*\n\n`;
-        for (const [client, assets] of Object.entries(byClient)) {
+
+        let detail = `*Expiring ${label.charAt(0).toUpperCase() + label.slice(1)}*\n`;
+        detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
+
+        for (const [client, clientAssets] of Object.entries(byClient)) {
           detail += `*${client}*\n`;
-          for (const asset of assets) {
-            const provider = asset.provider ? ` — ${asset.provider}` : '';
-            detail += `  • ${asset.name} (${asset.type === 'DOMAIN' ? 'Domain' : 'Inbox'})${provider}\n`;
+          for (const asset of clientAssets) {
+            const provider = asset.provider ? ` · ${asset.provider}` : '';
+            const typeLabel = asset.type === 'DOMAIN' ? '🌐' : '📧';
+            detail += `  ${typeLabel} ${asset.name}${provider}\n`;
           }
         }
-        detailMap[daysLeft] = detail.trim();
 
         blocks.push({
           type: 'section',
-          text: { type: 'mrkdwn', text: `*${summary}*` },
+          text: { type: 'mrkdwn', text: summaryText },
           accessory: {
             type: 'button',
-            text: { type: 'plain_text', text: 'View Details' },
+            text: { type: 'plain_text', text: 'Read more' },
             action_id: `view_details_${daysLeft}`,
-            value: JSON.stringify({ detail: detailMap[daysLeft], channel: dest })
+            value: JSON.stringify({ detail: detail.trim(), channel: dest })
           }
         });
         blocks.push({ type: 'divider' });
       }
+
+      // Add link to dashboard
+      blocks.push({
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: `🔗 <https://infra-bot.onrender.com/|View full dashboard> to renew or manage assets`
+        }]
+      });
 
       try {
         await app.client.chat.postMessage({
@@ -1484,14 +1135,13 @@ async function runDailySummary() {
       }
     }
 
-    // ---- Overdue: summary + "View Details" button ----
     if (expired.length > 0) {
       const domains = expired.filter(i => i.asset.type === 'DOMAIN');
       const inboxes = expired.filter(i => i.asset.type === 'INBOX');
 
       const parts = [];
-      if (domains.length) parts.push(`${domains.length} domain${domains.length !== 1 ? 's' : ''}`);
-      if (inboxes.length) parts.push(`${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}`);
+      if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
+      if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
       const summary = `${parts.join(' and ')} expired but still marked Active — please review`;
 
       const byClient = {};
@@ -1500,12 +1150,14 @@ async function runDailySummary() {
         if (!byClient[c]) byClient[c] = [];
         byClient[c].push({ asset, daysLeft });
       }
-      let detail = `*Expired & Still Active*\n\n`;
+      let detail = `*Expired & Still Active*\n`;
+      detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
       for (const [client, items] of Object.entries(byClient)) {
         detail += `*${client}*\n`;
         for (const { asset, daysLeft } of items) {
-          const provider = asset.provider ? ` — ${asset.provider}` : '';
-          detail += `  • ${asset.name} (${asset.type === 'DOMAIN' ? 'Domain' : 'Inbox'})${provider} — ${Math.abs(daysLeft)}d overdue\n`;
+          const provider = asset.provider ? ` · ${asset.provider}` : '';
+          const typeLabel = asset.type === 'DOMAIN' ? '🌐' : '📧';
+          detail += `  ${typeLabel} ${asset.name}${provider} — ${Math.abs(daysLeft)}d overdue\n`;
         }
       }
 
@@ -1516,13 +1168,20 @@ async function runDailySummary() {
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*${summary}*` },
+          text: { type: 'mrkdwn', text: summary },
           accessory: {
             type: 'button',
-            text: { type: 'plain_text', text: 'View Details' },
+            text: { type: 'plain_text', text: 'Read more' },
             action_id: 'view_expired_details',
             value: JSON.stringify({ detail: detail.trim(), channel: dest })
           }
+        },
+        {
+          type: 'context',
+          elements: [{
+            type: 'mrkdwn',
+            text: `🔗 <https://infra-bot.onrender.com/|View full dashboard> to manage these assets`
+          }]
         }
       ];
 
@@ -1540,37 +1199,109 @@ async function runDailySummary() {
   }
 }
 
-/* -------------------- Startup -------------------- 
-async function start() {
+/* -------------------- 12 PM IST Summary (Structured) -------------------- */
+/**
+ * Sends a structured daily summary to the main channel at 12 PM IST.
+ * Shows counts for expiring today, in 1 day, and in 3 days — separately for
+ * inboxes and domains — with a "Read more" button that posts details in-thread.
+ */
+async function runNoonSummary() {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log('✅ MongoDB connected');
+    const CHANNEL = 'C0AGVSUNEFP';
+    const assets = await Asset.find();
+    const prepared = prepareAssetsForSheet(assets);
 
-    const allAssets = await Asset.find();
-    await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-    console.log('✅ Google Sheets synced on startup');
+    const today = prepared.filter(a => a.daysLeft !== null && a.daysLeft === 0 && a.status === 'Active');
+    const in1 = prepared.filter(a => a.daysLeft !== null && a.daysLeft === 1 && a.status === 'Active');
+    const in3 = prepared.filter(a => a.daysLeft !== null && a.daysLeft > 1 && a.daysLeft <= 3 && a.status === 'Active');
 
-    await app.start();
-    console.log('✅ Slack bot running in socket mode');
+    const todayDomains = today.filter(a => a.type === 'DOMAIN');
+    const todayInboxes = today.filter(a => a.type === 'INBOX');
+    const in1Domains = in1.filter(a => a.type === 'DOMAIN');
+    const in1Inboxes = in1.filter(a => a.type === 'INBOX');
+    const in3Domains = in3.filter(a => a.type === 'DOMAIN');
+    const in3Inboxes = in3.filter(a => a.type === 'INBOX');
 
-    // Start HTTP server for CSV upload UI
-    expressApp.listen(PORT, () => {
-      console.log(`✅ Upload UI running at http://localhost:${PORT}`);
+    // Only send if there's something worth alerting about
+    const totalExpiring = today.length + in1.length + in3.length;
+    if (totalExpiring === 0) {
+      console.log('✅ No expiring assets for noon summary, skipping.');
+      return;
+    }
+
+    // Build compact summary blocks
+    const blocks = [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `⏰ Daily Renewal Check — ${dayjs().format('DD MMM YYYY')}` }
+      }
+    ];
+
+    // Helper to build a summary line + detail for a group
+    const makeGroup = (label, icon, domains, inboxes, dayKey) => {
+      if (domains.length === 0 && inboxes.length === 0) return;
+
+      const parts = [];
+      if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
+      if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
+      const summaryText = `${icon}  ${parts.join(' and ')} expire${(domains.length + inboxes.length) === 1 ? 's' : ''} *${label}*`;
+
+      // Detail: grouped by client, show name + provider
+      const allItems = [...domains, ...inboxes];
+      const byClient = {};
+      for (const a of allItems) {
+        const c = a.client || 'No Client';
+        if (!byClient[c]) byClient[c] = [];
+        byClient[c].push(a);
+      }
+      let detail = `*Expiring ${label}*\n`;
+      detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
+      for (const [client, items] of Object.entries(byClient)) {
+        detail += `*${client}*\n`;
+        for (const a of items) {
+          const providerPart = a.provider ? ` · ${a.provider}` : '';
+          const typeIcon = a.type === 'DOMAIN' ? '🌐' : '📧';
+          detail += `  ${typeIcon} ${a.name}${providerPart}\n`;
+        }
+      }
+
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: summaryText },
+        accessory: {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Read more' },
+          action_id: `view_details_${dayKey}`,
+          value: JSON.stringify({ detail: detail.trim(), channel: CHANNEL })
+        }
+      });
+      blocks.push({ type: 'divider' });
+    };
+
+    makeGroup('Today', '🔴', todayDomains, todayInboxes, 'noon_0');
+    makeGroup('Tomorrow', '🟠', in1Domains, in1Inboxes, 'noon_1');
+    makeGroup('in 2–3 days', '🟡', in3Domains, in3Inboxes, 'noon_3');
+
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: `🔗 <https://infra-bot.onrender.com/|Open dashboard> to renew or delete inboxes/domains`
+      }]
     });
 
-    // Schedule daily reminder at 9 AM
-    cron.schedule('0 9 * * *', () => {
-      console.log('Executing scheduled daily summary...');
-      runDailySummary();
+    await app.client.chat.postMessage({
+      token: process.env.SLACK_BOT_TOKEN,
+      channel: CHANNEL,
+      text: `Daily Renewal Check — ${dayjs().format('DD MMM YYYY')}`,
+      blocks
     });
-    console.log('✅ Daily reminder scheduled for 9:00 AM');
 
+    console.log('✅ Noon summary sent successfully');
   } catch (error) {
-    console.error('❌ Error during startup:', error);
-    process.exit(1);
+    console.error('❌ Error sending noon summary:', error);
   }
-}*/
-
+}
 
 /* -------------------- Startup -------------------- */
 async function start() {
@@ -1585,28 +1316,17 @@ async function start() {
     await app.start();
     console.log('✅ Slack bot running in socket mode');
 
-    // Start HTTP server for CSV upload UI
     expressApp.listen(PORT, () => {
       console.log(`✅ Upload UI running at http://localhost:${PORT}`);
     });
 
-    // Schedule inbox/domain reminder at 12 PM IST
-    // 12:00 PM IST = 6:30 AM UTC
+    // Schedule structured noon summary at 12 PM IST (6:30 AM UTC)
     cron.schedule('30 6 * * *', async () => {
-      try {
-        await app.client.chat.postMessage({
-          token: process.env.SLACK_BOT_TOKEN,
-          channel: 'C0AGVSUNEFP', 
-          text: 'Please check for expiring inboxes/domains : https://infra-bot.onrender.com/'
-        });
-
-        console.log('✅ 12 PM reminder sent successfully');
-      } catch (error) {
-        console.error('❌ Error sending 12 PM reminder:', error);
-      }
+      console.log('Executing scheduled noon summary...');
+      await runNoonSummary();
     });
 
-    console.log('✅ 12 PM inbox/domain reminder scheduled');
+    console.log('✅ 12 PM IST noon summary scheduled');
 
   } catch (error) {
     console.error('❌ Error during startup:', error);
