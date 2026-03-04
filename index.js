@@ -1412,7 +1412,7 @@ async function start() {
     });
 
     // Schedule structured noon summary at 12 PM IST (6:30 AM UTC), Mon-Fri only
-    cron.schedule('30 6 * * 1-5', async () => {
+    cron.schedule('45 6 * * 1-5', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Noon summary firing at ${now}`);
       await runNoonSummary();
