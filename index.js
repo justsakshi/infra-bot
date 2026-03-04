@@ -443,6 +443,72 @@ expressApp.get('/trigger-summary', async (req, res) => {
   }
 });
 
+// Diagnostic endpoint — hit /debug-summary to see exactly what the bot sees
+expressApp.get('/debug-summary', async (req, res) => {
+  try {
+    const CHANNEL = 'C0AGVSUNEFP';
+    const assets = await Asset.find();
+    const prepared = prepareAssetsForSheet(assets);
+    const dayOfWeek = dayjs().day();
+
+    const addWorkingDays = (n) => {
+      let d = dayjs().startOf('day');
+      let added = 0;
+      while (added < n) {
+        d = d.add(1, 'day');
+        if (d.day() !== 0 && d.day() !== 6) added++;
+      }
+      return d.diff(dayjs().startOf('day'), 'day');
+    };
+
+    const wd1CalDays = addWorkingDays(1);
+    const wd3CalDays = addWorkingDays(3);
+    const isThursday = dayOfWeek === 4;
+
+    const active = prepared.filter(a => a.status === 'Active' && a.daysLeft !== null);
+    const inactive = prepared.filter(a => a.status !== 'Active');
+    const noExpiry = prepared.filter(a => a.daysLeft === null);
+
+    const group0 = active.filter(a => a.daysLeft === 0);
+    const group1 = active.filter(a => a.daysLeft === wd1CalDays);
+    const group3 = active.filter(a => isThursday ? (a.daysLeft === 2 || a.daysLeft === 3) : a.daysLeft === wd3CalDays);
+
+    // Try sending a test ping to Slack right now
+    let slackTest = null;
+    try {
+      const result = await app.client.chat.postMessage({
+        token: process.env.SLACK_BOT_TOKEN,
+        channel: CHANNEL,
+        text: `🔧 Debug ping from /debug-summary — bot can reach this channel. Total assets: ${assets.length}, Active with expiry: ${active.length}, Expiring soon: ${group0.length + group1.length + group3.length}`
+      });
+      slackTest = { ok: true, ts: result.ts };
+    } catch (e) {
+      slackTest = { ok: false, error: e.message, data: e.data };
+    }
+
+    res.json({
+      serverTimeUTC: new Date().toISOString(),
+      serverTimeIST: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+      dayOfWeek,
+      isThursday,
+      wd1CalDays,
+      wd3CalDays,
+      totalAssets: assets.length,
+      activeWithExpiry: active.length,
+      inactiveCount: inactive.length,
+      noExpiryCount: noExpiry.length,
+      expiringToday: group0.map(a => ({ name: a.name, daysLeft: a.daysLeft, status: a.status, expiryDate: a.expiryDateFormatted })),
+      expiringTomorrow: group1.map(a => ({ name: a.name, daysLeft: a.daysLeft, status: a.status, expiryDate: a.expiryDateFormatted })),
+      expiringIn3WD: group3.map(a => ({ name: a.name, daysLeft: a.daysLeft, status: a.status, expiryDate: a.expiryDateFormatted })),
+      sampleAllActive: active.slice(0, 20).map(a => ({ name: a.name, daysLeft: a.daysLeft, status: a.status, expiryDate: a.expiryDateFormatted })),
+      slackPingResult: slackTest,
+      channelId: CHANNEL
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 expressApp.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
