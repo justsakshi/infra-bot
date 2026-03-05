@@ -1469,8 +1469,8 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
-    // Simple one-line reminder at 5:15 PM IST, Mon–Fri only
-    cron.schedule('15 17 * * 1-5', async () => {
+    // Simple one-line reminder at 11:30 PM IST, Mon–Fri only
+    cron.schedule('0 6 * * 1-5', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Simple reminder firing at ${now}`);
       await runSimpleReminder();
