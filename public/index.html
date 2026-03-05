@@ -1480,6 +1480,8 @@ function renderTable(content, actions, type) {
         <option value="expiry_desc">Latest to renew</option>
         <option value="name_asc">Name A→Z</option>
         <option value="name_desc">Name Z→A</option>
+        <option value="domain_asc">Domain A→Z (group by @domain)</option>
+        <option value="domain_desc">Domain Z→A (group by @domain)</option>
       </select>
     </div>
 
@@ -1533,6 +1535,8 @@ function onSortChange(val) {
   else if (val === 'expiry_desc') { sortField = 'daysLeft'; sortDir = 'desc'; }
   else if (val === 'name_asc') { sortField = 'name'; sortDir = 'asc'; }
   else if (val === 'name_desc') { sortField = 'name'; sortDir = 'desc'; }
+  else if (val === 'domain_asc') { sortField = 'domain_part'; sortDir = 'asc'; }
+  else if (val === 'domain_desc') { sortField = 'domain_part'; sortDir = 'desc'; }
   tablePage = 1;
   renderTableBody();
 }
@@ -1572,7 +1576,21 @@ function applyFilters() {
   // Sort
   if (sortField) {
     filtered = [...filtered].sort((a, b) => {
-      let av = a[sortField], bv = b[sortField];
+      let av, bv;
+      if (sortField === 'domain_part') {
+        // Sort by the part after @ so inboxes of the same domain cluster together
+        // Falls back to full name for domains (no @)
+        av = (a.name.includes('@') ? a.name.split('@')[1] : a.name).toLowerCase();
+        bv = (b.name.includes('@') ? b.name.split('@')[1] : b.name).toLowerCase();
+        // Secondary sort: within same domain, sort by the local part (before @)
+        if (av === bv) {
+          const al = a.name.includes('@') ? a.name.split('@')[0].toLowerCase() : '';
+          const bl = b.name.includes('@') ? b.name.split('@')[0].toLowerCase() : '';
+          return sortDir === 'asc' ? al.localeCompare(bl) : bl.localeCompare(al);
+        }
+        return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      av = a[sortField]; bv = b[sortField];
       if (sortField === 'daysLeft') {
         av = av === null ? 999999 : av;
         bv = bv === null ? 999999 : bv;
