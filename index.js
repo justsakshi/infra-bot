@@ -443,6 +443,17 @@ expressApp.get('/trigger-summary', async (req, res) => {
   }
 });
 
+// Manual trigger for the simple 5:15 PM reminder (for testing)
+expressApp.get('/trigger-reminder', async (req, res) => {
+  try {
+    console.log('Manual trigger: runSimpleReminder');
+    await runSimpleReminder();
+    res.json({ ok: true, message: 'Simple reminder triggered successfully' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic endpoint — hit /debug-summary to see exactly what the bot sees
 expressApp.get('/debug-summary', async (req, res) => {
   try {
@@ -1267,12 +1278,7 @@ async function runDailySummary() {
   }
 }
 
-/* -------------------- 1:30 PM IST Summary (Structured) -------------------- */
-/**
- * Sends a structured daily summary to the main channel at 1:30 PM IST (Mon-Fri only).
- * Always sends — even when no assets are expiring — so you can confirm the bot is alive.
- * On Thursday, also captures daysLeft=2 (Sat) and daysLeft=3 (Sun/Mon) so weekends are never missed.
- */
+/* -------------------- 4:00 PM IST Summary (Structured) -------------------- */
 async function runNoonSummary() {
   try {
     const CHANNEL = 'C0AGVSUNEFP';
@@ -1284,7 +1290,6 @@ async function runNoonSummary() {
 
     const isThursday = dayOfWeek === 4;
 
-    // Compute calendar days equivalent of N working days from today
     const addWorkingDays = (n) => {
       let d = dayjs().startOf('day');
       let added = 0;
@@ -1295,15 +1300,14 @@ async function runNoonSummary() {
       return d.diff(dayjs().startOf('day'), 'day');
     };
 
-    const wd1CalDays = addWorkingDays(1); // 1 on Mon–Thu, 3 on Fri
-    const wd3CalDays = addWorkingDays(3); // varies by day
+    const wd1CalDays = addWorkingDays(1);
+    const wd3CalDays = addWorkingDays(3);
 
     console.log(`[runNoonSummary] wd1=${wd1CalDays} cal days, wd3=${wd3CalDays} cal days, isThursday=${isThursday}`);
 
     const active = prepared.filter(a => a.status === 'Active' && a.daysLeft !== null);
     console.log(`[runNoonSummary] active assets with daysLeft: ${active.length}`);
 
-    // Log ALL daysLeft values for debugging
     const allDaysLeft = active.map(a => `${a.name}=${a.daysLeft}`).join(', ');
     console.log(`[runNoonSummary] all active daysLeft: ${allDaysLeft}`);
 
@@ -1321,7 +1325,6 @@ async function runNoonSummary() {
         key: 'noon_1'
       },
       {
-        // Thursday: also capture Sat (daysLeft=2) and Sun (daysLeft=3)
         assets: active.filter(a => {
           if (isThursday) return a.daysLeft === 2 || a.daysLeft === 3;
           return a.daysLeft === wd3CalDays;
@@ -1341,7 +1344,6 @@ async function runNoonSummary() {
     const totalExpiring = groups.reduce((sum, g) => sum + g.assets.length, 0);
     console.log(`[runNoonSummary] totalExpiring: ${totalExpiring}`);
 
-    // Always build and send a message — even when nothing is expiring
     const blocks = [
       {
         type: 'header',
@@ -1370,7 +1372,6 @@ async function runNoonSummary() {
         if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
         const summaryText = `${icon}  ${parts.join(' and ')} expire${gAssets.length === 1 ? 's' : ''} *${label}*`;
 
-        // Thread detail grouped by client
         const byClient = {};
         for (const a of gAssets) {
           const c = a.client || 'No Client';
@@ -1421,7 +1422,23 @@ async function runNoonSummary() {
 
   } catch (error) {
     console.error('❌ Error sending noon summary:', error);
-    // Log full Slack API error details if available
+    if (error.data) console.error('Slack error data:', JSON.stringify(error.data));
+  }
+}
+
+/* -------------------- 5:15 PM IST Simple Reminder -------------------- */
+async function runSimpleReminder() {
+  try {
+    const CHANNEL = 'C0AGVSUNEFP';
+    console.log('[runSimpleReminder] Sending 5:15 PM reminder...');
+    await app.client.chat.postMessage({
+      token: process.env.SLACK_BOT_TOKEN,
+      channel: CHANNEL,
+      text: `🔔 Reminder: Please review and renew any expiring domains or inboxes → https://infra-bot.onrender.com/`
+    });
+    console.log('✅ Simple reminder sent');
+  } catch (error) {
+    console.error('❌ Error sending simple reminder:', error);
     if (error.data) console.error('Slack error data:', JSON.stringify(error.data));
   }
 }
@@ -1443,7 +1460,7 @@ async function start() {
       console.log(`✅ Upload UI running at http://localhost:${PORT}`);
     });
 
-    // Schedule daily summary at 4:00 PM IST, Mon–Fri only
+    // Schedule daily structured summary at 4:00 PM IST, Mon–Fri only
     cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Daily summary firing at ${now}`);
@@ -1452,10 +1469,18 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
-    // Log server time on startup so timezone issues are immediately visible
+    // Simple one-line reminder at 5:15 PM IST, Mon–Fri only
+    cron.schedule('15 17 * * 1-5', async () => {
+      const now = new Date().toISOString();
+      console.log(`[CRON] Simple reminder firing at ${now}`);
+      await runSimpleReminder();
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     const nowUtc = new Date().toISOString();
     const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    console.log(`✅ 4:00 PM IST daily summary scheduled (server UTC: ${nowUtc} | IST: ${nowIst})`);
+    console.log(`✅ Crons scheduled — 4:00 PM IST summary + 5:15 PM IST reminder (server UTC: ${nowUtc} | IST: ${nowIst})`);
 
   } catch (error) {
     console.error('❌ Error during startup:', error);
