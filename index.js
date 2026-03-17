@@ -1469,8 +1469,8 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
-    // Simple one-line reminder at 11:30 PM IST, Mon–Fri only
-    cron.schedule('0 6 * * 1-5', async () => {
+    // Simple one-line reminder at 10:00 AM IST, Mon–Fri only
+    cron.schedule('0 10 * * 1-5', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Simple reminder firing at ${now}`);
       await runSimpleReminder();
@@ -1480,7 +1480,7 @@ async function start() {
 
     const nowUtc = new Date().toISOString();
     const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    console.log(`✅ Crons scheduled — 4:00 PM IST summary + 5:15 PM IST reminder (server UTC: ${nowUtc} | IST: ${nowIst})`);
+    console.log(`✅ Crons scheduled — 4:00 PM IST summary + 10:00 AM IST reminder (server UTC: ${nowUtc} | IST: ${nowIst})`);
 
   } catch (error) {
     console.error('❌ Error during startup:', error);
