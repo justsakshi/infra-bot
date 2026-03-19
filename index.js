@@ -1487,6 +1487,18 @@ async function start() {
     process.exit(1);
   }
 }
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ [process] Unhandled Promise Rejection:', reason);
+  // Optional: keep the process alive. If you prefer to restart on errors, uncomment:
+  // process.exit(1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('❌ [process] Uncaught Exception:', err);
+  // Optional: exit so the platform (Render) restarts cleanly:
+  // process.exit(1);
+});
 start();
 
 process.on('SIGINT', async () => {
