@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r smartlead_sync/requirements.txt
 
 # Node.js dependencies
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Copy application code
 COPY . .
