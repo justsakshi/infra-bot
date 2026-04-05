@@ -29,3 +29,5 @@ lib-cov
 coverage
 *.seed
 *.log
+__pycache__/
+*.pyc
