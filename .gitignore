@@ -11,6 +11,7 @@ npm-debug.log*
 
 # Google Credentials
 service-account.json
+service_account.json
 credentials-env.txt
 
 # IDEs and Editors

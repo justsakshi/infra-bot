@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const { App } = require('@slack/bolt');
 const cron = require('node-cron');
 const dayjs = require('dayjs');
+const { spawn } = require('child_process');
 const customParseFormat = require('dayjs/plugin/customParseFormat');
 const express = require('express');
 const multer = require('multer');
@@ -1449,9 +1450,13 @@ async function start() {
     await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ MongoDB connected');
 
-    const allAssets = await Asset.find();
-    await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-    console.log('✅ Google Sheets synced on startup');
+    try {
+      const allAssets = await Asset.find();
+      await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
+      console.log('✅ Google Sheets synced on startup');
+    } catch (sheetsErr) {
+      console.warn('⚠️  Google Sheets sync skipped on startup:', sheetsErr.message);
+    }
 
     await app.start();
     console.log('✅ Slack bot running in socket mode');
@@ -1469,6 +1474,22 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Smartlead dashboard sync at 10:00 AM IST, every day
+    cron.schedule('0 10 * * *', () => {
+      const now = new Date().toISOString();
+      console.log(`[CRON] Smartlead sync firing at ${now}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['run.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[smartlead] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[smartlead] ${d}`));
+      proc.on('close', code => console.log(`[smartlead] sync finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();
@@ -1480,7 +1501,7 @@ async function start() {
 
     const nowUtc = new Date().toISOString();
     const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    console.log(`✅ Crons scheduled — 10:00 AM IST summary + 4:00 PM IST reminder (server UTC: ${nowUtc} | IST: ${nowIst})`);
+    console.log(`✅ Crons scheduled — 10:00 AM IST Smartlead sync + 10:00 AM IST summary (Mon–Fri) + 4:00 PM IST reminder (Mon–Fri) (server UTC: ${nowUtc} | IST: ${nowIst})`);
 
   } catch (error) {
     console.error('❌ Error during startup:', error);
