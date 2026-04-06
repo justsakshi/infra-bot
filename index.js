@@ -1,4 +1,8 @@
 require('dotenv').config();
+
+process.on('unhandledRejection', (reason) => {
+  console.warn('[WARN] Unhandled rejection (process kept alive):', reason?.message || reason);
+});
 const mongoose = require('mongoose');
 const { App } = require('@slack/bolt');
 const cron = require('node-cron');
