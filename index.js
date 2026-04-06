@@ -1394,6 +1394,12 @@ async function runNoonSummary() {
           }
         }
 
+        // Slack button `value` must be < 2001 chars after JSON.stringify
+        // JSON wrapper overhead ~37 chars; cap raw detail at 1900 to stay well under limit
+        let detailStr = detail.trim();
+        if (detailStr.length > 1900) {
+          detailStr = detailStr.slice(0, 1900) + '\n…(list truncated)';
+        }
         blocks.push({
           type: 'section',
           text: { type: 'mrkdwn', text: summaryText },
@@ -1401,7 +1407,7 @@ async function runNoonSummary() {
             type: 'button',
             text: { type: 'plain_text', text: 'Read more' },
             action_id: `view_details_${key}`,
-            value: JSON.stringify({ detail: detail.trim(), channel: CHANNEL })
+            value: JSON.stringify({ detail: detailStr, channel: CHANNEL })
           }
         });
         blocks.push({ type: 'divider' });
@@ -1470,7 +1476,7 @@ async function start() {
     });
 
     // Schedule daily structured summary at 10:00 AM IST, Mon–Fri only
-    cron.schedule('30 13 * * *', async () => {
+    cron.schedule('0 10 * * 1-5', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Daily summary firing at ${now}`);
       await runNoonSummary();
