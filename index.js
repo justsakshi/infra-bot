@@ -1466,7 +1466,7 @@ async function start() {
     });
 
     // Schedule daily structured summary at 10:00 AM IST, Mon–Fri only
-    cron.schedule('30 11 * * *', async () => {
+    cron.schedule('30 12 * * *', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Daily summary firing at ${now}`);
       await runNoonSummary();
