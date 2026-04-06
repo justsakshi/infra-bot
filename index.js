@@ -961,10 +961,46 @@ app.action(/^view_details_/, async ({ ack, body, client }) => {
   await ack();
   try {
     const payload = JSON.parse(body.actions[0].value);
+
+    let detailText;
+
+    if (payload.daysFilter) {
+      // Noon summary format: re-compute full list from DB on click (no size limit)
+      const assets = await Asset.find();
+      const prepared = prepareAssetsForSheet(assets);
+      const active = prepared.filter(a => a.status === 'Active' && a.daysLeft !== null);
+      const gAssets = active.filter(a => payload.daysFilter.includes(a.daysLeft));
+
+      const domains = gAssets.filter(a => a.type === 'DOMAIN');
+      const inboxes = gAssets.filter(a => a.type === 'INBOX');
+
+      const byClient = {};
+      for (const a of gAssets) {
+        const c = a.client || 'No Client';
+        if (!byClient[c]) byClient[c] = [];
+        byClient[c].push(a);
+      }
+
+      let detail = `*Expiring ${payload.label}*\n`;
+      detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
+      for (const [c, items] of Object.entries(byClient)) {
+        detail += `*${c}*\n`;
+        for (const a of items) {
+          const providerPart = a.provider ? ` · ${a.provider}` : '';
+          const typeIcon = a.type === 'DOMAIN' ? '🌐' : '📧';
+          detail += `  ${typeIcon} ${a.name}${providerPart}\n`;
+        }
+      }
+      detailText = detail.trim();
+    } else {
+      // Legacy / per-owner alerts: detail was pre-serialized in the button value
+      detailText = payload.detail;
+    }
+
     await client.chat.postMessage({
       channel: payload.channel,
       thread_ts: body.message.ts,
-      text: payload.detail,
+      text: detailText,
       mrkdwn: true
     });
   } catch (e) {
@@ -1321,13 +1357,15 @@ async function runNoonSummary() {
         assets: active.filter(a => a.daysLeft === 0),
         label: 'Today',
         icon: '🔴',
-        key: 'noon_0'
+        key: 'noon_0',
+        daysFilter: [0]
       },
       {
         assets: active.filter(a => a.daysLeft === wd1CalDays),
         label: `Tomorrow (${dayjs().add(wd1CalDays, 'day').format('ddd DD MMM')})`,
         icon: '🟠',
-        key: 'noon_1'
+        key: 'noon_1',
+        daysFilter: [wd1CalDays]
       },
       {
         assets: active.filter(a => {
@@ -1338,7 +1376,8 @@ async function runNoonSummary() {
           ? `This weekend & Monday (${dayjs().add(3, 'day').format('ddd DD MMM')})`
           : `In ${wd3CalDays} days (${dayjs().add(wd3CalDays, 'day').format('ddd DD MMM')})`,
         icon: '🟡',
-        key: 'noon_3'
+        key: 'noon_3',
+        daysFilter: isThursday ? [2, 3] : [wd3CalDays]
       }
     ];
 
@@ -1366,7 +1405,7 @@ async function runNoonSummary() {
       });
     } else {
       for (const g of groups) {
-        const { label, icon, key, assets: gAssets } = g;
+        const { label, icon, key, daysFilter, assets: gAssets } = g;
         if (gAssets.length === 0) continue;
 
         const domains = gAssets.filter(a => a.type === 'DOMAIN');
@@ -1394,12 +1433,6 @@ async function runNoonSummary() {
           }
         }
 
-        // Slack button `value` must be < 2001 chars after JSON.stringify
-        // JSON wrapper overhead ~37 chars; cap raw detail at 1900 to stay well under limit
-        let detailStr = detail.trim();
-        if (detailStr.length > 1900) {
-          detailStr = detailStr.slice(0, 1900) + '\n…(list truncated)';
-        }
         blocks.push({
           type: 'section',
           text: { type: 'mrkdwn', text: summaryText },
@@ -1407,7 +1440,9 @@ async function runNoonSummary() {
             type: 'button',
             text: { type: 'plain_text', text: 'Read more' },
             action_id: `view_details_${key}`,
-            value: JSON.stringify({ detail: detailStr, channel: CHANNEL })
+            // Store only a compact lookup key — detail is re-fetched from DB on click
+            // to avoid Slack's 2001-char button value limit
+            value: JSON.stringify({ key, channel: CHANNEL, daysFilter, label })
           }
         });
         blocks.push({ type: 'divider' });
