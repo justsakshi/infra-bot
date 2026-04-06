@@ -448,6 +448,24 @@ expressApp.get('/trigger-summary', async (req, res) => {
   }
 });
 
+// Manual trigger for Smartlead sync
+expressApp.get('/trigger-smartlead', (req, res) => {
+  try {
+    console.log('Manual trigger: Smartlead sync');
+    const syncDir = path.join(__dirname, 'smartlead_sync');
+    const proc = spawn('python', ['run.py'], {
+      cwd: syncDir,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+    proc.stdout.on('data', d => process.stdout.write(`[smartlead] ${d}`));
+    proc.stderr.on('data', d => process.stderr.write(`[smartlead] ${d}`));
+    proc.on('close', code => console.log(`[smartlead] manual sync finished with code ${code}`));
+    res.json({ ok: true, message: 'Smartlead sync started (check server logs for progress)' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Manual trigger for the simple 5:15 PM reminder (for testing)
 expressApp.get('/trigger-reminder', async (req, res) => {
   try {
@@ -1239,7 +1257,7 @@ async function runDailySummary() {
         type: 'context',
         elements: [{
           type: 'mrkdwn',
-          text: `🔗 <https://infra-bot.onrender.com/|View full dashboard> to renew or manage assets`
+          text: `🔗 <https://infra-bot-1.onrender.com/|View full dashboard> to renew or manage assets`
         }]
       });
 
@@ -1300,7 +1318,7 @@ async function runDailySummary() {
           type: 'context',
           elements: [{
             type: 'mrkdwn',
-            text: `🔗 <https://infra-bot.onrender.com/|View full dashboard> to manage these assets`
+            text: `🔗 <https://infra-bot-1.onrender.com/|View full dashboard> to manage these assets`
           }]
         }
       ];
@@ -1453,7 +1471,7 @@ async function runNoonSummary() {
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `🔗 <https://infra-bot.onrender.com/|Open dashboard> to renew or manage assets`
+        text: `🔗 <https://infra-bot-1.onrender.com/|Open dashboard> to renew or manage assets`
       }]
     });
 
@@ -1480,7 +1498,7 @@ async function runSimpleReminder() {
     await app.client.chat.postMessage({
       token: process.env.SLACK_BOT_TOKEN,
       channel: CHANNEL,
-      text: `🔔 Reminder: Please review and renew any expiring domains or inboxes → https://infra-bot.onrender.com/`
+      text: `🔔 Reminder: Please review and renew any expiring domains or inboxes → https://infra-bot-1.onrender.com/`
     });
     console.log('✅ Simple reminder sent');
   } catch (error) {
