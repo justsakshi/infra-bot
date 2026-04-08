@@ -92,6 +92,13 @@ AssetSchema.pre('save', function (next) {
 
 const Asset = mongoose.model('Asset', AssetSchema);
 
+/* -------------------- CronLock Schema -------------------- */
+const CronLockSchema = new mongoose.Schema({
+  jobName: { type: String, required: true, unique: true },
+  createdAt: { type: Date, expires: '2h', default: Date.now }
+});
+const CronLock = mongoose.model('CronLock', CronLockSchema);
+
 /* -------------------- Helper Functions -------------------- */
 
 function parseDate(dateString) {
@@ -1340,6 +1347,17 @@ async function runDailySummary() {
 /* -------------------- 4:00 PM IST Summary (Structured) -------------------- */
 async function runNoonSummary() {
   try {
+    const todayStr = dayjs().format('YYYY-MM-DD');
+    try {
+      await CronLock.create({ jobName: `noonSummary-${todayStr}` });
+    } catch (e) {
+      if (e.code === 11000) {
+        console.log('[runNoonSummary] Lock already acquired by another instance. Skipping.');
+        return;
+      }
+      throw e;
+    }
+
     const CHANNEL = 'C0AGVSUNEFP';
     const assets = await Asset.find();
     const prepared = prepareAssetsForSheet(assets);
@@ -1467,11 +1485,13 @@ async function runNoonSummary() {
       }
     }
 
+    const baseUrl = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : 'https://infra-bot-1.onrender.com';
+
     blocks.push({
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `🔗 <https://infra-bot-1.onrender.com/|Open dashboard> to renew or manage assets`
+        text: `🔗 <${baseUrl}/|Open dashboard> to renew or manage assets`
       }]
     });
 
@@ -1493,12 +1513,24 @@ async function runNoonSummary() {
 /* -------------------- 5:15 PM IST Simple Reminder -------------------- */
 async function runSimpleReminder() {
   try {
+    const todayStr = dayjs().format('YYYY-MM-DD');
+    try {
+      await CronLock.create({ jobName: `simpleReminder-${todayStr}` });
+    } catch (e) {
+      if (e.code === 11000) {
+        console.log('[runSimpleReminder] Lock already acquired by another instance. Skipping.');
+        return;
+      }
+      throw e;
+    }
+
     const CHANNEL = 'C0AGVSUNEFP';
+    const baseUrl = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : 'https://infra-bot-1.onrender.com';
     console.log('[runSimpleReminder] Sending 5:15 PM reminder...');
     await app.client.chat.postMessage({
       token: process.env.SLACK_BOT_TOKEN,
       channel: CHANNEL,
-      text: `🔔 Reminder: Please review and renew any expiring domains or inboxes → https://infra-bot-1.onrender.com/`
+      text: `🔔 Reminder: Please review and renew any expiring domains or inboxes → ${baseUrl}/`
     });
     console.log('✅ Simple reminder sent');
   } catch (error) {
@@ -1538,9 +1570,18 @@ async function start() {
     });
 
     // Smartlead dashboard sync at 10:00 AM IST, every day
-    cron.schedule('0 10 * * *', () => {
+    cron.schedule('0 10 * * *', async () => {
       const now = new Date().toISOString();
       console.log(`[CRON] Smartlead sync firing at ${now}`);
+      const todayStr = dayjs().format('YYYY-MM-DD');
+      try {
+        await CronLock.create({ jobName: `smartleadSync-${todayStr}` });
+      } catch (e) {
+        if (e.code === 11000) {
+          console.log('[CRON] Smartlead sync lock already acquired. Skipping.');
+          return;
+        }
+      }
       const syncDir = path.join(__dirname, 'smartlead_sync');
       const proc = spawn('python', ['run.py'], {
         cwd: syncDir,
