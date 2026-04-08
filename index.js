@@ -1556,8 +1556,8 @@ async function start() {
     await app.start();
     console.log('✅ Slack bot running in socket mode');
 
-    expressApp.listen(PORT, () => {
-      console.log(`✅ Upload UI running at http://localhost:${PORT}`);
+    expressApp.listen(PORT, '0.0.0.0', () => {
+      console.log(`✅ Upload UI running at http://0.0.0.0:${PORT}`);
     });
 
     // Schedule daily structured summary at 10:00 AM IST, Mon–Fri only
