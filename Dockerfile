@@ -19,4 +19,6 @@ RUN npm install --omit=dev
 # Copy application code
 COPY . .
 
+EXPOSE 10000
+
 CMD ["node", "index.js"]

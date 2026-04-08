@@ -45,7 +45,7 @@ function resolveOwner(value) {
   return OWNER_MAP[trimmed.toLowerCase()] || null;
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 /* -------------------- MongoDB -------------------- */
 mongoose.set('bufferCommands', false);
