@@ -152,6 +152,14 @@ function parseCurrency(value) {
   return v.toUpperCase();
 }
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildNameQuery(name) {
+  return { name: { $regex: new RegExp(`^${escapeRegex(name.trim())}$`, 'i') } };
+}
+
 function getWorkingDayTargets() {
   const today = dayjs().startOf('day');
   const dayOfWeek = today.day();
@@ -362,7 +370,7 @@ expressApp.put('/api/assets/:name', async (req, res) => {
 expressApp.delete('/api/assets/:name', async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
-    const result = await Asset.deleteOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
+    const result = await Asset.deleteOne(buildNameQuery(name));
     if (result.deletedCount === 0) return res.status(404).json({ ok: false, error: 'Not found' });
     const allAssets = await Asset.find();
     await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
@@ -375,7 +383,7 @@ expressApp.delete('/api/assets/:name', async (req, res) => {
 expressApp.post('/api/assets/:name/renew', async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
-    const existing = await Asset.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
+    const existing = await Asset.findOne(buildNameQuery(name));
     if (!existing) return res.status(404).json({ ok: false, error: 'Not found' });
 
     const today = dayjs().startOf('day');
@@ -933,7 +941,7 @@ app.message(async ({ message, client }) => {
       for (const name of names) {
         let result = await Asset.deleteOne({ name });
         if (result.deletedCount === 0) {
-          result = await Asset.deleteOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
+          result = await Asset.deleteOne(buildNameQuery(name));
         }
         if (result.deletedCount > 0) deleted++;
         else notFound++;
@@ -949,7 +957,7 @@ app.message(async ({ message, client }) => {
       let renewed = 0, notFound = 0;
       const today = dayjs().startOf('day');
       for (const name of names) {
-        const existing = await Asset.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
+        const existing = await Asset.findOne(buildNameQuery(name));
         if (!existing) { notFound++; continue; }
 
         let newExpiryDate = null;
