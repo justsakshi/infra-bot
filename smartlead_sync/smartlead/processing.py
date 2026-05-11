@@ -333,7 +333,12 @@ def _build_inbox_row(
     load_info: dict,
     deliverability_map: dict[str, str],
 ) -> dict:
+    email_key = email.strip().lower()
     domain = get_domain_from_email(email)
+    test_status = deliverability_map.get(email_key)
+    if not test_status or test_status == "Unknown":
+        test_status = deliverability_map.get(domain, "Unknown")
+
     return {
         "email": email,
         "name": account.get("from_name", ""),
@@ -348,7 +353,7 @@ def _build_inbox_row(
         "true_load": 0.0,            # filled in process_inbox_availability
         "available_capacity": 0.0,   # filled in process_inbox_availability
         "warmup_rep_pct": "TBD",
-        "test_sheet_status": deliverability_map.get(domain, "Unknown"),
+        "test_sheet_status": test_status,
         "availability": "TBD",
         "account_id": str(account.get("id", "")),
     }

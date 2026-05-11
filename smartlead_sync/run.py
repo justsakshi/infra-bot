@@ -118,7 +118,7 @@ async def main() -> None:
     # Supports multiple tabs per account — maps are merged together
     account_tabs_map: dict[str, list[str]] = {
         "Belardi Wong": ["Belardiwong"],
-        "PRECISE_LEADS": ["Melior", "Avench"],
+        "PRECISE_LEADS": ["Melior", "Precise Leads", "Avench", "OSC"],
         "DARLEAN": ["Darlean new"],
     }
 
