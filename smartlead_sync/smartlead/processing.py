@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone, timedelta
 from smartlead.api import SmartleadClient
 from smartlead.config import MIN_WARMUP_REP_PCT, ACTIVE_STATUSES, MAX_INBOX_LIMIT
@@ -71,6 +70,53 @@ def format_daily_limit(account: dict) -> str:
     return f"{sent} / {limit}"
 
 
+def _classify_warmup_state(warmup_details: dict, rep_val: float) -> str:
+    """Return one of: blocked / off / warming / ramped."""
+    from smartlead.config import WARMUP_RAMP_DAYS
+    if not isinstance(warmup_details, dict):
+        return "off"
+    if warmup_details.get("is_warmup_blocked"):
+        return "blocked"
+    if warmup_details.get("status") != "ACTIVE":
+        return "off"
+    created = warmup_details.get("created_at", "")
+    age_days = None
+    try:
+        created_dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - created_dt).days
+    except (ValueError, TypeError):
+        age_days = None
+    if age_days is None or age_days < WARMUP_RAMP_DAYS or rep_val < 90:
+        return "warming"
+    return "ramped"
+
+
+def _latest_active_date(stats: object, fallback_updated_at: str) -> str:
+    """Latest YYYY-MM-DD with sent_count>0 in warmup stats; else updated_at date."""
+    latest = ""
+    rows = []
+    if isinstance(stats, dict):
+        rows = stats.get("stats_by_date", []) or []
+    elif isinstance(stats, list):
+        for s in stats:
+            if isinstance(s, dict):
+                if s.get("stats_by_date"):
+                    rows.extend(s.get("stats_by_date") or [])
+                elif "date" in s:
+                    rows.append(s)
+    for r in rows:
+        try:
+            if int(r.get("sent_count", 0)) > 0:
+                d = str(r.get("date", ""))[:10]
+                if d > latest:
+                    latest = d
+        except (ValueError, TypeError):
+            continue
+    if latest:
+        return latest
+    return str(fallback_updated_at)[:10] if fallback_updated_at else ""
+
+
 # ── Core data-fetch orchestration ────────────────────────────────────────────
 
 async def fetch_account_data(
@@ -130,18 +176,8 @@ async def fetch_account_data(
     detail_campaigns: list[dict] = []
     if detail_campaign_summaries:
         print(f"  [{name}] Fetching details for {len(detail_campaign_summaries)} campaigns...")
-        # Note: We can add a fetch_all_campaign_details helper to SmartleadClient later if needed, 
-        # but for now we'll do it in chunks here like accounts.
-        from smartlead.config import API_CHUNK_SIZE, API_CHUNK_DELAY
-        for i in range(0, len(detail_campaign_summaries), API_CHUNK_SIZE):
-            chunk = detail_campaign_summaries[i : i + API_CHUNK_SIZE]
-            tasks = [client._get(f"/campaigns/{str(c['id'])}") for c in chunk]
-            res = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in res:
-                if not isinstance(r, Exception):
-                    detail_campaigns.append(r)
-            if i + API_CHUNK_SIZE < len(detail_campaign_summaries):
-                await asyncio.sleep(API_CHUNK_DELAY)
+        detail_ids = [str(c["id"]) for c in detail_campaign_summaries if c.get("id") is not None]
+        detail_campaigns = await client.fetch_all_campaign_details(detail_ids)
 
     # 3. All email-account details (bulk)
     try:
@@ -154,15 +190,16 @@ async def fetch_account_data(
 
     account_map: dict[str, dict] = {str(a["id"]): a for a in all_accounts}
 
-    # 3. Map campaign -> email-account ids (only for campaigns we drill into)
-    campaign_to_inboxes: dict[str, list[str]] = {}
-    for campaign in detail_campaigns:
-        c_id = str(campaign.get("id", ""))
-        try:
-            accs = await client.get_campaign_email_accounts(c_id)
-            campaign_to_inboxes[c_id] = [str(a.get("id")) for a in accs]
-        except Exception:
-            campaign_to_inboxes[c_id] = []
+    # 3. Map campaign -> email-accounts (fetched once, reused for inbox rows below)
+    detail_ids = [str(c.get("id", "")) for c in detail_campaigns if c.get("id") is not None]
+    campaign_accounts_map = await client.fetch_campaign_accounts_map(detail_ids)
+    campaign_to_inboxes: dict[str, list[str]] = {
+        c_id: [str(a.get("id")) for a in accs]
+        for c_id, accs in campaign_accounts_map.items()
+    }
+
+    # 3b. Analytics for every detail campaign (fetched once, concurrently)
+    analytics_map = await client.fetch_campaign_analytics_map(detail_ids)
 
     # 4a. Build FULL campaign summary (all campaigns - active get analytics, inactive get basic info)
     campaign_summary: list[dict] = []
@@ -183,12 +220,8 @@ async def fetch_account_data(
             campaign_summary.append(_basic_campaign_row(campaign))
             continue
 
-        # Analytics
-        analytics = {}
-        try:
-            analytics = await client.get_campaign_analytics(c_id)
-        except Exception as exc:
-            print(f"  [!] Analytics for '{c_name}': {exc}")
+        # Analytics (pre-fetched concurrently above)
+        analytics = analytics_map.get(c_id, {})
 
         sent = int(analytics.get("sent_count", 0))
         opened = int(analytics.get("open_count", 0)) or int(analytics.get("unique_open_count", 0))
@@ -235,23 +268,19 @@ async def fetch_account_data(
             "true_load": true_load,
         }
 
-        # Inbox rows for this campaign
-        try:
-            accs = await client.get_campaign_email_accounts(c_id)
-            for acc_info in accs:
-                acc_id = str(acc_info.get("id"))
-                full = account_map.get(acc_id, acc_info)
-                email = full.get("from_email", "")
-                stats = campaign_load_stats.get(c_id, {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0})
+        # Inbox rows for this campaign (accounts pre-fetched into campaign_accounts_map)
+        for acc_info in campaign_accounts_map.get(c_id, []):
+            acc_id = str(acc_info.get("id"))
+            full = account_map.get(acc_id, acc_info)
+            email = full.get("from_email", "")
+            stats = campaign_load_stats.get(c_id, {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0})
 
-                # Aggregate true load per unique mailbox across all campaigns
-                inbox_aggregate_load[email] = inbox_aggregate_load.get(email, 0.0) + stats["true_load"]
+            # Aggregate true load per unique mailbox across all campaigns
+            inbox_aggregate_load[email] = inbox_aggregate_load.get(email, 0.0) + stats["true_load"]
 
-                inbox_data.append(_build_inbox_row(
-                    full, email, c_name, c_status, stats, deliverability_map,
-                ))
-        except Exception as exc:
-            print(f"  [!] Accounts for '{c_name}': {exc}")
+            inbox_data.append(_build_inbox_row(
+                full, email, c_name, c_status, stats, deliverability_map, client=name,
+            ))
 
     # 4b. Inactive campaigns: basic summary row only (no API calls for analytics/inboxes)
     if active_only:
@@ -273,6 +302,7 @@ async def fetch_account_data(
             acc, email, "N/A (No active campaign)", "N/A",
             {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0},
             deliverability_map,
+            client=name,
         ))
         seen_emails.add(email)
         orphan_count += 1
@@ -292,14 +322,18 @@ async def fetch_account_data(
 
 def process_inbox_availability(
     inbox_data: list[dict],
-    warmup_rep_map: dict[str, str],
+    warmup_rep_map: dict[str, dict],
     inbox_aggregate_load: dict[str, float],
 ) -> None:
     """Mutate *inbox_data* in-place: fill reputation, total load, and availability."""
     for item in inbox_data:
         email = item.get("email", "")
-        rep_str = warmup_rep_map.get(email, "N/A")
+        info = warmup_rep_map.get(email, {})
+        rep_str = info.get("rep", "N/A") if isinstance(info, dict) else "N/A"
         item["warmup_rep_pct"] = rep_str
+        item["warmup_state"] = info.get("warmup_state", "off") if isinstance(info, dict) else "off"
+        item["warmup_max_count"] = info.get("warmup_max_count", 0) if isinstance(info, dict) else 0
+        item["last_active_date"] = info.get("last_active_date", "") if isinstance(info, dict) else ""
 
         # Aggregate True Load and Capacity (using inbox's actual daily limit)
         total_true_load = round(inbox_aggregate_load.get(email, 0.0), 1)
@@ -311,19 +345,47 @@ def process_inbox_availability(
 
         try:
             rep_val = float(rep_str.replace("%", "")) if "%" in rep_str else 0
-            test = item.get("test_sheet_status", "")
-
-            # Aravind/Anjali Selection Rule:
-            # FREE if (Capacity > 0) AND (Rep >= 90%) AND (Test Status == "inbox")
-            item["availability"] = (
-                "FREE" if capacity > 0 and rep_val >= MIN_WARMUP_REP_PCT and test == "inbox"
-                else "BUSY"
-            )
         except (ValueError, TypeError):
-            item["availability"] = "BUSY"
+            rep_val = 0
+        test = item.get("test_sheet_status", "")
+
+        # Selection rule: an inbox is FREE (connectable) only if EVERY check passes.
+        # busy_reason lists every failed check so the downstream tool / a human
+        # knows exactly why an inbox is excluded.
+        reasons: list[str] = []
+        if not item.get("connection_ok"):
+            reasons.append("disconnected")
+        if item.get("warmup_state") == "blocked":
+            reasons.append("warmup_blocked")
+        if capacity <= 0:
+            reasons.append("no_capacity")
+        if rep_val < MIN_WARMUP_REP_PCT:
+            reasons.append("low_rep")
+        if test == "stale":
+            reasons.append("stale_test")
+        elif test in ("fail", "spam"):
+            reasons.append("failed_test")
+        elif test != "inbox":
+            reasons.append("untested")  # Unknown / blank
+
+        item["availability"] = "FREE" if not reasons else "BUSY"
+        item["busy_reason"] = "" if not reasons else ",".join(reasons)
 
 
 # ── Private helpers ──────────────────────────────────────────────────────────
+
+def _apply_staleness(status: str, date_str: str) -> str:
+    """Return 'stale' if a passing test is older than TEST_STALE_DAYS, else status."""
+    from smartlead.config import TEST_STALE_DAYS
+    if status == "inbox" and date_str:
+        try:
+            d = datetime.fromisoformat(date_str)
+            if (datetime.now() - d).days > TEST_STALE_DAYS:
+                return "stale"
+        except (ValueError, TypeError):
+            pass
+    return status
+
 
 def _build_inbox_row(
     account: dict,
@@ -331,13 +393,25 @@ def _build_inbox_row(
     campaign_name: str,
     campaign_status: str,
     load_info: dict,
-    deliverability_map: dict[str, str],
+    deliverability_map: dict[str, dict],
+    client: str = "",
 ) -> dict:
     email_key = email.strip().lower()
     domain = get_domain_from_email(email)
-    test_status = deliverability_map.get(email_key)
-    if not test_status or test_status == "Unknown":
-        test_status = deliverability_map.get(domain, "Unknown")
+    entry = deliverability_map.get(domain) or deliverability_map.get(email_key) or {}
+    if not isinstance(entry, dict):
+        entry = {}
+    raw_status = entry.get("status", "Unknown") or "Unknown"
+    test_date = entry.get("date", "")
+    test_status = _apply_staleness(raw_status, test_date)
+
+    max_per_day = int(account.get("message_per_day", 0) or 0)
+    sent_today = int(account.get("daily_sent_count", 0) or 0)
+    capacity_left = max(0, max_per_day - sent_today)
+    connection_ok = bool(
+        account.get("is_smtp_success") and account.get("is_imap_success")
+        and not account.get("is_suspended")
+    )
 
     return {
         "email": email,
@@ -354,18 +428,35 @@ def _build_inbox_row(
         "available_capacity": 0.0,   # filled in process_inbox_availability
         "warmup_rep_pct": "TBD",
         "test_sheet_status": test_status,
+        "test_date": test_date,
         "availability": "TBD",
+        "busy_reason": "",           # filled in process_inbox_availability
         "account_id": str(account.get("id", "")),
+        "client": client,
+        "connection_ok": connection_ok,
+        "max_per_day": max_per_day,
+        "sent_today": sent_today,
+        "capacity_left": capacity_left,
+        "warmup_state": "off",          # filled in process_inbox_availability
+        "last_active_date": "",         # filled in process_inbox_availability
+        "warmup_max_count": 0,          # filled in process_inbox_availability
     }
 
 
 async def _build_warmup_data(
     client: SmartleadClient,
     all_accounts: list[dict],
-) -> tuple[list[dict], dict[str, str]]:
-    """Build warmup-reputation rows and a ``{email: rep_str}`` map."""
+) -> tuple[list[dict], dict[str, dict]]:
+    """Build warmup-reputation rows and a ``{email: dict}`` map."""
     warmup_data: list[dict] = []
-    rep_map: dict[str, str] = {}
+    rep_map: dict[str, dict] = {}
+
+    # Pre-fetch warmup stats for every account concurrently (instead of serially)
+    account_ids = [
+        str(a["id"]) for a in all_accounts
+        if isinstance(a, dict) and a.get("id") is not None
+    ]
+    stats_map = await client.fetch_all_warmup_stats(account_ids)
 
     for acc in all_accounts:
         if not isinstance(acc, dict):
@@ -378,6 +469,7 @@ async def _build_warmup_data(
         # (matches what the Smartlead UI shows)
         sl_rep = warmup_details.get("warmup_reputation")
         rep_str = f"{sl_rep}%" if sl_rep is not None else "N/A"
+        rep_val = float(sl_rep) if sl_rep is not None else 0.0
 
         entry: dict = {
             "email": email,
@@ -392,24 +484,26 @@ async def _build_warmup_data(
             "warmup_reputation": rep_str,
         }
 
-        try:
-            stats = await client.get_warmup_stats(str(acc_id))
-            if isinstance(stats, list) and stats:
-                entry["warmup_limit"] = stats[0].get("warmup_limit", entry["warmup_limit"])
-                total_sent = sum(int(d.get("sent_count", 0)) for d in stats)
-                total_inbox = sum(int(d.get("inbox_count", 0)) for d in stats)
-                total_spam = sum(int(d.get("spam_count", 0)) for d in stats)
-                entry.update(warmup_sent=total_sent, landed_inbox=total_inbox, landed_spam=total_spam)
-            elif isinstance(stats, dict):
-                entry["warmup_limit"] = stats.get("warmup_limit", entry["warmup_limit"])
-                total_sent = int(stats.get("sent_count", 0))
-                total_inbox = int(stats.get("inbox_count", 0))
-                total_spam = int(stats.get("spam_count", 0))
-                entry.update(warmup_sent=total_sent, landed_inbox=total_inbox, landed_spam=total_spam)
-        except Exception as exc:
-            print(f"  [!] Warmup stats for {email}: {exc}")
+        stats = stats_map.get(str(acc_id))
+        if isinstance(stats, list) and stats:
+            entry["warmup_limit"] = stats[0].get("warmup_limit", entry["warmup_limit"])
+            total_sent = sum(int(d.get("sent_count", 0)) for d in stats)
+            total_inbox = sum(int(d.get("inbox_count", 0)) for d in stats)
+            total_spam = sum(int(d.get("spam_count", 0)) for d in stats)
+            entry.update(warmup_sent=total_sent, landed_inbox=total_inbox, landed_spam=total_spam)
+        elif isinstance(stats, dict):
+            entry["warmup_limit"] = stats.get("warmup_limit", entry["warmup_limit"])
+            total_sent = int(stats.get("sent_count", 0))
+            total_inbox = int(stats.get("inbox_count", 0))
+            total_spam = int(stats.get("spam_count", 0))
+            entry.update(warmup_sent=total_sent, landed_inbox=total_inbox, landed_spam=total_spam)
 
-        rep_map[email] = entry["warmup_reputation"]
+        rep_map[email] = {
+            "rep": entry["warmup_reputation"],
+            "warmup_state": _classify_warmup_state(warmup_details, rep_val),
+            "warmup_max_count": warmup_details.get("warmup_max_count", 0),
+            "last_active_date": _latest_active_date(stats_map.get(str(acc_id)), acc.get("updated_at", "")),
+        }
         warmup_data.append(entry)
 
     return warmup_data, rep_map

@@ -11,12 +11,32 @@ import polars as pl
 from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
 
-from smartlead.config import SERVICE_ACCOUNT_FILE, TEST_SHEET_ID, TEST_TAB_NAME
+from smartlead.config import SERVICE_ACCOUNT_FILE, TEST_SHEET_ID, TEST_TAB_NAME, MASTER_TAB_NAME
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+
+def _parse_test_date(cell: str) -> str:
+    """Parse a test-date header cell to 'YYYY-MM-DD', else ''.
+
+    Handles formats like '15 Apr 2026', '07 May', '11 Jun' (year-less cells
+    assume the current year). Returns '' for non-date cells.
+    """
+    s = str(cell).strip()
+    if not s:
+        return ""
+    for fmt in ("%d %b %Y", "%d %B %Y", "%d %b", "%d %B"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            if dt.year == 1900:  # year-less format -> assume current year
+                dt = dt.replace(year=datetime.now().year)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return ""
 
 
 def _authorize() -> gspread.Client:
@@ -80,7 +100,9 @@ _HEADER_LABELS = {
         "available_capacity": "Avail. Capacity",
         "warmup_rep_pct": "Warmup Rep %",
         "test_sheet_status": "Test Status",
+        "test_date": "Test Date",
         "availability": "Availability",
+        "busy_reason": "Busy Reason",
         "account_id": "Account ID",
     },
     "Warmup Reputation": {
@@ -95,6 +117,28 @@ _HEADER_LABELS = {
         "landed_spam": "Landed Spam",
         "warmup_reputation": "Reputation %",
     },
+    "All Inboxes": {
+        "client": "Client",
+        "email": "Email",
+        "name": "Name",
+        "provider": "Provider",
+        "account_id": "Account ID",
+        "availability": "Availability",
+        "busy_reason": "Busy Reason",
+        "campaigns": "# Campaigns",
+        "connection_ok": "Connection OK",
+        "max_per_day": "Max/Day",
+        "sent_today": "Sent Today",
+        "capacity_left": "Capacity Left",
+        "true_load": "True Load",
+        "available_capacity": "Avail. Capacity",
+        "warmup_state": "Warmup State",
+        "warmup_rep_pct": "Warmup Rep %",
+        "warmup_max_count": "Warmup Max",
+        "last_active_date": "Last Active",
+        "test_sheet_status": "Test Status",
+        "test_date": "Test Date",
+    },
 }
 
 # Column widths (pixels) per tab - only specify overrides, rest get a default
@@ -102,6 +146,7 @@ _COL_WIDTHS = {
     "Campaign Summary": {"name": 260, "status": 110, "reach_pct": 90},
     "Inboxes":          {"email": 250, "campaign_name": 230, "daily_limit": 110, "availability": 110, "true_load": 90, "available_capacity": 120},
     "Warmup Reputation": {"email": 250, "warmup_reputation": 110},
+    "All Inboxes": {"client": 140, "email": 250, "availability": 110, "busy_reason": 200, "campaigns": 95, "warmup_state": 120, "last_active_date": 110},
 }
 _DEFAULT_COL_WIDTH = 120
 
@@ -119,8 +164,12 @@ class DeliverabilityReader:
         self.sheet_id = sheet_id
         self.tab_name = tab_name
 
-    async def fetch(self) -> dict[str, str]:
-        """Return ``{domain: status}`` mapping.  Runs synchronous gspread under the hood."""
+    async def fetch(self) -> dict[str, dict]:
+        """Return ``{domain: {"status": str, "date": "YYYY-MM-DD"|""}}`` mapping.
+
+        ``date`` is the most recent test-column date that fed the result, used
+        downstream to flag stale tests. Runs synchronous gspread under the hood.
+        """
         print(f"  [Sheets] Reading deliverability from '{self.tab_name}' tab ...")
         try:
             gc = _authorize()
@@ -150,10 +199,19 @@ class DeliverabilityReader:
             print(f"  [!] Could not find G suite/Outlook header row in '{self.tab_name}'")
             return {}
 
+        # The row directly above the type-label row holds the test dates per column
+        date_row = rows[type_row_idx - 1] if type_row_idx > 0 else []
+        col_dates: dict[int, str] = {}
+        for ci in gsuite_cols + outlook_cols:
+            if ci < len(date_row):
+                parsed = _parse_test_date(date_row[ci])
+                if parsed:
+                    col_dates[ci] = parsed
+
         # Data rows start after the type-label row
         data_start = type_row_idx + 1
 
-        mapping: dict[str, str] = {}
+        mapping: dict[str, dict] = {}
         for row in rows[data_start:]:
             if not row or not row[0]:
                 continue
@@ -161,26 +219,30 @@ class DeliverabilityReader:
             if not domain or "." not in domain:
                 continue
 
-            # Find latest non-empty GSuite and Outlook results
-            latest_gs = self._latest_result(row, gsuite_cols)
-            latest_ol = self._latest_result(row, outlook_cols)
+            # Find latest non-empty GSuite and Outlook results (with their columns)
+            gs_val, gs_col = self._latest_result(row, gsuite_cols)
+            ol_val, ol_col = self._latest_result(row, outlook_cols)
 
             # Both must be inbox for "inbox"; if either is spam/fail → "fail"
-            status = self._merge_provider_status(latest_gs, latest_ol)
-            mapping[domain] = status
+            status = self._merge_provider_status(gs_val, ol_val)
+
+            # Date = most recent test column that contributed a value
+            dates = [col_dates[c] for c in (gs_col, ol_col) if c is not None and c in col_dates]
+            test_date = max(dates) if dates else ""
+            mapping[domain] = {"status": status, "date": test_date}
 
         print(f"  [Sheets] Loaded {len(mapping)} domain statuses.")
         return mapping
 
     @staticmethod
-    def _latest_result(row: list[str], cols: list[int]) -> str:
-        """Return the latest non-empty value from the given columns (right to left)."""
+    def _latest_result(row: list[str], cols: list[int]) -> tuple[str, int | None]:
+        """Return ``(value, col_index)`` of the latest non-empty value (right to left)."""
         for ci in reversed(cols):
             if ci < len(row):
                 val = row[ci].strip().lower()
                 if val and val not in ("-", ""):
-                    return val
-        return ""
+                    return val, ci
+        return "", None
 
     @staticmethod
     def _merge_provider_status(gsuite: str, outlook: str) -> str:
@@ -252,6 +314,52 @@ class SheetsWriter:
         self.write_inboxes(inbox_data)
         self.write_warmup(warmup_data)
         print(f"  [Sheets] Done - summary={len(campaign_summary)}, inboxes={len(inbox_data)}, warmup={len(warmup_data)}")
+
+    MASTER_COLUMNS = [
+        "client", "email", "name", "provider", "account_id",
+        "availability", "busy_reason", "campaigns",
+        "connection_ok", "max_per_day", "sent_today",
+        "capacity_left", "true_load", "available_capacity",
+        "warmup_state", "warmup_rep_pct", "warmup_max_count",
+        "last_active_date", "test_sheet_status", "test_date",
+    ]
+
+    def write_master_inboxes(self, rows: list[dict]) -> None:
+        """Write the flat cross-client 'All Inboxes' tab.
+
+        Dedupes to ONE row per (client, email) — an inbox attached to several
+        campaigns appears once — and records how many active campaigns it's in
+        (``campaigns``). This is the clean selection source the downstream tool
+        reads: each inbox listed once with its availability + usable volume.
+        """
+        from smartlead.config import MASTER_TAB_NAME
+        if not rows:
+            print("  [Sheets] No inbox rows for master tab — skipping.")
+            return
+
+        groups: dict[tuple, dict] = {}
+        for r in rows:
+            key = (r.get("client", ""), str(r.get("email", "")).strip().lower())
+            g = groups.get(key)
+            if g is None:
+                g = {"row": r, "campaigns": 0}
+                groups[key] = g
+            campaign = str(r.get("campaign_name", ""))
+            if campaign and not campaign.startswith("N/A"):
+                g["campaigns"] += 1
+
+        deduped: list[dict] = []
+        for g in groups.values():
+            row = dict(g["row"])
+            row["campaigns"] = g["campaigns"]
+            deduped.append(row)
+
+        ordered = sorted(
+            deduped, key=lambda r: (r.get("client", ""), r.get("availability", ""), r.get("email", "")),
+        )
+        projected = [{c: r.get(c, "") for c in self.MASTER_COLUMNS} for r in ordered]
+        self._write_tab(MASTER_TAB_NAME, projected)
+        print(f"  [Sheets] master dedup: {len(rows)} campaign-rows -> {len(deduped)} unique inboxes")
 
     # ── internals ────────────────────────────────────────────────────────
 
@@ -439,7 +547,7 @@ class SheetsWriter:
                         bg=bg, fg=fg, bold=True, h_align="CENTER",
                     ))
 
-        if tab_key == "Inboxes":
+        if tab_key in ("Inboxes", MASTER_TAB_NAME):
             # Availability column
             if "availability" in columns:
                 col_idx = columns.index("availability")
@@ -483,8 +591,13 @@ class SheetsWriter:
                             sheet_id, ri, ri + 1, col_idx, col_idx + 1,
                             bg=_COLORS["red_bg"], fg=_COLORS["red_text"], h_align="CENTER",
                         ))
+                    elif val == "stale":
+                        reqs.append(_format_range(
+                            sheet_id, ri, ri + 1, col_idx, col_idx + 1,
+                            bg=_COLORS["yellow_bg"], fg=_COLORS["orange_text"], h_align="CENTER",
+                        ))
 
-        if tab_key == "Inboxes" and "warmup_rep_pct" in columns:
+        if tab_key in ("Inboxes", MASTER_TAB_NAME) and "warmup_rep_pct" in columns:
             col_idx = columns.index("warmup_rep_pct")
             for ri, row in enumerate(data, start=1):
                 rep_str = str(row.get("warmup_rep_pct", ""))

@@ -33,7 +33,7 @@ from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.mock import get_mock_data
 from smartlead.processing import fetch_account_data
-from smartlead.config import TEST_TAB_NAME
+from smartlead.config import TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_SHEET_ID, MASTER_TAB_NAME
 from smartlead.sheets import DeliverabilityReader, SheetsWriter
 
 
@@ -45,7 +45,7 @@ async def process_account(
     account_name: str,
     deliverability_map: dict[str, str],
     active_only: bool = True,
-) -> None:
+) -> list[dict]:
     """Fetch data for one Smartlead account and push it to Google Sheets."""
     print(f"\n{'=' * 60}")
     print(f"  Account: {account_name}")
@@ -58,7 +58,7 @@ async def process_account(
 
     if not inbox_data and not campaign_summary:
         print(f"  [!] No data for {account_name} - skipping sheet update.")
-        return
+        return []
 
     # Console preview
     _print_tables(account_name, inbox_data, campaign_summary, warmup_data)
@@ -69,6 +69,8 @@ async def process_account(
         writer.write_all(campaign_summary, inbox_data, warmup_data)
     except Exception as exc:
         print(f"  [!] Sheet sync failed for {account_name}: {exc}")
+
+    return inbox_data
 
 
 def _print_tables(
@@ -114,30 +116,29 @@ async def main() -> None:
     print(f"[*] Sync started at {sync_time}")
     print(f"[*] {len(accounts)} account(s) discovered.")
 
-    # Map account names to their deliverability test tab name(s)
-    # Supports multiple tabs per account — maps are merged together
-    account_tabs_map: dict[str, list[str]] = {
-        "Belardi Wong": ["Belardiwong"],
-        "PRECISE_LEADS": ["Melior", "Precise Leads", "Avench", "OSC"],
-        "DARLEAN": ["Darlean new"],
-    }
+    all_inbox_rows: list[dict] = []
 
     # Process each account sequentially with its own deliverability data
     for acc in accounts:
         try:
-            tab_names = account_tabs_map.get(acc.name, [TEST_TAB_NAME])
+            tab_names = ACCOUNT_DELIVERABILITY_TABS.get(acc.name, [TEST_TAB_NAME])
             deliverability_map: dict[str, str] = {}
             for tab_name in tab_names:
                 reader = DeliverabilityReader(tab_name=tab_name)
                 tab_map = await reader.fetch()
-                # Merge: fail from either tab wins over inbox
-                for domain, status in tab_map.items():
+                # Merge across tabs: fail wins; otherwise keep the most-recent test.
+                # Each value is {"status": str, "date": "YYYY-MM-DD"|""}.
+                for domain, entry in tab_map.items():
+                    status, date = entry.get("status", ""), entry.get("date", "")
                     existing = deliverability_map.get(domain)
-                    if existing == "fail" or status == "fail":
-                        deliverability_map[domain] = "fail"
-                    elif status:
-                        deliverability_map[domain] = status
-            await process_account(acc.api_key, acc.sheet_id, acc.name, deliverability_map, active_only)
+                    existing_status = existing.get("status") if existing else None
+                    if status == "fail" or existing_status == "fail":
+                        fail_date = date if status == "fail" else (existing or {}).get("date", "")
+                        deliverability_map[domain] = {"status": "fail", "date": fail_date}
+                    elif status and (not existing or date >= existing.get("date", "")):
+                        deliverability_map[domain] = {"status": status, "date": date}
+            rows = await process_account(acc.api_key, acc.sheet_id, acc.name, deliverability_map, active_only)
+            all_inbox_rows.extend(rows)
         except Exception as exc:
             print(f"[!] Account {acc.name} failed: {exc}")
 
@@ -149,6 +150,13 @@ async def main() -> None:
         shared_writer.write_sync_timestamp(end_time)
     except Exception as exc:
         print(f"[!] Shared tabs failed: {exc}")
+
+    try:
+        master_writer = SheetsWriter(MASTER_SHEET_ID)
+        master_writer.write_master_inboxes(all_inbox_rows)
+        print(f"[*] Master tab '{MASTER_TAB_NAME}' written from {len(all_inbox_rows)} campaign-rows (deduped to unique inboxes)")
+    except Exception as exc:
+        print(f"[!] Master inbox tab failed: {exc}")
 
     print(f"\n[*] All accounts processed. Finished at {end_time}")
 
