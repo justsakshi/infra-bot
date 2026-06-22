@@ -57,9 +57,9 @@ def get_domain_from_email(email: str) -> str:
 
 def detect_provider(type_field: str) -> str:
     upper = str(type_field).upper()
-    if "GMAIL" in upper:
+    if "GMAIL" in upper or "GOOGLE" in upper:
         return "Gmail"
-    if "OUTLOOK" in upper:
+    if "OUTLOOK" in upper or "OFFICE" in upper or "MICROSOFT" in upper or "EXCHANGE" in upper:
         return "Outlook"
     return "Other"
 
@@ -152,12 +152,12 @@ async def fetch_account_data(
         if not _is_active_status(status):
             inactive_campaigns.append(c)
             continue
-        # Check if paused campaign is stale
+        # Check if paused campaign is stale (based on last update, falling back to creation)
         if status.upper().startswith("PAUSE"):
-            created = c.get("created_at", "")
+            updated = c.get("updated_at") or c.get("created_at", "")
             try:
-                created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-                if (now - created_dt) > timedelta(days=PAUSED_STALE_DAYS):
+                updated_dt = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                if (now - updated_dt) > timedelta(days=PAUSED_STALE_DAYS):
                     inactive_campaigns.append(c)
                     continue
             except (ValueError, TypeError):
@@ -409,8 +409,8 @@ def _build_inbox_row(
     sent_today = int(account.get("daily_sent_count", 0) or 0)
     capacity_left = max(0, max_per_day - sent_today)
     connection_ok = bool(
-        account.get("is_smtp_success") and account.get("is_imap_success")
-        and not account.get("is_suspended")
+        account.get("is_smtp_success", True) and account.get("is_imap_success", True)
+        and not account.get("is_suspended", False)
     )
 
     return {

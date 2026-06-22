@@ -161,8 +161,39 @@ async def main() -> None:
     campaign_counts = sorted(groups.values())
     ok(campaign_counts == [0, 1, 1], f"campaign counts [0,1,1] (got {campaign_counts})")
 
-    print("\nALL PASSED")
+    # Extension verification checks
+    
+    # 1. API key cleaning
+    from smartlead.accounts import _clean_key
+    ok(_clean_key("Smartlead: uuid_123_abc") == "uuid_123_abc", "clean key strips prefix")
+    ok(_clean_key("  uuid_123_abc  ") == "uuid_123_abc", "clean key strips spaces")
+    ok(_clean_key(None) is None, "clean key handles None")
+    
+    # 2. Date parsing
+    from smartlead.sheets import _parse_test_date
+    ok(_parse_test_date("2026-06-22") == "2026-06-22", "parse_test_date handles YYYY-MM-DD")
+    ok(_parse_test_date("22/06/2026") == "2026-06-22", "parse_test_date handles DD/MM/YYYY")
+    ok(_parse_test_date("2026/06/22") == "2026-06-22", "parse_test_date handles YYYY/MM/DD")
+    
+    # 3. Provider detection
+    from smartlead.processing import detect_provider
+    ok(detect_provider("GOOGLE_OAUTH") == "Gmail", "detect_provider handles GOOGLE_OAUTH")
+    ok(detect_provider("OFFICE365_OAUTH") == "Outlook", "detect_provider handles OFFICE365_OAUTH")
+    ok(detect_provider("smtp") == "Other", "detect_provider fallback")
+    
+    # 4. Connection check default values
+    from smartlead.processing import _build_inbox_row
+    dummy_acc = {"from_email": "test@dom.com", "from_name": "Test", "type": "smtp", "message_per_day": 35}
+    row_with_defaults = _build_inbox_row(dummy_acc, "test@dom.com", "Cam", "ACTIVE", {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0}, {})
+    ok(row_with_defaults["connection_ok"] is True, "connection_ok defaults to True when SMTP/IMAP flags are missing")
+
+    # 5. Paused campaign staleness
+    from smartlead.processing import _is_active_status
+    ok(_is_active_status("PAUSED") is True, "paused campaign is active status")
+
+    print("\nALL PASSED (INCLUDING IMPROVEMENTS)")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

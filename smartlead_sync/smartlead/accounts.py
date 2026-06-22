@@ -13,12 +13,21 @@ import os
 from smartlead.config import AccountConfig, DEFAULT_SHEET_ID
 
 
+def _clean_key(key: str | None) -> str | None:
+    if not key:
+        return None
+    s = key.strip()
+    if s.lower().startswith("smartlead:"):
+        s = s[len("smartlead:"):].strip()
+    return s
+
+
 def discover_accounts() -> list[AccountConfig]:
     """Return a list of :class:`AccountConfig` found in the environment."""
     accounts: list[AccountConfig] = []
 
     # 1. Default / Main account
-    default_key = os.getenv("SMARTLEAD_API_KEY")
+    default_key = _clean_key(os.getenv("SMARTLEAD_API_KEY"))
     default_sheet = os.getenv("SHEET_ID", DEFAULT_SHEET_ID)
 
     if default_key:
@@ -30,6 +39,9 @@ def discover_accounts() -> list[AccountConfig]:
         if key.startswith("SMARTLEAD_API_KEY_") and key not in skip:
             name = key[len("SMARTLEAD_API_KEY_"):]
             sheet = os.getenv(f"SMARTLEAD_SHEET_ID_{name}", default_sheet)
-            accounts.append(AccountConfig(name=name, api_key=value, sheet_id=sheet))
+            cleaned_value = _clean_key(value)
+            if cleaned_value:
+                accounts.append(AccountConfig(name=name, api_key=cleaned_value, sheet_id=sheet))
 
     return accounts
+

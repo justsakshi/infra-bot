@@ -44,8 +44,9 @@ MASTER_TAB_NAME: str = os.getenv("MASTER_TAB_NAME", "All Inboxes")
 # (Moved out of run.py so adding a client is a config edit, not a code edit.)
 ACCOUNT_DELIVERABILITY_TABS: dict[str, list[str]] = {
     "Belardi Wong": ["Belardiwong"],
-    "PRECISE_LEADS": ["Melior", "Precise Leads", "Avench", "OSC", "StaffAI"],
+    "PRECISE_LEADS": ["Melior", "Precise Leads", "Avench", "OSC", "StaffAI", "Bettrdata"],
     "DARLEAN": ["Darlean new"],
+    "MYTHIC": [],  # separate workspace; no deliverability tab yet -> all inboxes "untested"
 }
 
 

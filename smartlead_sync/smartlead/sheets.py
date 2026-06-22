@@ -22,13 +22,18 @@ _SCOPES = [
 def _parse_test_date(cell: str) -> str:
     """Parse a test-date header cell to 'YYYY-MM-DD', else ''.
 
-    Handles formats like '15 Apr 2026', '07 May', '11 Jun' (year-less cells
-    assume the current year). Returns '' for non-date cells.
+    Handles formats like '15 Apr 2026', '07 May', '11 Jun', '2026-06-22',
+    '22/06/2026', etc. Returns '' for non-date cells.
     """
     s = str(cell).strip()
     if not s:
         return ""
-    for fmt in ("%d %b %Y", "%d %B %Y", "%d %b", "%d %B"):
+    formats = (
+        "%d %b %Y", "%d %B %Y", "%d %b", "%d %B",
+        "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
+        "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y",
+    )
+    for fmt in formats:
         try:
             dt = datetime.strptime(s, fmt)
             if dt.year == 1900:  # year-less format -> assume current year
@@ -37,6 +42,7 @@ def _parse_test_date(cell: str) -> str:
         except ValueError:
             continue
     return ""
+
 
 
 def _authorize() -> gspread.Client:

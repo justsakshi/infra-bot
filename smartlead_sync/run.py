@@ -33,7 +33,7 @@ from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.mock import get_mock_data
 from smartlead.processing import fetch_account_data
-from smartlead.config import TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_SHEET_ID, MASTER_TAB_NAME
+from smartlead.config import TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_TAB_NAME
 from smartlead.sheets import DeliverabilityReader, SheetsWriter
 
 
@@ -116,7 +116,10 @@ async def main() -> None:
     print(f"[*] Sync started at {sync_time}")
     print(f"[*] {len(accounts)} account(s) discovered.")
 
-    all_inbox_rows: list[dict] = []
+    # Group inbox rows by the sheet they belong to, so each workspace/sheet
+    # gets its own consolidated master tab (a separate-workspace client on its
+    # own sheet gets an isolated 'All Inboxes'; clients sharing a sheet share one).
+    rows_by_sheet: dict[str, list[dict]] = {}
 
     # Process each account sequentially with its own deliverability data
     for acc in accounts:
@@ -138,7 +141,7 @@ async def main() -> None:
                     elif status and (not existing or date >= existing.get("date", "")):
                         deliverability_map[domain] = {"status": status, "date": date}
             rows = await process_account(acc.api_key, acc.sheet_id, acc.name, deliverability_map, active_only)
-            all_inbox_rows.extend(rows)
+            rows_by_sheet.setdefault(acc.sheet_id, []).extend(rows)
         except Exception as exc:
             print(f"[!] Account {acc.name} failed: {exc}")
 
@@ -151,12 +154,13 @@ async def main() -> None:
     except Exception as exc:
         print(f"[!] Shared tabs failed: {exc}")
 
-    try:
-        master_writer = SheetsWriter(MASTER_SHEET_ID)
-        master_writer.write_master_inboxes(all_inbox_rows)
-        print(f"[*] Master tab '{MASTER_TAB_NAME}' written from {len(all_inbox_rows)} campaign-rows (deduped to unique inboxes)")
-    except Exception as exc:
-        print(f"[!] Master inbox tab failed: {exc}")
+    # One 'All Inboxes' master tab per distinct sheet (per workspace)
+    for sheet_id, rows in rows_by_sheet.items():
+        try:
+            SheetsWriter(sheet_id).write_master_inboxes(rows)
+            print(f"[*] Master tab '{MASTER_TAB_NAME}' written to sheet {sheet_id} from {len(rows)} campaign-rows")
+        except Exception as exc:
+            print(f"[!] Master inbox tab failed for sheet {sheet_id}: {exc}")
 
     print(f"\n[*] All accounts processed. Finished at {end_time}")
 
