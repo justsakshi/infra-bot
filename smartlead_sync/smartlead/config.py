@@ -49,6 +49,19 @@ ACCOUNT_DELIVERABILITY_TABS: dict[str, list[str]] = {
     "MYTHIC": [],  # separate workspace; no deliverability tab yet -> all inboxes "untested"
 }
 
+# ── HeyReach ─────────────────────────────────────────────────────────────────
+HEYREACH_BASE_URL: str = "https://api.heyreach.io/api/public"
+
+# ── Campaign Metrics dashboard ───────────────────────────────────────────────
+CAMPAIGN_METRICS_TAB_NAME: str = os.getenv("CAMPAIGN_METRICS_TAB_NAME", "Campaign Metrics")
+CAMPAIGN_METRICS_SHEET_ID: str = os.getenv("CAMPAIGN_METRICS_SHEET_ID", DEFAULT_SHEET_ID)
+# Smartlead accounts (by discovered name) to include in the metrics tab
+CAMPAIGN_METRICS_CLIENTS: set[str] = {"DARLEAN"}
+# Smartlead lead-category ids treated as positive/neutral (from /leads/fetch-categories):
+# 1=Interested, 2=Meeting Request, 5=Information Request. Excluded: 3=Not Interested,
+# 4=Do Not Contact, 6=Out Of Office (auto), 7=Wrong Person, 9=Sender Originated Bounce.
+SMARTLEAD_POSITIVE_CATEGORY_IDS: set[int] = {1, 2, 5}
+
 
 @dataclass
 class AccountConfig:
