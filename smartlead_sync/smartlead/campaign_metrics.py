@@ -81,7 +81,8 @@ def should_include_heyreach_campaign(campaign: dict, week_by_day: dict, today: d
 
 
 def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
-                         yest_replies: int, today: datetime, positive_ids: set[int]) -> dict:
+                         yest_replies: int, today: datetime, positive_ids: set[int],
+                         month_sent: int = 0) -> dict:
     added_month = added_yest = pos_neutral = 0
     for lead in leads:
         d = _parse(lead.get("created_at", ""))
@@ -101,7 +102,7 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         "leads_in_progress": _int(summary.get("in_progress", 0)),
         "connections_sent": "-",
         "connections_accepted": "-",
-        "msg_sent": _int(summary.get("sent", 0)),
+        "msg_sent": _int(summary.get("sent", 0)) or month_sent,
         # Smartlead positive-by-date is API-limited; yesterday-positive not reliably
         # available -> "-" (HeyReach has it). positive/neutral = current category snapshot.
         "positive_responses_yesterday": "-",
