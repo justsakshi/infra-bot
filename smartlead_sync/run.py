@@ -13,7 +13,7 @@ import asyncio
 import argparse
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Fix Windows console encoding for Polars unicode table output
 if sys.platform == "win32":
@@ -33,8 +33,14 @@ from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.mock import get_mock_data
 from smartlead.processing import fetch_account_data
-from smartlead.config import TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_TAB_NAME
+from smartlead.config import (
+    TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_TAB_NAME,
+    CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_SHEET_ID, SMARTLEAD_POSITIVE_CATEGORY_IDS,
+)
 from smartlead.sheets import DeliverabilityReader, SheetsWriter
+from smartlead.heyreach import HeyReachClient
+from smartlead.heyreach_accounts import discover_heyreach_workspaces
+from smartlead import campaign_metrics as cm
 
 
 # ── Per-account pipeline ─────────────────────────────────────────────────────
@@ -45,8 +51,11 @@ async def process_account(
     account_name: str,
     deliverability_map: dict[str, str],
     active_only: bool = True,
-) -> list[dict]:
-    """Fetch data for one Smartlead account and push it to Google Sheets."""
+) -> tuple[list[dict], list[dict]]:
+    """Fetch data for one Smartlead account and push it to Google Sheets.
+
+    Returns ``(inbox_data, campaign_summary)``.
+    """
     print(f"\n{'=' * 60}")
     print(f"  Account: {account_name}")
     print(f"{'=' * 60}")
@@ -58,7 +67,7 @@ async def process_account(
 
     if not inbox_data and not campaign_summary:
         print(f"  [!] No data for {account_name} - skipping sheet update.")
-        return []
+        return [], []
 
     # Console preview
     _print_tables(account_name, inbox_data, campaign_summary, warmup_data)
@@ -70,7 +79,7 @@ async def process_account(
     except Exception as exc:
         print(f"  [!] Sheet sync failed for {account_name}: {exc}")
 
-    return inbox_data
+    return inbox_data, campaign_summary
 
 
 def _print_tables(
@@ -120,6 +129,8 @@ async def main() -> None:
     # gets its own consolidated master tab (a separate-workspace client on its
     # own sheet gets an isolated 'All Inboxes'; clients sharing a sheet share one).
     rows_by_sheet: dict[str, list[dict]] = {}
+    # (account, campaign_summary) pairs for accounts included in the metrics tab
+    smartlead_campaigns_for_metrics: list = []
 
     # Process each account sequentially with its own deliverability data
     for acc in accounts:
@@ -140,8 +151,10 @@ async def main() -> None:
                         deliverability_map[domain] = {"status": "fail", "date": fail_date}
                     elif status and (not existing or date >= existing.get("date", "")):
                         deliverability_map[domain] = {"status": status, "date": date}
-            rows = await process_account(acc.api_key, acc.sheet_id, acc.name, deliverability_map, active_only)
+            rows, campaigns = await process_account(acc.api_key, acc.sheet_id, acc.name, deliverability_map, active_only)
             rows_by_sheet.setdefault(acc.sheet_id, []).extend(rows)
+            if acc.name in CAMPAIGN_METRICS_CLIENTS:
+                smartlead_campaigns_for_metrics.append((acc, campaigns))
         except Exception as exc:
             print(f"[!] Account {acc.name} failed: {exc}")
 
@@ -161,6 +174,58 @@ async def main() -> None:
             print(f"[*] Master tab '{MASTER_TAB_NAME}' written to sheet {sheet_id} from {len(rows)} campaign-rows")
         except Exception as exc:
             print(f"[!] Master inbox tab failed for sheet {sheet_id}: {exc}")
+
+    # ── Campaign Metrics dashboard (Smartlead + HeyReach) ────────────────────
+    try:
+        today = datetime.now(timezone.utc)
+        ms = cm.month_start(today)
+        ms_str, end_str = ms.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
+        metric_rows: list[dict] = []
+
+        # Smartlead rows (DARLEAN account(s))
+        for acc, campaigns in smartlead_campaigns_for_metrics:
+            async with SmartleadClient(acc.api_key, acc.name) as slc:
+                for camp in campaigns:
+                    cid = str(camp.get("campaign_id") or camp.get("id") or "")
+                    if not cid:
+                        continue
+                    try:
+                        leads = await slc.get_campaign_leads(cid)
+                        m_an = await slc.get_analytics_by_date(cid, ms_str, end_str)
+                        month_replies = int(float(m_an.get("reply_count", 0) or 0))
+                    except Exception as exc:
+                        print(f"  [metrics] Smartlead campaign {cid} failed: {exc}")
+                        leads, month_replies = [], 0
+                    metric_rows.append(cm.smartlead_metric_row(
+                        camp, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS))
+
+        # HeyReach rows (all workspaces; currently DARLEAN)
+        for ws in discover_heyreach_workspaces():
+            try:
+                async with HeyReachClient(ws.api_key, ws.name) as hrc:
+                    for camp in await hrc.list_campaigns():
+                        cid = camp["id"]
+                        try:
+                            oa = await hrc.get_overall_stats(cid)
+                            om = await hrc.get_overall_stats(
+                                cid,
+                                start=ms.isoformat().replace("+00:00", "Z"),
+                                end=today.isoformat().replace("+00:00", "Z"),
+                            )
+                            leads = await hrc.get_campaign_leads(cid)
+                        except Exception as exc:
+                            print(f"  [metrics] HeyReach campaign {cid} failed: {exc}")
+                            oa, om, leads = {}, {}, []
+                        metric_rows.append(cm.heyreach_metric_row(camp, oa, om, leads, today))
+            except Exception as exc:
+                print(f"  [metrics] HeyReach workspace {ws.name} failed: {exc}")
+
+        if metric_rows:
+            metric_rows.append(cm.total_row(metric_rows))
+            SheetsWriter(CAMPAIGN_METRICS_SHEET_ID).write_campaign_metrics(metric_rows)
+            print(f"[*] Campaign Metrics tab written: {len(metric_rows) - 1} campaigns")
+    except Exception as exc:
+        print(f"[!] Campaign Metrics dashboard failed: {exc}")
 
     print(f"\n[*] All accounts processed. Finished at {end_time}")
 
