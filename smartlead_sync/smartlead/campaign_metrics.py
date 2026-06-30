@@ -49,6 +49,37 @@ def _int(v) -> int:
         return 0
 
 
+_INACTIVE_STATUSES = {"DRAFTED", "DRAFT"}
+_STALE_STATUSES = {"PAUSED", "COMPLETED", "COMPLETE", "STOPPED", "STOP"}
+_STALE_DAYS = 7
+
+
+def should_include_smartlead_campaign(summary: dict, week_sent: int) -> bool:
+    """Exclude DRAFTs. Exclude PAUSED/COMPLETED if no emails sent in last 7 days."""
+    status = str(summary.get("status", "")).upper()
+    if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
+        return False
+    if status in _STALE_STATUSES or any(status.startswith(s) for s in _STALE_STATUSES):
+        return week_sent > 0
+    return True
+
+
+def should_include_heyreach_campaign(campaign: dict, week_by_day: dict, today: datetime) -> bool:
+    """Exclude DRAFTs. Exclude PAUSED/COMPLETED if no sends in last 7 days (from byDayStats)."""
+    status = str(campaign.get("status", "")).upper()
+    if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
+        return False
+    if status in _STALE_STATUSES or any(status.startswith(s) for s in _STALE_STATUSES):
+        cutoff_ord = today.date().toordinal() - _STALE_DAYS
+        for k, v in week_by_day.items():
+            d = _parse(k)
+            if d and d.date().toordinal() >= cutoff_ord:
+                if _int(v.get("messagesSent", 0)) > 0 or _int(v.get("connectionsSent", 0)) > 0:
+                    return True
+        return False
+    return True
+
+
 def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                          yest_replies: int, today: datetime, positive_ids: set[int]) -> dict:
     added_month = added_yest = pos_neutral = 0

@@ -183,6 +183,7 @@ async def main() -> None:
         metric_rows: list[dict] = []
 
         # Smartlead rows (DARLEAN account(s))
+        week_start_str = (today.replace(day=max(1, today.day - 7))).strftime("%Y-%m-%d")
         for acc, campaigns in smartlead_campaigns_for_metrics:
             async with SmartleadClient(acc.api_key, acc.name) as slc:
                 for camp in campaigns:
@@ -190,12 +191,20 @@ async def main() -> None:
                     if not cid:
                         continue
                     try:
-                        leads = await slc.get_campaign_leads(cid)
+                        week_an = await slc.get_analytics_by_date(cid, week_start_str, end_str)
+                        week_sent = int(float(week_an.get("sent_count", 0) or 0))
                         m_an = await slc.get_analytics_by_date(cid, ms_str, end_str)
                         month_replies = int(float(m_an.get("reply_count", 0) or 0))
                     except Exception as exc:
-                        print(f"  [metrics] Smartlead campaign {cid} failed: {exc}")
-                        leads, month_replies = [], 0
+                        print(f"  [metrics] Smartlead campaign {cid} analytics failed: {exc}")
+                        week_sent, month_replies = 0, 0
+                    if not cm.should_include_smartlead_campaign(camp, week_sent):
+                        continue
+                    try:
+                        leads = await slc.get_campaign_leads(cid)
+                    except Exception as exc:
+                        print(f"  [metrics] Smartlead campaign {cid} leads failed: {exc}")
+                        leads = []
                     metric_rows.append(cm.smartlead_metric_row(
                         camp, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS))
 
@@ -216,6 +225,9 @@ async def main() -> None:
                         except Exception as exc:
                             print(f"  [metrics] HeyReach campaign {cid} failed: {exc}")
                             oa, om, leads = {}, {}, []
+                        by_day = (om or {}).get("byDayStats", {}) or {}
+                        if not cm.should_include_heyreach_campaign(camp, by_day, today):
+                            continue
                         metric_rows.append(cm.heyreach_metric_row(camp, oa, om, leads, today))
             except Exception as exc:
                 print(f"  [metrics] HeyReach workspace {ws.name} failed: {exc}")
