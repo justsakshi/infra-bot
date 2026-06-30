@@ -109,6 +109,27 @@ class SmartleadClient:
     async def get_warmup_stats(self, account_id: str) -> list[dict] | dict:
         return await self._get(f"/email-accounts/{account_id}/warmup-stats")
 
+    # ── campaign leads / dated analytics (for Campaign Metrics dashboard) ──
+    async def get_campaign_leads(self, campaign_id: str) -> list[dict]:
+        """Fetch all leads for a campaign (paginated). Each: created_at, lead_category_id, status."""
+        all_leads: list[dict] = []
+        offset = 0
+        page = 100
+        while True:
+            resp = await self._get(f"/campaigns/{campaign_id}/leads",
+                                   extra_params={"offset": offset, "limit": page})
+            data = resp.get("data", []) if isinstance(resp, dict) else []
+            all_leads.extend(data)
+            if len(data) < page:
+                break
+            offset += page
+        return all_leads
+
+    async def get_analytics_by_date(self, campaign_id: str, start_date: str, end_date: str) -> dict:
+        """Range-aggregate analytics for [start_date, end_date] (YYYY-MM-DD). Values may be strings."""
+        return await self._get(f"/campaigns/{campaign_id}/analytics-by-date",
+                               extra_params={"start_date": start_date, "end_date": end_date})
+
     # ── bulk helpers ─────────────────────────────────────────────────────
     async def _gather_chunked(
         self, items: list, coro_fn, label: str = "",
