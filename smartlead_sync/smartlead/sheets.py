@@ -145,6 +145,15 @@ _HEADER_LABELS = {
         "test_sheet_status": "Test Status",
         "test_date": "Test Date",
     },
+    "Campaign Metrics": {
+        "campaign": "Campaign name", "platform": "Platform", "status": "Campaign Status",
+        "total_leads": "Total leads", "leads_added_month": "Leads added this month",
+        "leads_added_yesterday": "Leads added yesterday", "leads_in_progress": "Leads in progress",
+        "connections_sent": "Connections sent", "connections_accepted": "Connections accepted",
+        "msg_sent": "Msg Sent", "positive_responses_yesterday": "Positive Responses Yesterday",
+        "total_responses_month": "Total Responses this month",
+        "positive_neutral_month": "Positive/ Neutral responses this month",
+    },
 }
 
 # Column widths (pixels) per tab - only specify overrides, rest get a default
@@ -153,6 +162,7 @@ _COL_WIDTHS = {
     "Inboxes":          {"email": 250, "campaign_name": 230, "daily_limit": 110, "availability": 110, "true_load": 90, "available_capacity": 120},
     "Warmup Reputation": {"email": 250, "warmup_reputation": 110},
     "All Inboxes": {"client": 140, "email": 250, "availability": 110, "busy_reason": 200, "campaigns": 95, "warmup_state": 120, "last_active_date": 110},
+    "Campaign Metrics": {"campaign": 320, "platform": 100, "status": 130},
 }
 _DEFAULT_COL_WIDTH = 120
 
@@ -367,6 +377,17 @@ class SheetsWriter:
         self._write_tab(MASTER_TAB_NAME, projected)
         print(f"  [Sheets] master dedup: {len(rows)} campaign-rows -> {len(deduped)} unique inboxes")
 
+    def write_campaign_metrics(self, rows: list[dict]) -> None:
+        """Write the 'Campaign Metrics' tab (Smartlead + HeyReach campaigns)."""
+        from smartlead.config import CAMPAIGN_METRICS_TAB_NAME
+        from smartlead.campaign_metrics import COLUMNS
+        if not rows:
+            print("  [Sheets] No campaign metrics rows - skipping.")
+            return
+        projected = [{c: r.get(c, "") for c in COLUMNS} for r in rows]
+        self._write_tab(CAMPAIGN_METRICS_TAB_NAME, projected)
+        print(f"  [Sheets] Campaign Metrics tab written: {len(rows)} rows")
+
     # ── internals ────────────────────────────────────────────────────────
 
     def _get_or_create_tab(self, title: str, rows: int = 500, cols: int = 20) -> Any:
@@ -540,7 +561,16 @@ class SheetsWriter:
         self, sheet_id: int, tab_key: str, columns: list[str], data: list[dict],
     ) -> list[dict]:
         """Return format requests that color-code status/availability cells."""
+        from smartlead.config import CAMPAIGN_METRICS_TAB_NAME
         reqs: list[dict] = []
+
+        if tab_key == CAMPAIGN_METRICS_TAB_NAME and "status" in columns:
+            col_idx = columns.index("status")
+            for ri, row in enumerate(data, start=1):
+                bg, fg = _status_style(str(row.get("status", "")).upper())
+                if bg:
+                    reqs.append(_format_range(sheet_id, ri, ri + 1, col_idx, col_idx + 1,
+                                              bg=bg, fg=fg, bold=True, h_align="CENTER"))
 
         if tab_key == "Campaign Summary" and "status" in columns:
             col_idx = columns.index("status")
@@ -658,9 +688,9 @@ def _status_style(status: str) -> tuple[dict | None, dict | None]:
     s = status.upper().strip()
     if not s:
         return None, None
-    if s in ("ACTIVE",) or s.startswith("START"):
+    if s in ("ACTIVE",) or s.startswith("START") or s.startswith("IN_PROGRESS") or s.startswith("IN PROGRESS"):
         return _COLORS["green_bg"], _COLORS["green_text"]
-    if s.startswith("COMPLETED"):
+    if s.startswith("COMPLETE"):
         return _COLORS["gray_bg"], _COLORS["gray_text"]
     if s in ("PAUSED", "PAUSE") or s.startswith("PAUSE"):
         return _COLORS["yellow_bg"], _COLORS["orange_text"]
