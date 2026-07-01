@@ -50,7 +50,7 @@ async def process_account(
     sheet_id: str,
     account_name: str,
     deliverability_map: dict[str, str],
-    active_only: bool = True,
+    active_only: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """Fetch data for one Smartlead account and push it to Google Sheets.
 
@@ -104,10 +104,11 @@ def _print_tables(
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Smartlead Dashboard -> Google Sheets")
     parser.add_argument("--mock", action="store_true", help="Use mock data (no API calls)")
-    parser.add_argument("--all", action="store_true", help="Include ALL campaigns (default: active/paused only)")
+    parser.add_argument("--active-only", action="store_true", help="Only process active/paused campaigns (default: process all)")
     parser.add_argument("--sheet", type=str, default=None, help="Google Sheet name (for mock mode)")
+    parser.add_argument("--month", type=str, default="auto", help="Reporting month (e.g. 'June', 'previous', 'current', or 'auto' [defaults to previous month on days 1-5])")
     args = parser.parse_args()
-    active_only = not args.all
+    active_only = args.active_only
 
     if args.mock:
         inbox_data, campaign_summary, warmup_data = get_mock_data()
@@ -178,8 +179,10 @@ async def main() -> None:
     # ── Campaign Metrics dashboard (Smartlead + HeyReach) ────────────────────
     try:
         today = datetime.now(timezone.utc)
-        ms = cm.month_start(today)
-        ms_str, end_str = ms.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
+        reporting_start, reporting_end, month_name = cm.get_reporting_range(args.month, today)
+        ms_str = reporting_start.strftime("%Y-%m-%d")
+        end_str = reporting_end.strftime("%Y-%m-%d")
+        print(f"[*] Reporting range for metrics: {ms_str} to {end_str} ({month_name})")
         metric_rows: list[dict] = []
 
         # Smartlead rows (DARLEAN account(s))
@@ -191,7 +194,7 @@ async def main() -> None:
                     if not cid:
                         continue
                     try:
-                        week_an = await slc.get_analytics_by_date(cid, week_start_str, end_str)
+                        week_an = await slc.get_analytics_by_date(cid, week_start_str, today.strftime("%Y-%m-%d"))
                         week_sent = int(float(week_an.get("sent_count", 0) or 0))
                         m_an = await slc.get_analytics_by_date(cid, ms_str, end_str)
                         month_sent = int(float(m_an.get("sent_count", 0) or 0))
@@ -199,7 +202,7 @@ async def main() -> None:
                     except Exception as exc:
                         print(f"  [metrics] Smartlead campaign {cid} analytics failed: {exc}")
                         week_sent, month_sent, month_replies = 0, 0, 0
-                    if not cm.should_include_smartlead_campaign(camp, week_sent):
+                    if not cm.should_include_smartlead_campaign(camp, week_sent, month_sent):
                         continue
                     try:
                         leads = await slc.get_campaign_leads(cid)
@@ -208,7 +211,7 @@ async def main() -> None:
                         leads = []
                     metric_rows.append(cm.smartlead_metric_row(
                         camp, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
-                        month_sent=month_sent))
+                        month_sent=month_sent, start_dt=reporting_start, end_dt=reporting_end))
 
         # HeyReach rows (all workspaces; currently DARLEAN)
         for ws in discover_heyreach_workspaces():
@@ -220,23 +223,24 @@ async def main() -> None:
                             oa = await hrc.get_overall_stats(cid)
                             om = await hrc.get_overall_stats(
                                 cid,
-                                start=ms.isoformat().replace("+00:00", "Z"),
-                                end=today.isoformat().replace("+00:00", "Z"),
+                                start=reporting_start.isoformat().replace("+00:00", "Z"),
+                                end=reporting_end.isoformat().replace("+00:00", "Z"),
                             )
                             leads = await hrc.get_campaign_leads(cid)
                         except Exception as exc:
                             print(f"  [metrics] HeyReach campaign {cid} failed: {exc}")
                             oa, om, leads = {}, {}, []
                         by_day = (om or {}).get("byDayStats", {}) or {}
-                        if not cm.should_include_heyreach_campaign(camp, by_day, today):
+                        if not cm.should_include_heyreach_campaign(camp, by_day):
                             continue
-                        metric_rows.append(cm.heyreach_metric_row(camp, oa, om, leads, today))
+                        metric_rows.append(cm.heyreach_metric_row(
+                            camp, oa, om, leads, today, start_dt=reporting_start, end_dt=reporting_end))
             except Exception as exc:
                 print(f"  [metrics] HeyReach workspace {ws.name} failed: {exc}")
 
         if metric_rows:
             metric_rows.append(cm.total_row(metric_rows))
-            SheetsWriter(CAMPAIGN_METRICS_SHEET_ID).write_campaign_metrics(metric_rows)
+            SheetsWriter(CAMPAIGN_METRICS_SHEET_ID).write_campaign_metrics(metric_rows, month_name=month_name)
             print(f"[*] Campaign Metrics tab written: {len(metric_rows) - 1} campaigns")
     except Exception as exc:
         print(f"[!] Campaign Metrics dashboard failed: {exc}")

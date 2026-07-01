@@ -28,12 +28,79 @@ def _parse(dt: str) -> datetime | None:
         return None
 
 
-def month_start(today: datetime) -> datetime:
-    return today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+def get_reporting_range(month_arg: str | None, today: datetime) -> tuple[datetime, datetime, str]:
+    """Return (start_dt, end_dt, month_name) for the reporting month.
+    
+    All datetimes are timezone-aware (UTC).
+    """
+    from datetime import timedelta
+    month_arg = (month_arg or "auto").strip().lower()
+    
+    # Auto-detection: day <= 5 -> previous month; otherwise current month
+    if month_arg == "auto":
+        if today.day <= 5:
+            month_arg = "previous"
+        else:
+            month_arg = "current"
+            
+    if month_arg == "current":
+        start_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_dt = today
+        month_name = today.strftime("%B")
+        return start_dt, end_dt, month_name
+        
+    elif month_arg == "previous":
+        if today.month == 1:
+            prev_month = 12
+            prev_year = today.year - 1
+        else:
+            prev_month = today.month - 1
+            prev_year = today.year
+        start_dt = datetime(prev_year, prev_month, 1, 0, 0, 0, tzinfo=timezone.utc)
+        curr_month_start = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_dt = curr_month_start - timedelta(seconds=1)
+        month_name = start_dt.strftime("%B")
+        return start_dt, end_dt, month_name
+        
+    else:
+        # Try to parse month name or number
+        month_num = None
+        try:
+            val = int(month_arg)
+            if 1 <= val <= 12:
+                month_num = val
+        except ValueError:
+            pass
+            
+        if not month_num:
+            months = [
+                "january", "february", "march", "april", "may", "june",
+                "july", "august", "september", "october", "november", "december"
+            ]
+            for idx, m in enumerate(months):
+                if month_arg.startswith(m[:3]):
+                    month_num = idx + 1
+                    break
+                    
+        if not month_num:
+            raise ValueError(f"Unknown month format: {month_arg}")
+            
+        start_dt = datetime(today.year, month_num, 1, 0, 0, 0, tzinfo=timezone.utc)
+        if month_num == 12:
+            next_month_start = datetime(today.year + 1, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        else:
+            next_month_start = datetime(today.year, month_num + 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        end_dt = next_month_start - timedelta(seconds=1)
+        
+        if start_dt <= today <= end_dt:
+            end_dt = today
+            
+        month_name = start_dt.strftime("%B")
+        return start_dt, end_dt, month_name
 
 
-def _in_month(dt: datetime | None, today: datetime) -> bool:
-    return dt is not None and dt >= month_start(today) and dt <= today
+def _in_month(dt: datetime | None, start_dt: datetime, end_dt: datetime) -> bool:
+    return dt is not None and dt >= start_dt and dt <= end_dt
 
 
 def _is_yesterday(dt: datetime | None, today: datetime) -> bool:
@@ -54,39 +121,41 @@ _STALE_STATUSES = {"PAUSED", "COMPLETED", "COMPLETE", "STOPPED", "STOP"}
 _STALE_DAYS = 7
 
 
-def should_include_smartlead_campaign(summary: dict, week_sent: int) -> bool:
-    """Exclude DRAFTs. Exclude PAUSED/COMPLETED if no emails sent in last 7 days."""
+def should_include_smartlead_campaign(summary: dict, week_sent: int, month_sent: int = 0) -> bool:
+    """Exclude DRAFTs. For PAUSED/COMPLETED: include if sent this month or this week."""
     status = str(summary.get("status", "")).upper()
     if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
         return False
     if status in _STALE_STATUSES or any(status.startswith(s) for s in _STALE_STATUSES):
-        return week_sent > 0
+        return (week_sent > 0) or (month_sent > 0)
     return True
 
 
-def should_include_heyreach_campaign(campaign: dict, week_by_day: dict, today: datetime) -> bool:
-    """Exclude DRAFTs. Exclude PAUSED/COMPLETED if no sends in last 7 days (from byDayStats)."""
+def should_include_heyreach_campaign(campaign: dict, month_by_day: dict) -> bool:
+    """Exclude DRAFTs. For PAUSED/COMPLETED: include if sent this month."""
     status = str(campaign.get("status", "")).upper()
     if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
         return False
     if status in _STALE_STATUSES or any(status.startswith(s) for s in _STALE_STATUSES):
-        cutoff_ord = today.date().toordinal() - _STALE_DAYS
-        for k, v in week_by_day.items():
-            d = _parse(k)
-            if d and d.date().toordinal() >= cutoff_ord:
-                if _int(v.get("messagesSent", 0)) > 0 or _int(v.get("connectionsSent", 0)) > 0:
-                    return True
+        for v in month_by_day.values():
+            if _int(v.get("messagesSent", 0)) > 0 or _int(v.get("connectionsSent", 0)) > 0:
+                return True
         return False
     return True
 
 
 def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                          yest_replies: int, today: datetime, positive_ids: set[int],
-                         month_sent: int = 0) -> dict:
+                         month_sent: int = 0, start_dt: datetime | None = None,
+                         end_dt: datetime | None = None) -> dict:
     added_month = added_yest = pos_neutral = 0
+    if start_dt is None or end_dt is None:
+        start_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_dt = today
+
     for lead in leads:
         d = _parse(lead.get("created_at", ""))
-        if _in_month(d, today):
+        if _in_month(d, start_dt, end_dt):
             added_month += 1
         if _is_yesterday(d, today):
             added_yest += 1
@@ -103,8 +172,6 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         "connections_sent": "-",
         "connections_accepted": "-",
         "msg_sent": _int(summary.get("sent", 0)) or month_sent,
-        # Smartlead positive-by-date is API-limited; yesterday-positive not reliably
-        # available -> "-" (HeyReach has it). positive/neutral = current category snapshot.
         "positive_responses_yesterday": "-",
         "total_responses_month": _int(month_replies),
         "positive_neutral_month": pos_neutral,
@@ -112,21 +179,25 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
 
 
 def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: dict,
-                        leads: list[dict], today: datetime) -> dict:
+                        leads: list[dict], today: datetime, start_dt: datetime | None = None,
+                        end_dt: datetime | None = None) -> dict:
     ps = campaign.get("progressStats", {}) or {}
     oa = (overall_alltime or {}).get("overallStats", {}) or {}
     om = (overall_month or {}).get("overallStats", {}) or {}
     by_day = (overall_month or {}).get("byDayStats", {}) or {}
 
+    if start_dt is None or end_dt is None:
+        start_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_dt = today
+
     added_month = added_yest = 0
     for lead in leads:
         d = _parse(lead.get("creationTime", ""))
-        if _in_month(d, today):
+        if _in_month(d, start_dt, end_dt):
             added_month += 1
         if _is_yesterday(d, today):
             added_yest += 1
 
-    # yesterday's positive from byDayStats (key = UTC midnight)
     y_ord = today.date().toordinal() - 1
     pos_yest = 0
     for k, v in by_day.items():
