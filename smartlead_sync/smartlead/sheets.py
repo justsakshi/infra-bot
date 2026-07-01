@@ -193,14 +193,14 @@ class DeliverabilityReader:
             ws = sh.worksheet(self.tab_name)
             rows = ws.get_all_values()
         except Exception as exc:
-            print(f"  [!] Could not read deliverability sheet: {exc}")
+            print(f"  [!] Could not read '{self.tab_name}': {type(exc).__name__}: {exc}")
             return {}
 
-        # Find the row that contains "G suite" / "Outlook" column labels
+        # Find the row that contains "G suite" / "Outlook" column labels (search up to row 10)
         type_row_idx = -1
         gsuite_cols: list[int] = []
         outlook_cols: list[int] = []
-        for ri, row in enumerate(rows):
+        for ri, row in enumerate(rows[:10]):  # Search only first 10 rows
             labels = [c.strip().lower() for c in row]
             if "g suite" in labels or "outlook" in labels:
                 type_row_idx = ri
@@ -233,6 +233,14 @@ class DeliverabilityReader:
                 continue
             domain = row[0].strip().lower()
             if not domain or "." not in domain:
+                continue
+
+            # Skip rows that are just ESP provider info (no actual test results)
+            has_test_result = any(
+                (ci < len(row) and row[ci].strip().lower() in ["inbox", "fail"])
+                for ci in gsuite_cols + outlook_cols
+            )
+            if not has_test_result:
                 continue
 
             # Find latest non-empty GSuite and Outlook results (with their columns)
@@ -377,7 +385,7 @@ class SheetsWriter:
         self._write_tab(MASTER_TAB_NAME, projected)
         print(f"  [Sheets] master dedup: {len(rows)} campaign-rows -> {len(deduped)} unique inboxes")
 
-    def write_campaign_metrics(self, rows: list[dict]) -> None:
+    def write_campaign_metrics(self, rows: list[dict], month_name: str | None = None) -> None:
         """Write the 'Campaign Metrics' tab (Smartlead + HeyReach campaigns)."""
         from smartlead.config import CAMPAIGN_METRICS_TAB_NAME
         from smartlead.campaign_metrics import COLUMNS
@@ -385,7 +393,10 @@ class SheetsWriter:
             print("  [Sheets] No campaign metrics rows - skipping.")
             return
         projected = [{c: r.get(c, "") for c in COLUMNS} for r in rows]
-        self._write_tab(CAMPAIGN_METRICS_TAB_NAME, projected)
+        custom_headers = {}
+        if month_name:
+            custom_headers["leads_added_month"] = f"Leads added in {month_name}"
+        self._write_tab(CAMPAIGN_METRICS_TAB_NAME, projected, custom_headers=custom_headers)
         print(f"  [Sheets] Campaign Metrics tab written: {len(rows)} rows")
 
     # ── internals ────────────────────────────────────────────────────────
@@ -404,7 +415,7 @@ class SheetsWriter:
         except gspread.exceptions.WorksheetNotFound:
             return self._sh.add_worksheet(title=title, rows=str(rows), cols=str(cols))
 
-    def _write_tab(self, tab_key: str, data: list[dict]) -> None:
+    def _write_tab(self, tab_key: str, data: list[dict], custom_headers: dict[str, str] | None = None) -> None:
         ws = self._get_or_create_tab(tab_key)
         ws.clear()
         if not data:
@@ -416,7 +427,9 @@ class SheetsWriter:
         num_rows = len(data) + 1  # +1 for header
 
         # Build header row with pretty labels
-        labels = _HEADER_LABELS.get(tab_key, {})
+        labels = dict(_HEADER_LABELS.get(tab_key, {}))
+        if custom_headers:
+            labels.update(custom_headers)
         header = [labels.get(c, c.replace("_", " ").title()) for c in columns]
         body = [[_serialize(v) for v in row.values()] for row in data]
         ws.update(values=[header] + body, range_name="A1")

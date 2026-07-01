@@ -46,7 +46,7 @@ ACCOUNT_DELIVERABILITY_TABS: dict[str, list[str]] = {
     "Belardi Wong": ["Belardiwong"],
     "PRECISE_LEADS": ["Melior", "Precise Leads", "Avench", "OSC", "StaffAI", "Bettrdata"],
     "DARLEAN": ["Darlean new"],
-    "MYTHIC": ["Mythic"],
+    "MYTHIC": ["Mythic "],  # Note: trailing space in actual tab name
 }
 
 # ── HeyReach ─────────────────────────────────────────────────────────────────
