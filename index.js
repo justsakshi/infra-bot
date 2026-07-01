@@ -57,6 +57,25 @@ const app = new App({
   socketMode: true
 });
 
+// Socket-mode's finity state machine throws "Unhandled event 'server explicit
+// disconnect' in state 'connecting'" when Slack forces a disconnect (e.g. during
+// a deploy overlap where two containers briefly share the app token) while the
+// client is mid-reconnect. Attach an error listener so that race is logged, not
+// thrown as an unhandled rejection that spams the crash handler.
+try {
+  const smClient = app.receiver && app.receiver.client;
+  if (smClient && typeof smClient.on === 'function') {
+    smClient.on('error', (err) => {
+      console.warn('⚠️  Slack socket-mode error (auto-reconnecting):', err?.message || err);
+    });
+    smClient.on('disconnect', () => {
+      console.log('ℹ️  Slack socket-mode disconnected — will reconnect');
+    });
+  }
+} catch (err) {
+  console.warn('⚠️  Could not attach socket-mode error handler:', err?.message || err);
+}
+
 /* -------------------- Asset Schema -------------------- */
 const AssetSchema = new mongoose.Schema({
   type: { type: String, enum: ['DOMAIN', 'INBOX'], required: true },
@@ -1634,8 +1653,24 @@ process.on('uncaughtException', (err) => {
 });
 start();
 
-process.on('SIGINT', async () => {
-  console.log('Shutting down gracefully...');
-  await mongoose.connection.close();
+async function shutdown(signal) {
+  console.log(`Received ${signal} — shutting down gracefully...`);
+  try {
+    // Disconnect the Slack socket first so the new deploy's container can
+    // claim the single allowed socket-mode connection without Slack forcing
+    // a "server explicit disconnect" on the overlapping old container.
+    await app.stop();
+    console.log('✅ Slack socket disconnected');
+  } catch (err) {
+    console.warn('⚠️  Error stopping Slack app:', err?.message || err);
+  }
+  try {
+    await mongoose.connection.close();
+  } catch (err) {
+    console.warn('⚠️  Error closing MongoDB:', err?.message || err);
+  }
   process.exit(0);
-});
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
