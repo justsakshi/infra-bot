@@ -33,6 +33,7 @@ from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.mock import get_mock_data
 from smartlead.processing import fetch_account_data
+from smartlead.client_filter import is_excluded_inbox
 from smartlead.config import (
     TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_TAB_NAME,
     CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_SHEET_ID, SMARTLEAD_POSITIVE_CATEGORY_IDS,
@@ -69,6 +70,13 @@ async def process_account(
         inbox_data, campaign_summary, warmup_data = await fetch_account_data(
             client, deliverability_map, active_only=active_only,
         )
+
+    # Drop old/inactive clients' inboxes (health, master tab, warmup rows)
+    before = len(inbox_data)
+    inbox_data = [r for r in inbox_data if not is_excluded_inbox(r)]
+    warmup_data = [r for r in warmup_data if not is_excluded_inbox(r)]
+    if before != len(inbox_data):
+        print(f"  [filter] excluded {before - len(inbox_data)} old-client inbox row(s)")
 
     if not inbox_data and not campaign_summary:
         print(f"  [!] No data for {account_name} - skipping sheet update.")

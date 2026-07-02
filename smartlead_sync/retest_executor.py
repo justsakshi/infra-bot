@@ -33,6 +33,7 @@ from smartlead.manager_map import resolve_manager
 from smartlead.retest_targets import select_targets
 from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeliveryError
 from smartlead.placement_store import PlacementStore
+from smartlead.client_filter import is_excluded_inbox
 
 
 def _domain(email: str) -> str:
@@ -75,6 +76,7 @@ async def _health_rows_for(acc) -> list[dict]:
             print(f"  [Retest] deliverability read {tab} failed: {exc}")
     async with SmartleadClient(acc.api_key, acc.name) as c:
         inbox, _, _ = await fetch_account_data(c, dmap, active_only=False)
+    inbox = [r for r in inbox if not is_excluded_inbox(r)]  # drop old-client inboxes
     for r in inbox:
         r.setdefault("client", acc.name)
     return build_health_rows(inbox, date.today(), None, resolve_manager)

@@ -29,6 +29,7 @@ from smartlead.config import (
 from smartlead.processing import fetch_account_data
 from smartlead.warmup_planner import plan_warmup_changes
 from smartlead.campaign_freshness import is_campaign_stale, STALE_DAYS
+from smartlead.client_filter import is_excluded_inbox
 
 
 async def _stale_campaign_names(c: SmartleadClient, today: date) -> set[str]:
@@ -57,6 +58,7 @@ async def _raw_inbox_rows(acc, today: date) -> list[dict]:
     async with SmartleadClient(acc.api_key, acc.name) as c:
         inbox, _, _ = await fetch_account_data(c, {}, active_only=False)
         stale_names = await _stale_campaign_names(c, today)
+    inbox = [r for r in inbox if not is_excluded_inbox(r)]  # drop old-client inboxes
     for r in inbox:
         r.setdefault("client", acc.name)
         # stamp campaign_is_stale so the planner can 3-way decide
