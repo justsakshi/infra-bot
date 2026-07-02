@@ -198,6 +198,26 @@ For each inbox:
 2. Anything **<70%** → pause + incident response (auth + copy).
 3. Update the deliverability sheet with results.
 
+### Stale campaigns — the silent inbox killer
+A campaign can show **ACTIVE** in Smartlead but be effectively **dead**: no new
+lead added AND no emails sent in **14+ days**. This is dangerous because:
+- The inboxes on it aren't sending (not working) *and* were going cold (not warming).
+- It hides — the dashboard says ACTIVE, so nobody looks.
+- It traps good inboxes on a zombie campaign.
+
+**What the system does automatically:** detects stale campaigns, turns warmup back
+ON for their inboxes (rescue), and flags them.
+
+**What YOU (the manager) must do when a campaign is flagged stale — pick one:**
+| Situation | Action |
+|---|---|
+| Still valuable, just out of leads | **Feed it new leads** (build + upload a list) → campaign goes fresh |
+| Done / not worth continuing | **Pause or complete it** → frees the inboxes |
+| Inboxes needed elsewhere | **Reassign** them to a live campaign |
+
+Rule of thumb: a stale campaign shouldn't sit stale more than a few days. Revive it
+(leads) or retire it (pause). Never leave good inboxes trapped on a zombie campaign.
+
 ### The manager's mental model
 - **Green (A/B)** = healthy, use freely.
 - **Yellow (C)** = degrading, watch + fix this week.
