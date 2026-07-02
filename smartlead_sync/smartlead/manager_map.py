@@ -10,9 +10,9 @@ MANAGER_MAP: dict[str, dict] = {
     "Belardi Wong":  {"name": "Anjali",     "slack": ""},
     "Bettrdata":     {"name": "Varsha",     "slack": ""},  # Better Data
     "Precise Leads": {"name": "Varsha",     "slack": ""},  # internal
-    "Avench":        {"name": "Unassigned", "slack": ""},
-    "OSC":           {"name": "Unassigned", "slack": ""},
-    "StaffAI":       {"name": "Unassigned", "slack": ""},
+    "OSC":           {"name": "Balasankar", "slack": ""},
+    "StaffAI":       {"name": "Balasankar", "slack": ""},
+    "Avench":        {"name": "Unassigned", "slack": ""},  # old client - ignore
 }
 
 
