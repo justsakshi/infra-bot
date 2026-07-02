@@ -338,6 +338,14 @@ _HEADER_LABELS = {
         "total_responses_month": "Total Responses this month",
         "positive_neutral_month": "Positive/ Neutral responses this month",
     },
+    "Inbox Health": {
+        "priority": "Priority", "client": "Client", "email": "Email", "domain": "Domain",
+        "provider": "Provider", "score": "Health Score", "grade": "Grade", "trend": "Trend (7d)",
+        "status": "Status", "top_problem": "Top Problem", "what_to_do": "What To Do",
+        "owner": "Owner", "how_long": "How Long", "manager": "Manager", "drivers": "Score Drivers",
+        "warmup_rep_pct": "Warmup Rep %", "test_sheet_status": "Test Status", "test_date": "Test Date",
+        "campaigns": "# Campaigns", "owner_skill": "Owner Skill",
+    },
 }
 
 # Column widths (pixels) per tab - only specify overrides, rest get a default
@@ -348,6 +356,9 @@ _COL_WIDTHS = {
     "All Inboxes": {"client": 140, "email": 250, "availability": 110, "busy_reason": 200, "campaigns": 95, "warmup_state": 120, "last_active_date": 110},
     "Deliverability Queue": {"priority": 80, "client": 140, "email": 250, "queue_reason": 220, "recommended_action": 420, "owner_skill": 190, "busy_reason": 200},
     "Campaign Metrics": {"campaign": 320, "platform": 100, "status": 130},
+    "Inbox Health": {"priority": 80, "client": 130, "email": 250, "score": 90, "grade": 70,
+                     "trend": 100, "status": 130, "top_problem": 220, "what_to_do": 420,
+                     "owner": 90, "manager": 130, "drivers": 320},
 }
 _DEFAULT_COL_WIDTH = 120
 
@@ -573,6 +584,22 @@ class SheetsWriter:
         self._write_tab(DELIVERABILITY_QUEUE_TAB_NAME, projected)
         print(f"  [Sheets] deliverability queue written: {len(queue)} action item(s)")
 
+    INBOX_HEALTH_COLUMNS = [
+        "priority", "client", "email", "domain", "provider", "score", "grade", "trend",
+        "status", "top_problem", "what_to_do", "owner", "how_long", "manager", "drivers",
+        "warmup_rep_pct", "test_sheet_status", "test_date", "campaigns", "owner_skill",
+    ]
+
+    def write_inbox_health(self, rows: list[dict]) -> None:
+        """Write the 'Inbox Health' workbook tab."""
+        from smartlead.config import INBOX_HEALTH_TAB_NAME
+        if not rows:
+            print("  [Sheets] No inbox health rows - skipping.")
+            return
+        projected = [{c: r.get(c, "") for c in self.INBOX_HEALTH_COLUMNS} for r in rows]
+        self._write_tab(INBOX_HEALTH_TAB_NAME, projected)
+        print(f"  [Sheets] Inbox Health tab written: {len(rows)} inboxes")
+
     def write_campaign_metrics(self, rows: list[dict], month_name: str | None = None) -> None:
         """Write the 'Campaign Metrics' tab (Smartlead + HeyReach campaigns)."""
         from smartlead.config import CAMPAIGN_METRICS_TAB_NAME
@@ -762,8 +789,20 @@ class SheetsWriter:
         self, sheet_id: int, tab_key: str, columns: list[str], data: list[dict],
     ) -> list[dict]:
         """Return format requests that color-code status/availability cells."""
-        from smartlead.config import CAMPAIGN_METRICS_TAB_NAME
+        from smartlead.config import CAMPAIGN_METRICS_TAB_NAME, INBOX_HEALTH_TAB_NAME
         reqs: list[dict] = []
+
+        if tab_key == INBOX_HEALTH_TAB_NAME and "grade" in columns:
+            col_idx = columns.index("grade")
+            palette = {"A": (_COLORS["green_bg"], _COLORS["green_text"]),
+                       "B": (_COLORS["green_bg"], _COLORS["green_text"]),
+                       "C": (_COLORS["yellow_bg"], _COLORS["orange_text"]),
+                       "D": (_COLORS["red_bg"], _COLORS["red_text"])}
+            for ri, row in enumerate(data, start=1):
+                bg, fg = palette.get(str(row.get("grade", "")).upper(), (None, None))
+                if bg:
+                    reqs.append(_format_range(sheet_id, ri, ri + 1, col_idx, col_idx + 1,
+                                              bg=bg, fg=fg, bold=True, h_align="CENTER"))
 
         if tab_key == CAMPAIGN_METRICS_TAB_NAME and "status" in columns:
             col_idx = columns.index("status")
