@@ -77,6 +77,16 @@ HEALTH_WARMUP_FULL: float = 99.0   # rep >= this -> full warmup credit
 HEALTH_WARMUP_ZERO: float = 90.0   # rep <  this -> zero warmup credit
 HEALTH_TREND_DROP: int = 8         # score drop >= this over 7d -> "declining" early warning
 
+# ── Auto placement-test (health phase 3) ─────────────────────────────────────
+SMARTDELIVERY_BASE_URL: str = "https://smartdelivery.smartlead.ai/api/v1"
+# DRY-RUN by default: executor selects + logs targets but does NOT create tests.
+RETEST_ENABLED: bool = os.getenv("RETEST_ENABLED", "false").lower() == "true"
+RETEST_PER_CLIENT_DAILY_CAP: int = int(os.getenv("RETEST_PER_CLIENT_DAILY_CAP", "2"))
+RETEST_INBOX_THRESHOLD: float = float(os.getenv("RETEST_INBOX_THRESHOLD", "80"))
+RETEST_MIN_TIME_MINUTES: int = 5   # SmartDelivery business rule: >= 5
+PLACEMENT_TESTS_COLLECTION: str = os.getenv("PLACEMENT_TESTS_COLLECTION", "placement_tests")
+PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "placement_results")
+
 
 @dataclass
 class AccountConfig:
