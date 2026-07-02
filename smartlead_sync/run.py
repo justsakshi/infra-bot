@@ -157,6 +157,9 @@ async def main() -> None:
                         deliverability_map[domain] = {"status": "fail", "date": fail_date}
                     elif status and (not existing or date >= existing.get("date", "")):
                         deliverability_map[domain] = {"status": status, "date": date}
+            # Overlay any newer API placement results (no-op until phase-3 tests run)
+            from smartlead.placement_merge import apply_api_results
+            deliverability_map = apply_api_results(deliverability_map)
             rows, campaigns = await process_account(acc.api_key, acc.sheet_id, acc.name, deliverability_map, active_only)
             rows_by_sheet.setdefault(acc.sheet_id, []).extend(rows)
             if acc.name in CAMPAIGN_METRICS_CLIENTS:
