@@ -155,3 +155,64 @@ def compute_trend(today_score: int, prior_score: int | None) -> dict:
     delta = today_score - prior_score
     arrow = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
     return {"delta_7d": delta, "arrow": arrow, "declining": delta <= -HEALTH_TREND_DROP}
+
+
+def _domain(email: str) -> str:
+    return str(email).split("@", 1)[1].strip().lower() if "@" in str(email) else ""
+
+
+def build_health_rows(inbox_rows: list[dict], today, store, resolve_manager) -> list[dict]:
+    """Score+action+trend+manager for each unique inbox. `today` is a date."""
+    from smartlead.sheets import _dedupe_inbox_rows  # reuse existing dedup
+    rows: list[dict] = []
+    for snap in _dedupe_inbox_rows(inbox_rows):
+        client = snap.get("client", "")
+        email = str(snap.get("email", "")).strip()
+        if not email:
+            continue
+        hs = compute_health_score(snap, today)
+        act = resolve_action(snap, hs["score"])
+        prior = store.prior_score(client, email, 7, today) if store else None
+        tr = compute_trend(hs["score"], prior)
+        mgr = resolve_manager(client)
+        drivers = hs["drivers"]
+        rows.append({
+            "priority": act["priority"],
+            "client": client,
+            "email": email,
+            "domain": _domain(email),
+            "provider": snap.get("provider", ""),
+            "score": hs["score"],
+            "grade": hs["grade"],
+            "trend": (f"{tr['arrow']} {tr['delta_7d']:+d}" if tr["delta_7d"] is not None else tr["arrow"]),
+            "status": act["status"],
+            "top_problem": act["top_problem"],
+            "what_to_do": act["what_to_do"],
+            "owner": "🤖 Auto" if act["owner"] == "auto" else ("👤 You" if act["owner"] == "human" else ""),
+            "how_long": act["how_long"],
+            "manager": mgr["name"],
+            "drivers": f"test {drivers['placement']}/40 · warmup {drivers['warmup']}/25 · bounce {drivers['bounce']}/20 · conn {drivers['connection']}/15",
+            "warmup_rep_pct": snap.get("warmup_rep_pct", ""),
+            "test_sheet_status": snap.get("test_sheet_status", ""),
+            "test_date": snap.get("test_date", ""),
+            "campaigns": snap.get("campaigns", 0),
+            "owner_skill": act["owner_skill"],
+            "_declining": tr["declining"],
+        })
+    priority_order = {"P0": 0, "P1": 1, "P2": 2, "": 9}
+    rows.sort(key=lambda r: (priority_order.get(r["priority"], 9), r["client"], r["score"]))
+    return rows
+
+
+def health_records_for_store(rows: list[dict], today) -> list[dict]:
+    """Project workbook rows into Mongo history records."""
+    ds = today.strftime("%Y-%m-%d")
+    out = []
+    for r in rows:
+        out.append({
+            "client": r["client"], "email": r["email"], "domain": r["domain"],
+            "date": ds, "score": r["score"], "grade": r["grade"],
+            "placement_status": r["test_sheet_status"], "placement_date": r["test_date"],
+            "warmup_rep_pct": r["warmup_rep_pct"], "campaigns": r["campaigns"],
+        })
+    return out

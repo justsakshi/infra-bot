@@ -59,4 +59,18 @@ ok(t["delta_7d"] == -15 and t["arrow"] == "↓" and t["declining"] is True, "dec
 ok(compute_trend(90, None)["arrow"] == "—", "no prior -> flat/unknown")
 ok(compute_trend(90, 88)["arrow"] == "↑", "improving -> up arrow")
 
-print("\nALL PASSED")
+# --- build_health_rows integration (no Mongo, no manager file needed) ---
+class _NoStore:
+    def prior_score(self, *a, **k): return None
+from smartlead.health import build_health_rows, health_records_for_store
+inbox = [snap(email="a@d1.com", client="DARLEAN"),
+         snap(email="a@d1.com", client="DARLEAN", campaign_name="C2"),  # dup -> merged
+         snap(email="b@d2.com", client="DARLEAN", test_sheet_status="fail", busy_reason="failed_test")]
+rows = build_health_rows(inbox, TODAY, _NoStore(), lambda c: {"name": "Dmitrii", "slack": "@d"})
+ok(len(rows) == 2, f"deduped to 2 inboxes (got {len(rows)})")
+ok(rows[0]["priority"] == "P0", "P0 sorts first")
+ok(rows[0]["manager"] == "Dmitrii", "manager attached")
+recs = health_records_for_store(rows, TODAY)
+ok(recs[0]["date"] == "2026-07-02" and "score" in recs[0], "history record shape")
+
+print("\nALL PASSED (with build_health_rows)")
