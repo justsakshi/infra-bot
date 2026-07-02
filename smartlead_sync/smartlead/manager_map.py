@@ -4,12 +4,12 @@ Fill slack handles at rollout (Slack member IDs like 'U01234' or '@name')."""
 from __future__ import annotations
 
 MANAGER_MAP: dict[str, dict] = {
-    "DARLEAN":       {"name": "Unassigned", "slack": ""},
-    "Melior":        {"name": "Unassigned", "slack": ""},
-    "Precise Leads": {"name": "Unassigned", "slack": ""},
-    "Bettrdata":     {"name": "Unassigned", "slack": ""},  # Better Data
-    "Mythic":        {"name": "Unassigned", "slack": ""},
-    "Belardi Wong":  {"name": "Unassigned", "slack": ""},
+    "DARLEAN":       {"name": "Balasankar", "slack": ""},
+    "Mythic":        {"name": "Balasankar", "slack": ""},
+    "Melior":        {"name": "Anjali",     "slack": ""},
+    "Belardi Wong":  {"name": "Anjali",     "slack": ""},
+    "Bettrdata":     {"name": "Varsha",     "slack": ""},  # Better Data
+    "Precise Leads": {"name": "Varsha",     "slack": ""},  # internal
     "Avench":        {"name": "Unassigned", "slack": ""},
     "OSC":           {"name": "Unassigned", "slack": ""},
     "StaffAI":       {"name": "Unassigned", "slack": ""},
