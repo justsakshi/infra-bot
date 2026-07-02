@@ -161,6 +161,40 @@ async def main() -> None:
     campaign_counts = sorted(groups.values())
     ok(campaign_counts == [0, 1, 1], f"campaign counts [0,1,1] (got {campaign_counts})")
 
+    # Deliverability queue: failed/stale/untested/low-rep/high-volume rows become action items.
+    from smartlead.sheets import build_deliverability_queue
+    queue = build_deliverability_queue([
+        {
+            "client": "TEST", "email": "failed@dom.com", "provider": "Gmail", "account_id": "1",
+            "availability": "BUSY", "busy_reason": "failed_test", "campaign_name": "Camp",
+            "campaigns": 1, "max_per_day": 35, "sent_today": 0, "true_load": 0,
+            "available_capacity": 35, "warmup_state": "ramped", "warmup_rep_pct": "95%",
+            "test_sheet_status": "fail", "test_date": fresh,
+        },
+        {
+            "client": "TEST", "email": "stale@dom.com", "provider": "Outlook", "account_id": "2",
+            "availability": "BUSY", "busy_reason": "stale_test", "campaign_name": "N/A (No active campaign)",
+            "campaigns": 0, "max_per_day": 35, "sent_today": 0, "true_load": 0,
+            "available_capacity": 35, "warmup_state": "ramped", "warmup_rep_pct": "95%",
+            "test_sheet_status": "stale", "test_date": old,
+        },
+        {
+            "client": "TEST", "email": "healthy@dom.com", "provider": "Gmail", "account_id": "3",
+            "availability": "FREE", "busy_reason": "", "campaign_name": "Camp",
+            "campaigns": 1, "max_per_day": 35, "sent_today": 28, "true_load": 28,
+            "available_capacity": 7, "warmup_state": "ramped", "warmup_rep_pct": "95%",
+            "test_sheet_status": "inbox", "test_date": old,
+        },
+    ])
+    ok([r["priority"] for r in queue] == ["P0", "P1", "P2"],
+       f"queue priorities P0/P1/P2 (got {[r['priority'] for r in queue]})")
+    ok(queue[0]["owner_skill"] == "deliverability-incident-response",
+       f"failed test routes to incident response (got {queue[0]['owner_skill']})")
+    ok(queue[1]["owner_skill"] == "email-deliverability-audit",
+       f"stale test routes to audit (got {queue[1]['owner_skill']})")
+    ok(queue[2]["owner_skill"] == "deliverability-test-public",
+       f"high-volume retest routes to deliverability test (got {queue[2]['owner_skill']})")
+
     # Extension verification checks
     
     # 1. API key cleaning
@@ -196,4 +230,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

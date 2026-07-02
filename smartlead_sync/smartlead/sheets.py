@@ -11,7 +11,13 @@ import polars as pl
 from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
 
-from smartlead.config import SERVICE_ACCOUNT_FILE, TEST_SHEET_ID, TEST_TAB_NAME, MASTER_TAB_NAME
+from smartlead.config import (
+    DELIVERABILITY_QUEUE_TAB_NAME,
+    MASTER_TAB_NAME,
+    SERVICE_ACCOUNT_FILE,
+    TEST_SHEET_ID,
+    TEST_TAB_NAME,
+)
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -42,6 +48,162 @@ def _parse_test_date(cell: str) -> str:
         except ValueError:
             continue
     return ""
+
+
+def _age_days(date_str: str) -> int | None:
+    """Return whole days since a YYYY-MM-DD date, else None."""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(date_str)[:10])
+    except ValueError:
+        return None
+    return (datetime.now() - dt).days
+
+
+def _domain_from_email(email: str) -> str:
+    if "@" not in str(email):
+        return ""
+    return str(email).split("@", 1)[1].strip().lower()
+
+
+def _parse_number(value: object) -> float:
+    try:
+        return float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
+    """Return one row per (client, email), with active campaign count attached."""
+    groups: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r.get("client", ""), str(r.get("email", "")).strip().lower())
+        g = groups.get(key)
+        if g is None:
+            g = {"row": r, "campaigns": 0}
+            groups[key] = g
+        campaign = str(r.get("campaign_name", ""))
+        if campaign and not campaign.startswith("N/A"):
+            g["campaigns"] += 1
+
+    deduped: list[dict] = []
+    for g in groups.values():
+        row = dict(g["row"])
+        row["campaigns"] = g["campaigns"]
+        deduped.append(row)
+    return deduped
+
+
+def _queue_item(row: dict) -> dict | None:
+    """Translate one master inbox row into a queue item when action is needed."""
+    email = str(row.get("email", "")).strip()
+    if not email:
+        return None
+
+    reasons = {
+        r.strip()
+        for r in str(row.get("busy_reason", "")).split(",")
+        if r.strip()
+    }
+    status = str(row.get("test_sheet_status", "")).strip().lower()
+    test_age = _age_days(str(row.get("test_date", "")))
+    campaigns = int(_parse_number(row.get("campaigns", 0)))
+    max_per_day = _parse_number(row.get("max_per_day", 0))
+    true_load = _parse_number(row.get("true_load", 0))
+    sent_today = _parse_number(row.get("sent_today", 0))
+    live_load = max(true_load, sent_today)
+
+    priority = ""
+    reason = ""
+    action = ""
+    owner_skill = ""
+
+    if "failed_test" in reasons or status in {"fail", "spam"}:
+        priority = "P0"
+        reason = "failed placement test"
+        action = "Pause inbox/domain, run incident response, fix auth/copy/list, then retest."
+        owner_skill = "deliverability-incident-response"
+    elif "warmup_blocked" in reasons:
+        priority = "P0"
+        reason = "warmup blocked"
+        action = "Investigate block reason; pause or retire inbox if it does not recover."
+        owner_skill = "smartlead-inbox-manager"
+    elif "disconnected" in reasons:
+        priority = "P1"
+        reason = "SMTP/IMAP disconnected"
+        action = "Reconnect the inbox before any campaign assignment."
+        owner_skill = "smartlead-inbox-manager"
+    elif "low_rep" in reasons:
+        priority = "P1"
+        reason = "warmup reputation below threshold"
+        action = "Keep out of campaigns; continue/adjust warmup and retest after reputation recovers."
+        owner_skill = "smartlead-inbox-manager"
+    elif "untested" in reasons or status in {"", "unknown"}:
+        priority = "P1"
+        reason = "no placement test on record"
+        action = "Run initial GSuite + Outlook placement test before assigning to campaigns."
+        owner_skill = "email-deliverability-audit"
+    elif "stale_test" in reasons or status == "stale":
+        priority = "P1"
+        reason = "placement test is stale"
+        action = "Run fresh placement test; keep unavailable until test result is inbox."
+        owner_skill = "email-deliverability-audit"
+    elif campaigns > 0 and live_load >= 25 and (test_age is None or test_age >= 7):
+        priority = "P2"
+        reason = "active high-volume inbox needs routine retest"
+        action = "Retest before increasing volume; hold current cap until fresh inbox result."
+        owner_skill = "deliverability-test-public"
+    elif campaigns > 0 and max_per_day >= 35 and (test_age is None or test_age >= 7):
+        priority = "P2"
+        reason = "near max daily cap needs scale check"
+        action = "Run placement check before using remaining capacity."
+        owner_skill = "deliverability-test-public"
+    else:
+        return None
+
+    return {
+        "priority": priority,
+        "client": row.get("client", ""),
+        "email": email,
+        "domain": _domain_from_email(email),
+        "provider": row.get("provider", ""),
+        "account_id": row.get("account_id", ""),
+        "queue_reason": reason,
+        "recommended_action": action,
+        "owner_skill": owner_skill,
+        "availability": row.get("availability", ""),
+        "busy_reason": row.get("busy_reason", ""),
+        "campaigns": campaigns,
+        "max_per_day": row.get("max_per_day", ""),
+        "sent_today": row.get("sent_today", ""),
+        "true_load": row.get("true_load", ""),
+        "available_capacity": row.get("available_capacity", ""),
+        "warmup_state": row.get("warmup_state", ""),
+        "warmup_rep_pct": row.get("warmup_rep_pct", ""),
+        "test_sheet_status": row.get("test_sheet_status", ""),
+        "test_date": row.get("test_date", ""),
+    }
+
+
+def build_deliverability_queue(rows: list[dict]) -> list[dict]:
+    """Build the cross-account action queue from raw inbox rows."""
+    queue = [
+        item
+        for row in _dedupe_inbox_rows(rows)
+        for item in [_queue_item(row)]
+        if item is not None
+    ]
+    priority_order = {"P0": 0, "P1": 1, "P2": 2}
+    return sorted(
+        queue,
+        key=lambda r: (
+            priority_order.get(str(r.get("priority")), 9),
+            str(r.get("client", "")),
+            str(r.get("domain", "")),
+            str(r.get("email", "")),
+        ),
+    )
 
 
 
@@ -145,6 +307,28 @@ _HEADER_LABELS = {
         "test_sheet_status": "Test Status",
         "test_date": "Test Date",
     },
+    "Deliverability Queue": {
+        "priority": "Priority",
+        "client": "Client",
+        "email": "Email",
+        "domain": "Domain",
+        "provider": "Provider",
+        "account_id": "Account ID",
+        "queue_reason": "Queue Reason",
+        "recommended_action": "Recommended Action",
+        "owner_skill": "Owner Skill",
+        "availability": "Availability",
+        "busy_reason": "Busy Reason",
+        "campaigns": "# Campaigns",
+        "max_per_day": "Max/Day",
+        "sent_today": "Sent Today",
+        "true_load": "True Load",
+        "available_capacity": "Avail. Capacity",
+        "warmup_state": "Warmup State",
+        "warmup_rep_pct": "Warmup Rep %",
+        "test_sheet_status": "Test Status",
+        "test_date": "Test Date",
+    },
     "Campaign Metrics": {
         "campaign": "Campaign name", "platform": "Platform", "status": "Campaign Status",
         "total_leads": "Total leads", "leads_added_month": "Leads added this month",
@@ -162,6 +346,7 @@ _COL_WIDTHS = {
     "Inboxes":          {"email": 250, "campaign_name": 230, "daily_limit": 110, "availability": 110, "true_load": 90, "available_capacity": 120},
     "Warmup Reputation": {"email": 250, "warmup_reputation": 110},
     "All Inboxes": {"client": 140, "email": 250, "availability": 110, "busy_reason": 200, "campaigns": 95, "warmup_state": 120, "last_active_date": 110},
+    "Deliverability Queue": {"priority": 80, "client": 140, "email": 250, "queue_reason": 220, "recommended_action": 420, "owner_skill": 190, "busy_reason": 200},
     "Campaign Metrics": {"campaign": 320, "platform": 100, "status": 130},
 }
 _DEFAULT_COL_WIDTH = 120
@@ -348,6 +533,14 @@ class SheetsWriter:
         "last_active_date", "test_sheet_status", "test_date",
     ]
 
+    DELIVERABILITY_QUEUE_COLUMNS = [
+        "priority", "client", "email", "domain", "provider", "account_id",
+        "queue_reason", "recommended_action", "owner_skill",
+        "availability", "busy_reason", "campaigns",
+        "max_per_day", "sent_today", "true_load", "available_capacity",
+        "warmup_state", "warmup_rep_pct", "test_sheet_status", "test_date",
+    ]
+
     def write_master_inboxes(self, rows: list[dict]) -> None:
         """Write the flat cross-client 'All Inboxes' tab.
 
@@ -361,22 +554,7 @@ class SheetsWriter:
             print("  [Sheets] No inbox rows for master tab — skipping.")
             return
 
-        groups: dict[tuple, dict] = {}
-        for r in rows:
-            key = (r.get("client", ""), str(r.get("email", "")).strip().lower())
-            g = groups.get(key)
-            if g is None:
-                g = {"row": r, "campaigns": 0}
-                groups[key] = g
-            campaign = str(r.get("campaign_name", ""))
-            if campaign and not campaign.startswith("N/A"):
-                g["campaigns"] += 1
-
-        deduped: list[dict] = []
-        for g in groups.values():
-            row = dict(g["row"])
-            row["campaigns"] = g["campaigns"]
-            deduped.append(row)
+        deduped = _dedupe_inbox_rows(rows)
 
         ordered = sorted(
             deduped, key=lambda r: (r.get("client", ""), r.get("availability", ""), r.get("email", "")),
@@ -384,6 +562,16 @@ class SheetsWriter:
         projected = [{c: r.get(c, "") for c in self.MASTER_COLUMNS} for r in ordered]
         self._write_tab(MASTER_TAB_NAME, projected)
         print(f"  [Sheets] master dedup: {len(rows)} campaign-rows -> {len(deduped)} unique inboxes")
+
+    def write_deliverability_queue(self, rows: list[dict]) -> None:
+        """Write the cross-account work queue for placement tests and incidents."""
+        if not rows:
+            print("  [Sheets] No inbox rows for deliverability queue - skipping.")
+            return
+        queue = build_deliverability_queue(rows)
+        projected = [{c: r.get(c, "") for c in self.DELIVERABILITY_QUEUE_COLUMNS} for r in queue]
+        self._write_tab(DELIVERABILITY_QUEUE_TAB_NAME, projected)
+        print(f"  [Sheets] deliverability queue written: {len(queue)} action item(s)")
 
     def write_campaign_metrics(self, rows: list[dict], month_name: str | None = None) -> None:
         """Write the 'Campaign Metrics' tab (Smartlead + HeyReach campaigns)."""

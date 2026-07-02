@@ -39,6 +39,7 @@ WARMUP_RAMP_DAYS: int = 21        # warmup younger than this is still "warming"
 # ── Master "All Inboxes" tab ─────────────────────────────────────────────────
 MASTER_SHEET_ID: str = os.getenv("MASTER_SHEET_ID", DEFAULT_SHEET_ID)
 MASTER_TAB_NAME: str = os.getenv("MASTER_TAB_NAME", "All Inboxes")
+DELIVERABILITY_QUEUE_TAB_NAME: str = os.getenv("DELIVERABILITY_QUEUE_TAB_NAME", "Deliverability Queue")
 
 # Account name -> deliverability test tab name(s). Maps are merged; "fail" wins.
 # (Moved out of run.py so adding a client is a config edit, not a code edit.)

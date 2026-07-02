@@ -52,4 +52,34 @@ ok(tr["campaign"] == "Total", "total label")
 ok(tr["total_leads"] == 299, f"total leads sum==299 (got {tr['total_leads']})")
 ok(tr["msg_sent"] == 112, f"msg sent sum (100+12)==112 (got {tr['msg_sent']})")
 ok(set(COLUMNS) >= {"campaign", "platform", "status", "total_leads"}, "COLUMNS defined")
+
+# --- Reporting Range ---
+from smartlead.campaign_metrics import get_reporting_range
+
+# 1. Test Auto detection on day <= 5
+t1 = datetime(2026, 7, 3, 12, 0, 0, tzinfo=timezone.utc)
+start, end, name = get_reporting_range("auto", t1)
+ok(name == "June", f"auto-month on July 3rd should be June (got {name})")
+ok(start == datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc), "June start")
+ok(end == datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc), "June end")
+
+# 2. Test Auto detection on day > 5
+t2 = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
+start, end, name = get_reporting_range("auto", t2)
+ok(name == "July", f"auto-month on July 10th should be July (got {name})")
+ok(start == datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc), "July start")
+ok(end == t2, "July end capped at today")
+
+# 3. Test explicit month name
+start, end, name = get_reporting_range("june", t2)
+ok(name == "June", "explicit June name")
+ok(start == datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc), "June start")
+ok(end == datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc), "June end")
+
+# 4. Test explicit previous
+start, end, name = get_reporting_range("previous", t2)
+ok(name == "June", "explicit previous")
+ok(start == datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc), "June start")
+
 print("\nALL PASSED")
+

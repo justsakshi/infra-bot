@@ -171,7 +171,9 @@ async def main() -> None:
     # One 'All Inboxes' master tab per distinct sheet (per workspace)
     for sheet_id, rows in rows_by_sheet.items():
         try:
-            SheetsWriter(sheet_id).write_master_inboxes(rows)
+            writer = SheetsWriter(sheet_id)
+            writer.write_master_inboxes(rows)
+            writer.write_deliverability_queue(rows)
             print(f"[*] Master tab '{MASTER_TAB_NAME}' written to sheet {sheet_id} from {len(rows)} campaign-rows")
         except Exception as exc:
             print(f"[!] Master inbox tab failed for sheet {sheet_id}: {exc}")
