@@ -32,6 +32,7 @@ That's what this system does. This playbook is the map.
 | 6 | **Deliverability test mapping** | Reads placement-test results (inbox/spam) per domain from the deliverability sheet, all clients | ✅ LIVE |
 | 7 | **Slack digest** | Daily message grouped by client, @-mentions each manager, lists their action items | ⏳ CODE READY (needs live channel + manager handles) |
 | 8 | **Auto placement-test executor** | Auto-runs SmartDelivery tests for stale/untested inboxes, worst-first, per-client capped | ✅ BUILT — DRY-RUN (spends nothing until enabled) |
+| 9 | **Auto-warmup executor** | Keeps warmup ON unless an inbox is actively sending in a live campaign; flips any inbox whose state is wrong | ✅ BUILT — DRY-RUN (changes nothing until enabled) |
 
 **The health score (how #4 works):** 4 signals, 0–100:
 - Placement test result — 40 pts (landed inbox vs spam — strongest signal)
@@ -157,7 +158,65 @@ For each inbox:
 
 ---
 
-## Part 8 — Current Status Summary
+## Part 8 — Campaign Manager's Weekly Action Calendar
+
+**The exact routine each campaign manager follows to keep their client's inboxes landing in the inbox.** The system does the tracking; the manager does the judgment fixes. Open the **Inbox Health workbook**, filter to your client, and work top-down (P0 first).
+
+### Every DAY (5 min)
+1. Open the workbook → your client → sort by Priority.
+2. Any **P0 (red / D-grade)?** Do them TODAY — these are actively landing in spam:
+   - *Failed placement test* → pause the inbox in Smartlead, check the domain's SPF/DKIM/DMARC, simplify the copy if spammy, then let it retest.
+3. **🤖 Auto rows** — ignore, the system handles them.
+
+### MONDAY (30 min) — Health sweep
+1. Scan all your inboxes' grades. Note anything that dropped a grade since last week (Trend column ↓).
+2. Any inbox with **reply rate <1% after 200+ sends** → it's underperforming: compare its copy to a healthy sibling inbox, or rotate it out.
+3. Any **bounce >3%** → list problem: clean the list (remove bad addresses). **>5% → pause that campaign now.**
+4. Any **P1** rows (disconnected, low-rep, stale/untested) → work them:
+   - *Disconnected* → reconnect the inbox (re-login).
+   - *Low warmup rep (<90%)* → keep it OUT of campaigns, let warmup recover.
+   - *Stale/untested* → the auto-tester handles it (or run a manual placement test).
+
+### WEDNESDAY (15 min) — Reply handling
+1. Check for positive/interested replies → respond fast (within the hour for hot ones).
+2. Categorize replies correctly in Smartlead (the auto-tagging isn't perfect — your manual tags feed the metrics).
+
+### FRIDAY (20 min) — Campaign review
+1. For campaigns hitting the **21-day mark**, review reply rate:
+   - **≥2× baseline** → scale it up.
+   - **near baseline** → iterate the copy.
+   - **<50% of baseline** → kill it.
+2. Note any inbox that's been sending heavily — flag for a placement retest.
+
+### EVERY OTHER MONDAY (30 min) — Inbox rotation
+1. **Retire** inboxes that are bad/blocked/failing the 1% rule (tag retired, warmup off).
+2. **Promote** warmed insurance inboxes → active to backfill.
+3. If you have **<5 spare warm inboxes**, start a new domain purchase (2-week lead time).
+
+### MONTHLY (1st of month, 45 min) — Fleet placement test
+1. Run placement tests across the client's inboxes (target **≥85% inbox**).
+2. Anything **<70%** → pause + incident response (auth + copy).
+3. Update the deliverability sheet with results.
+
+### The manager's mental model
+- **Green (A/B)** = healthy, use freely.
+- **Yellow (C)** = degrading, watch + fix this week.
+- **Red (D)** = broken, pull from campaigns NOW.
+- **Trend ↓** = catch it before it turns red.
+- **Warmup ON** unless the inbox is actively sending — the system now manages this automatically (once enabled).
+
+### What the system does FOR the manager (so they don't have to)
+- Scores + grades every inbox daily
+- Warns before decline (trend)
+- Runs placement tests (when enabled)
+- Manages warmup on/off (when enabled)
+- Slacks them their action list each morning
+
+The manager only does what needs a human: **DNS fixes, copy rewrites, reconnects, retire/scale decisions, reply handling.**
+
+---
+
+## Part 9 — Current Status Summary
 
 **✅ Working now (daily, automatic):** inbox scoring, workbook, history, trend, test-mapping, campaign metrics.
 **⏳ One step from live:** Slack digest (needs channel + managers), cron for auto-test (dry-run).
