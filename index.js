@@ -1621,6 +1621,40 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Auto placement-test executor at 11:00 AM IST daily (1h after sync so
+    // health data is fresh). Ships DRY-RUN (RETEST_ENABLED=false) — spends
+    // nothing until explicitly enabled via the RETEST_ENABLED env var.
+    cron.schedule('0 11 * * *', () => {
+      console.log(`[CRON] Auto placement-test firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['retest_executor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[retest] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[retest] ${d}`));
+      proc.on('close', code => console.log(`[retest] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // Auto-warmup executor at 11:30 AM IST daily. Ships DRY-RUN
+    // (WARMUP_AUTO_ENABLED=false) — logs would-change, applies nothing until
+    // explicitly enabled via the WARMUP_AUTO_ENABLED env var.
+    cron.schedule('30 11 * * *', () => {
+      console.log(`[CRON] Auto-warmup firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['warmup_executor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[warmup] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[warmup] ${d}`));
+      proc.on('close', code => console.log(`[warmup] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();
