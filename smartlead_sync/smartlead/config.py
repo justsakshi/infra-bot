@@ -77,6 +77,12 @@ HEALTH_WARMUP_FULL: float = 99.0   # rep >= this -> full warmup credit
 HEALTH_WARMUP_ZERO: float = 90.0   # rep <  this -> zero warmup credit
 HEALTH_TREND_DROP: int = 8         # score drop >= this over 7d -> "declining" early warning
 
+# R3 TOGGLE — warmup spam-count red flag. OFF = ignore (legacy). ON = an inbox
+# with warmup spam landings (total_spam_count > threshold) is flagged as a P0
+# spam-risk in the workbook (2026: landing in spam even during warmup = bad).
+HEALTH_SPAM_FLAG_ENABLED: bool = os.getenv("HEALTH_SPAM_FLAG_ENABLED", "false").lower() == "true"
+HEALTH_SPAM_COUNT_THRESHOLD: int = int(os.getenv("HEALTH_SPAM_COUNT_THRESHOLD", "3"))
+
 # ── Auto placement-test (health phase 3) ─────────────────────────────────────
 SMARTDELIVERY_BASE_URL: str = "https://smartdelivery.smartlead.ai/api/v1"
 # DRY-RUN by default: executor selects + logs targets but does NOT create tests.

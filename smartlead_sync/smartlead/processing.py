@@ -334,6 +334,7 @@ def process_inbox_availability(
         item["warmup_state"] = info.get("warmup_state", "off") if isinstance(info, dict) else "off"
         item["warmup_max_count"] = info.get("warmup_max_count", 0) if isinstance(info, dict) else 0
         item["last_active_date"] = info.get("last_active_date", "") if isinstance(info, dict) else ""
+        item["warmup_spam_count"] = info.get("warmup_spam_count", 0) if isinstance(info, dict) else 0
 
         # Aggregate True Load and Capacity (using inbox's actual daily limit)
         total_true_load = round(inbox_aggregate_load.get(email, 0.0), 1)
@@ -503,6 +504,7 @@ async def _build_warmup_data(
             "warmup_state": _classify_warmup_state(warmup_details, rep_val),
             "warmup_max_count": warmup_details.get("warmup_max_count", 0),
             "last_active_date": _latest_active_date(stats_map.get(str(acc_id)), acc.get("updated_at", "")),
+            "warmup_spam_count": entry["landed_spam"],
         }
         warmup_data.append(entry)
 

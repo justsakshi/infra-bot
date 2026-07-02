@@ -6,6 +6,7 @@ from datetime import date, datetime
 from smartlead.config import (
     HEALTH_WEIGHTS, HEALTH_TEST_STALE_DAYS, HEALTH_TEST_DEAD_DAYS,
     HEALTH_WARMUP_FULL, HEALTH_WARMUP_ZERO, HEALTH_TREND_DROP,
+    HEALTH_SPAM_FLAG_ENABLED, HEALTH_SPAM_COUNT_THRESHOLD,
 )
 
 _FAIL = {"fail", "spam"}
@@ -117,6 +118,13 @@ def resolve_action(snapshot: dict, score: int) -> dict:
         state = "broken" if priority == "P0" else ("needs_action" if priority else "healthy")
         return {"priority": priority, "top_problem": problem, "what_to_do": what,
                 "how_long": how, "owner": owner, "owner_skill": skill, "status": state}
+
+    # R3: warmup spam landings (toggle). Landing in spam even during warmup is a
+    # top red flag — surfaces above failed-test since it's live-reputation damage.
+    if HEALTH_SPAM_FLAG_ENABLED and _num(snapshot.get("warmup_spam_count", 0)) > HEALTH_SPAM_COUNT_THRESHOLD:
+        return item("P0", "Landing in spam during warmup",
+                    "Pause inbox; audit copy + auth (SPF/DKIM/DMARC); check Google Postmaster complaint rate; retest.",
+                    "1-7 days", "human", "deliverability-incident-response")
 
     if "failed_test" in reasons or status in _FAIL:
         return item("P0", "Failed placement test",

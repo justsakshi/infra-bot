@@ -53,6 +53,17 @@ ok(a2["priority"] == "P1" and a2["owner"] == "auto", "stale -> P1 auto")
 a3 = resolve_action(snap(), 100)
 ok(a3["priority"] == "" and a3["status"] == "healthy", "healthy -> no priority")
 
+# --- R3 spam-flag toggle ---
+import smartlead.health as _h
+sp = snap(warmup_spam_count=5)  # over threshold 3
+_h.HEALTH_SPAM_FLAG_ENABLED = False
+ok(resolve_action(sp, 100)["priority"] == "", "spam flag OFF -> ignored")
+_h.HEALTH_SPAM_FLAG_ENABLED = True
+r = resolve_action(sp, 100)
+ok(r["priority"] == "P0" and "spam" in r["top_problem"].lower(), "spam flag ON -> P0 spam")
+ok(resolve_action(snap(warmup_spam_count=1), 100)["priority"] == "", "under threshold -> no flag")
+_h.HEALTH_SPAM_FLAG_ENABLED = False  # restore
+
 # --- trend ---
 t = compute_trend(70, 85)
 ok(t["delta_7d"] == -15 and t["arrow"] == "↓" and t["declining"] is True, "declining trend")
