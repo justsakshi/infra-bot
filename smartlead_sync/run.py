@@ -41,6 +41,11 @@ from smartlead.sheets import DeliverabilityReader, SheetsWriter
 from smartlead.heyreach import HeyReachClient
 from smartlead.heyreach_accounts import discover_heyreach_workspaces
 from smartlead import campaign_metrics as cm
+from datetime import date as _date
+from smartlead.health import build_health_rows, health_records_for_store
+from smartlead.health_store import HealthStore
+from smartlead.manager_map import resolve_manager
+from smartlead import notify as _notify
 
 
 # ── Per-account pipeline ─────────────────────────────────────────────────────
@@ -173,10 +178,41 @@ async def main() -> None:
         try:
             writer = SheetsWriter(sheet_id)
             writer.write_master_inboxes(rows)
-            writer.write_deliverability_queue(rows)
             print(f"[*] Master tab '{MASTER_TAB_NAME}' written to sheet {sheet_id} from {len(rows)} campaign-rows")
         except Exception as exc:
             print(f"[!] Master inbox tab failed for sheet {sheet_id}: {exc}")
+
+    # ── Inbox Health workbook (score + trend + action + manager) ─────────────
+    try:
+        today_d = _date.today()
+        store = HealthStore()
+        all_health_rows: list[dict] = []
+        health_rows_by_sheet: dict[str, list[dict]] = {}
+        for sheet_id, rows in rows_by_sheet.items():
+            hrows = build_health_rows(rows, today_d, store, resolve_manager)
+            for hr in hrows:
+                hr["_mgr_slack"] = resolve_manager(hr["client"]).get("slack", "")
+            health_rows_by_sheet[sheet_id] = hrows
+            all_health_rows.extend(hrows)
+            try:
+                SheetsWriter(sheet_id).write_inbox_health(hrows)
+            except Exception as exc:
+                print(f"[!] Inbox Health tab failed for sheet {sheet_id}: {exc}")
+        saved = store.save_daily(
+            [rec for hrows in health_rows_by_sheet.values()
+             for rec in health_records_for_store(hrows, today_d)]
+        )
+        print(f"[*] Inbox Health: {len(all_health_rows)} inboxes scored, {saved} history records saved")
+        try:
+            primary = accounts[0].sheet_id
+            sheet_url = f"https://docs.google.com/spreadsheets/d/{primary}"
+            digest = _notify.build_digest(all_health_rows, sheet_url)
+            if _notify.post_digest(digest):
+                print("[*] Inbox Health Slack digest posted")
+        except Exception as exc:
+            print(f"[!] Inbox Health notify failed: {exc}")
+    except Exception as exc:
+        print(f"[!] Inbox Health workbook failed: {exc}")
 
     # ── Campaign Metrics dashboard (Smartlead + HeyReach) ────────────────────
     try:
