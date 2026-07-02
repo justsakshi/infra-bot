@@ -90,10 +90,19 @@ PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "p
 # ── Auto warmup (health phase 4) ─────────────────────────────────────────────
 # DRY-RUN by default: planner logs would-enable/would-disable but changes nothing.
 WARMUP_AUTO_ENABLED: bool = os.getenv("WARMUP_AUTO_ENABLED", "false").lower() == "true"
-# Warmup ramp when auto-enabling (industry defaults; new-inbox profile).
-WARMUP_PER_DAY: int = int(os.getenv("WARMUP_PER_DAY", "40"))
+
+# R1 TOGGLE — conservative 2026 volume. OFF = legacy 40/day; ON = 30/day (2026
+# safe band 20-50/day; 100+/day = 4.3x bounce per Woodpecker 2025).
+WARMUP_CONSERVATIVE_VOLUME: bool = os.getenv("WARMUP_CONSERVATIVE_VOLUME", "false").lower() == "true"
+WARMUP_PER_DAY: int = int(os.getenv("WARMUP_PER_DAY", "30" if WARMUP_CONSERVATIVE_VOLUME else "40"))
 WARMUP_DAILY_RAMPUP: int = int(os.getenv("WARMUP_DAILY_RAMPUP", "5"))
 WARMUP_REPLY_RATE: int = int(os.getenv("WARMUP_REPLY_RATE", "20"))
+
+# R2 TOGGLE — maintenance-warmup trickle. OFF = fully disable warmup on active
+# senders (legacy). ON = keep a low trickle instead (2026: never fully off, or
+# deliverability erodes in 6-8 weeks). Trickle volume/day when ON:
+WARMUP_MAINTENANCE_TRICKLE: bool = os.getenv("WARMUP_MAINTENANCE_TRICKLE", "false").lower() == "true"
+WARMUP_TRICKLE_PER_DAY: int = int(os.getenv("WARMUP_TRICKLE_PER_DAY", "8"))
 # an inbox counts as "actively sending" (warmup should be OFF) at/above this today
 WARMUP_ACTIVE_SENT_MIN: int = int(os.getenv("WARMUP_ACTIVE_SENT_MIN", "1"))
 

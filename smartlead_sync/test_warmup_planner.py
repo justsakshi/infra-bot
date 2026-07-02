@@ -36,4 +36,14 @@ ok(by_email["g@x.com"]["action"] == "enable", "STALE active campaign -> enable (
 ok("STALE" in by_email["g@x.com"]["reason"], "stale reason flagged")
 
 ok(plan_warmup_changes([]) == [], "empty -> no changes")
+
+# --- R2 trickle toggle ---
+import smartlead.warmup_planner as wp
+wp.WARMUP_MAINTENANCE_TRICKLE = True  # simulate toggle ON
+tr = {c["email"]: c for c in plan_warmup_changes([r1])}  # r1 = live active sender, warmup on
+ok(tr["a@x.com"]["action"] == "trickle", "trickle ON: live sender -> trickle (not disable)")
+wp.WARMUP_MAINTENANCE_TRICKLE = False  # restore
+tr2 = {c["email"]: c for c in plan_warmup_changes([r1])}
+ok(tr2["a@x.com"]["action"] == "disable", "trickle OFF: live sender -> disable (legacy)")
+
 print("\nALL PASSED")

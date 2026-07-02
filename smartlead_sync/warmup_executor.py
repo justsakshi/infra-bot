@@ -24,6 +24,7 @@ from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.config import (
     WARMUP_AUTO_ENABLED, WARMUP_PER_DAY, WARMUP_DAILY_RAMPUP, WARMUP_REPLY_RATE,
+    WARMUP_TRICKLE_PER_DAY,
 )
 from smartlead.processing import fetch_account_data
 from smartlead.warmup_planner import plan_warmup_changes
@@ -90,7 +91,9 @@ async def main() -> None:
 
     enable = [c for c in all_changes if c["action"] == "enable"]
     disable = [c for c in all_changes if c["action"] == "disable"]
-    print(f"[Warmup] {len(all_changes)} change(s): {len(enable)} enable, {len(disable)} disable"
+    trickle = [c for c in all_changes if c["action"] == "trickle"]
+    print(f"[Warmup] {len(all_changes)} change(s): {len(enable)} enable, "
+          f"{len(disable)} disable, {len(trickle)} trickle"
           f"{' (DRY-RUN - not applying)' if not WARMUP_AUTO_ENABLED else ''}")
     for c in all_changes[:60]:
         print(f"    {c['action']:7} {c['client']:14} {c['email']:34} {c['reason']}")
@@ -109,13 +112,19 @@ async def main() -> None:
             continue
         async with SmartleadClient(acc.api_key, acc.name) as sl:
             try:
-                await sl.set_warmup(
-                    str(c["account_id"]),
-                    enabled=(c["action"] == "enable"),
-                    total_per_day=WARMUP_PER_DAY,
-                    daily_rampup=WARMUP_DAILY_RAMPUP,
-                    reply_rate=WARMUP_REPLY_RATE,
-                )
+                if c["action"] == "trickle":
+                    # maintenance warmup: ON but low volume, no ramp
+                    await sl.set_warmup(str(c["account_id"]), enabled=True,
+                                        total_per_day=WARMUP_TRICKLE_PER_DAY,
+                                        daily_rampup=0, reply_rate=WARMUP_REPLY_RATE)
+                else:
+                    await sl.set_warmup(
+                        str(c["account_id"]),
+                        enabled=(c["action"] == "enable"),
+                        total_per_day=WARMUP_PER_DAY,
+                        daily_rampup=WARMUP_DAILY_RAMPUP,
+                        reply_rate=WARMUP_REPLY_RATE,
+                    )
                 applied += 1
             except Exception as exc:  # noqa: BLE001
                 print(f"  [Warmup] {c['action']} failed for {c['email']}: {exc}")

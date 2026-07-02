@@ -15,6 +15,8 @@ Never touch 'blocked' inboxes (needs human investigation).
 """
 from __future__ import annotations
 
+from smartlead.config import WARMUP_MAINTENANCE_TRICKLE
+
 # warmup_state values that mean "warmup is currently ON"
 _ON_STATES = {"warming", "ramped", "on"}
 # never auto-manage these (human-only)
@@ -55,9 +57,18 @@ def plan_warmup_changes(health_rows: list[dict]) -> list[dict]:
                 "client": row.get("client", ""), "action": "enable", "reason": reason,
             })
         elif not should_be_on and currently_on:
-            changes.append({
-                "email": email, "account_id": row.get("account_id", ""),
-                "client": row.get("client", ""), "action": "disable",
-                "reason": "in a live ACTIVE campaign -> free send budget",
-            })
+            # R2: 2026 says never fully off on active senders. With the trickle
+            # toggle ON, keep a low maintenance warmup instead of disabling.
+            if WARMUP_MAINTENANCE_TRICKLE:
+                changes.append({
+                    "email": email, "account_id": row.get("account_id", ""),
+                    "client": row.get("client", ""), "action": "trickle",
+                    "reason": "live sender -> maintenance warmup trickle (don't erode rep)",
+                })
+            else:
+                changes.append({
+                    "email": email, "account_id": row.get("account_id", ""),
+                    "client": row.get("client", ""), "action": "disable",
+                    "reason": "in a live ACTIVE campaign -> free send budget",
+                })
     return changes
