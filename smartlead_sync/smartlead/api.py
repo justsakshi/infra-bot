@@ -109,6 +109,41 @@ class SmartleadClient:
     async def get_warmup_stats(self, account_id: str) -> list[dict] | dict:
         return await self._get(f"/email-accounts/{account_id}/warmup-stats")
 
+    async def set_warmup(self, account_id: str, enabled: bool,
+                         total_per_day: int = 40, daily_rampup: int = 5,
+                         reply_rate: int = 20) -> dict:
+        """Enable/disable warmup on an inbox (POST /email-accounts/{id}/warmup)."""
+        assert self._client, "Use `async with SmartleadClient(...)` as a context manager."
+        if enabled:
+            body = {
+                "warmup_enabled": "true",
+                "total_warmup_per_day": total_per_day,
+                "daily_rampup": daily_rampup,
+                "reply_rate_percentage": reply_rate,
+            }
+        else:
+            body = {"warmup_enabled": "false"}
+        url = f"{BASE_URL}/email-accounts/{account_id}/warmup"
+        for attempt in range(API_MAX_RETRIES + 1):
+            try:
+                resp = await self._client.post(url, params={"api_key": self._api_key}, json=body)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                if attempt < API_MAX_RETRIES:
+                    delay = min(API_RETRY_BASE_DELAY * (2 ** attempt), API_RETRY_MAX_DELAY)
+                    print(f"  [!] network error on warmup {account_id}: {exc!r} - retry in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < API_MAX_RETRIES:
+                    delay = self._retry_delay(resp, attempt)
+                    print(f"  [!] {resp.status_code} on warmup {account_id} - retry in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+            resp.raise_for_status()
+            return resp.json()
+        resp.raise_for_status()
+
     # ── campaign leads / dated analytics (for Campaign Metrics dashboard) ──
     async def get_campaign_leads(self, campaign_id: str) -> list[dict]:
         """Fetch all leads for a campaign (paginated). Each: created_at, lead_category_id, status."""

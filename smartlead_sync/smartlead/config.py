@@ -87,6 +87,16 @@ RETEST_MIN_TIME_MINUTES: int = 5   # SmartDelivery business rule: >= 5
 PLACEMENT_TESTS_COLLECTION: str = os.getenv("PLACEMENT_TESTS_COLLECTION", "placement_tests")
 PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "placement_results")
 
+# ── Auto warmup (health phase 4) ─────────────────────────────────────────────
+# DRY-RUN by default: planner logs would-enable/would-disable but changes nothing.
+WARMUP_AUTO_ENABLED: bool = os.getenv("WARMUP_AUTO_ENABLED", "false").lower() == "true"
+# Warmup ramp when auto-enabling (industry defaults; new-inbox profile).
+WARMUP_PER_DAY: int = int(os.getenv("WARMUP_PER_DAY", "40"))
+WARMUP_DAILY_RAMPUP: int = int(os.getenv("WARMUP_DAILY_RAMPUP", "5"))
+WARMUP_REPLY_RATE: int = int(os.getenv("WARMUP_REPLY_RATE", "20"))
+# an inbox counts as "actively sending" (warmup should be OFF) at/above this today
+WARMUP_ACTIVE_SENT_MIN: int = int(os.getenv("WARMUP_ACTIVE_SENT_MIN", "1"))
+
 
 @dataclass
 class AccountConfig:
