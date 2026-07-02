@@ -63,6 +63,20 @@ CAMPAIGN_METRICS_CLIENTS: set[str] = {"DARLEAN"}
 # 4=Do Not Contact, 6=Out Of Office (auto), 7=Wrong Person, 9=Sender Originated Bounce.
 SMARTLEAD_POSITIVE_CATEGORY_IDS: set[int] = {1, 2, 5}
 
+# ── Inbox Health workbook ────────────────────────────────────────────────────
+INBOX_HEALTH_TAB_NAME: str = os.getenv("INBOX_HEALTH_TAB_NAME", "Inbox Health")
+HEALTH_NOTIFY_CHANNEL: str = os.getenv("HEALTH_NOTIFY_CHANNEL", os.getenv("REMINDER_CHANNEL", ""))
+HEALTH_HISTORY_DB: str = os.getenv("HEALTH_HISTORY_DB", "infrabot")
+HEALTH_HISTORY_COLLECTION: str = os.getenv("HEALTH_HISTORY_COLLECTION", "inbox_health_history")
+
+# Health score weights (sum = 100) and thresholds. Tune after seeing real data.
+HEALTH_WEIGHTS: dict[str, int] = {"placement": 40, "warmup": 25, "bounce": 20, "connection": 15}
+HEALTH_TEST_STALE_DAYS: int = 14   # test older than this starts decaying placement credit
+HEALTH_TEST_DEAD_DAYS: int = 28    # test older than this treated as untested (neutral)
+HEALTH_WARMUP_FULL: float = 99.0   # rep >= this -> full warmup credit
+HEALTH_WARMUP_ZERO: float = 90.0   # rep <  this -> zero warmup credit
+HEALTH_TREND_DROP: int = 8         # score drop >= this over 7d -> "declining" early warning
+
 
 @dataclass
 class AccountConfig:
