@@ -9,7 +9,16 @@ Pass B: select worst-first targets per client (capped) and create tests
 from __future__ import annotations
 
 import asyncio
+import sys
 from datetime import date
+
+# Windows console: force UTF-8 so arrows/em-dashes in logs don't crash.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
@@ -120,12 +129,12 @@ async def main() -> None:
         return
 
     print(f"[Retest] {len(all_targets)} target(s) selected"
-          f"{' (DRY-RUN — not creating)' if not RETEST_ENABLED else ''}:")
+          f"{' (DRY-RUN - not creating)' if not RETEST_ENABLED else ''}:")
     for t in all_targets:
         print(f"    {t['client']:14} {t['email']:34} {t['reason']}  camp={t['campaign_hint'][:30]}")
 
     if not RETEST_ENABLED:
-        print("[Retest] RETEST_ENABLED=false → dry-run complete. Set RETEST_ENABLED=true to create.")
+        print("[Retest] RETEST_ENABLED=false -> dry-run complete. Set RETEST_ENABLED=true to create.")
         return
 
     created = skipped = 0

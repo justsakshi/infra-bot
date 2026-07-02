@@ -196,6 +196,7 @@ def build_health_rows(inbox_rows: list[dict], today, store, resolve_manager) -> 
             "test_sheet_status": snap.get("test_sheet_status", ""),
             "test_date": snap.get("test_date", ""),
             "campaigns": snap.get("campaigns", 0),
+            "campaign_name": snap.get("campaign_name", ""),
             "owner_skill": act["owner_skill"],
             "_declining": tr["declining"],
         })
