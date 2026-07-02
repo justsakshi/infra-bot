@@ -93,6 +93,13 @@ RETEST_MIN_TIME_MINUTES: int = 5   # SmartDelivery business rule: >= 5
 PLACEMENT_TESTS_COLLECTION: str = os.getenv("PLACEMENT_TESTS_COLLECTION", "placement_tests")
 PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "placement_results")
 
+# TOGGLE — disable warmup on the sender inboxes before a placement test, then
+# create the test with is_warmup=false, so the test measures REAL send-path
+# deliverability (faster + true inbox placement) instead of warmup-network
+# placement. Warmup is restored (re-enabled) after the test is created.
+# OFF by default: legacy behavior (test with is_warmup=true, warmup untouched).
+RETEST_DISABLE_WARMUP: bool = os.getenv("RETEST_DISABLE_WARMUP", "false").lower() == "true"
+
 # ── Auto warmup (health phase 4) ─────────────────────────────────────────────
 # DRY-RUN by default: planner logs would-enable/would-disable but changes nothing.
 WARMUP_AUTO_ENABLED: bool = os.getenv("WARMUP_AUTO_ENABLED", "false").lower() == "true"

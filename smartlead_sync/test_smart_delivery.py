@@ -30,9 +30,14 @@ class FakeHTTP:
     async def aclose(self): pass
 
 async def main():
-    c = SmartDeliveryClient("k"); c._client = FakeHTTP("ok")
+    c = SmartDeliveryClient("k"); fake = FakeHTTP("ok"); c._client = fake
     tid = await c.create_test(123, 999, ["a@x.com"], "t")
     ok(tid == 555, f"create returns id (got {tid})")
+    # default is_warmup True
+    ok(fake.calls[-1][2]["is_warmup"] is True, "default is_warmup=True")
+    # explicit is_warmup False (warmup-off test mode)
+    await c.create_test(123, 999, ["a@x.com"], "t", is_warmup=False)
+    ok(fake.calls[-1][2]["is_warmup"] is False, "is_warmup=False passthrough")
     poll = await c.poll_test(555)
     ok(poll["done"] is True and poll["status"] == "COMPLETED", "poll parses done")
     rep = await c.get_report(555)

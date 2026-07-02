@@ -25,7 +25,7 @@ from smartlead.api import SmartleadClient
 from smartlead.sheets import DeliverabilityReader
 from smartlead.config import (
     ACCOUNT_DELIVERABILITY_TABS, TEST_TAB_NAME, RETEST_ENABLED,
-    RETEST_PER_CLIENT_DAILY_CAP, RETEST_INBOX_THRESHOLD,
+    RETEST_PER_CLIENT_DAILY_CAP, RETEST_INBOX_THRESHOLD, RETEST_DISABLE_WARMUP,
 )
 from smartlead.processing import fetch_account_data
 from smartlead.health import build_health_rows
@@ -94,9 +94,11 @@ async def _campaign_launch_args(acc, campaign_name: str):
             return None
         accts = await c.get_campaign_email_accounts(str(cid))
         senders = [a.get("from_email") for a in accts if a.get("from_email")]
+        # account ids of the senders we'll test — needed to toggle warmup off/on
+        sender_ids = [str(a.get("id")) for a in accts if a.get("from_email") and a.get("id")]
         if not senders:
             return None
-        return cid, seqs[0]["id"], senders[:100]
+        return cid, seqs[0]["id"], senders[:100], sender_ids[:100]
 
 
 async def main() -> None:
@@ -151,14 +153,29 @@ async def main() -> None:
             print(f"  [Retest] skip {t['email']}: no campaign/senders/sequence")
             skipped += 1
             continue
-        cid, seq_id, senders = args
+        cid, seq_id, senders, sender_ids = args
+        # RETEST_DISABLE_WARMUP: turn warmup OFF on the sender inboxes so the test
+        # measures real send-path deliverability (faster + true placement), then
+        # test with is_warmup=false. Warmup is restored right after creation.
+        disabled_ids: list[str] = []
+        if RETEST_DISABLE_WARMUP:
+            async with SmartleadClient(acc.api_key, acc.name) as slc:
+                for aid in sender_ids:
+                    try:
+                        await slc.set_warmup(aid, enabled=False)
+                        disabled_ids.append(aid)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [Retest] warmup-off failed for acct {aid}: {exc}")
+            print(f"  [Retest] warmup disabled on {len(disabled_ids)} sender(s) for test")
         async with SmartDeliveryClient(acc.api_key) as sd:
             try:
                 tid = await sd.create_test(cid, seq_id, senders,
-                                           f"auto-{t['client']}-{date.today().isoformat()}")
+                                           f"auto-{t['client']}-{date.today().isoformat()}",
+                                           is_warmup=not RETEST_DISABLE_WARMUP)
                 store.record_created(tid, t["client"], cid, senders)
                 created += 1
-                print(f"  [Retest] created test {tid} for {t['client']} campaign {cid}")
+                print(f"  [Retest] created test {tid} for {t['client']} campaign {cid}"
+                      f"{' (warmup-off mode)' if RETEST_DISABLE_WARMUP else ''}")
             except CreditError as exc:
                 print(f"  [Retest] CREDITS exhausted on {t['client']} — skipping rest of client: {exc}")
                 drained_clients.add(t["client"])
@@ -166,6 +183,9 @@ async def main() -> None:
             except SmartDeliveryError as exc:
                 print(f"  [Retest] create failed for {t['email']}: {exc}")
                 skipped += 1
+        # NOTE: warmup is intentionally NOT auto-restored here. These are active-
+        # campaign senders, so warmup-off is already their correct state per the
+        # warmup rule; the daily warmup executor sets the final state next run.
     print(f"[Retest] Pass B done: {created} created, {skipped} skipped.")
 
 

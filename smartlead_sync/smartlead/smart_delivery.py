@@ -35,7 +35,8 @@ class SmartDeliveryClient:
         return f"{SMARTDELIVERY_BASE_URL}{path}{sep}api_key={self._api_key}"
 
     async def create_test(self, campaign_id: int, sequence_mapping_id: int,
-                          sender_emails: list[str], test_name: str) -> int:
+                          sender_emails: list[str], test_name: str,
+                          is_warmup: bool = True) -> int:
         body = {
             "test_name": test_name,
             "description": f"auto placement test — {test_name}",
@@ -48,7 +49,7 @@ class SmartDeliveryClient:
             "all_email_sent_without_time_gap": False,
             "min_time_btwn_emails": RETEST_MIN_TIME_MINUTES,
             "min_time_unit": "minutes",
-            "is_warmup": True,
+            "is_warmup": is_warmup,
         }
         resp = await self._client.post(self._url("/spam-test/manual"),
                                        headers={"Content-Type": "application/json"}, json=body)
