@@ -24,6 +24,16 @@ Goal: every inbox tested, maintained, and landing in the inbox — always.
               → enables any inbox with warmup off
               → BOOSTS warmup on low-reputation inboxes (<90%) — never reduces it
               → flags "zombie" campaigns (ACTIVE but no leads/sends in 14 days)
+
+12:00 PM IST  AUTO-ROTATION
+              a broken (spam-landing) inbox in a live campaign gets SWAPPED OUT
+              → picks a healthy same-client inbox, same sender name if possible
+              → adds it to the campaign FIRST, then removes the broken one
+              → new leads: zero change · in-flight leads: reassigned to the
+                same-name inbox (or paused if no name match)
+              → no healthy spare available? → alert: "provision domains"
+              → the broken inbox stays connected (replies still arrive), gets
+                fixed + retested, and returns to the bench when green
 ```
 
 **Where you see everything: the Google Sheet → "Inbox Health" tab.**
@@ -44,6 +54,8 @@ One row per inbox: Health Score (0–100), Grade (A–D color), Trend (↑↓), 
 | Flags campaigns that look ACTIVE but are dead (14d no leads/sends) | flagged in run logs + inboxes rescued to warmup |
 | Flags inboxes sending above the safe volume (>50/day) | P2 row: "Sending above 2026 safe volume" |
 | Flags spam landings during warmup | P0 row: "Landing in spam during warmup" (when enabled) |
+| Swaps broken senders out of live campaigns for healthy ones | rotation log lines + Slack digest; campaign keeps running |
+| Alerts when a client has no healthy spare inboxes | "NO HEALTHY BENCH — provision domains" in logs/digest |
 | Ignores old clients (Avench, Monarch, Capsule, Gofloaters) | they don't appear anywhere |
 
 **Rule of thumb: if the row says 🤖 Auto — skip it, the robot has it.**
@@ -106,6 +118,7 @@ Everything ships safe. Flip on Render env vars to activate:
 | `WARMUP_AUTO_ENABLED` | **off (dry-run)** | warmup executor actually enables/boosts (logs-only until then) |
 | `RETEST_ENABLED` | **off (dry-run)** | auto-tests actually run (spends Smartlead credits, per-client daily cap) |
 | `RETEST_DISABLE_WARMUP` | off | tests run warmup-off (fast, true placement), warmup auto-restored after |
+| `ROTATION_ENABLED` | **off (dry-run)** | broken-sender swaps actually happen (dummy-campaign validation first!) |
 | `WARMUP_ALWAYS_ON` | **ON** | never-pause-warmup policy (Avi) |
 | `WARMUP_CONSERVATIVE_VOLUME` | off | warmup ramp 30/day instead of 40 |
 | `HEALTH_SPAM_FLAG_ENABLED` | off | spam-during-warmup P0 flag |
