@@ -1655,6 +1655,23 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Auto inbox-rotation at 12:00 PM IST daily. Ships DRY-RUN
+    // (ROTATION_ENABLED=false) — logs planned swaps, applies nothing until
+    // validated on a dummy campaign and enabled via the ROTATION_ENABLED env var.
+    cron.schedule('0 12 * * *', () => {
+      console.log(`[CRON] Inbox rotation firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['rotation_executor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[rotation] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[rotation] ${d}`));
+      proc.on('close', code => console.log(`[rotation] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();

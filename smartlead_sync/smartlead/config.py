@@ -103,6 +103,13 @@ RETEST_MIN_TIME_MINUTES: int = 5   # SmartDelivery business rule: >= 5
 PLACEMENT_TESTS_COLLECTION: str = os.getenv("PLACEMENT_TESTS_COLLECTION", "placement_tests")
 PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "placement_results")
 
+# ── Auto inbox rotation (swap broken senders for healthy bench inboxes) ─────
+# DRY-RUN by default: logs every intended add/reassign/remove, mutates nothing.
+ROTATION_ENABLED: bool = os.getenv("ROTATION_ENABLED", "false").lower() == "true"
+ROTATION_PER_CLIENT_DAILY_CAP: int = int(os.getenv("ROTATION_PER_CLIENT_DAILY_CAP", "2"))
+# bench eligibility: reuse HEALTH_WARMUP_ZERO (rep >= 90) + fresh inbox test
+ROTATION_LOG_COLLECTION: str = os.getenv("ROTATION_LOG_COLLECTION", "rotation_log")
+
 # TOGGLE — disable warmup on the sender inboxes before a placement test, then
 # create the test with is_warmup=false, so the test measures REAL send-path
 # deliverability (faster + true inbox placement) instead of warmup-network

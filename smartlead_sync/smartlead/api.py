@@ -144,6 +144,54 @@ class SmartleadClient:
             return resp.json()
         resp.raise_for_status()
 
+    # ── inbox rotation (add/remove senders on a campaign, lead reassignment) ──
+    async def _request_json(self, method: str, endpoint: str, body: dict) -> Any:
+        """POST/DELETE with json body + api_key param; single retry pass on 429/5xx."""
+        assert self._client, "Use `async with SmartleadClient(...)` as a context manager."
+        for attempt in range(API_MAX_RETRIES + 1):
+            try:
+                resp = await self._client.request(
+                    method, f"{BASE_URL}{endpoint}",
+                    params={"api_key": self._api_key}, json=body,
+                )
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                if attempt < API_MAX_RETRIES:
+                    delay = min(API_RETRY_BASE_DELAY * (2 ** attempt), API_RETRY_MAX_DELAY)
+                    print(f"  [!] network error on {endpoint}: {exc!r} - retry in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < API_MAX_RETRIES:
+                    delay = self._retry_delay(resp, attempt)
+                    print(f"  [!] {resp.status_code} on {endpoint} - retry in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+            resp.raise_for_status()
+            return resp.json()
+        resp.raise_for_status()
+
+    async def add_campaign_email_accounts(self, campaign_id: str, account_ids: list[int]) -> dict:
+        """Attach sender inboxes to a campaign (verified: POST /campaigns/{id}/email-accounts)."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/email-accounts",
+                                        {"email_account_ids": [int(a) for a in account_ids]})
+
+    async def remove_campaign_email_accounts(self, campaign_id: str, account_ids: list[int]) -> dict:
+        """Detach sender inboxes from a campaign (verified: DELETE /campaigns/{id}/email-accounts)."""
+        return await self._request_json("DELETE", f"/campaigns/{campaign_id}/email-accounts",
+                                        {"email_account_ids": [int(a) for a in account_ids]})
+
+    async def update_lead_email_account(self, campaign_id: str, lead_id: int,
+                                        lead_email: str, new_account_id: int) -> dict:
+        """Reassign a lead's sending inbox (route probed: POST /campaigns/{cid}/leads/{lid};
+        exact body validated on the dummy campaign before first real use)."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/leads/{lead_id}",
+                                        {"email": lead_email, "email_account_id": int(new_account_id)})
+
+    async def pause_lead(self, campaign_id: str, lead_id: int) -> dict:
+        """Pause a lead's sequence (policy B fallback for in-flight leads)."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/leads/{lead_id}/pause", {})
+
     # ── campaign leads / dated analytics (for Campaign Metrics dashboard) ──
     async def get_campaign_leads(self, campaign_id: str) -> list[dict]:
         """Fetch all leads for a campaign (paginated). Each: created_at, lead_category_id, status."""
