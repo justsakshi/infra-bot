@@ -109,6 +109,12 @@ RETEST_DISABLE_WARMUP: bool = os.getenv("RETEST_DISABLE_WARMUP", "false").lower(
 # DRY-RUN by default: planner logs would-enable/would-disable but changes nothing.
 WARMUP_AUTO_ENABLED: bool = os.getenv("WARMUP_AUTO_ENABLED", "false").lower() == "true"
 
+# POLICY (Avi): warmup ON permanently, never paused. When ON (default), the
+# planner ONLY enables warmup on inboxes that are off — it never disables or
+# trickles down. Underperformance is handled by lowering campaign volume, not
+# warmup. Set false to fall back to the on/off/trickle behavior.
+WARMUP_ALWAYS_ON: bool = os.getenv("WARMUP_ALWAYS_ON", "true").lower() == "true"
+
 # R1 TOGGLE — conservative 2026 volume. OFF = legacy 40/day; ON = 30/day (2026
 # safe band 20-50/day; 100+/day = 4.3x bounce per Woodpecker 2025).
 WARMUP_CONSERVATIVE_VOLUME: bool = os.getenv("WARMUP_CONSERVATIVE_VOLUME", "false").lower() == "true"

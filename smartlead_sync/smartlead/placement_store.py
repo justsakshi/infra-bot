@@ -51,14 +51,16 @@ class PlacementStore:
             out.update(t.get("emails", []))
         return out
 
-    def record_created(self, test_id: int, client: str, campaign_id: int, emails: list[str]) -> None:
+    def record_created(self, test_id: int, client: str, campaign_id: int, emails: list[str],
+                       warmup_off_ids: list[str] | None = None) -> None:
         if self._tests is None:
             return
         try:
             self._tests.update_one(
                 {"test_id": test_id},
                 {"$set": {"test_id": test_id, "client": client, "campaign_id": campaign_id,
-                          "emails": emails, "status": "ACTIVE"}},
+                          "emails": emails, "status": "ACTIVE",
+                          "warmup_off_ids": warmup_off_ids or []}},
                 upsert=True,
             )
         except PyMongoError as exc:

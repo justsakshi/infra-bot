@@ -15,7 +15,7 @@ Never touch 'blocked' inboxes (needs human investigation).
 """
 from __future__ import annotations
 
-from smartlead.config import WARMUP_MAINTENANCE_TRICKLE
+from smartlead.config import WARMUP_MAINTENANCE_TRICKLE, WARMUP_ALWAYS_ON
 
 # warmup_state values that mean "warmup is currently ON"
 _ON_STATES = {"warming", "ramped", "on"}
@@ -46,6 +46,19 @@ def plan_warmup_changes(health_rows: list[dict]) -> list[dict]:
         if not email:
             continue
         currently_on = state in _ON_STATES
+
+        # POLICY (Avi): warmup ON permanently, never paused. Only enable inboxes
+        # that are off; NEVER disable or trickle down. Underperformance is fixed
+        # by lowering campaign volume, not warmup.
+        if WARMUP_ALWAYS_ON:
+            if not currently_on:
+                changes.append({
+                    "email": email, "account_id": row.get("account_id", ""),
+                    "client": row.get("client", ""), "action": "enable",
+                    "reason": "warmup-always-on policy -> keep warm permanently",
+                })
+            continue
+
         should_be_on = not _in_live_campaign(row)
 
         if should_be_on and not currently_on:

@@ -62,6 +62,19 @@ async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) ->
         for email in t.get("emails", []):
             store.save_result(email, _domain(email), status, today, "api")
         store.mark_done(t["test_id"], rep["inbox_pct"], status)
+        # Test done -> RE-ENABLE warmup on any inboxes we turned off for it
+        # (Avi's policy: warmup only off for the test duration, then back on).
+        off_ids = t.get("warmup_off_ids", []) or []
+        if off_ids:
+            async with SmartleadClient(api_key, client) as slc:
+                restored = 0
+                for aid in off_ids:
+                    try:
+                        await slc.set_warmup(str(aid), enabled=True)
+                        restored += 1
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [Retest] warmup re-enable failed for {aid}: {exc}")
+            print(f"  [Retest] re-enabled warmup on {restored} sender(s) post-test")
         completed += 1
         print(f"  [Retest] test {t['test_id']} ({client}) -> {status} ({rep['inbox_pct']:.0f}% inbox)")
     return completed
@@ -158,7 +171,8 @@ async def main() -> None:
         cid, seq_id, senders, sender_ids = args
         # RETEST_DISABLE_WARMUP: turn warmup OFF on the sender inboxes so the test
         # measures real send-path deliverability (faster + true placement), then
-        # test with is_warmup=false. Warmup is restored right after creation.
+        # test with is_warmup=false. Per Avi's policy warmup is only OFF for the
+        # duration of the test — it is RE-ENABLED when the test completes (Pass A).
         disabled_ids: list[str] = []
         if RETEST_DISABLE_WARMUP:
             async with SmartleadClient(acc.api_key, acc.name) as slc:
@@ -174,7 +188,9 @@ async def main() -> None:
                 tid = await sd.create_test(cid, seq_id, senders,
                                            f"auto-{t['client']}-{date.today().isoformat()}",
                                            is_warmup=not RETEST_DISABLE_WARMUP)
-                store.record_created(tid, t["client"], cid, senders)
+                # store the ids whose warmup we turned off so Pass A can restore
+                store.record_created(tid, t["client"], cid, senders,
+                                     warmup_off_ids=disabled_ids)
                 created += 1
                 print(f"  [Retest] created test {tid} for {t['client']} campaign {cid}"
                       f"{' (warmup-off mode)' if RETEST_DISABLE_WARMUP else ''}")
@@ -185,9 +201,6 @@ async def main() -> None:
             except SmartDeliveryError as exc:
                 print(f"  [Retest] create failed for {t['email']}: {exc}")
                 skipped += 1
-        # NOTE: warmup is intentionally NOT auto-restored here. These are active-
-        # campaign senders, so warmup-off is already their correct state per the
-        # warmup rule; the daily warmup executor sets the final state next run.
     print(f"[Retest] Pass B done: {created} created, {skipped} skipped.")
 
 

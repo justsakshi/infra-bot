@@ -1,4 +1,9 @@
+import smartlead.warmup_planner as wp
 from smartlead.warmup_planner import plan_warmup_changes
+
+# The r1-r7 assertions below test the LEGACY on/off/trickle logic, so force
+# always-on OFF here (it's ON by default per Avi's policy).
+wp.WARMUP_ALWAYS_ON = False
 
 def ok(c, m): print(f"  {'PASS' if c else 'FAIL'}: {m}"); assert c, m
 
@@ -37,12 +42,22 @@ ok("STALE" in by_email["g@x.com"]["reason"], "stale reason flagged")
 
 ok(plan_warmup_changes([]) == [], "empty -> no changes")
 
-# --- R2 trickle toggle ---
-import smartlead.warmup_planner as wp
-wp.WARMUP_MAINTENANCE_TRICKLE = True  # simulate toggle ON
-tr = {c["email"]: c for c in plan_warmup_changes([r1])}  # r1 = live active sender, warmup on
+# --- WARMUP_ALWAYS_ON policy (Avi): only enable, never disable/trickle ---
+wp.WARMUP_ALWAYS_ON = True
+ao = {c["email"]: c for c in plan_warmup_changes([r1, r2])}  # r1=live sender ON, r2=idle OFF
+ok("a@x.com" not in ao, "always-on: live sender ON -> no change (never disabled)")
+ok(ao["b@x.com"]["action"] == "enable", "always-on: idle OFF -> enable")
+# a live sender that is OFF gets ENABLED (never leave warmup off)
+r_off = row("h@x.com", "off", campaign_status="ACTIVE", campaign_is_stale=False)
+ok({c["email"]: c for c in plan_warmup_changes([r_off])}["h@x.com"]["action"] == "enable",
+   "always-on: live sender OFF -> enable (warmup never paused)")
+wp.WARMUP_ALWAYS_ON = False  # restore for legacy tests below
+
+# --- R2 trickle toggle (legacy mode, always-on off) ---
+wp.WARMUP_MAINTENANCE_TRICKLE = True
+tr = {c["email"]: c for c in plan_warmup_changes([r1])}
 ok(tr["a@x.com"]["action"] == "trickle", "trickle ON: live sender -> trickle (not disable)")
-wp.WARMUP_MAINTENANCE_TRICKLE = False  # restore
+wp.WARMUP_MAINTENANCE_TRICKLE = False
 tr2 = {c["email"]: c for c in plan_warmup_changes([r1])}
 ok(tr2["a@x.com"]["action"] == "disable", "trickle OFF: live sender -> disable (legacy)")
 
