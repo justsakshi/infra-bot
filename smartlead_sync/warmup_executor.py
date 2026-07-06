@@ -94,8 +94,9 @@ async def main() -> None:
     enable = [c for c in all_changes if c["action"] == "enable"]
     disable = [c for c in all_changes if c["action"] == "disable"]
     trickle = [c for c in all_changes if c["action"] == "trickle"]
+    boost = [c for c in all_changes if c["action"] == "boost"]
     print(f"[Warmup] {len(all_changes)} change(s): {len(enable)} enable, "
-          f"{len(disable)} disable, {len(trickle)} trickle"
+          f"{len(boost)} boost, {len(disable)} disable, {len(trickle)} trickle"
           f"{' (DRY-RUN - not applying)' if not WARMUP_AUTO_ENABLED else ''}")
     for c in all_changes[:60]:
         print(f"    {c['action']:7} {c['client']:14} {c['email']:34} {c['reason']}")
@@ -119,6 +120,12 @@ async def main() -> None:
                     await sl.set_warmup(str(c["account_id"]), enabled=True,
                                         total_per_day=WARMUP_TRICKLE_PER_DAY,
                                         daily_rampup=0, reply_rate=WARMUP_REPLY_RATE)
+                elif c["action"] == "boost":
+                    # low-rep recovery (Avi): INCREASE warmup — re-apply full ramp
+                    await sl.set_warmup(str(c["account_id"]), enabled=True,
+                                        total_per_day=WARMUP_PER_DAY,
+                                        daily_rampup=WARMUP_DAILY_RAMPUP,
+                                        reply_rate=WARMUP_REPLY_RATE)
                 else:
                     await sl.set_warmup(
                         str(c["account_id"]),

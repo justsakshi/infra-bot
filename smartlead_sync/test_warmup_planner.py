@@ -42,7 +42,7 @@ ok("STALE" in by_email["g@x.com"]["reason"], "stale reason flagged")
 
 ok(plan_warmup_changes([]) == [], "empty -> no changes")
 
-# --- WARMUP_ALWAYS_ON policy (Avi): only enable, never disable/trickle ---
+# --- WARMUP_ALWAYS_ON policy (Avi): only enable/boost, never disable/trickle ---
 wp.WARMUP_ALWAYS_ON = True
 ao = {c["email"]: c for c in plan_warmup_changes([r1, r2])}  # r1=live sender ON, r2=idle OFF
 ok("a@x.com" not in ao, "always-on: live sender ON -> no change (never disabled)")
@@ -51,6 +51,14 @@ ok(ao["b@x.com"]["action"] == "enable", "always-on: idle OFF -> enable")
 r_off = row("h@x.com", "off", campaign_status="ACTIVE", campaign_is_stale=False)
 ok({c["email"]: c for c in plan_warmup_changes([r_off])}["h@x.com"]["action"] == "enable",
    "always-on: live sender OFF -> enable (warmup never paused)")
+# low-rep inbox already ON -> BOOST (increase warmup, never cut)
+r_low = row("i@x.com", "warming"); r_low["warmup_rep_pct"] = "85%"
+ok({c["email"]: c for c in plan_warmup_changes([r_low])}["i@x.com"]["action"] == "boost",
+   "always-on: low rep (85%) -> boost warmup")
+# healthy rep ON -> no change
+r_hi = row("j@x.com", "warming"); r_hi["warmup_rep_pct"] = "98%"
+ok("j@x.com" not in {c["email"]: c for c in plan_warmup_changes([r_hi])},
+   "always-on: healthy rep ON -> no change")
 wp.WARMUP_ALWAYS_ON = False  # restore for legacy tests below
 
 # --- R2 trickle toggle (legacy mode, always-on off) ---

@@ -7,6 +7,7 @@ from smartlead.config import (
     HEALTH_WEIGHTS, HEALTH_TEST_STALE_DAYS, HEALTH_TEST_DEAD_DAYS,
     HEALTH_WARMUP_FULL, HEALTH_WARMUP_ZERO, HEALTH_TREND_DROP,
     HEALTH_SPAM_FLAG_ENABLED, HEALTH_SPAM_COUNT_THRESHOLD,
+    VOLUME_SAFE_MAX,
 )
 
 _FAIL = {"fail", "spam"}
@@ -154,6 +155,12 @@ def resolve_action(snapshot: dict, score: int) -> dict:
         return item("P2", "High-volume inbox needs routine retest",
                     "Auto-retest before scaling volume.",
                     "auto", "auto", "deliverability-test-public")
+    # 2026 volume-cap watch: sending above the safe band is a reputation risk
+    # (100+/day = 4.3x bounce). Fix = lower the CAMPAIGN cap, never warmup (Avi).
+    if _num(snapshot.get("sent_today", 0)) > VOLUME_SAFE_MAX:
+        return item("P2", f"Sending above 2026 safe volume (>{VOLUME_SAFE_MAX}/day)",
+                    "Lower this inbox's campaign daily cap to 30-40; scale with more inboxes, not volume.",
+                    "minutes", "human", "smartlead-inbox-manager")
     return item("", "", "", "", "", "")
 
 

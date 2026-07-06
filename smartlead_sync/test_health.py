@@ -64,6 +64,11 @@ ok(r["priority"] == "P0" and "spam" in r["top_problem"].lower(), "spam flag ON -
 ok(resolve_action(snap(warmup_spam_count=1), 100)["priority"] == "", "under threshold -> no flag")
 _h.HEALTH_SPAM_FLAG_ENABLED = False  # restore
 
+# --- 2026 volume-cap watch ---
+v = resolve_action(snap(sent_today=60), 100)
+ok(v["priority"] == "P2" and "volume" in v["top_problem"].lower(), "sent 60/day -> P2 volume flag")
+ok(resolve_action(snap(sent_today=40), 100)["priority"] == "", "sent 40/day -> no volume flag")
+
 # --- trend ---
 t = compute_trend(70, 85)
 ok(t["delta_7d"] == -15 and t["arrow"] == "↓" and t["declining"] is True, "declining trend")

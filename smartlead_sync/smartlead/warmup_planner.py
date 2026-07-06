@@ -15,12 +15,21 @@ Never touch 'blocked' inboxes (needs human investigation).
 """
 from __future__ import annotations
 
-from smartlead.config import WARMUP_MAINTENANCE_TRICKLE, WARMUP_ALWAYS_ON
+from smartlead.config import (
+    WARMUP_MAINTENANCE_TRICKLE, WARMUP_ALWAYS_ON, HEALTH_WARMUP_ZERO,
+)
 
 # warmup_state values that mean "warmup is currently ON"
 _ON_STATES = {"warming", "ramped", "on"}
 # never auto-manage these (human-only)
 _SKIP_STATES = {"blocked"}
+
+
+def _rep(row: dict) -> float:
+    try:
+        return float(str(row.get("warmup_rep_pct", "")).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _in_live_campaign(row: dict) -> bool:
@@ -49,13 +58,20 @@ def plan_warmup_changes(health_rows: list[dict]) -> list[dict]:
 
         # POLICY (Avi): warmup ON permanently, never paused. Only enable inboxes
         # that are off; NEVER disable or trickle down. Underperformance is fixed
-        # by lowering campaign volume, not warmup.
+        # by lowering campaign volume + INCREASING warmup (boost), never cutting it.
         if WARMUP_ALWAYS_ON:
             if not currently_on:
                 changes.append({
                     "email": email, "account_id": row.get("account_id", ""),
                     "client": row.get("client", ""), "action": "enable",
                     "reason": "warmup-always-on policy -> keep warm permanently",
+                })
+            elif _rep(row) and _rep(row) < HEALTH_WARMUP_ZERO:
+                # already on but reputation below threshold -> boost to full ramp
+                changes.append({
+                    "email": email, "account_id": row.get("account_id", ""),
+                    "client": row.get("client", ""), "action": "boost",
+                    "reason": f"low warmup rep ({_rep(row):.0f}%) -> boost warmup to full ramp",
                 })
             continue
 

@@ -88,6 +88,11 @@ HEALTH_TREND_DROP: int = 8         # score drop >= this over 7d -> "declining" e
 HEALTH_SPAM_FLAG_ENABLED: bool = os.getenv("HEALTH_SPAM_FLAG_ENABLED", "false").lower() == "true"
 HEALTH_SPAM_COUNT_THRESHOLD: int = int(os.getenv("HEALTH_SPAM_COUNT_THRESHOLD", "3"))
 
+# Volume-cap watch (2026): sending above this per day = reputation risk
+# (Woodpecker 2025: 100+/day = 4.3x bounce; safe band 20-50). Read-only flag
+# in the workbook — tells the manager to lower the campaign cap.
+VOLUME_SAFE_MAX: int = int(os.getenv("VOLUME_SAFE_MAX", "50"))
+
 # ── Auto placement-test (health phase 3) ─────────────────────────────────────
 SMARTDELIVERY_BASE_URL: str = "https://smartdelivery.smartlead.ai/api/v1"
 # DRY-RUN by default: executor selects + logs targets but does NOT create tests.
