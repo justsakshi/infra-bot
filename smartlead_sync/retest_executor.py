@@ -42,6 +42,10 @@ def _domain(email: str) -> str:
 
 async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) -> int:
     """Pass A: poll ACTIVE tests, write results for completed ones."""
+    # Free up inboxes stuck behind tests that never finished (>3 days pending)
+    abandoned = store.abandon_stale(max_age_days=3)
+    if abandoned:
+        print(f"  [Retest] abandoned {abandoned} stuck test(s) (>3 days pending)")
     completed = 0
     for t in store.pending_tests():
         client = t.get("client", "")
@@ -62,6 +66,10 @@ async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) ->
         for email in t.get("emails", []):
             store.save_result(email, _domain(email), status, today, "api")
         store.mark_done(t["test_id"], rep["inbox_pct"], status)
+        # human-visible log: append per-domain rows to the deliverability sheet
+        from smartlead.placement_sheet import append_api_result
+        append_api_result(client, t["test_id"], t.get("emails", []),
+                          rep["inbox_pct"], rep["spam_pct"], status)
         # Test done -> RE-ENABLE warmup on any inboxes we turned off for it
         # (Avi's policy: warmup only off for the test duration, then back on).
         off_ids = t.get("warmup_off_ids", []) or []

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import date as _date, timedelta
 
 try:
     from pymongo import MongoClient
@@ -60,11 +61,29 @@ class PlacementStore:
                 {"test_id": test_id},
                 {"$set": {"test_id": test_id, "client": client, "campaign_id": campaign_id,
                           "emails": emails, "status": "ACTIVE",
+                          "created": _date.today().strftime("%Y-%m-%d"),
                           "warmup_off_ids": warmup_off_ids or []}},
                 upsert=True,
             )
         except PyMongoError as exc:
             print(f"  [Retest] record_created failed: {exc}")
+
+    def abandon_stale(self, max_age_days: int = 3) -> int:
+        """Mark tests pending longer than max_age_days as ABANDONED so their
+        inboxes free up for re-targeting. Returns how many were abandoned."""
+        if self._tests is None:
+            return 0
+        cutoff = (_date.today() - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
+        try:
+            res = self._tests.update_many(
+                {"status": "ACTIVE",
+                 "$or": [{"created": {"$lt": cutoff}}, {"created": {"$exists": False}}]},
+                {"$set": {"status": "ABANDONED"}},
+            )
+            return res.modified_count or 0
+        except PyMongoError as exc:
+            print(f"  [Retest] abandon_stale failed: {exc}")
+            return 0
 
     def mark_done(self, test_id: int, inbox_pct: float, status: str) -> None:
         if self._tests is None:
