@@ -76,10 +76,10 @@ Everything lands in **one Google Sheet tab — "Inbox Health"** — which is the
 - Google/Microsoft's new sender rules (authentication, complaint limits, one-click unsubscribe) are built into the fix instructions.
 
 ### ⑨ Focus on Current Clients Only
-- Old clients (Avench, Monarch, Capsule Video, Gofloaters — 33 inboxes) are automatically excluded from everything. No wasted checks, tests, or credits on dead accounts.
+- Old clients (Avench, Monarch, Capsule Video, Gofloaters) and paused clients (OSC, StaffAI — no work this quarter) are automatically excluded from everything. No wasted checks, tests, or credits. Re-enabling a paused client is a one-line change.
 
 ### ⑩ Manager Routing + Daily Slack Message *(Slack part pending setup)*
-- Every inbox is mapped to its owner: **Balasankar** (Darlean, Mythic, OSC, StaffAI), **Anjali** (Melior, Belardi Wong), **Varsha** (Better Data, Precise Leads).
+- Every inbox is mapped to its owner: **Balasankar** (Darlean, Mythic), **Anjali** (Melior, Belardi Wong), **Varsha** (Better Data, Precise Leads).
 - Once the Slack channel is connected, each manager gets a morning message listing *their* problem inboxes with a link to the workbook.
 
 ---

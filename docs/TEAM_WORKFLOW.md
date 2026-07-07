@@ -58,7 +58,7 @@ One row per inbox: Health Score (0–100), Grade (A–D color), Trend (↑↓), 
 | Flags spam landings during warmup | P0 row: "Landing in spam during warmup" (when enabled) |
 | Swaps broken senders out of live campaigns for healthy ones | rotation log lines + Slack digest; campaign keeps running |
 | Alerts when a client has no healthy spare inboxes | "NO HEALTHY BENCH — provision domains" in logs/digest |
-| Ignores old clients (Avench, Monarch, Capsule, Gofloaters) | they don't appear anywhere |
+| Ignores old/paused clients (Avench, Monarch, Capsule, Gofloaters + OSC/StaffAI paused for Q3) | they don't appear anywhere |
 
 **Rule of thumb: if the row says 🤖 Auto — skip it, the robot has it.**
 
@@ -69,7 +69,7 @@ One row per inbox: Health Score (0–100), Grade (A–D color), Trend (↑↓), 
 ### Every day — 5 minutes
 1. Open the **Inbox Health** tab. It's sorted worst-first.
 2. Filter to **your clients** (Manager column):
-   - **Balasankar** — DARLEAN, Mythic, OSC, StaffAI
+   - **Balasankar** — DARLEAN, Mythic *(OSC + StaffAI paused for Q3)*
    - **Anjali** — Melior, Belardi Wong
    - **Varsha** — Better Data (Bettrdata), Precise Leads
 3. Work every **P0 (red)** row that says **👤 You** — the "What To Do" column is your exact instruction. Do these TODAY.
