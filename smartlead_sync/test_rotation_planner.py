@@ -22,14 +22,14 @@ s = select_swaps(rows, per_client_cap=2)
 ok(len(s) == 1, f"one swap (got {len(s)})")
 ok(s[0]["victim_email"] == "sam@bad.com", "victim identified")
 ok(s[0]["replacement_email"] == "sam@good.com", "persona match preferred over higher rep")
-ok(s[0]["inflight_policy"] == "reassign", "persona match -> reassign in-flight")
+ok(s[0]["inflight_policy"] == "resume", "persona match -> resume in-flight (new thread)")
 
 # no persona match -> pause policy
 rows2 = [row("sam@bad.com", "Sam L", test="fail", busy="failed_test"),
          row("amy@good.com", "Amy Cole", camp="", camp_status="", acct="21")]
 s2 = select_swaps(rows2, 2)
-ok(s2[0]["replacement_email"] == "amy@good.com" and s2[0]["inflight_policy"] == "pause",
-   "no persona match -> swap still happens, in-flight paused")
+ok(s2[0]["replacement_email"] == "amy@good.com" and s2[0]["inflight_policy"] == "leave_paused",
+   "no persona match -> swap still happens, tail left paused")
 
 # no bench at all -> alert
 s3 = select_swaps([row("sam@bad.com", "Sam", test="fail", busy="failed_test")], 2)

@@ -181,12 +181,12 @@ class SmartleadClient:
         return await self._request_json("DELETE", f"/campaigns/{campaign_id}/email-accounts",
                                         {"email_account_ids": [int(a) for a in account_ids]})
 
-    async def update_lead_email_account(self, campaign_id: str, lead_id: int,
-                                        lead_email: str, new_account_id: int) -> dict:
-        """Reassign a lead's sending inbox (route probed: POST /campaigns/{cid}/leads/{lid};
-        exact body validated on the dummy campaign before first real use)."""
-        return await self._request_json("POST", f"/campaigns/{campaign_id}/leads/{lead_id}",
-                                        {"email": lead_email, "email_account_id": int(new_account_id)})
+    async def resume_lead(self, campaign_id: str, lead_id: int) -> dict:
+        """Resume a stranded/paused lead so it continues on the campaign's
+        remaining sender(s) at its next sequence step (new thread, new sender —
+        per Smartlead support 2026-07-07: threading across senders is a
+        protocol-level impossibility; resume is the documented mechanism)."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/leads/{lead_id}/resume", {})
 
     async def pause_lead(self, campaign_id: str, lead_id: int) -> dict:
         """Pause a lead's sequence (policy B fallback for in-flight leads)."""

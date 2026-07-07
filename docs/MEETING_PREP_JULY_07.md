@@ -138,3 +138,14 @@ current design stands: same-persona reassignment, new thread.)*
 | Everything write-capable | ships **dry-run** (env-var gated) |
 
 **Recommended go-live order:** deploy → 1 day of dry-run logs → `WARMUP_AUTO_ENABLED` → `RETEST_ENABLED` + `RETEST_DISABLE_WARMUP` (credit approval) → dummy-campaign validation → `ROTATION_ENABLED`.
+
+---
+
+## ✅ UPDATE: Smartlead support ANSWERED (before the call)
+
+**Same-thread swap = impossible** (protocol-level, no API setting — confirmed).
+Their documented workflow is exactly our design: add new sender → remove old
+(leads go PENDING, not redistributed) → **Resume Lead API** → follow-ups continue
+from the new same-name sender in a new thread. Rotation executor already updated
+to this. Tell Avi: question answered, design final, pending only the dummy-campaign
+validation before enabling.

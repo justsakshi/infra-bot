@@ -11,7 +11,10 @@ Rules (spec 2026-07-03):
 - Bench (same client, best-first): test=inbox, rep>=90, connected, not blocked,
   capacity left, not the victim, not already in that campaign, used once per run.
 - Persona match (same first name) is a SOFT preference for the swap and decides
-  the in-flight policy: match -> "reassign", no match -> "pause" the tail.
+  the in-flight policy (per Smartlead support 2026-07-07: removal leaves
+  mid-sequence leads PENDING; same-thread continuation is impossible):
+  match -> "resume" the stranded leads on the new same-name sender (new thread),
+  no match -> "leave_paused" (drop the tail cleanly).
 """
 from __future__ import annotations
 
@@ -131,7 +134,7 @@ def select_swaps(rows: list[dict], per_client_cap: int,
             "client": client, "campaign_name": v.get("campaign_name", ""),
             "victim_email": v.get("email", ""), "victim_account_id": v.get("account_id", ""),
             "replacement_email": best.get("email", ""), "replacement_account_id": best.get("account_id", ""),
-            "inflight_policy": "reassign" if match else "pause",
+            "inflight_policy": "resume" if match else "leave_paused",
             "persona_match": match,
         })
     return swaps

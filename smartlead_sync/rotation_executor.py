@@ -52,7 +52,11 @@ async def _raw_rows(acc) -> list[dict]:
 
 
 async def _apply_swap(acc, swap: dict, store: RotationStore) -> bool:
-    """Enabled path: add replacement -> verify -> remove victim. Never leaves 0 senders."""
+    """Enabled path — Smartlead's documented workflow (support, 2026-07-07):
+    ADD replacement -> verify -> REMOVE victim (its mid-sequence leads are left
+    PENDING, not redistributed) -> if persona-matched, RESUME the stranded leads
+    so they continue on the new same-name sender at their next step (new thread;
+    same-thread continuation is protocol-impossible). Never leaves 0 senders."""
     async with SmartleadClient(acc.api_key, acc.name) as c:
         camps = await c.list_campaigns()
         camp = next((x for x in camps if x.get("name") == swap["campaign_name"]), None)
@@ -71,11 +75,30 @@ async def _apply_swap(acc, swap: dict, store: RotationStore) -> bool:
         if len(emails) < 2:
             store.log_swap(swap, "failed", "would leave campaign with <1 sender")
             return False
-        # 2. in-flight policy — validated on the dummy campaign before real use
-        print(f"  [Rotation] in-flight policy for {swap['victim_email']}: {swap['inflight_policy']}")
-        # 3. REMOVE victim
+        # 2. REMOVE victim — its mid-sequence leads become PENDING (per support)
         await c.remove_campaign_email_accounts(cid, [swap["victim_account_id"]])
-        store.log_swap(swap, "done")
+        # 3. in-flight: resume stranded leads on the new sender (persona match only)
+        resumed = 0
+        if swap["inflight_policy"] == "resume":
+            try:
+                leads = await c.get_campaign_leads(cid)
+                stranded = [l for l in leads
+                            if str(l.get("status", "")).upper() in {"PAUSED", "PENDING", "BLOCKED"}]
+                for l in stranded:
+                    lid = (l.get("lead") or {}).get("id")
+                    if not lid:
+                        continue
+                    try:
+                        await c.resume_lead(cid, int(lid))
+                        resumed += 1
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [Rotation] resume failed for lead {lid}: {exc}")
+                print(f"  [Rotation] resumed {resumed}/{len(stranded)} stranded lead(s) on new sender")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [Rotation] stranded-lead resume pass failed (leads stay paused): {exc}")
+        else:
+            print(f"  [Rotation] in-flight policy '{swap['inflight_policy']}' -> stranded leads left paused")
+        store.log_swap(swap, "done", f"resumed={resumed}")
         return True
 
 

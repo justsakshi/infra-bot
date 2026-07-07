@@ -74,10 +74,16 @@ Same: campaign runs, volume, schedule, sequences, new-lead experience, sender *n
 Changes: From *address* on reassigned in-flight follow-ups; Gmail may split the conversation view.
 Strictly better: follow-ups land in the inbox instead of spam.
 
-## Open Item (2026-07-07 standup)
+## RESOLVED (2026-07-07, Smartlead support)
 
-Avi/Aravind: Smartlead may support sending the next follow-up **in the same
-thread from a different mailbox**. Question sent to Smartlead support (draft in
-MEETING_PREP_JULY_07.md). If supported via API → upgrade in-flight handling from
-"same-persona reassignment, new thread" to true same-thread continuation before
-enabling ROTATION_ENABLED.
+Same-thread continuation across senders is **impossible** — protocol-level
+(email-client threading requires matching sender), no API setting exists.
+Support's documented workflow (now implemented in `rotation_executor.py`):
+1. `addEmailAccountToCampaign` (replacement)
+2. `removeEmailAccountFromCampaign` (victim) — its mid-sequence leads are left
+   **PENDING** (NOT redistributed — better than we assumed)
+3. **Resume Lead API** on the stranded leads → they continue on the new sender
+   at their next step, in a NEW thread.
+Policies renamed to match: persona match → `resume`; no match → `leave_paused`.
+`update_lead_email_account` (guessed endpoint) replaced with `resume_lead`.
+Dummy-campaign validation still required before `ROTATION_ENABLED=true`.
