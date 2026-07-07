@@ -738,8 +738,49 @@ class SheetsWriter:
             ["", "Landed Inbox", "Warmup emails that landed in inbox", ""],
             ["", "Landed Spam", "Warmup emails that landed in spam", ""],
             ["", "Reputation %", "Warmup reputation (inbox / total sent)", ">=90% is healthy, <90% needs attention"],
+            # ── All Inboxes (master) ─────────────────────────
+            ["All Inboxes", "Client", "Which client the inbox belongs to", ""],
+            ["", "Email / Name / Provider", "Sending address, display name, provider", "Gmail, Outlook, Other"],
+            ["", "Availability", "Can this inbox take a new campaign?", "FREE = capacity + rep>=90% + fresh 'inbox' test + connected; else BUSY"],
+            ["", "Busy Reason", "Why the inbox is not FREE", "disconnected, warmup_blocked, no_capacity, low_rep, stale_test, failed_test, untested"],
+            ["", "# Campaigns", "How many active campaigns use this inbox", ""],
+            ["", "Warmup State", "Warmup lifecycle stage", "off / warming / ramped / blocked"],
+            ["", "Last Active", "Last date the inbox actually sent", "YYYY-MM-DD"],
+            ["", "Test Status / Test Date", "Latest placement test result + when", "inbox / fail / stale (>14 days old) / untested"],
+            # ── Inbox Health (the workbook) ──────────────────
+            ["Inbox Health", "Priority", "Urgency of the row", "P0 = today, P1 = this week, P2 = routine, blank = healthy"],
+            ["", "Health Score", "Daily 0-100 health score", "placement 40 + warmup 25 + bounce 20 + connection 15"],
+            ["", "Grade", "Score band, color-coded", "A 90+ (green), B 70-89, C 50-69 (yellow), D <50 (red)"],
+            ["", "Trend (7d)", "Score change vs 7 days ago", "↑ improving, ↓ declining (act before it fails), — no history yet"],
+            ["", "Status", "One-word state", "healthy / needs_action / broken"],
+            ["", "Top Problem", "The #1 thing wrong with this inbox", ""],
+            ["", "What To Do", "The exact fix instruction - follow it as written", ""],
+            ["", "Owner", "Who handles it", "\U0001F916 Auto = robot fixes it (skip), \U0001F464 You = human action needed"],
+            ["", "How Long", "Expected fix time", ""],
+            ["", "Manager", "Person responsible for this client's inboxes", "Balasankar / Anjali / Varsha"],
+            ["", "Score Drivers", "Points breakdown behind the score", "test x/40 - warmup x/25 - bounce x/20 - conn x/15"],
+            ["", "Owner Skill", "Playbook used to fix this problem type", ""],
+            # ── Campaign Metrics ─────────────────────────────
+            ["Campaign Metrics", "Campaign / Platform / Status", "Campaign name, Smartlead (email) or Heyreach (LinkedIn), state", ""],
+            ["", "Total leads", "Leads loaded in the campaign", ""],
+            ["", "Leads added this month / yesterday", "New leads added in the reporting window", ""],
+            ["", "Leads in progress", "Leads currently mid-sequence", ""],
+            ["", "Connections sent / accepted", "LinkedIn connection requests (HeyReach only)", "'-' for Smartlead"],
+            ["", "Msg Sent", "Emails / LinkedIn messages sent", "COMPLETED campaigns show month totals from analytics"],
+            ["", "Total Responses this month", "All replies in the reporting month", "API counts include auto-replies"],
+            ["", "Positive/Neutral responses", "Interested + Meeting Request + Info Request", "auto-categorized; humans can refine"],
+            # ── API Tests (deliverability sheet) ─────────────
+            ["API Tests (deliverability sheet)", "Date / Client / Domain", "When the robot ran a placement test + for whom", ""],
+            ["", "Result", "Where the test emails landed", "inbox (>=80% inboxed) or fail"],
+            ["", "Inbox % / Spam %", "Exact placement percentages", ""],
+            ["", "Test ID / Emails Tested", "Smartlead test id + how many senders were seeded", ""],
         ]
 
+        # ensure the grid is big enough for the grown glossary
+        try:
+            ws.resize(rows=len(rows) + 5)
+        except Exception:  # noqa: BLE001 - resize is best-effort
+            pass
         ws.update(values=rows, range_name="A1")
 
         # Format
