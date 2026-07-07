@@ -29,8 +29,10 @@ Goal: every inbox tested, maintained, and landing in the inbox — always.
               a broken (spam-landing) inbox in a live campaign gets SWAPPED OUT
               → picks a healthy same-client inbox, same sender name if possible
               → adds it to the campaign FIRST, then removes the broken one
-              → new leads: zero change · in-flight leads: reassigned to the
-                same-name inbox (or paused if no name match)
+              → new leads: zero change · in-flight leads: RESUMED on the
+                same-name inbox in a fresh thread (or left paused if no name
+                match) — same-thread handover is technically impossible
+                (confirmed by Smartlead support)
               → no healthy spare available? → alert: "provision domains"
               → the broken inbox stays connected (replies still arrive), gets
                 fixed + retested, and returns to the bench when green

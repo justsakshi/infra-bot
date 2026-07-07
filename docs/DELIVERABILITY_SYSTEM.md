@@ -65,7 +65,7 @@ Everything lands in **one Google Sheet tab — "Inbox Health"** — which is the
 
 ### ⑦ Automatic Inbox Rotation (the substitution)
 - **What:** if an inbox in a **live campaign** fails its spam test, the robot swaps it out for a healthy spare from the **same client** — preferably with the **same sender name** (Sam → Sam) — and the campaign keeps running without interruption.
-- **How (carefully ordered):** add the replacement first → hand over the leads mid-conversation to the same-name inbox (so follow-ups keep landing) → only then remove the broken one. It never leaves a campaign without senders, and it never mixes clients.
+- **How (carefully ordered):** add the replacement first → remove the broken one (its mid-conversation leads pause safely) → resume those leads on the same-name inbox, so follow-ups keep landing (they arrive as a fresh email from the same sender name — continuing the old thread from a new address is technically impossible, per Smartlead). It never leaves a campaign without senders, and it never mixes clients.
 - **The clever part:** a broken inbox's follow-ups were going to spam anyway — the swap means follow-ups actually get *seen* again, from the same sender name.
 - **Aftercare:** the broken inbox isn't deleted — replies still arrive, it stays in warmup, gets fixed, gets retested, and returns to the bench when green.
 - **No spare available?** The robot alerts: "provision new domains for this client" (2-week lead time).
