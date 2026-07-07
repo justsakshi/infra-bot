@@ -86,7 +86,14 @@ def _connection_points(snapshot: dict) -> int:
     maxp = HEALTH_WEIGHTS["connection"]
     if not snapshot.get("connection_ok", True):
         return 0
-    return maxp  # connected; reply-rate rule needs campaign data -> full when connected
+    score = maxp
+    if not snapshot.get("dns_spf_ok", True):
+        score -= 5
+    if not snapshot.get("dns_dkim_ok", True):
+        score -= 5
+    if not snapshot.get("dns_dmarc_ok", True):
+        score -= 3
+    return max(0, score)
 
 
 def _grade(score: int) -> str:
@@ -131,14 +138,38 @@ def resolve_action(snapshot: dict, score: int) -> dict:
         return item("P0", "Failed placement test",
                     "Pause inbox/domain; check SPF/DKIM/DMARC + copy + list; retest.",
                     "1-7 days", "human", "deliverability-incident-response")
+
+    # Critical DNS SPF check
+    if not snapshot.get("dns_spf_ok", True):
+        spf_msg = snapshot.get("dns_spf_msg", "Missing or invalid SPF record")
+        return item("P0", "SPF misconfigured or missing",
+                    f"Fix SPF record on DNS provider: {spf_msg}",
+                    "1-2 days", "human", "deliverability-incident-response")
+
+    # Critical DNS DKIM check
+    if not snapshot.get("dns_dkim_ok", True):
+        dkim_msg = snapshot.get("dns_dkim_msg", "Missing or invalid DKIM record")
+        return item("P0", "DKIM misconfigured or missing",
+                    f"Fix DKIM record on DNS provider: {dkim_msg}",
+                    "1-2 days", "human", "deliverability-incident-response")
+
     if "warmup_blocked" in reasons:
         return item("P0", "Warmup blocked",
                     "Investigate block reason; pause or retire inbox if it does not recover.",
                     "1-7 days", "human", "smartlead-inbox-manager")
+
     if "disconnected" in reasons or not snapshot.get("connection_ok", True):
         return item("P1", "SMTP/IMAP disconnected",
                     "Reconnect the inbox before any campaign assignment.",
                     "minutes", "human", "smartlead-inbox-manager")
+
+    # Critical DNS DMARC check
+    if not snapshot.get("dns_dmarc_ok", True):
+        dmarc_msg = snapshot.get("dns_dmarc_msg", "Missing or invalid DMARC record")
+        return item("P1", "DMARC misconfigured or missing",
+                    f"Fix DMARC record on DNS provider: {dmarc_msg}",
+                    "1-2 days", "human", "deliverability-incident-response")
+
     if "low_rep" in reasons:
         return item("P1", "Warmup reputation below threshold",
                     "Keep out of campaigns; continue/adjust warmup; retest after recovery.",

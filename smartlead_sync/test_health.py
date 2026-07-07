@@ -89,4 +89,29 @@ ok(rows[0]["manager"] == "Dmitrii", "manager attached")
 recs = health_records_for_store(rows, TODAY)
 ok(recs[0]["date"] == "2026-07-02" and "score" in recs[0], "history record shape")
 
-print("\nALL PASSED (with build_health_rows)")
+# --- DNS authentication checks ---
+# 1. Scoring penalties
+s_dns_spf = compute_health_score(snap(dns_spf_ok=False), TODAY)
+ok(s_dns_spf["drivers"]["connection"] == 10, f"failed SPF drops connection points from 15 to 10 (got {s_dns_spf['drivers']['connection']})")
+ok(s_dns_spf["score"] == 95, "failed SPF drops overall score to 95")
+
+s_dns_dkim = compute_health_score(snap(dns_dkim_ok=False), TODAY)
+ok(s_dns_dkim["drivers"]["connection"] == 10, "failed DKIM drops connection points to 10")
+
+s_dns_dmarc = compute_health_score(snap(dns_dmarc_ok=False), TODAY)
+ok(s_dns_dmarc["drivers"]["connection"] == 12, f"failed DMARC drops connection points to 12 (got {s_dns_dmarc['drivers']['connection']})")
+
+s_all_dns_fail = compute_health_score(snap(dns_spf_ok=False, dns_dkim_ok=False, dns_dmarc_ok=False), TODAY)
+ok(s_all_dns_fail["drivers"]["connection"] == 2, f"all DNS failures drop connection points to 2 (15 - 5 - 5 - 3 = 2) (got {s_all_dns_fail['drivers']['connection']})")
+
+# 2. Action resolution priorities
+a_spf = resolve_action(snap(dns_spf_ok=False, dns_spf_msg="Unsafe SPF"), 95)
+ok(a_spf["priority"] == "P0" and "SPF" in a_spf["top_problem"] and "Unsafe SPF" in a_spf["what_to_do"], "failed SPF is P0")
+
+a_dkim = resolve_action(snap(dns_dkim_ok=False, dns_dkim_msg="Missing DKIM"), 95)
+ok(a_dkim["priority"] == "P0" and "DKIM" in a_dkim["top_problem"], "failed DKIM is P0")
+
+a_dmarc = resolve_action(snap(dns_dmarc_ok=False, dns_dmarc_msg="Missing DMARC"), 97)
+ok(a_dmarc["priority"] == "P1" and "DMARC" in a_dmarc["top_problem"], "failed DMARC is P1")
+
+print("\nALL PASSED (with build_health_rows and DNS tests)")

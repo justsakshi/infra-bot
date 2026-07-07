@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone, timedelta
 from smartlead.api import SmartleadClient
 from smartlead.config import MIN_WARMUP_REP_PCT, ACTIVE_STATUSES, MAX_INBOX_LIMIT
+from smartlead.dns_checker import audit_domain_dns
 
 PAUSED_STALE_DAYS = 7  # paused campaigns older than this are treated as finished
 
@@ -190,6 +192,25 @@ async def fetch_account_data(
 
     account_map: dict[str, dict] = {str(a["id"]): a for a in all_accounts}
 
+    # 3a. DNS Authentication Audit for all unique domains concurrently
+    unique_domains = {get_domain_from_email(a.get("from_email", "")) for a in all_accounts if a.get("from_email")}
+    unique_domains.discard("")
+    dns_tasks = {dom: audit_domain_dns(dom) for dom in unique_domains}
+    dns_audit_map = {}
+    if dns_tasks:
+        dns_results_list = await asyncio.gather(*dns_tasks.values(), return_exceptions=True)
+        for dom, res in zip(dns_tasks.keys(), dns_results_list):
+            if isinstance(res, Exception):
+                print(f"  [!] DNS check failed for {dom}: {res}")
+                dns_audit_map[dom] = {
+                    "spf_ok": True, "spf_msg": "DNS check skipped due to error",
+                    "dkim_ok": True, "dkim_msg": "DNS check skipped due to error",
+                    "dmarc_ok": True, "dmarc_msg": "DNS check skipped due to error",
+                }
+            else:
+                dns_audit_map[dom] = res
+        print(f"  [{name}] Audited {len(dns_tasks)} domain(s) for SPF/DKIM/DMARC")
+
     # 3. Map campaign -> email-accounts (fetched once, reused for inbox rows below)
     detail_ids = [str(c.get("id", "")) for c in detail_campaigns if c.get("id") is not None]
     campaign_accounts_map = await client.fetch_campaign_accounts_map(detail_ids)
@@ -279,7 +300,8 @@ async def fetch_account_data(
             inbox_aggregate_load[email] = inbox_aggregate_load.get(email, 0.0) + stats["true_load"]
 
             inbox_data.append(_build_inbox_row(
-                full, email, c_name, c_status, stats, deliverability_map, client=name,
+                full, email, c_name, c_status, stats, deliverability_map,
+                dns_audit_map=dns_audit_map, client=name,
             ))
 
     # 4b. Inactive campaigns: basic summary row only (no API calls for analytics/inboxes)
@@ -302,6 +324,7 @@ async def fetch_account_data(
             acc, email, "N/A (No active campaign)", "N/A",
             {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0},
             deliverability_map,
+            dns_audit_map=dns_audit_map,
             client=name,
         ))
         seen_emails.add(email)
@@ -369,6 +392,10 @@ def process_inbox_availability(
         elif test != "inbox":
             reasons.append("untested")  # Unknown / blank
 
+        # Check DNS records
+        if not item.get("dns_spf_ok", True) or not item.get("dns_dkim_ok", True) or not item.get("dns_dmarc_ok", True):
+            reasons.append("dns_error")
+
         item["availability"] = "FREE" if not reasons else "BUSY"
         item["busy_reason"] = "" if not reasons else ",".join(reasons)
 
@@ -395,6 +422,7 @@ def _build_inbox_row(
     campaign_status: str,
     load_info: dict,
     deliverability_map: dict[str, dict],
+    dns_audit_map: dict[str, dict] = None,
     client: str = "",
 ) -> dict:
     email_key = email.strip().lower()
@@ -413,6 +441,12 @@ def _build_inbox_row(
         account.get("is_smtp_success", True) and account.get("is_imap_success", True)
         and not account.get("is_suspended", False)
     )
+
+    dns_info = (dns_audit_map or {}).get(domain) or {
+        "spf_ok": True, "spf_msg": "",
+        "dkim_ok": True, "dkim_msg": "",
+        "dmarc_ok": True, "dmarc_msg": ""
+    }
 
     return {
         "email": email,
@@ -441,6 +475,12 @@ def _build_inbox_row(
         "warmup_state": "off",          # filled in process_inbox_availability
         "last_active_date": "",         # filled in process_inbox_availability
         "warmup_max_count": 0,          # filled in process_inbox_availability
+        "dns_spf_ok": dns_info.get("spf_ok", True),
+        "dns_spf_msg": dns_info.get("spf_msg", ""),
+        "dns_dkim_ok": dns_info.get("dkim_ok", True),
+        "dns_dkim_msg": dns_info.get("dkim_msg", ""),
+        "dns_dmarc_ok": dns_info.get("dmarc_ok", True),
+        "dns_dmarc_msg": dns_info.get("dmarc_msg", ""),
     }
 
 
