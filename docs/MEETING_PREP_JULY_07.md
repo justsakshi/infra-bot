@@ -108,3 +108,33 @@ Use these points to close out the meeting and get approval to push the system li
 - [ ] **LinkedIn Finder Scraper:** Confirm we will deprecate 85 Compute due to the $0.02/company fee and source credit-only billing alternatives.
 - [ ] **Enable Auto-Warmup:** Set `WARMUP_AUTO_ENABLED=true` in Render to let the bot manage idle warmup and trickle states.
 - [ ] **Slack Digest Activation:** Map manager Slack handles in [manager_map.py](file:///c:/Users/Manveen/Desktop/new_things_to_mess_araound/infrabot/infra-bot/smartlead_sync/smartlead/manager_map.py) and input `HEALTH_NOTIFY_CHANNEL`.
+
+---
+
+## 📨 Ready-to-send: Smartlead support question (copy-paste)
+
+> Hi — when one of our sending inboxes has a deliverability drop and we replace it
+> with a different inbox on the same campaign **via the API** (add the new
+> email-account, remove the old one), how can we make sure leads who are
+> mid-sequence receive their next follow-up **in the same email thread**?
+> Is there a setting or API field that preserves the thread (subject/references)
+> when the sending account changes? If yes, is it available via the public API?
+
+*(If YES → we wire it into the rotation executor: fully seamless swaps. If NO →
+current design stands: same-persona reassignment, new thread.)*
+
+---
+
+## 📊 Live numbers for the call (as of July 07)
+
+| Fact | Number |
+|---|---|
+| Inboxes tracked (current clients only) | **409** (33 old-client inboxes excluded) |
+| DARLEAN grades today | 39 A · 6 B · 30 C · 33 D — 63 P0 |
+| Low-rep inboxes the warmup-boost will fix on enable | **41** (rep 68–82%) |
+| Swaps rotation would make today (dry-run) | **4** — all persona-matched |
+| SmartDelivery credits | **30 used / locked — no spend without approval** |
+| Auto-test cap | 2 inboxes/client/day, worst-score-first |
+| Everything write-capable | ships **dry-run** (env-var gated) |
+
+**Recommended go-live order:** deploy → 1 day of dry-run logs → `WARMUP_AUTO_ENABLED` → `RETEST_ENABLED` + `RETEST_DISABLE_WARMUP` (credit approval) → dummy-campaign validation → `ROTATION_ENABLED`.

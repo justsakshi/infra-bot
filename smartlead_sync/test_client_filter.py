@@ -18,4 +18,13 @@ ok(not is_excluded_inbox({"email": "w@wemythic.com", "tags": []}), "mythic -> ke
 # also accepts the health-row shape (client field)
 ok(is_excluded_inbox({"email": "a@x.com", "client": "Avench"}), "client field -> excluded")
 ok(not is_excluded_inbox({"email": "a@x.com", "client": "DARLEAN"}), "client field DARLEAN -> kept")
+
+# paused clients (Q3 2026): OSC + StaffAI excluded
+ok(is_excluded_inbox({"email": "mark@growwithosc.com", "tags": []}), "osc domain -> excluded")
+ok(is_excluded_inbox({"email": "m@beginosc.com", "tags": []}), "beginosc domain -> excluded")
+ok(is_excluded_inbox({"email": "x@usestaffai.com", "tags": []}), "staffai domain -> excluded")
+ok(is_excluded_inbox({"email": "a@x.com", "tags": [{"tag_name": "StaffAI"}]}), "StaffAI tag -> excluded")
+# local part must NOT trigger short keywords
+ok(not is_excluded_inbox({"email": "oscar@darleansuite.com", "tags": []}),
+   "local part 'oscar' does NOT match 'osc' (domain-only matching)")
 print("\nALL PASSED")

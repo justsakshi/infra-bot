@@ -10,7 +10,11 @@ from smartlead.config import EXCLUDED_CLIENTS
 
 
 def _haystack(inbox: dict) -> str:
-    parts = [str(inbox.get("email", "")), str(inbox.get("client", ""))]
+    # match on the email DOMAIN only (not the local part - a sender named
+    # "oscar@..." must not match the "osc" keyword), plus tags + client field
+    email = str(inbox.get("email", "") or inbox.get("from_email", ""))
+    domain = email.split("@", 1)[1] if "@" in email else ""
+    parts = [domain, str(inbox.get("client", ""))]
     for t in (inbox.get("tags") or []):
         if isinstance(t, dict):
             parts.append(str(t.get("tag_name", "")))

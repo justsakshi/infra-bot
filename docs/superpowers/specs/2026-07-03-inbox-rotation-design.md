@@ -73,3 +73,11 @@ zero healthy spares for <client> — provision domains (2-week lead)."
 Same: campaign runs, volume, schedule, sequences, new-lead experience, sender *name*, replies to old mail.
 Changes: From *address* on reassigned in-flight follow-ups; Gmail may split the conversation view.
 Strictly better: follow-ups land in the inbox instead of spam.
+
+## Open Item (2026-07-07 standup)
+
+Avi/Aravind: Smartlead may support sending the next follow-up **in the same
+thread from a different mailbox**. Question sent to Smartlead support (draft in
+MEETING_PREP_JULY_07.md). If supported via API → upgrade in-flight handling from
+"same-persona reassignment, new thread" to true same-thread continuation before
+enabling ROTATION_ENABLED.

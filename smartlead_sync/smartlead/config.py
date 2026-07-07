@@ -45,7 +45,7 @@ DELIVERABILITY_QUEUE_TAB_NAME: str = os.getenv("DELIVERABILITY_QUEUE_TAB_NAME", 
 # (Moved out of run.py so adding a client is a config edit, not a code edit.)
 ACCOUNT_DELIVERABILITY_TABS: dict[str, list[str]] = {
     "Belardi Wong": ["Belardiwong"],
-    "PRECISE_LEADS": ["Melior", "Precise Leads", "OSC", "StaffAI", "Bettrdata"],  # Avench dropped (old)
+    "PRECISE_LEADS": ["Melior", "Precise Leads", "Bettrdata"],  # Avench(old), OSC+StaffAI(paused Q3) dropped
     "DARLEAN": ["Darlean new"],
     "MYTHIC": ["Mythic "],  # Note: trailing space in actual tab name
 }
@@ -53,7 +53,9 @@ ACCOUNT_DELIVERABILITY_TABS: dict[str, list[str]] = {
 # Old/inactive clients — exclude their inboxes from ALL tracking (health score,
 # workbook, placement tests, warmup). Matched against an inbox's tags AND domain
 # (case-insensitive substring). Don't waste API calls / credits on dead clients.
-EXCLUDED_CLIENTS: set[str] = {"avench", "monarch", "capsule", "gofloater"}
+EXCLUDED_CLIENTS: set[str] = {"avench", "monarch", "capsule", "gofloater",
+                              # paused for Q3 2026 per Sri (2026-07-07) - re-add by removing these:
+                              "osc", "staffai"}
 
 # ── HeyReach ─────────────────────────────────────────────────────────────────
 HEYREACH_BASE_URL: str = "https://api.heyreach.io/api/public"
