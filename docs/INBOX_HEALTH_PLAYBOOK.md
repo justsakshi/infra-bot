@@ -54,11 +54,15 @@ These are the industry-standard numbers the system uses / should use. **Referenc
 - **Warmup reputation:** >80 good · 50–80 keep warming, don't send critical · **<50 do not send**.
 - **Reply-rate drop:** >30% week-over-week → run full audit. This week <50% of last-4-week avg → real problem (else noise).
 
-### Warmup ramp settings
-- **New inbox:** 40/day cap, ramp +5/day, 20% reply rate. Ramp over 2–4 weeks (day1=1, day2=6…).
-- **Insurance (idle) inbox:** 15/day, ramp 0, warmup ON.
-- **Active (sending) inbox:** warmup OFF.
-- **Recovering blocked inbox:** re-enable at 15/day (not 40).
+### Warmup ramp settings (UPDATED 2026-07-07 — see docs/DELIVERABILITY_MASTER_PLAN.md §1)
+**Warmup is ALWAYS ON, in every state — only volume changes.** (Smartlead + Instantly
+official: turning warmup off while sending erodes deliverability within 6–8 weeks.)
+- **New inbox:** 40/day cap (Smartlead official max — not 50), ramp +2–5/day, 25% reply rate. 21–30 days before first campaign send.
+- **Active (sending) inbox:** warmup stays ON at ≤20/day + auto-adjust ON (Smartlead trims 7–10/day automatically while campaigns run).
+- **Insurance (idle) inbox:** 20/day, ramp 0, warmup ON.
+- **Recovering (low rep / post-incident):** 15/day, ramp 0, **reply rate 30%** — boost the REPLY RATE, never the volume (replies are the reputation signal; volume spikes look like spam).
+- Reply rate band: 25–30%, never above 30 (unnaturally high reply rate is itself a spam signal).
+- Fleet-wide: "send warmup emails only on weekdays" ON (UI setting — not exposed via API, set manually).
 
 ### Infrastructure
 - **2 inboxes per domain** (Gmail flags domains with >3–5 inboxes).
@@ -76,13 +80,13 @@ These are the industry-standard numbers the system uses / should use. **Referenc
 
 ```
 NEW (just provisioned)
-  → enable warmup (40/day, ramp 5), set signature, tag "insurance"
-  → WARMUP (~2 weeks) — reputation builds
-  → ACTIVE — promote to a live campaign, turn warmup OFF
+  → enable warmup (40/day, ramp +2-5, reply 25%), set signature, tag "insurance"
+  → WARMUP (21-30 days for new domains; 14 days only if domain is aged) — reputation builds
+  → ACTIVE — promote to a live campaign; warmup STAYS ON at ≤20/day + auto-adjust
   → MONITOR — daily health score; watch 1% rule, bounce, reputation, warmup-blocked
   → if healthy → keep sending
-  → if going bad → PULL from campaign, alert manager, fix or RETIRE
-  → RETIRE (dead/unrecoverable) → tag retired, disable warmup, swap in an insurance inbox
+  → if going bad → PULL from campaign (RECOVERING: warmup 15/day, reply 30%), alert manager, fix or RETIRE
+  → RETIRE (dead/unrecoverable) → tag retired, disable warmup (the ONLY state with warmup off), swap in an insurance inbox
 ```
 
 **Signals an inbox is going bad + the fix:**
@@ -124,18 +128,19 @@ NEW (just provisioned)
    - (health workbook already runs inside the daily sync — no new cron)
 3. **Redeploy** from `main` → everything runs automatically on the server.
 
-### B. Auto-warmup automation (next feature — designed, not built)
-**Rule (your strategy): warmup ON by default, OFF when actively sending in a live campaign.**
+### B. Auto-warmup automation (BUILT 2026-07-07 — state machine, dry-run)
+**Rule (final, vendor-confirmed): warmup ALWAYS ON; only the volume profile changes.**
 ```
-For each inbox:
-  in an active campaign + actually sending → warmup should be OFF
-  else (idle, new, low-rep, failed test)   → warmup should be ON
-  → flip any inbox whose real state is wrong (via Smartlead API)
+For each inbox (smartlead/warmup_planner.py):
+  rep < 90                          → RECOVERING: 15/day, reply rate 30% (boost replies, not volume)
+  in live (ACTIVE + fresh) campaign → ACTIVE: 20/day, auto-adjust ON
+  still in ramp window ("warming")  → NEW: 40/day, ramp +5
+  everything else                   → IDLE: 20/day
+  blocked                           → skip (human-only)
+  → apply profile when warmup is off OR volume is off-target (±10 tolerance on auto-adjusted inboxes)
 ```
-- Reuses the health data's existing campaign/availability logic to pick inboxes.
-- Ships **DRY-RUN first** (logs "would enable X / disable Y", changes nothing) → you review → enable.
-- New cron once enabled.
-- *(Rule still being refined with you before building.)*
+- Ships **DRY-RUN** (`WARMUP_AUTO_ENABLED=false`) — cron at 11:30 AM IST logs enable/retune/boost plans.
+- Also built: **bounce auto-protection sweep** (`bounce_protect_executor.py`, 12:30 PM IST, dry-run via `BOUNCE_PROTECT_ENABLED`) — sets Smartlead's `bounce_autopause_threshold=3%` on every ACTIVE campaign missing it; and **blacklist monitor** (`blacklist_monitor.py`, Mondays 9 AM IST, read-only) — Spamhaus DBL / SURBL / URIBL for every sending domain → Mongo `blacklist_checks`.
 
 ### C. Auto-placement-test — turn on when ready
 - Currently DRY-RUN (`RETEST_ENABLED=false`) — logs targets daily, spends nothing.

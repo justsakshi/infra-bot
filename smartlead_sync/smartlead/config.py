@@ -133,8 +133,62 @@ WARMUP_ALWAYS_ON: bool = os.getenv("WARMUP_ALWAYS_ON", "true").lower() == "true"
 # safe band 20-50/day; 100+/day = 4.3x bounce per Woodpecker 2025).
 WARMUP_CONSERVATIVE_VOLUME: bool = os.getenv("WARMUP_CONSERVATIVE_VOLUME", "false").lower() == "true"
 WARMUP_PER_DAY: int = int(os.getenv("WARMUP_PER_DAY", "30" if WARMUP_CONSERVATIVE_VOLUME else "40"))
+# CONFLICT (verified 2026-07-08): Smartlead's own sources disagree on this
+# ramp number — api.smartlead.ai's parameter table + example payload use 2-3,
+# but their blog says 5-10/day. We use 5 (inside the blog's band, above the
+# API doc's default) — a judgment call, not a single settled vendor number.
 WARMUP_DAILY_RAMPUP: int = int(os.getenv("WARMUP_DAILY_RAMPUP", "5"))
-WARMUP_REPLY_RATE: int = int(os.getenv("WARMUP_REPLY_RATE", "20"))
+# CONFLICT (verified 2026-07-08): Smartlead's helpcenter (art. 52) + blog say
+# 20-30% reply rate, "above 30% inadvisable" — but api.smartlead.ai's own
+# parameter table recommends 30-40% and its example payload uses 30. We use
+# the more conservative helpcenter band (20-30%), not the API doc's number.
+WARMUP_REPLY_RATE: int = int(os.getenv("WARMUP_REPLY_RATE", "25"))
+
+# ── State-based warmup profiles (2026-07-07 plan, docs/DELIVERABILITY_MASTER_PLAN.md §1) ──
+# Warmup stays ON in every state; only the volume/ramp/reply-rate profile changes.
+# NOTE: the 4-state framework itself (NEW/ACTIVE/IDLE/RECOVERING) is OUR OWN
+# design, not a vendor concept — verified 2026-07-08, neither Smartlead nor
+# Instantly documents a state-machine model. It's built to satisfy vendor
+# guardrails, not copied from a vendor doc. Per-state sourcing:
+#   NEW        -> vendor-confirmed: ramp to a <=40/day ceiling (api.smartlead.ai,
+#                 verbatim "do not set above 40 for new accounts"); ramp-up
+#                 feature is vendor-confirmed as "for fresh domains only,
+#                 unnecessary once established" (helpcenter art. 164).
+#   ACTIVE     -> vendor range is 15-25/day while campaigns run (Smartlead
+#                 warmup-timeline doc + helpcenter art. 52, two overlapping but
+#                 not identical ranges); we picked 20 as the midpoint. auto-adjust
+#                 ON is vendor-confirmed to trim warmup ~7-10/day automatically
+#                 (helpcenter art. 63, verbatim).
+#   IDLE       -> NOT FOUND in any vendor source (verified 2026-07-08) — no
+#                 vendor publishes a bench/insurance-inbox number. 20/day is
+#                 our own call (low end of the general 20-40 band).
+#   RECOVERING -> NOT FOUND in Smartlead docs. A possible Instantly blog figure
+#                 (10-15/day for damaged reputation) surfaced but could only be
+#                 verified via search-summary, not a raw fetch — treat as
+#                 unconfirmed. 15/day is our own call, not a cited vendor number.
+WARMUP_NEW_PER_DAY: int = int(os.getenv("WARMUP_NEW_PER_DAY", str(WARMUP_PER_DAY)))       # young inbox, full ramp
+WARMUP_ACTIVE_PER_DAY: int = int(os.getenv("WARMUP_ACTIVE_PER_DAY", "20"))                # in live campaign
+WARMUP_IDLE_PER_DAY: int = int(os.getenv("WARMUP_IDLE_PER_DAY", "20"))                    # insurance/bench (our own call — no vendor number)
+# LONG_IDLE sub-state (2026-07-08, no volume change — see reasoning below):
+# an inbox that hasn't sent a real campaign email in a long time has had no
+# fresh human-engagement signal for a while. We do NOT raise its volume
+# (no evidence 20/day is insufficient — see WARMUP_IDLE_PER_DAY note above);
+# instead nudge reply rate up slightly (cheap, same lever as RECOVERING) and
+# flag it for a placement retest before it's ever promoted back to ACTIVE.
+WARMUP_LONG_IDLE_DAYS: int = int(os.getenv("WARMUP_LONG_IDLE_DAYS", "30"))
+WARMUP_LONG_IDLE_REPLY_RATE: int = int(os.getenv("WARMUP_LONG_IDLE_REPLY_RATE", "28"))
+WARMUP_RECOVERY_PER_DAY: int = int(os.getenv("WARMUP_RECOVERY_PER_DAY", "15"))            # rep < 90 / post-incident (our own call — no confirmed vendor number)
+# Boost = raise the REPLY RATE, not volume (replies are the reputation signal;
+# volume spikes without engagement read as spam) — principle is vendor-
+# confirmed (Smartlead), the specific 30% figure is our own choice at the top
+# of their 20-30% conservative band. Never above 30.
+WARMUP_BOOST_REPLY_RATE: int = int(os.getenv("WARMUP_BOOST_REPLY_RATE", "30"))
+# Enable Smartlead's smart-adjusting algorithm on campaign-attached inboxes
+# (auto-reduces warmup 7-10/day while campaigns run; restores after).
+WARMUP_AUTO_ADJUST_ACTIVE: bool = os.getenv("WARMUP_AUTO_ADJUST_ACTIVE", "true").lower() == "true"
+# Retune tolerance: skip a volume change when |current - target| <= this
+# (auto-adjust legitimately moves the number 7-10 below target; don't fight it).
+WARMUP_RETUNE_TOLERANCE: int = int(os.getenv("WARMUP_RETUNE_TOLERANCE", "10"))
 
 # R2 TOGGLE — maintenance-warmup trickle. OFF = fully disable warmup on active
 # senders (legacy). ON = keep a low trickle instead (2026: never fully off, or
@@ -143,6 +197,36 @@ WARMUP_MAINTENANCE_TRICKLE: bool = os.getenv("WARMUP_MAINTENANCE_TRICKLE", "fals
 WARMUP_TRICKLE_PER_DAY: int = int(os.getenv("WARMUP_TRICKLE_PER_DAY", "8"))
 # an inbox counts as "actively sending" (warmup should be OFF) at/above this today
 WARMUP_ACTIVE_SENT_MIN: int = int(os.getenv("WARMUP_ACTIVE_SENT_MIN", "1"))
+
+
+# ── Warmup headroom fix (2026-07-07 finding) ─────────────────────────────────
+# Smartlead's max_email_per_day is ONE shared bucket for warmup + campaign sends
+# (confirmed via their own API docs). Every real inbox we checked caps at <=30,
+# which leaves 0 room for the ACTIVE-state 20/day warmup target -> auto-adjust
+# has nothing to trim from. Fix: on ACTIVE inboxes only, raise max_email_per_day
+# to (current campaign cap + WARMUP_HEADROOM) so warmup has real room to send.
+# DRY-RUN by default: logs would-raise, changes nothing.
+HEADROOM_FIX_ENABLED: bool = os.getenv("HEADROOM_FIX_ENABLED", "false").lower() == "true"
+WARMUP_HEADROOM: int = int(os.getenv("WARMUP_HEADROOM", "20"))  # matches WARMUP_ACTIVE_PER_DAY
+HEADROOM_FIX_PER_RUN_CAP: int = int(os.getenv("HEADROOM_FIX_PER_RUN_CAP", "50"))
+
+# ── Bounce auto-protection sweep (plan §5.4) ────────────────────────────────
+# DRY-RUN by default: logs which ACTIVE campaigns would get the Smartlead
+# "High Bounce Rate Auto Protection" threshold set, changes nothing.
+# Field: bounce_autopause_threshold (string %) on POST /campaigns/{id}/settings.
+BOUNCE_PROTECT_ENABLED: bool = os.getenv("BOUNCE_PROTECT_ENABLED", "false").lower() == "true"
+BOUNCE_PROTECT_THRESHOLD: str = os.getenv("BOUNCE_PROTECT_THRESHOLD", "3")  # % — pause at 3
+BOUNCE_PROTECT_PER_RUN_CAP: int = int(os.getenv("BOUNCE_PROTECT_PER_RUN_CAP", "10"))
+
+# ── Blacklist monitor (plan §5.6) ────────────────────────────────────────────
+# Domain-reputation DNSBLs we treat as SERIOUS (act: pause + delist + escalate).
+# UCEProtect-style pay-to-delist lists are deliberately excluded (noise).
+BLACKLIST_ZONES: dict[str, str] = {
+    "dbl.spamhaus.org": "Spamhaus DBL",
+    "multi.surbl.org": "SURBL",
+    "multi.uribl.com": "URIBL",
+}
+BLACKLIST_COLLECTION: str = os.getenv("BLACKLIST_COLLECTION", "blacklist_checks")
 
 
 @dataclass

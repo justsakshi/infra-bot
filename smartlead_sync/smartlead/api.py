@@ -109,10 +109,40 @@ class SmartleadClient:
     async def get_warmup_stats(self, account_id: str) -> list[dict] | dict:
         return await self._get(f"/email-accounts/{account_id}/warmup-stats")
 
+    async def update_email_account(self, account_id: str, fields: dict) -> dict:
+        """Partial-update an email account (POST /email-accounts/{id}).
+        Documented fields incl. max_email_per_day — the SAME daily cap shared by
+        warmup + campaign sends (Smartlead's own description)."""
+        assert self._client, "Use `async with SmartleadClient(...)` as a context manager."
+        url = f"{BASE_URL}/email-accounts/{account_id}"
+        for attempt in range(API_MAX_RETRIES + 1):
+            try:
+                resp = await self._client.post(url, params={"api_key": self._api_key}, json=fields)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                if attempt < API_MAX_RETRIES:
+                    delay = min(API_RETRY_BASE_DELAY * (2 ** attempt), API_RETRY_MAX_DELAY)
+                    print(f"  [!] network error updating account {account_id}: {exc!r} - retry in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < API_MAX_RETRIES:
+                    delay = self._retry_delay(resp, attempt)
+                    print(f"  [!] {resp.status_code} updating account {account_id} - retry in {delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+            resp.raise_for_status()
+            return resp.json()
+        resp.raise_for_status()
+
     async def set_warmup(self, account_id: str, enabled: bool,
                          total_per_day: int = 40, daily_rampup: int = 5,
-                         reply_rate: int = 20) -> dict:
-        """Enable/disable warmup on an inbox (POST /email-accounts/{id}/warmup)."""
+                         reply_rate: int = 20, auto_adjust: bool | None = None) -> dict:
+        """Enable/disable warmup on an inbox (POST /email-accounts/{id}/warmup).
+
+        auto_adjust=True turns on Smartlead's smart-adjusting algorithm
+        (auto-lowers warmup while the inbox sends in a live campaign); None
+        leaves the account's current setting untouched."""
         assert self._client, "Use `async with SmartleadClient(...)` as a context manager."
         if enabled:
             body = {
@@ -121,6 +151,8 @@ class SmartleadClient:
                 "daily_rampup": daily_rampup,
                 "reply_rate_percentage": reply_rate,
             }
+            if auto_adjust is not None:
+                body["auto_adjust_warmup"] = bool(auto_adjust)
         else:
             body = {"warmup_enabled": "false"}
         url = f"{BASE_URL}/email-accounts/{account_id}/warmup"
@@ -191,6 +223,12 @@ class SmartleadClient:
     async def pause_lead(self, campaign_id: str, lead_id: int) -> dict:
         """Pause a lead's sequence (policy B fallback for in-flight leads)."""
         return await self._request_json("POST", f"/campaigns/{campaign_id}/leads/{lead_id}/pause", {})
+
+    async def update_campaign_settings(self, campaign_id: str, settings: dict) -> dict:
+        """Partial-update campaign general settings
+        (POST /campaigns/{id}/settings — documented fields incl.
+        bounce_autopause_threshold, enable_ai_esp_matching, send_as_plain_text)."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/settings", settings)
 
     # ── campaign leads / dated analytics (for Campaign Metrics dashboard) ──
     async def get_campaign_leads(self, campaign_id: str) -> list[dict]:

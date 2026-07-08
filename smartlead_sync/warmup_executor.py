@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Auto-warmup executor (health phase 4). Separate cron; dry-run by default.
 
-Rule: warmup ON unless the inbox is actively sending in a live ACTIVE campaign.
-Reads raw inbox rows (which carry warmup_state / sent_today / campaign_status /
-account_id), plans the changes, and applies them via the Smartlead API — unless
-WARMUP_AUTO_ENABLED is False (dry-run: log only, change nothing).
+Rule (docs/DELIVERABILITY_MASTER_PLAN.md §1): warmup is ALWAYS ON; the planner
+assigns each inbox a state profile (NEW 40/ramp, ACTIVE-campaign 20+auto-adjust,
+IDLE 20, RECOVERING 15+reply-rate-boost) and this executor applies whatever the
+change dict carries — unless WARMUP_AUTO_ENABLED is False (dry-run: log only).
 """
 from __future__ import annotations
 
@@ -22,10 +22,7 @@ from datetime import date, timedelta
 
 from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
-from smartlead.config import (
-    WARMUP_AUTO_ENABLED, WARMUP_PER_DAY, WARMUP_DAILY_RAMPUP, WARMUP_REPLY_RATE,
-    WARMUP_TRICKLE_PER_DAY,
-)
+from smartlead.config import WARMUP_AUTO_ENABLED
 from smartlead.processing import fetch_account_data
 from smartlead.warmup_planner import plan_warmup_changes
 from smartlead.campaign_freshness import is_campaign_stale, STALE_DAYS
@@ -91,12 +88,11 @@ async def main() -> None:
             seen.add(key)
             all_changes.append(ch)
 
-    enable = [c for c in all_changes if c["action"] == "enable"]
-    disable = [c for c in all_changes if c["action"] == "disable"]
-    trickle = [c for c in all_changes if c["action"] == "trickle"]
-    boost = [c for c in all_changes if c["action"] == "boost"]
-    print(f"[Warmup] {len(all_changes)} change(s): {len(enable)} enable, "
-          f"{len(boost)} boost, {len(disable)} disable, {len(trickle)} trickle"
+    counts = {a: sum(1 for c in all_changes if c["action"] == a)
+              for a in ("enable", "retune", "boost", "disable", "trickle")}
+    print(f"[Warmup] {len(all_changes)} change(s): {counts['enable']} enable, "
+          f"{counts['retune']} retune, {counts['boost']} boost, "
+          f"{counts['disable']} disable, {counts['trickle']} trickle"
           f"{' (DRY-RUN - not applying)' if not WARMUP_AUTO_ENABLED else ''}")
     for c in all_changes[:60]:
         print(f"    {c['action']:7} {c['client']:14} {c['email']:34} {c['reason']}")
@@ -115,25 +111,15 @@ async def main() -> None:
             continue
         async with SmartleadClient(acc.api_key, acc.name) as sl:
             try:
-                if c["action"] == "trickle":
-                    # maintenance warmup: ON but low volume, no ramp
-                    await sl.set_warmup(str(c["account_id"]), enabled=True,
-                                        total_per_day=WARMUP_TRICKLE_PER_DAY,
-                                        daily_rampup=0, reply_rate=WARMUP_REPLY_RATE)
-                elif c["action"] == "boost":
-                    # low-rep recovery (Avi): INCREASE warmup — re-apply full ramp
-                    await sl.set_warmup(str(c["account_id"]), enabled=True,
-                                        total_per_day=WARMUP_PER_DAY,
-                                        daily_rampup=WARMUP_DAILY_RAMPUP,
-                                        reply_rate=WARMUP_REPLY_RATE)
-                else:
-                    await sl.set_warmup(
-                        str(c["account_id"]),
-                        enabled=(c["action"] == "enable"),
-                        total_per_day=WARMUP_PER_DAY,
-                        daily_rampup=WARMUP_DAILY_RAMPUP,
-                        reply_rate=WARMUP_REPLY_RATE,
-                    )
+                # every change carries its full profile from the planner
+                await sl.set_warmup(
+                    str(c["account_id"]),
+                    enabled=(c["action"] != "disable"),
+                    total_per_day=c.get("per_day", 40),
+                    daily_rampup=c.get("rampup", 0),
+                    reply_rate=c.get("reply_rate", 25),
+                    auto_adjust=c.get("auto_adjust"),
+                )
                 applied += 1
             except Exception as exc:  # noqa: BLE001
                 print(f"  [Warmup] {c['action']} failed for {c['email']}: {exc}")

@@ -139,18 +139,25 @@ def resolve_action(snapshot: dict, score: int) -> dict:
                     "Pause inbox/domain; check SPF/DKIM/DMARC + copy + list; retest.",
                     "1-7 days", "human", "deliverability-incident-response")
 
-    # Critical DNS SPF check
+    # Critical DNS SPF check. DNS is Zapmail's responsibility (2026-07-07):
+    # we detect + escalate, we never edit records ourselves.
     if not snapshot.get("dns_spf_ok", True):
         spf_msg = snapshot.get("dns_spf_msg", "Missing or invalid SPF record")
         return item("P0", "SPF misconfigured or missing",
-                    f"Fix SPF record on DNS provider: {spf_msg}",
+                    f"Escalate to Zapmail support (do NOT edit DNS yourself): {spf_msg}",
                     "1-2 days", "human", "deliverability-incident-response")
 
-    # Critical DNS DKIM check
+    # Critical DNS DKIM check. Outlook inboxes often legitimately lack a DKIM
+    # record at the default selector — confirm with Zapmail before treating as
+    # broken (meeting 2026-07-07), so Outlook gets P1/verify, others stay P0.
     if not snapshot.get("dns_dkim_ok", True):
         dkim_msg = snapshot.get("dns_dkim_msg", "Missing or invalid DKIM record")
+        if "outlook" in str(snapshot.get("provider", "")).lower():
+            return item("P1", "DKIM missing (Outlook — may be expected)",
+                        f"Ask Zapmail if DKIM is expected for this Outlook domain: {dkim_msg}",
+                        "1-3 days", "human", "deliverability-incident-response")
         return item("P0", "DKIM misconfigured or missing",
-                    f"Fix DKIM record on DNS provider: {dkim_msg}",
+                    f"Escalate to Zapmail support (do NOT edit DNS yourself): {dkim_msg}",
                     "1-2 days", "human", "deliverability-incident-response")
 
     if "warmup_blocked" in reasons:
@@ -163,16 +170,17 @@ def resolve_action(snapshot: dict, score: int) -> dict:
                     "Reconnect the inbox before any campaign assignment.",
                     "minutes", "human", "smartlead-inbox-manager")
 
-    # Critical DNS DMARC check
+    # Critical DNS DMARC check (escalate to Zapmail — never edit DNS ourselves)
     if not snapshot.get("dns_dmarc_ok", True):
         dmarc_msg = snapshot.get("dns_dmarc_msg", "Missing or invalid DMARC record")
         return item("P1", "DMARC misconfigured or missing",
-                    f"Fix DMARC record on DNS provider: {dmarc_msg}",
+                    f"Escalate to Zapmail support (do NOT edit DNS yourself): {dmarc_msg}",
                     "1-2 days", "human", "deliverability-incident-response")
 
     if "low_rep" in reasons:
         return item("P1", "Warmup reputation below threshold",
-                    "Keep out of campaigns; continue/adjust warmup; retest after recovery.",
+                    "Keep out of campaigns; auto-warmup sets RECOVERING profile "
+                    "(15/day + reply rate 30% — boost replies, not volume); retest after recovery.",
                     "3-14 days", "human", "smartlead-inbox-manager")
     if "untested" in reasons or status in {"", "unknown"}:
         return item("P1", "No placement test on record",

@@ -1672,6 +1672,56 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Warmup-headroom fix at 12:15 PM IST daily (before bounce-protect). Ships
+    // DRY-RUN (HEADROOM_FIX_ENABLED=false) — raises max_email_per_day on ACTIVE
+    // inboxes so campaign + warmup share a bucket with actual room in it.
+    cron.schedule('15 12 * * *', () => {
+      console.log(`[CRON] Headroom fix firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['headroom_fix_executor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[headroom] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[headroom] ${d}`));
+      proc.on('close', code => console.log(`[headroom] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // Bounce auto-protection sweep at 12:30 PM IST daily. Ships DRY-RUN
+    // (BOUNCE_PROTECT_ENABLED=false) — logs ACTIVE campaigns missing the
+    // Smartlead bounce auto-pause threshold, applies nothing until enabled.
+    cron.schedule('30 12 * * *', () => {
+      console.log(`[CRON] Bounce-protect sweep firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['bounce_protect_executor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[bounce-protect] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[bounce-protect] ${d}`));
+      proc.on('close', code => console.log(`[bounce-protect] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // Blacklist monitor at 9:00 AM IST every Monday. Read-only (DNSBL lookups
+    // via Google DoH against Spamhaus DBL / SURBL / URIBL) — no enable flag needed.
+    cron.schedule('0 9 * * 1', () => {
+      console.log(`[CRON] Blacklist monitor firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['blacklist_monitor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[blacklist] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[blacklist] ${d}`));
+      proc.on('close', code => console.log(`[blacklist] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();
