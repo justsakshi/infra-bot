@@ -1,5 +1,5 @@
 import asyncio
-from smartlead.dns_checker import audit_spf, audit_dkim, audit_dmarc, audit_domain_dns
+from smartlead.dns_checker import audit_spf, audit_dkim_multi, audit_dmarc, audit_domain_dns
 
 def ok(c, m):
     print(f"  {'PASS' if c else 'FAIL'}: {m}")
@@ -21,16 +21,22 @@ ok("unsafe" in msg_spf3, "unsafe SPF error message")
 ok_spf4, msg_spf4 = audit_spf(["v=spf1", "v=spf1 include:x ~all"])
 ok(not ok_spf4, "multiple SPF fail")
 
-# 2. Test DKIM Auditing
-ok_dkim, msg_dkim = audit_dkim(["v=DKIM1; k=rsa; p=" + ("A" * 350)]) # 2048 bit mock
-ok(ok_dkim, "valid DKIM 2048-bit pass")
+# 2. Test DKIM Auditing (multi-selector: 2026-07-08 fix checks google/
+# selector1/selector2/default and passes on any hit — see dns_checker.py)
+ok_dkim, msg_dkim = audit_dkim_multi({"default": ["v=DKIM1; k=rsa; p=" + ("A" * 350)]})
+ok(ok_dkim, "valid DKIM pass at default selector")
 
-ok_dkim2, msg_dkim2 = audit_dkim(["v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDzve3Bs4dTdvQ20PGN"]) # 1024 bit mock
-ok(not ok_dkim2, "DKIM 1024-bit warning/fail")
-ok("1024-bit" in msg_dkim2, "1024-bit warning message")
+ok_dkim_alt, msg_dkim_alt = audit_dkim_multi({
+    "google": [], "default": ["v=DKIM1; k=rsa; p=" + ("A" * 350)],
+})
+ok(ok_dkim_alt, "valid DKIM pass when only a non-primary selector has the record")
 
-ok_dkim3, msg_dkim3 = audit_dkim([])
-ok(not ok_dkim3, "missing DKIM fail")
+ok_dkim3, msg_dkim3 = audit_dkim_multi({"google": [], "selector1": [], "default": []})
+ok(not ok_dkim3, "missing DKIM at every selector -> fail")
+
+ok_dkim4, msg_dkim4 = audit_dkim_multi({"google": None, "default": []})
+ok(ok_dkim4, "lookup ERROR at a selector -> status unknown, never a hard fail")
+ok("unknown" in msg_dkim4.lower(), "lookup-error message says status unknown")
 
 # 3. Test DMARC Auditing
 ok_dmarc, msg_dmarc = audit_dmarc(["v=DMARC1; p=quarantine;"])

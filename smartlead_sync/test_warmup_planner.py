@@ -42,11 +42,22 @@ ok("STALE" in by_email["g@x.com"]["reason"], "stale reason flagged")
 
 ok(plan_warmup_changes([]) == [], "empty -> no changes")
 
-# --- WARMUP_ALWAYS_ON policy (Avi): only enable/boost, never disable/trickle ---
+# --- WARMUP_ALWAYS_ON policy (Avi): only enable/boost/retune, never disable ---
+# (2026-07-08: the state-machine rewrite retunes an ACTIVE-campaign sender to
+# its 20/day target rather than leaving whatever volume it already had — r1
+# here has warmup_max_count unset (0), so it's correctly off-target -> retune,
+# never "no change." "never DISABLED" is the invariant this asserts, not
+# "never touched.")
 wp.WARMUP_ALWAYS_ON = True
 ao = {c["email"]: c for c in plan_warmup_changes([r1, r2])}  # r1=live sender ON, r2=idle OFF
-ok("a@x.com" not in ao, "always-on: live sender ON -> no change (never disabled)")
+ok(ao["a@x.com"]["action"] == "retune", "always-on: live sender retuned to its ACTIVE profile volume")
+ok(ao["a@x.com"]["per_day"] == 20, "always-on: ACTIVE profile target is 20/day")
 ok(ao["b@x.com"]["action"] == "enable", "always-on: idle OFF -> enable")
+# a live sender ALREADY at its target volume -> genuinely no change
+r_ok = row("k@x.com", "warming", campaign_status="ACTIVE", campaign_is_stale=False)
+r_ok["warmup_max_count"] = 20
+ok("k@x.com" not in {c["email"]: c for c in plan_warmup_changes([r_ok])},
+   "always-on: live sender already at target volume -> no change")
 # a live sender that is OFF gets ENABLED (never leave warmup off)
 r_off = row("h@x.com", "off", campaign_status="ACTIVE", campaign_is_stale=False)
 ok({c["email"]: c for c in plan_warmup_changes([r_off])}["h@x.com"]["action"] == "enable",
@@ -55,10 +66,12 @@ ok({c["email"]: c for c in plan_warmup_changes([r_off])}["h@x.com"]["action"] ==
 r_low = row("i@x.com", "warming"); r_low["warmup_rep_pct"] = "85%"
 ok({c["email"]: c for c in plan_warmup_changes([r_low])}["i@x.com"]["action"] == "boost",
    "always-on: low rep (85%) -> boost warmup")
-# healthy rep ON -> no change
-r_hi = row("j@x.com", "warming"); r_hi["warmup_rep_pct"] = "98%"
+# healthy rep, ON, and already at its NEW-profile target volume -> no change
+r_hi = row("j@x.com", "warming")
+r_hi["warmup_rep_pct"] = "98%"
+r_hi["warmup_max_count"] = 40  # NEW profile target (see warmup_planner._profile)
 ok("j@x.com" not in {c["email"]: c for c in plan_warmup_changes([r_hi])},
-   "always-on: healthy rep ON -> no change")
+   "always-on: healthy rep ON at target volume -> no change")
 wp.WARMUP_ALWAYS_ON = False  # restore for legacy tests below
 
 # --- R2 trickle toggle (legacy mode, always-on off) ---
