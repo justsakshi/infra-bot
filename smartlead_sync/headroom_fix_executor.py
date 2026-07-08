@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import date, timedelta
+from datetime import date
 
 if sys.platform == "win32":
     try:
@@ -35,7 +35,7 @@ from smartlead.config import (
     HEADROOM_FIX_ENABLED, WARMUP_HEADROOM, HEADROOM_FIX_PER_RUN_CAP,
 )
 from smartlead.processing import fetch_account_data
-from smartlead.campaign_freshness import is_campaign_stale, STALE_DAYS
+from smartlead.campaign_freshness import stale_campaign_names
 from smartlead.client_filter import is_excluded_inbox
 
 
@@ -46,31 +46,10 @@ def _in_live_campaign(row: dict) -> bool:
     return not bool(row.get("campaign_is_stale", False))
 
 
-async def _stale_campaign_names(c: SmartleadClient, today: date) -> set[str]:
-    stale: set[str] = set()
-    start = (today - timedelta(days=STALE_DAYS)).strftime("%Y-%m-%d")
-    end = today.strftime("%Y-%m-%d")
-    for camp in await c.list_campaigns():
-        if str(camp.get("status", "")).upper() != "ACTIVE":
-            continue
-        cid = str(camp["id"])
-        try:
-            leads = await c.get_campaign_leads(cid)
-            newest = max((l.get("created_at", "") for l in leads), default="")
-            an = await c.get_analytics_by_date(cid, start, end)
-            sent14 = int(float(an.get("sent_count", 0) or 0))
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [Headroom] freshness check failed for {cid}: {exc}")
-            continue
-        if is_campaign_stale(newest, sent14, today):
-            stale.add(camp.get("name", ""))
-    return stale
-
-
 async def _plan_for_account(acc, today: date) -> list[dict]:
     async with SmartleadClient(acc.api_key, acc.name) as c:
         inbox, _, _ = await fetch_account_data(c, {}, active_only=False)
-        stale_names = await _stale_campaign_names(c, today)
+        stale_names = await stale_campaign_names(c, today)
     inbox = [r for r in inbox if not is_excluded_inbox(r)]
 
     seen: set = set()

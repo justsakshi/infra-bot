@@ -18,43 +18,21 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from datetime import date, timedelta
+from datetime import date
 
 from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.config import WARMUP_AUTO_ENABLED
 from smartlead.processing import fetch_account_data
 from smartlead.warmup_planner import plan_warmup_changes
-from smartlead.campaign_freshness import is_campaign_stale, STALE_DAYS
+from smartlead.campaign_freshness import stale_campaign_names
 from smartlead.client_filter import is_excluded_inbox
-
-
-async def _stale_campaign_names(c: SmartleadClient, today: date) -> set[str]:
-    """Return the names of ACTIVE campaigns that are stale (dead 14d+)."""
-    stale: set[str] = set()
-    start = (today - timedelta(days=STALE_DAYS)).strftime("%Y-%m-%d")
-    end = today.strftime("%Y-%m-%d")
-    for camp in await c.list_campaigns():
-        if str(camp.get("status", "")).upper() != "ACTIVE":
-            continue
-        cid = str(camp["id"])
-        try:
-            leads = await c.get_campaign_leads(cid)
-            newest = max((l.get("created_at", "") for l in leads), default="")
-            an = await c.get_analytics_by_date(cid, start, end)
-            sent14 = int(float(an.get("sent_count", 0) or 0))
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [Warmup] freshness check failed for {cid}: {exc}")
-            continue
-        if is_campaign_stale(newest, sent14, today):
-            stale.add(camp.get("name", ""))
-    return stale
 
 
 async def _raw_inbox_rows(acc, today: date) -> list[dict]:
     async with SmartleadClient(acc.api_key, acc.name) as c:
         inbox, _, _ = await fetch_account_data(c, {}, active_only=False)
-        stale_names = await _stale_campaign_names(c, today)
+        stale_names = await stale_campaign_names(c, today)
     inbox = [r for r in inbox if not is_excluded_inbox(r)]  # drop old-client inboxes
     for r in inbox:
         r.setdefault("client", acc.name)
