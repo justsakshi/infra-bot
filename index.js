@@ -1738,6 +1738,21 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Per-domain reply-rate early warning at 1:00 PM IST daily (read-only).
+    cron.schedule('0 13 * * *', () => {
+      console.log(`[CRON] Reply monitor firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['reply_monitor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[reply-mon] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[reply-mon] ${d}`));
+      proc.on('close', code => console.log(`[reply-mon] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();

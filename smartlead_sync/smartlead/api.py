@@ -251,6 +251,30 @@ class SmartleadClient:
         return await self._get(f"/campaigns/{campaign_id}/analytics-by-date",
                                extra_params={"start_date": start_date, "end_date": end_date})
 
+    async def get_campaign_mailbox_statistics(self, campaign_id: str) -> list[dict]:
+        """Per-sender-mailbox stats for a campaign (paginated).
+
+        Endpoint + field names verified LIVE on 2026-07-08 (Task 4 Step 1):
+        GET /campaigns/{id}/mailbox-statistics -> {"ok": true, "data": [...]}
+        where each row has from_email, sent_count, reply_count (also
+        open_count, click_count, bounce_count, sender_bounce_count,
+        unsubscribed_count - unused here). `limit` caps at 20 - the API
+        returns 400 for limit=25+ (confirmed live), so page at 20, not 100.
+        Cross-checked against the get_campaign_mailbox_statistics MCP tool
+        on the same campaign - identical rows."""
+        all_rows: list[dict] = []
+        offset = 0
+        page = 20
+        while True:
+            resp = await self._get(f"/campaigns/{campaign_id}/mailbox-statistics",
+                                   extra_params={"offset": offset, "limit": page})
+            data = resp.get("data", []) if isinstance(resp, dict) else (resp or [])
+            all_rows.extend(data)
+            if len(data) < page:
+                break
+            offset += page
+        return all_rows
+
     # ── bulk helpers ─────────────────────────────────────────────────────
     async def _gather_chunked(
         self, items: list, coro_fn, label: str = "",

@@ -237,6 +237,12 @@ CAPACITY_BENCH_MIN: int = int(os.getenv("CAPACITY_BENCH_MIN", "5"))
 CAPACITY_LEAD_TIME_DAYS: int = int(os.getenv("CAPACITY_LEAD_TIME_DAYS", "35")) # purchase+warmup ≈ 5 weeks
 DOMAIN_REGISTRY_COLLECTION: str = os.getenv("DOMAIN_REGISTRY_COLLECTION", "domain_registry")
 
+# ── Per-domain reply-rate early warning ──────────────────────────────────────
+REPLY_STATS_COLLECTION: str = os.getenv("REPLY_STATS_COLLECTION", "domain_reply_stats")
+REPLY_ALERT_DROP_RATIO: float = float(os.getenv("REPLY_ALERT_DROP_RATIO", "0.7"))  # alert below 70% of own baseline
+REPLY_ALERT_MIN_SENT: int = int(os.getenv("REPLY_ALERT_MIN_SENT", "50"))           # drop-alert send floor (this window)
+REPLY_ONE_PERCENT_MIN_SENT: int = int(os.getenv("REPLY_ONE_PERCENT_MIN_SENT", "200"))
+
 
 @dataclass
 class AccountConfig:
