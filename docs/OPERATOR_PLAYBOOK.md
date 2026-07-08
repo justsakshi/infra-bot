@@ -8,7 +8,7 @@ Created: 2026-07-07. Companions: [INBOX_HEALTH_PLAYBOOK.md](INBOX_HEALTH_PLAYBOO
 
 ## 1 — The System (background automation)
 
-Six cron jobs on Render, all IST. Each row: what it does, how we check it works, current state.
+Eleven cron jobs on Render, all IST. Each row: what it does, how we check it works, current state.
 
 | # | Cron (IST) | Job | What it does | How we check it | State |
 |---|---|---|---|---|---|
@@ -19,9 +19,13 @@ Six cron jobs on Render, all IST. Each row: what it does, how we check it works,
 | 4 | 12:00 daily | `rotation_executor.py` | Swaps P0-broken senders for healthy bench inboxes, cap 2/client | Log `[rotation]`; `rotation_log` Mongo collection | ⏸ DRY-RUN (`ROTATION_ENABLED=false`) |
 | 5 | 12:30 daily | `bounce_protect_executor.py` | Sets Smartlead bounce auto-pause (3%) on every ACTIVE campaign missing it | Log `[bounce-protect] N campaigns missing`; after enable, N should drop to 0 and stay 0; verify one campaign in Smartlead UI → Setup | ⏸ DRY-RUN (`BOUNCE_PROTECT_ENABLED=false`) — NEW, deploy pending |
 | 6 | Mon 09:00 | `blacklist_monitor.py` | Every sending domain vs Spamhaus DBL / SURBL / URIBL; hits → console + Mongo `blacklist_checks` | Log `[blacklist] ✅ all domains clean` or 🚨 list; read-only, no enable flag | ✅ READY — NEW, deploy pending |
+| 6b | Mon 09:30 | `capacity_planner.py` | Demand vs healthy supply vs bench per client → "order N domains by DATE" advisory in the shared "Capacity" Sheet tab; also maintains a Mongo `domain_registry` (first-seen date per domain, for future domain-age gating) | Log `[Capacity] <client>: <status> — demand X/d, capacity Y/d, bench A/B, order N domain(s) by DATE`; check the "Capacity" tab has one row per client | ✅ READY — read-only, no enable flag needed |
+| 6c | 13:00 daily | `reply_monitor.py` | Per-DOMAIN reply-rate early warning — the earliest deliverability-decay signal (~48h ahead of opens/bounces). Alerts when a domain's daily reply rate drops sharply below its own trailing baseline, or breaks the "1% reply rate after 200+ sends" rule. Stores one daily cumulative snapshot per domain in Mongo (`domain_reply_stats`) and diffs consecutive snapshots into true daily deltas before alerting | Log `[ReplyMon] collected stats for N domain(s)`, then `[ALERT] <domain> (<client>): <reason>` per hit, or `[ReplyMon] OK - no reply-rate alerts` | ✅ READY — read-only, no enable flag needed |
 | 7 | daily (inside #1) | Slack digest | Per-client action list @-mentioning managers | Message appears in channel | ⏳ NEEDS channel + manager handles |
 
-**Deploy note:** jobs 3b, 5, 6 + the new warmup logic exist on this machine only until pushed to `main` → Render redeploy.
+**Deploy note:** jobs 3b, 5, 6, 6b, 6c + the new warmup logic exist on this machine only until pushed to `main` → Render redeploy.
+
+**New (2026-07-08): capacity planner + reply monitor.** Both are read-only reporting jobs — they never touch Smartlead inbox/campaign settings, only write to Sheets and Mongo, so unlike the executors above they don't need an enable flag or a staged rollout. Add them to your daily/weekly routine now: check the "Capacity" tab Monday mornings for any client showing "ORDER NOW", and treat a `[ReplyMon] [ALERT]` line the same as a P0 in the daily sweep (§2) — a reply-rate drop on a domain is the earliest sign something's about to go wrong, worth investigating same-day even though it's not (yet) a red row in Inbox Health.
 
 **Enablement order note:** enable the headroom fix (3b) BEFORE warmup auto (3) — raising the daily cap first means warmup actually has room to use once its profile is applied. Doing it the other way round means warmup targets get set but silently can't send.
 

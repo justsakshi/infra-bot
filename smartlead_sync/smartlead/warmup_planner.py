@@ -122,11 +122,12 @@ def _profile(row: dict) -> tuple[str, dict]:
 def _reply_rate_off_target(row: dict, target: int) -> bool:
     """True if the inbox's current reply-rate setting differs from target.
 
-    We don't currently pull the live reply_rate_percentage through the sync
-    (Smartlead's warmup_details response isn't parsed for it), so this can't
-    be compared precisely. Fail safe: report off-target (apply once) rather
-    than silently skipping the freshness nudge — set_warmup is idempotent, so
-    a harmless repeat call is the safer failure mode than never applying it."""
+    warmup_reply_rate_pct is populated from Smartlead's live warmup_details
+    (see smartlead/processing.py) whenever the sync ran successfully. If it's
+    still None (row predates that pass, or the field is genuinely absent
+    upstream), fail safe: report off-target (apply once) rather than silently
+    skipping the freshness nudge — set_warmup is idempotent, so a harmless
+    repeat call is the safer failure mode than never applying it."""
     current = row.get("warmup_reply_rate_pct")
     if current is None:
         return True

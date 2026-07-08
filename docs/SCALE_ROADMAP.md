@@ -62,7 +62,7 @@ LEAD TIME (why we order EARLY)
 ```
 
 ### Implementation spec — `capacity_planner.py` (new, read-only)
-- Runs inside/after the daily sync (data already fetched: grades, reps, campaigns, message_per_day).
+- Shipped as its own standalone Monday 9:30 AM IST cron (not folded into the daily sync — it re-fetches account/campaign data itself, including a real deliverability-tab read, rather than reusing the sync's in-memory state).
 - Domain age: start tracking NOW — first-seen date per domain in Mongo (`domain_registry` collection); backfill via WHOIS once. Without this, the 21-30-day gate and replace-vs-repair calls stay guesswork.
 - Output: new "Capacity" tab in the workbook, one row per client:
   `client | demand/day | safe capacity | headroom % | bench | bench target | churn/mo | days of runway | ORDER: N domains, M inboxes | by date`
