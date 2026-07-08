@@ -228,6 +228,15 @@ BLACKLIST_ZONES: dict[str, str] = {
 }
 BLACKLIST_COLLECTION: str = os.getenv("BLACKLIST_COLLECTION", "blacklist_checks")
 
+# ── Capacity planner (read-only Monday advisory) ─────────────────────────────
+CAPACITY_TAB_NAME: str = os.getenv("CAPACITY_TAB_NAME", "Capacity")
+CAPACITY_PER_INBOX_CAP: int = int(os.getenv("CAPACITY_PER_INBOX_CAP", "30"))   # sends/day counted per healthy inbox
+CAPACITY_HEADROOM: float = float(os.getenv("CAPACITY_HEADROOM", "1.2"))        # demand buffer (20%)
+CAPACITY_BENCH_RATIO: float = float(os.getenv("CAPACITY_BENCH_RATIO", "0.25")) # bench = 25% of active fleet
+CAPACITY_BENCH_MIN: int = int(os.getenv("CAPACITY_BENCH_MIN", "5"))
+CAPACITY_LEAD_TIME_DAYS: int = int(os.getenv("CAPACITY_LEAD_TIME_DAYS", "35")) # purchase+warmup ≈ 5 weeks
+DOMAIN_REGISTRY_COLLECTION: str = os.getenv("DOMAIN_REGISTRY_COLLECTION", "domain_registry")
+
 
 @dataclass
 class AccountConfig:

@@ -1722,6 +1722,22 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Capacity planner at 9:30 AM IST every Monday (after the blacklist run).
+    // Read-only: writes the Capacity advisory tab + domain registry only.
+    cron.schedule('30 9 * * 1', () => {
+      console.log(`[CRON] Capacity planner firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['capacity_planner.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[capacity] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[capacity] ${d}`));
+      proc.on('close', code => console.log(`[capacity] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     cron.schedule('0 16 * * 1-5', async () => {
       const now = new Date().toISOString();

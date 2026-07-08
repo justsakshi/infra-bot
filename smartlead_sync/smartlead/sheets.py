@@ -633,6 +633,27 @@ class SheetsWriter:
         self._write_tab(CAMPAIGN_METRICS_TAB_NAME, projected, custom_headers=custom_headers)
         print(f"  [Sheets] Campaign Metrics tab written: {len(rows)} rows")
 
+    CAPACITY_COLUMNS = [
+        "client", "status", "demand_per_day", "safe_capacity", "headroom_pct",
+        "sendable_inboxes", "bench", "bench_target", "churn_per_month",
+        "order_inboxes", "order_domains", "order_by",
+    ]
+
+    def write_capacity(self, rows: list[dict]) -> None:
+        """Write the shared 'Capacity' advisory tab (one row per client)."""
+        from smartlead.config import CAPACITY_TAB_NAME
+        if not rows:
+            print("  [Sheets] No capacity rows - skipping.")
+            return
+        ws = self._get_or_create_shared_tab(CAPACITY_TAB_NAME, rows=100, cols=len(self.CAPACITY_COLUMNS) + 2)
+        ws.clear()
+        header = [c.replace("_", " ").title() for c in self.CAPACITY_COLUMNS]
+        values = [header] + [
+            [str(r.get(c, "")) for c in self.CAPACITY_COLUMNS] for r in rows
+        ]
+        ws.update(values=values, range_name="A1")
+        print(f"  [Sheets] Capacity tab written: {len(rows)} client row(s)")
+
     # ── internals ────────────────────────────────────────────────────────
 
     def _get_or_create_tab(self, title: str, rows: int = 500, cols: int = 20) -> Any:
