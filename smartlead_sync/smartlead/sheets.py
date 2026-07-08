@@ -74,15 +74,34 @@ def _parse_number(value: object) -> float:
         return 0.0
 
 
+def _campaign_row_rank(r: dict) -> int:
+    """How authoritative a campaign-row is for representing an inbox:
+    ACTIVE campaign row (2) > any other real campaign row (1) > orphan/N-A (0).
+    Without this, dedup kept whichever row the API returned first, so an inbox
+    on both an ACTIVE and a completed campaign could show the completed one —
+    and campaign_status drives warmup/priority logic downstream."""
+    campaign = str(r.get("campaign_name", ""))
+    if not campaign or campaign.startswith("N/A"):
+        return 0
+    if str(r.get("campaign_status", "")).upper() == "ACTIVE":
+        return 2
+    return 1
+
+
 def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
-    """Return one row per (client, email), with active campaign count attached."""
+    """Return one row per (client, email), keeping the most-live campaign's row
+    (ACTIVE beats paused/completed beats orphan), with active campaign count."""
     groups: dict[tuple, dict] = {}
     for r in rows:
         key = (r.get("client", ""), str(r.get("email", "")).strip().lower())
         g = groups.get(key)
         if g is None:
-            g = {"row": r, "campaigns": 0}
+            g = {"row": r, "rank": _campaign_row_rank(r), "campaigns": 0}
             groups[key] = g
+        else:
+            rank = _campaign_row_rank(r)
+            if rank > g["rank"]:
+                g["row"], g["rank"] = r, rank
         campaign = str(r.get("campaign_name", ""))
         if campaign and not campaign.startswith("N/A"):
             g["campaigns"] += 1

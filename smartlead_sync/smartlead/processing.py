@@ -201,11 +201,15 @@ async def fetch_account_data(
         dns_results_list = await asyncio.gather(*dns_tasks.values(), return_exceptions=True)
         for dom, res in zip(dns_tasks.keys(), dns_results_list):
             if isinstance(res, Exception):
+                # ok=True so a transient DoH failure can't fabricate a P0, but
+                # the message says UNKNOWN — never present an unchecked domain
+                # as verified-green. (Lookup-level errors are already handled
+                # inside audit_domain_dns and not cached; this catches bugs.)
                 print(f"  [!] DNS check failed for {dom}: {res}")
                 dns_audit_map[dom] = {
-                    "spf_ok": True, "spf_msg": "DNS check skipped due to error",
-                    "dkim_ok": True, "dkim_msg": "DNS check skipped due to error",
-                    "dmarc_ok": True, "dmarc_msg": "DNS check skipped due to error",
+                    "spf_ok": True, "spf_msg": "DNS check errored - status UNKNOWN",
+                    "dkim_ok": True, "dkim_msg": "DNS check errored - status UNKNOWN",
+                    "dmarc_ok": True, "dmarc_msg": "DNS check errored - status UNKNOWN",
                 }
             else:
                 dns_audit_map[dom] = res

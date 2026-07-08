@@ -68,22 +68,42 @@ class PlacementStore:
         except PyMongoError as exc:
             print(f"  [Retest] record_created failed: {exc}")
 
-    def abandon_stale(self, max_age_days: int = 3) -> int:
-        """Mark tests pending longer than max_age_days as ABANDONED so their
-        inboxes free up for re-targeting. Returns how many were abandoned."""
+    def stale_tests(self, max_age_days: int = 3) -> list[dict]:
+        """ACTIVE tests pending longer than max_age_days — candidates for
+        abandonment. Returned (not blind-updated) so the caller can restore
+        warmup on each test's warmup_off_ids BEFORE marking it abandoned;
+        the old bulk-update version stranded those inboxes with warmup off
+        forever (found in 2026-07-08 audit)."""
         if self._tests is None:
-            return 0
+            return []
         cutoff = (_date.today() - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
         try:
-            res = self._tests.update_many(
+            return list(self._tests.find(
                 {"status": "ACTIVE",
-                 "$or": [{"created": {"$lt": cutoff}}, {"created": {"$exists": False}}]},
-                {"$set": {"status": "ABANDONED"}},
-            )
-            return res.modified_count or 0
+                 "$or": [{"created": {"$lt": cutoff}}, {"created": {"$exists": False}}]}))
         except PyMongoError as exc:
-            print(f"  [Retest] abandon_stale failed: {exc}")
-            return 0
+            print(f"  [Retest] stale_tests failed: {exc}")
+            return []
+
+    def mark_abandoned(self, test_id: int) -> None:
+        if self._tests is None:
+            return
+        try:
+            self._tests.update_one({"test_id": test_id},
+                                   {"$set": {"status": "ABANDONED"}})
+        except PyMongoError as exc:
+            print(f"  [Retest] mark_abandoned failed: {exc}")
+
+    def update_warmup_off_ids(self, test_id: int, ids: list[str]) -> None:
+        """Shrink a test's outstanding warmup-off list to the ids whose
+        restore is still pending (retry target for the next run)."""
+        if self._tests is None:
+            return
+        try:
+            self._tests.update_one({"test_id": test_id},
+                                   {"$set": {"warmup_off_ids": ids}})
+        except PyMongoError as exc:
+            print(f"  [Retest] update_warmup_off_ids failed: {exc}")
 
     def mark_done(self, test_id: int, inbox_pct: float, status: str) -> None:
         if self._tests is None:

@@ -40,12 +40,43 @@ def _domain(email: str) -> str:
     return email.split("@", 1)[1].lower() if "@" in email else ""
 
 
+async def _restore_warmup(api_key: str, client: str, ids: list[str]) -> list[str]:
+    """Best-effort warmup re-enable. Returns the ids that FAILED to restore
+    (empty list = all restored). Callers must not consider a test finished
+    while this returns failures — leaving warmup off permanently is the #1
+    way to silently lose an inbox."""
+    failed: list[str] = []
+    if not ids:
+        return failed
+    async with SmartleadClient(api_key, client) as slc:
+        for aid in ids:
+            try:
+                await slc.set_warmup(str(aid), enabled=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [Retest] warmup re-enable failed for {aid}: {exc}")
+                failed.append(str(aid))
+    return failed
+
+
 async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) -> int:
     """Pass A: poll ACTIVE tests, write results for completed ones."""
-    # Free up inboxes stuck behind tests that never finished (>3 days pending)
-    abandoned = store.abandon_stale(max_age_days=3)
-    if abandoned:
-        print(f"  [Retest] abandoned {abandoned} stuck test(s) (>3 days pending)")
+    # Free up inboxes stuck behind tests that never finished (>3 days pending).
+    # Restore each stale test's warmup FIRST; only mark abandoned once its
+    # senders are warm again — otherwise they'd be stranded with warmup off.
+    for t in store.stale_tests(max_age_days=3):
+        api_key = key_by_client.get(t.get("client", ""))
+        off_ids = [str(i) for i in (t.get("warmup_off_ids", []) or [])]
+        if off_ids and api_key:
+            still_off = await _restore_warmup(api_key, t.get("client", ""), off_ids)
+            if still_off:
+                # keep ACTIVE with the remaining ids -> retried next run
+                store.update_warmup_off_ids(t["test_id"], still_off)
+                print(f"  [Retest] stale test {t['test_id']}: {len(still_off)} warmup "
+                      "restore(s) failed - keeping ACTIVE to retry tomorrow")
+                continue
+        store.mark_abandoned(t["test_id"])
+        print(f"  [Retest] abandoned stuck test {t['test_id']} (>3 days pending)")
+
     completed = 0
     for t in store.pending_tests():
         client = t.get("client", "")
@@ -65,24 +96,26 @@ async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) ->
         today = date.today().strftime("%Y-%m-%d")
         for email in t.get("emails", []):
             store.save_result(email, _domain(email), status, today, "api")
+
+        # RE-ENABLE warmup BEFORE marking the test done (Avi's policy: warmup
+        # only off for the test duration). If any restore fails, the test stays
+        # ACTIVE carrying just the failed ids, so the next run retries — a test
+        # must never be closed out while its senders are still warmup-off.
+        off_ids = [str(i) for i in (t.get("warmup_off_ids", []) or [])]
+        still_off = await _restore_warmup(api_key, client, off_ids)
+        if still_off:
+            store.update_warmup_off_ids(t["test_id"], still_off)
+            print(f"  [Retest] test {t['test_id']}: result saved but {len(still_off)} "
+                  "warmup restore(s) failed - retrying restore next run")
+            continue
+        if off_ids:
+            print(f"  [Retest] re-enabled warmup on {len(off_ids)} sender(s) post-test")
+
         store.mark_done(t["test_id"], rep["inbox_pct"], status)
         # human-visible log: append per-domain rows to the deliverability sheet
         from smartlead.placement_sheet import append_api_result
         append_api_result(client, t["test_id"], t.get("emails", []),
                           rep["inbox_pct"], rep["spam_pct"], status)
-        # Test done -> RE-ENABLE warmup on any inboxes we turned off for it
-        # (Avi's policy: warmup only off for the test duration, then back on).
-        off_ids = t.get("warmup_off_ids", []) or []
-        if off_ids:
-            async with SmartleadClient(api_key, client) as slc:
-                restored = 0
-                for aid in off_ids:
-                    try:
-                        await slc.set_warmup(str(aid), enabled=True)
-                        restored += 1
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"  [Retest] warmup re-enable failed for {aid}: {exc}")
-            print(f"  [Retest] re-enabled warmup on {restored} sender(s) post-test")
         completed += 1
         print(f"  [Retest] test {t['test_id']} ({client}) -> {status} ({rep['inbox_pct']:.0f}% inbox)")
     return completed
@@ -206,9 +239,19 @@ async def main() -> None:
                 print(f"  [Retest] CREDITS exhausted on {t['client']} — skipping rest of client: {exc}")
                 drained_clients.add(t["client"])
                 skipped += 1
+                # no test was created -> nothing will ever re-enable warmup on
+                # the senders we just disabled; restore them right now
+                still_off = await _restore_warmup(acc.api_key, t["client"], disabled_ids)
+                if still_off:
+                    print(f"  [Retest] WARNING: {len(still_off)} sender(s) left warmup-off "
+                          f"after failed create: {still_off} — re-enable manually in Smartlead")
             except SmartDeliveryError as exc:
                 print(f"  [Retest] create failed for {t['email']}: {exc}")
                 skipped += 1
+                still_off = await _restore_warmup(acc.api_key, t["client"], disabled_ids)
+                if still_off:
+                    print(f"  [Retest] WARNING: {len(still_off)} sender(s) left warmup-off "
+                          f"after failed create: {still_off} — re-enable manually in Smartlead")
     print(f"[Retest] Pass B done: {created} created, {skipped} skipped.")
 
 

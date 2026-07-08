@@ -111,6 +111,21 @@ LATER   ROTATION_ENABLED — only after warmup + retest have run clean for 2+
 
 ---
 
+## 3b — Full-repo audit (2026-07-08): bugs found + fixed before enablement
+
+Three independent review passes over the whole pipeline, every finding verified
+against the code (and live DNS) before fixing:
+
+| Bug | Impact | Fix |
+|---|---|---|
+| DKIM checked only at `default` selector | **Every Gmail/Outlook "DKIM misconfigured" P0 in the workbook was a FALSE ALARM** — verified live: all flagged domains have valid DKIM at `google`/`selector1`. **The planned Zapmail DKIM ticket is CANCELLED — nothing was broken** | Checker now tries google/selector1/selector2/default; passes on any hit |
+| DNS lookup errors reported as "missing" or as green | DoH timeout could fabricate a P0, or hide a real failure as verified-OK | Errors now report "status unknown", never cached, never flagged |
+| Inbox on 2+ campaigns: dedup kept a random row | `campaign_status` in the workbook (and warmup state downstream) could show a completed campaign instead of the ACTIVE one | Dedup + warmup planner now always prefer the live-ACTIVE campaign row |
+| Retest executor could strand warmup OFF (3 paths: abandoned tests, failed test-creation, failed restore) | The #1 "silently lose an inbox" mechanism — inboxes left warmup-off forever with only a log line | Restore-before-done ordering; abandoned tests restore warmup first; failed creations restore immediately; failed restores retry next run |
+| 7-day retest floor implicit only | Config change could silently burn credits on too-fresh re-tests | Explicit floor in target selection |
+
+Also audited clean: rotation executor (no dry-run mutation, no capacity-loss path), all 9 crons (schedules correct, IST), campaign staleness logic, Mongo stores, account discovery, client exclusion.
+
 ## 4 — E2E test status (2026-07-07)
 
 | Component | Test | Result |

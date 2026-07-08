@@ -145,13 +145,41 @@ def _volume_off_target(current: int, target: int, auto_adjusted: bool) -> bool:
     return current != target
 
 
+def _liveness_rank(row: dict) -> int:
+    """Most-live campaign row wins when one inbox appears on several campaigns:
+    live ACTIVE (3) > stale ACTIVE (2) > other campaign (1) > none (0).
+    Without this, the profile chosen depended on API response order — an inbox
+    on both an ACTIVE and a completed campaign could get the IDLE profile."""
+    status = str(row.get("campaign_status", "")).upper()
+    if status == "ACTIVE":
+        return 3 if not bool(row.get("campaign_is_stale", False)) else 2
+    campaign = str(row.get("campaign_name", ""))
+    if campaign and not campaign.startswith("N/A"):
+        return 1
+    return 0
+
+
+def _merge_per_inbox(rows: list[dict]) -> list[dict]:
+    """One row per (client, email), keeping the most-live campaign's row."""
+    best: dict[tuple, dict] = {}
+    for row in rows:
+        email = str(row.get("email", "")).strip().lower()
+        if not email:
+            continue
+        key = (row.get("client", ""), email)
+        cur = best.get(key)
+        if cur is None or _liveness_rank(row) > _liveness_rank(cur):
+            best[key] = row
+    return list(best.values())
+
+
 def plan_warmup_changes(health_rows: list[dict]) -> list[dict]:
     """Return list of change dicts:
     {email, account_id, client, action, reason, per_day, rampup, reply_rate, auto_adjust}
     action: 'enable' (was off) | 'retune' (on, wrong volume) | 'boost' (recovering)
     plus legacy 'disable'/'trickle' when WARMUP_ALWAYS_ON is false."""
     changes: list[dict] = []
-    for row in health_rows:
+    for row in _merge_per_inbox(health_rows):
         state = str(row.get("warmup_state", "")).strip().lower()
         if state in _SKIP_STATES:
             continue
