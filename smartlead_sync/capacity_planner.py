@@ -24,9 +24,12 @@ from smartlead.api import SmartleadClient
 from smartlead.capacity import compute_client_capacity
 from smartlead.campaign_freshness import stale_campaign_names
 from smartlead.client_filter import is_excluded_inbox
-from smartlead.config import HEALTH_HISTORY_DB, DOMAIN_REGISTRY_COLLECTION, DEFAULT_SHEET_ID
+from smartlead.config import (
+    HEALTH_HISTORY_DB, DOMAIN_REGISTRY_COLLECTION, DEFAULT_SHEET_ID,
+    ACCOUNT_DELIVERABILITY_TABS, TEST_TAB_NAME,
+)
 from smartlead.processing import fetch_account_data, get_domain_from_email
-from smartlead.sheets import SheetsWriter, _dedupe_inbox_rows
+from smartlead.sheets import SheetsWriter, DeliverabilityReader, _dedupe_inbox_rows
 
 try:
     from pymongo import MongoClient, UpdateOne
@@ -92,14 +95,28 @@ def _churn_per_month(client_rows: list[dict]) -> int:
     return broken
 
 
+async def _deliverability_map(acc) -> dict[str, dict]:
+    """Same pattern as retest_executor._health_rows_for: merge every tab
+    configured for this client so test_sheet_status reflects real placement
+    results instead of defaulting to 'Unknown' for every inbox."""
+    dmap: dict[str, dict] = {}
+    for tab in ACCOUNT_DELIVERABILITY_TABS.get(acc.name, [TEST_TAB_NAME]):
+        try:
+            dmap.update(await DeliverabilityReader(tab_name=tab).fetch())
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [Capacity] deliverability read {tab} failed: {exc}")
+    return dmap
+
+
 async def main() -> None:
     today = date.today()
     out_rows: list[dict] = []
     all_rows: list[dict] = []
     for acc in discover_accounts():
         try:
+            dmap = await _deliverability_map(acc)
             async with SmartleadClient(acc.api_key, acc.name) as c:
-                inbox, _, _ = await fetch_account_data(c, {}, active_only=False)
+                inbox, _, _ = await fetch_account_data(c, dmap, active_only=False)
                 demand = await _demand_per_day(c, today)
         except Exception as exc:  # noqa: BLE001
             print(f"  [Capacity] {acc.name} failed: {exc}")
