@@ -26,6 +26,7 @@ from smartlead.sheets import DeliverabilityReader
 from smartlead.config import (
     ACCOUNT_DELIVERABILITY_TABS, TEST_TAB_NAME, RETEST_ENABLED,
     RETEST_PER_CLIENT_DAILY_CAP, RETEST_INBOX_THRESHOLD, RETEST_DISABLE_WARMUP,
+    RETEST_TEST_CAMPAIGN_KEYWORD,
 )
 from smartlead.processing import fetch_account_data
 from smartlead.health import build_health_rows
@@ -121,7 +122,9 @@ async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) ->
     return completed
 
 
-async def _health_rows_for(acc) -> list[dict]:
+async def _health_rows_for(acc) -> tuple[list[dict], dict[str, str]]:
+    """Health rows for one account, plus {email: account_id} so the bench
+    fallback can attach a campaign-less inbox to the test campaign."""
     dmap = {}
     for tab in ACCOUNT_DELIVERABILITY_TABS.get(acc.name, [TEST_TAB_NAME]):
         try:
@@ -131,9 +134,13 @@ async def _health_rows_for(acc) -> list[dict]:
     async with SmartleadClient(acc.api_key, acc.name) as c:
         inbox, _, _ = await fetch_account_data(c, dmap, active_only=False)
     inbox = [r for r in inbox if not is_excluded_inbox(r)]  # drop old-client inboxes
+    id_by_email: dict[str, str] = {}
     for r in inbox:
         r.setdefault("client", acc.name)
-    return build_health_rows(inbox, date.today(), None, resolve_manager)
+        email = str(r.get("email", "")).strip()
+        if email and r.get("account_id"):
+            id_by_email[email] = str(r["account_id"])
+    return build_health_rows(inbox, date.today(), None, resolve_manager), id_by_email
 
 
 async def _campaign_launch_args(acc, campaign_name: str):
@@ -157,6 +164,38 @@ async def _campaign_launch_args(acc, campaign_name: str):
         return cid, seqs[0]["id"], senders[:100], sender_ids[:100]
 
 
+async def _test_campaign_fallback_args(acc, target_email: str, target_account_id: str):
+    """Bench-inbox fallback: a placement test must send through a campaign's
+    sequence, so an inbox with no live campaign is routed through the
+    account's standing deliverability-test campaign (name matched on
+    RETEST_TEST_CAMPAIGN_KEYWORD — every account has one). The target inbox
+    is attached to that campaign, and ONLY the target is tested (not the
+    test campaign's other senders)."""
+    async with SmartleadClient(acc.api_key, acc.name) as c:
+        camps = await c.list_campaigns()
+        camp = next((x for x in camps
+                     if RETEST_TEST_CAMPAIGN_KEYWORD in str(x.get("name", "")).lower()), None)
+        if not camp:
+            print(f"  [Retest] no '{RETEST_TEST_CAMPAIGN_KEYWORD}' campaign in {acc.name} "
+                  "- cannot test bench inboxes for this account")
+            return None
+        cid = camp["id"]
+        seq = await c._get(f"/campaigns/{cid}/sequences")
+        seqs = seq if isinstance(seq, list) else seq.get("sequences", [])
+        if not seqs:
+            print(f"  [Retest] test campaign '{camp.get('name')}' has no sequence - "
+                  "add one in Smartlead to enable bench testing")
+            return None
+        try:
+            await c.add_campaign_email_accounts(str(cid), [int(target_account_id)])
+        except Exception as exc:  # noqa: BLE001
+            # already-attached errors are fine; anything else is a real skip
+            print(f"  [Retest] attach {target_email} to test campaign: {exc} (continuing)")
+        print(f"  [Retest] routing {target_email} via test campaign "
+              f"'{camp.get('name')}' ({cid})")
+        return cid, seqs[0]["id"], [target_email], [str(target_account_id)]
+
+
 async def main() -> None:
     store = PlacementStore()
     if not store.available:
@@ -174,12 +213,14 @@ async def main() -> None:
     pending_emails = store.pending_emails()
     all_targets: list[dict] = []
     acc_by_client = {a.name: a for a in accounts}
+    id_by_email: dict[str, str] = {}
     for acc in accounts:
         try:
-            rows = await _health_rows_for(acc)
+            rows, acc_ids = await _health_rows_for(acc)
         except Exception as exc:  # noqa: BLE001
             print(f"  [Retest] health rows for {acc.name} failed: {exc}")
             continue
+        id_by_email.update(acc_ids)
         all_targets.extend(select_targets(rows, RETEST_PER_CLIENT_DAILY_CAP, pending_emails))
 
     if not all_targets:
@@ -205,6 +246,12 @@ async def main() -> None:
         if not acc:
             continue
         args = await _campaign_launch_args(acc, t["campaign_hint"])
+        if not args:
+            # bench inbox (no live campaign) -> route via the account's
+            # standing deliverability-test campaign
+            target_id = id_by_email.get(t["email"], "")
+            if target_id:
+                args = await _test_campaign_fallback_args(acc, t["email"], target_id)
         if not args:
             print(f"  [Retest] skip {t['email']}: no campaign/senders/sequence")
             skipped += 1

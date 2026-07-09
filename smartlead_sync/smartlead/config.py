@@ -112,6 +112,13 @@ ROTATION_PER_CLIENT_DAILY_CAP: int = int(os.getenv("ROTATION_PER_CLIENT_DAILY_CA
 # bench eligibility: reuse HEALTH_WARMUP_ZERO (rep >= 90) + fresh inbox test
 ROTATION_LOG_COLLECTION: str = os.getenv("ROTATION_LOG_COLLECTION", "rotation_log")
 
+# Bench-inbox fallback: a placement test must send through a campaign's
+# sequence, so idle/bench inboxes (no campaign) get routed through the
+# account's standing deliverability-test campaign — every account has one
+# (confirmed 2026-07-09: "Deliverability test Campaign" in Belardi Wong,
+# DARLEAN, MYTHIC, PRECISE_LEADS). Matched case-insensitively by name.
+RETEST_TEST_CAMPAIGN_KEYWORD: str = os.getenv("RETEST_TEST_CAMPAIGN_KEYWORD", "deliverability test")
+
 # TOGGLE — disable warmup on the sender inboxes before a placement test, then
 # create the test with is_warmup=false, so the test measures REAL send-path
 # deliverability (faster + true inbox placement) instead of warmup-network
@@ -198,6 +205,18 @@ WARMUP_TRICKLE_PER_DAY: int = int(os.getenv("WARMUP_TRICKLE_PER_DAY", "8"))
 # an inbox counts as "actively sending" (warmup should be OFF) at/above this today
 WARMUP_ACTIVE_SENT_MIN: int = int(os.getenv("WARMUP_ACTIVE_SENT_MIN", "1"))
 
+
+# ── Provider-aware campaign-capacity caps (2026-07-09) ───────────────────────
+# The raised max_email_per_day bucket (headroom for warmup) must NOT translate
+# into more COLD sends. Providers tolerate very different cold volumes —
+# Outlook inboxes were deliberately kept at 10/day cold and must stay there
+# even though their total bucket is now bigger (10 cold + 20 warmup). These
+# caps bound the sheet's "Avail. Capacity" column (precise-automator's volume
+# budget) per provider, so no selector can assign more cold volume than the
+# provider safely handles, regardless of the raw limit.
+CAMPAIGN_CAP_OUTLOOK: int = int(os.getenv("CAMPAIGN_CAP_OUTLOOK", "10"))
+CAMPAIGN_CAP_GMAIL: int = int(os.getenv("CAMPAIGN_CAP_GMAIL", "25"))
+CAMPAIGN_CAP_DEFAULT: int = int(os.getenv("CAMPAIGN_CAP_DEFAULT", "15"))  # SMTP/other
 
 # ── Warmup headroom fix (2026-07-07 finding) ─────────────────────────────────
 # Smartlead's max_email_per_day is ONE shared bucket for warmup + campaign sends

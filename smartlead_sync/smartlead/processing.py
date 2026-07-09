@@ -391,6 +391,15 @@ def process_inbox_availability(
         else:
             capacity = max(0.0, round(inbox_limit - total_true_load, 1))
 
+        # Provider-aware cold-send ceiling: the raised warmup bucket must not
+        # become extra COLD capacity. Outlook inboxes were deliberately kept
+        # at 10/day cold (fragile provider) — that intent survives the bucket
+        # raise via this cap, regardless of the raw limit.
+        from smartlead.config import CAMPAIGN_CAP_OUTLOOK, CAMPAIGN_CAP_GMAIL, CAMPAIGN_CAP_DEFAULT
+        provider_cap = {"Outlook": CAMPAIGN_CAP_OUTLOOK,
+                        "Gmail": CAMPAIGN_CAP_GMAIL}.get(item.get("provider"), CAMPAIGN_CAP_DEFAULT)
+        capacity = min(capacity, float(provider_cap))
+
         item["true_load"] = total_true_load
         item["available_capacity"] = capacity
 
