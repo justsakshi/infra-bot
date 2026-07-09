@@ -240,7 +240,14 @@ DOMAIN_REGISTRY_COLLECTION: str = os.getenv("DOMAIN_REGISTRY_COLLECTION", "domai
 # ── Per-domain reply-rate early warning ──────────────────────────────────────
 REPLY_STATS_COLLECTION: str = os.getenv("REPLY_STATS_COLLECTION", "domain_reply_stats")
 REPLY_ALERT_DROP_RATIO: float = float(os.getenv("REPLY_ALERT_DROP_RATIO", "0.7"))  # alert below 70% of own baseline
-REPLY_ALERT_MIN_SENT: int = int(os.getenv("REPLY_ALERT_MIN_SENT", "50"))           # drop-alert send floor (this window)
+# Retuned 2026-07-08 (final-review finding): after the cumulative->daily-delta
+# fix, this floor is compared against a true 1-DAY send count, not a summed
+# multi-day total like before. At the fleet's per-inbox cap (20-30/day) x
+# 2 inboxes/domain, a single-inbox domain sending normally lands ~20-30/day —
+# the old 50 floor would have silently exempted many real domains from ever
+# getting a drop alert. Lowered to 20 so a domain with just one active sender
+# is still covered; still high enough to filter near-zero noise.
+REPLY_ALERT_MIN_SENT: int = int(os.getenv("REPLY_ALERT_MIN_SENT", "20"))           # drop-alert send floor (1-day delta)
 REPLY_ONE_PERCENT_MIN_SENT: int = int(os.getenv("REPLY_ONE_PERCENT_MIN_SENT", "200"))
 
 

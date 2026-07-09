@@ -14,6 +14,17 @@ DKIM at google._domainkey but nothing at default._domainkey).
 Lookup ERRORS (DoH timeout, network) are distinguished from "record absent":
 an errored lookup reports ok=True with an 'unknown' message and is NOT
 cached, so transient DoH flakiness can't fabricate a false P0 or persist.
+
+PERFORMANCE (fixed 2026-07-08): each domain audit fires ~6 TXT lookups
+(SPF + DMARC + one per DKIM selector). A full-fleet run fans these out via
+asyncio.gather across dozens of domains at once — previously each lookup
+opened its OWN httpx.AsyncClient (a fresh TLS handshake per request), which
+meant hundreds of simultaneous new connections to dns.google and got
+throttled hard under load (measured: 23 concurrent domains took 58s vs ~3s
+for one in isolation; full 4-client runs stalled for 20+ minutes). Fixed by
+routing every lookup through one shared, connection-pooled AsyncClient plus
+a concurrency semaphore that caps how many DoH requests are in flight at
+once — reuses TCP/TLS connections instead of opening a new one per call.
 """
 from __future__ import annotations
 
@@ -28,9 +39,44 @@ _DNS_CACHE: dict[str, dict] = {}
 # DKIM selectors to try, in order of how common they are in this fleet.
 DKIM_SELECTORS: tuple[str, ...] = ("google", "selector1", "selector2", "default")
 
+# Shared, pooled HTTP client + concurrency cap for all DoH lookups (module-
+# level so every caller across a run reuses the same connection pool instead
+# of each resolve_txt() call opening its own client/TLS handshake).
+_DOH_TIMEOUT = 10.0
+_DOH_MAX_CONCURRENT = 20  # cap simultaneous in-flight DoH requests
+_client_lock = asyncio.Lock()
+_shared_client: httpx.AsyncClient | None = None
+_semaphore: asyncio.Semaphore | None = None
+
+
+async def _get_client() -> tuple[httpx.AsyncClient, asyncio.Semaphore]:
+    """Lazily create the shared client/semaphore on first use, bound to
+    whichever event loop is running (safe across separate `asyncio.run()`
+    calls in different scripts/tests within the same process)."""
+    global _shared_client, _semaphore
+    async with _client_lock:
+        if _shared_client is None or _shared_client.is_closed:
+            limits = httpx.Limits(max_connections=_DOH_MAX_CONCURRENT,
+                                  max_keepalive_connections=_DOH_MAX_CONCURRENT)
+            _shared_client = httpx.AsyncClient(timeout=_DOH_TIMEOUT, limits=limits)
+            _semaphore = asyncio.Semaphore(_DOH_MAX_CONCURRENT)
+    return _shared_client, _semaphore
+
+
+async def close_dns_client() -> None:
+    """Close the shared client. Call at the end of a run/process if you want
+    a clean shutdown; harmless to skip (the OS reclaims the socket)."""
+    global _shared_client, _semaphore
+    async with _client_lock:
+        if _shared_client is not None and not _shared_client.is_closed:
+            await _shared_client.aclose()
+        _shared_client = None
+        _semaphore = None
+
 
 async def resolve_txt(name: str) -> list[str] | None:
-    """Resolve TXT records via Google DoH.
+    """Resolve TXT records via Google DoH, through the shared pooled client
+    and under the concurrency cap.
 
     Returns a list of record strings ([] = domain answered, no records =
     genuinely absent) or None on lookup ERROR (timeout/network) — callers
@@ -38,20 +84,21 @@ async def resolve_txt(name: str) -> list[str] | None:
     url = "https://dns.google/resolve"
     params = {"name": name, "type": "TXT"}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        client, sem = await _get_client()
+        async with sem:
             resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        resp.raise_for_status()
+        data = resp.json()
 
-            records = []
-            for answer in data.get("Answer", []):
-                # Type 16 is TXT
-                if answer.get("type") == 16:
-                    raw_data = answer.get("data", "")
-                    # Clean up quotes and joined segments (DNS splits long values)
-                    clean_data = raw_data.strip('"').replace('" "', '')
-                    records.append(clean_data)
-            return records
+        records = []
+        for answer in data.get("Answer", []):
+            # Type 16 is TXT
+            if answer.get("type") == 16:
+                raw_data = answer.get("data", "")
+                # Clean up quotes and joined segments (DNS splits long values)
+                clean_data = raw_data.strip('"').replace('" "', '')
+                records.append(clean_data)
+        return records
     except Exception as e:
         print(f"[DNS] Error querying {name}: {e}", file=sys.stderr)
         return None

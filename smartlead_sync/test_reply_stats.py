@@ -33,8 +33,9 @@ def test_no_alert_when_healthy():
 
 
 def test_no_drop_alert_on_thin_data():
-    # under the send floor, drop-vs-average must not fire (noise)
+    # under the send floor (REPLY_ALERT_MIN_SENT), drop-vs-average must not
+    # fire (noise) — value kept below the floor, not equal to it
     history = [{"sent": 100, "replies": 5} for _ in range(7)]
-    current = {"sent": 20, "replies": 0}
+    current = {"sent": 5, "replies": 0}
     alerts = evaluate_alerts("dom1.com", current, history)
     assert not any("drop" in a for a in alerts)
