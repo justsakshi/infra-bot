@@ -81,9 +81,20 @@ class SmartDeliveryClient:
         if resp.status_code >= 400:
             raise SmartDeliveryError(f"report failed {resp.status_code}: {resp.text[:150]}")
         d = resp.json()
-        rows = d.get("data", d if isinstance(d, list) else [])
-        inboxes = [float(r.get("inbox", 0)) for r in rows if isinstance(r, dict)]
-        spams = [float(r.get("spam", 0)) for r in rows if isinstance(r, dict)]
-        inbox_pct = sum(inboxes) / len(inboxes) if inboxes else 0.0
-        spam_pct = sum(spams) / len(spams) if spams else 0.0
+        # Real payload shape (verified live on test 475859, 2026-07-09):
+        #   {"overallTotalCount": 60, "status": "COMPLETED", "result": [
+        #     {"provider_name": "Office365", "inbox_count": 35, "spam_count": 0,
+        #      "tab_count": 0, "adjusted_total_email_count": 35}, ...]}
+        # The old parser read d["data"] rows with "inbox"/"spam" percentage
+        # fields — neither exists, so every completed test scored 0%/0% and
+        # would have been written to the sheet as a FALSE FAIL.
+        rows = d.get("result") or d.get("data") or (d if isinstance(d, list) else [])
+        total = sum(float(r.get("adjusted_total_email_count", 0) or 0)
+                    for r in rows if isinstance(r, dict))
+        inbox_n = sum(float(r.get("inbox_count", 0) or 0)
+                      for r in rows if isinstance(r, dict))
+        spam_n = sum(float(r.get("spam_count", 0) or 0)
+                     for r in rows if isinstance(r, dict))
+        inbox_pct = (100.0 * inbox_n / total) if total else 0.0
+        spam_pct = (100.0 * spam_n / total) if total else 0.0
         return {"inbox_pct": inbox_pct, "spam_pct": spam_pct}
