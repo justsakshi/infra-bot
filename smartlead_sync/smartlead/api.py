@@ -148,9 +148,16 @@ class SmartleadClient:
             body = {
                 "warmup_enabled": "true",
                 "total_warmup_per_day": total_per_day,
-                "daily_rampup": daily_rampup,
                 "reply_rate_percentage": reply_rate,
             }
+            # Smartlead rejects daily_rampup outside 5-20 with a 400 (found
+            # live 2026-07-09: 50/55 writes failed on daily_rampup=0). To
+            # disable ramping, omit the field and turn the feature off.
+            if daily_rampup and daily_rampup > 0:
+                body["daily_rampup"] = daily_rampup
+                body["is_rampup_enabled"] = True
+            else:
+                body["is_rampup_enabled"] = False
             if auto_adjust is not None:
                 body["auto_adjust_warmup"] = bool(auto_adjust)
         else:

@@ -364,10 +364,32 @@ def process_inbox_availability(
         item["warmup_spam_count"] = info.get("warmup_spam_count", 0) if isinstance(info, dict) else 0
         item["warmup_reply_rate_pct"] = info.get("warmup_reply_rate_pct") if isinstance(info, dict) else None
 
-        # Aggregate True Load and Capacity (using inbox's actual daily limit)
+        # Aggregate True Load and CAMPAIGN-visible Capacity.
+        #
+        # available_capacity feeds downstream inbox SELECTION (the sheet's
+        # "Avail. Capacity" column is precise-automator's per-inbox volume
+        # budget). Since 2026-07-09 the daily limit is a bucket SHARED with
+        # warmup (headroom fix raises limits by +20 up to a 45 cap so warmup
+        # has room) — so raw (limit - load) would hand warmup's reserved room
+        # to campaign assignment, silently pushing cold volume past what we
+        # account for. Instead, expose only the campaign share:
+        #   warming -> 0 (still ramping; not campaign-ready per 21-30d policy)
+        #   ramped  -> min(limit + headroom, cap) - warmup reservation - load
+        #              (mirrors exactly what the headroom executor will set
+        #               once the inbox is on a campaign: e.g. limit 10 -> 10,
+        #               limit 30 -> 25, limit 45 -> 25)
+        #   off/blocked -> limit - load (no warmup running; blocked is BUSY anyway)
         total_true_load = round(inbox_aggregate_load.get(email, 0.0), 1)
         inbox_limit = item.get("message_per_day", 0) or MAX_INBOX_LIMIT  # fallback to 35 if not set
-        capacity = max(0.0, round(inbox_limit - total_true_load, 1))
+        state = item.get("warmup_state", "off")
+        if state == "warming":
+            capacity = 0.0
+        elif state == "ramped":
+            from smartlead.config import WARMUP_HEADROOM, HEADROOM_TOTAL_CAP, WARMUP_ACTIVE_PER_DAY
+            effective_limit = min(inbox_limit + WARMUP_HEADROOM, HEADROOM_TOTAL_CAP)
+            capacity = max(0.0, round(effective_limit - WARMUP_ACTIVE_PER_DAY - total_true_load, 1))
+        else:
+            capacity = max(0.0, round(inbox_limit - total_true_load, 1))
 
         item["true_load"] = total_true_load
         item["available_capacity"] = capacity
