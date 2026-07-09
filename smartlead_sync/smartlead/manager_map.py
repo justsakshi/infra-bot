@@ -4,15 +4,21 @@ Fill slack handles at rollout (Slack member IDs like 'U01234' or '@name')."""
 from __future__ import annotations
 
 MANAGER_MAP: dict[str, dict] = {
-    "DARLEAN":       {"name": "Balasankar", "slack": ""},
-    "Mythic":        {"name": "Balasankar", "slack": ""},
-    "Melior":        {"name": "Anjali",     "slack": ""},
-    "Belardi Wong":  {"name": "Anjali",     "slack": ""},
-    "Bettrdata":     {"name": "Varsha",     "slack": ""},  # Better Data
-    "Precise Leads": {"name": "Varsha",     "slack": ""},  # internal
-    "OSC":           {"name": "Balasankar", "slack": ""},
-    "StaffAI":       {"name": "Balasankar", "slack": ""},
+    "DARLEAN":       {"name": "Balasankar", "slack": "U091D7REGGN"},
+    "Mythic":        {"name": "Balasankar", "slack": "U091D7REGGN"},
+    "Melior":        {"name": "Anjali",     "slack": "U045NBCSA3F"},
+    "Belardi Wong":  {"name": "Anjali",     "slack": "U045NBCSA3F"},
+    "Bettrdata":     {"name": "Varsha",     "slack": "U0767GZUM8S"},  # Better Data
+    "Precise Leads": {"name": "Varsha",     "slack": "U0767GZUM8S"},  # internal
+    "OSC":           {"name": "Balasankar", "slack": "U091D7REGGN"},
+    "StaffAI":       {"name": "Balasankar", "slack": "U091D7REGGN"},
     "Avench":        {"name": "Unassigned", "slack": ""},  # old client - ignore
+}
+
+# Founders — not client owners, but useful for fleet-wide notify targets.
+FOUNDERS: dict[str, str] = {
+    "Avinash": "U026H4M2X09",
+    "Aravind": "U03AF9U985V",
 }
 
 
