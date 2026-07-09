@@ -151,3 +151,24 @@ Breakdown of the 55 (all "retune" — volume corrected to state profile):
 
 ### Cross-check that ties it together
 The 9 failing-placement inboxes (job 1) sit exactly on 3 of the SURBL-listed domains (job 2) — the system's signals corroborate each other and point to one root cause per domain, which is what makes the daily workbook actionable rather than noisy.
+
+---
+
+## Placement testing — what we ran, what we learned, and the account/credit reality
+
+**Tests created so far: 0. Credits spent: 0.** Three live attempts, each informative:
+
+1. **Belardi Wong, attempt 1:** both auto-selected targets were bench inboxes with no campaign attached — and a placement test physically sends through a campaign's sequence. The executor correctly refused. This surfaced the gap.
+2. **Belardi Wong, attempt 2 (after building the fix):** the executor now falls back to the account's standing "Deliverability test Campaign" — it found the campaign, attached the bench inbox, and issued the test-creation call. Smartlead rejected it with **"Insufficient sequence credits"** — the Belardi Wong account has **zero SmartDelivery credits**. The whole code path is proven right up to the credit wall.
+3. **PRECISE_LEADS (in progress at time of writing):** running the full end-to-end flow on the PL account, which has **92 confirmed credits** — up to 2 tests on its worst inboxes. When they finish (~30 min after creation), results are auto-written to Mongo and appended to the deliverability sheet, then flow into the workbook's Test Status column — which is exactly what the campaign-creation tool (precise-automator) reads when picking inboxes. Same loop as a human-run test, fully automated.
+
+**Account structure fact (verified today, worth everyone knowing):** we run **4 separate Smartlead accounts** — Belardi Wong, DARLEAN, MYTHIC, and PRECISE_LEADS (which itself hosts the Melior / Bettrdata / OSC / Monarch / Capsule / VOC family, 345 inboxes). Checked directly: **no Belardi Wong / Darlean / Mythic inboxes exist inside the PRECISE_LEADS account.** SmartDelivery credits are per-account and don't transfer. Each account also already has its own "Deliverability test Campaign" — so the plumbing for per-account testing exists everywhere; only credits are missing in 3 of 4 accounts.
+
+## ❓ Questions to resolve tomorrow (for the team / Smartlead support)
+
+1. **How do we test Belardi Wong / Darlean / Mythic inboxes?** Their own accounts have no SmartDelivery credits. Options, in order of preference:
+   - **(a) Buy credits in each account** — simplest, no side effects; each account's test campaign is already set up.
+   - **(b) Ask Smartlead support whether credits can be pooled/shared across workspaces** under one billing relationship — if yes, cheapest.
+   - **(c) Connect those clients' mailboxes into the PRECISE_LEADS account too** (Smartlead allows the same mailbox in multiple workspaces) — technically possible but NOT recommended: it duplicates mailbox billing, risks two accounts running conflicting warmup on the same inbox (dangerous now that warmup is automated), and splits test results away from where the client's data lives.
+2. **Confirm with the team:** when they say they "test all clients from the Precise Leads Smartlead" — do they mean the PL family of sub-clients (true), or do they have a separate process for BW/Darlean/Mythic we haven't seen (their manual test results do exist in the per-client sheet tabs, so tests happened somewhere — worth asking exactly how)?
+3. **Top-up decision:** how many credits per account per month? At the auto-tester's cap (2/client/day, only when stale) actual usage is modest — likely 20-40/month per account.
