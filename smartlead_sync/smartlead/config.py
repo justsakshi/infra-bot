@@ -208,6 +208,12 @@ WARMUP_ACTIVE_SENT_MIN: int = int(os.getenv("WARMUP_ACTIVE_SENT_MIN", "1"))
 # DRY-RUN by default: logs would-raise, changes nothing.
 HEADROOM_FIX_ENABLED: bool = os.getenv("HEADROOM_FIX_ENABLED", "false").lower() == "true"
 WARMUP_HEADROOM: int = int(os.getenv("WARMUP_HEADROOM", "20"))  # matches WARMUP_ACTIVE_PER_DAY
+# Hard ceiling on the RESULTING total daily limit. 45 = Avi's stated max
+# (meeting 2026-07-07: "should not go beyond 45") and sits inside Smartlead's
+# own 20-49/day optimal band (88% placement) with margin, instead of riding
+# the 50 boundary. An inbox already at 30 campaign sends gets 45 (not 50);
+# an inbox at 10 still gets the full +20 -> 30.
+HEADROOM_TOTAL_CAP: int = int(os.getenv("HEADROOM_TOTAL_CAP", "45"))
 HEADROOM_FIX_PER_RUN_CAP: int = int(os.getenv("HEADROOM_FIX_PER_RUN_CAP", "50"))
 
 # ── Bounce auto-protection sweep (plan §5.4) ────────────────────────────────

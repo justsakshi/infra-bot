@@ -33,6 +33,7 @@ from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.config import (
     HEADROOM_FIX_ENABLED, WARMUP_HEADROOM, HEADROOM_FIX_PER_RUN_CAP,
+    HEADROOM_TOTAL_CAP,
 )
 from smartlead.processing import fetch_account_data
 from smartlead.campaign_freshness import stale_campaign_names
@@ -65,8 +66,11 @@ async def _plan_for_account(acc, today: date) -> list[dict]:
             continue
         seen.add(key)
         current = int(row.get("message_per_day", 0) or 0)
-        target = current + WARMUP_HEADROOM
-        if current >= target:  # already has headroom (or field missing -> skip, unsafe to guess)
+        # +20 headroom, but never push the TOTAL past the cap (45): an inbox
+        # already at 30 campaign sends goes to 45, not 50 — stays inside
+        # Smartlead's 20-49/day optimal band with margin instead of on its edge.
+        target = min(current + WARMUP_HEADROOM, HEADROOM_TOTAL_CAP)
+        if current >= target:  # already at/above cap or field missing -> skip
             continue
         plans.append({
             "client": acc.name, "email": email, "account_id": account_id,
