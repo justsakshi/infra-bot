@@ -50,7 +50,8 @@ New channel connected and test-posted successfully. Daily digest will @-mention 
 - **Everything ran in "report-only" mode first** — every job printed exactly what it *would* change, reviewed before any live write.
 - **A timestamped snapshot of every inbox's original settings was taken before any change** (`rollback_snapshot_belardiwong_2026-07-09T14-56-58.json`). We can restore any value to exactly what it was.
 - **Every write was verified** by reading the value back from Smartlead afterward — not trusting the script's own success claim.
-- **The live run caught 2 real bugs** that testing-without-writing could never find (an API rejection on one parameter; a capacity number that another tool reads which would have over-allocated volume). Both fixed, verified, and shipped the same hour. This is exactly why we piloted on one client first.
+- **The live run caught 3 real issues** that testing-without-writing could never find: an API rejection on one parameter (50 writes failed, diagnosed and retried clean the same hour); a capacity number that precise-automator reads which would have over-allocated cold volume; and the Outlook limit question below. All fixed, verified, and shipped the same day. This is exactly why we piloted on one client first.
+- **Outlook inboxes stay at 10 cold sends/day — guaranteed in code.** Outlook tolerates far less cold volume than Gmail, which is why those inboxes were originally limited to 10. Raising their bucket (for warmup room) could have let the campaign-creation tool assign them more cold volume — so the capacity number every tool reads is now hard-capped per provider: **Outlook 10, Gmail 25, SMTP/other 15** cold sends/day, no matter how big the raised bucket is. The extra bucket room is warmup-only by construction.
 - **Rotation — the only genuinely risky job (it moves leads between senders) — stays OFF.**
 - Nothing increased cold-email volume. The only new sends are warmup emails, which land in a friendly network and *build* reputation.
 
@@ -165,11 +166,26 @@ The 9 failing-placement inboxes (job 1) sit exactly on 3 of the SURBL-listed dom
 
 **Account structure fact (verified today, worth everyone knowing):** we run **4 separate Smartlead accounts** — Belardi Wong, DARLEAN, MYTHIC, and PRECISE_LEADS (which itself hosts the Melior / Bettrdata / OSC / Monarch / Capsule / VOC family, 345 inboxes). Checked directly: **no Belardi Wong / Darlean / Mythic inboxes exist inside the PRECISE_LEADS account.** SmartDelivery credits are per-account and don't transfer. Each account also already has its own "Deliverability test Campaign" — so the plumbing for per-account testing exists everywhere; only credits are missing in 3 of 4 accounts.
 
-## ❓ Questions to resolve tomorrow (for the team / Smartlead support)
+## The plan for testing every client's inboxes
 
-1. **How do we test Belardi Wong / Darlean / Mythic inboxes?** Their own accounts have no SmartDelivery credits. Options, in order of preference:
-   - **(a) Buy credits in each account** — simplest, no side effects; each account's test campaign is already set up.
-   - **(b) Ask Smartlead support whether credits can be pooled/shared across workspaces** under one billing relationship — if yes, cheapest.
-   - **(c) Connect those clients' mailboxes into the PRECISE_LEADS account too** (Smartlead allows the same mailbox in multiple workspaces) — technically possible but NOT recommended: it duplicates mailbox billing, risks two accounts running conflicting warmup on the same inbox (dangerous now that warmup is automated), and splits test results away from where the client's data lives.
-2. **Confirm with the team:** when they say they "test all clients from the Precise Leads Smartlead" — do they mean the PL family of sub-clients (true), or do they have a separate process for BW/Darlean/Mythic we haven't seen (their manual test results do exist in the per-client sheet tabs, so tests happened somewhere — worth asking exactly how)?
-3. **Top-up decision:** how many credits per account per month? At the auto-tester's cap (2/client/day, only when stale) actual usage is modest — likely 20-40/month per account.
+**Where testing works today:** PRECISE_LEADS (92 credits) — the auto-tester is live there, first real test (475859) created today through a live campaign; result flows automatically into the deliverability sheet when Smartlead finishes running it (tests through a multi-sender campaign take 1-2 hours; the daily 11 AM cycle picks results up with no human involvement).
+
+**Where it's blocked and the plan to unblock (Belardi Wong / DARLEAN / MYTHIC):**
+
+1. **Buy SmartDelivery credits in each of the 3 accounts** ← the recommended path. Everything else is already in place: each account has its own "Deliverability test Campaign", the auto-tester code works there (proven on BW right up to the credit wall), and results flow to each client's own sheet tab. Budget guide: at the tester's pace (max 2/client/day, only for stale/untested inboxes) expect ~20-40 credits/month per account.
+2. **One-time 2-minute prep per account (free, do this regardless):** add one dummy lead to each account's "Deliverability test Campaign" — we learned live that Smartlead refuses to run a test through a campaign with zero leads ("No leads available"). One dummy lead fixes it permanently.
+3. **In parallel, ask Smartlead support:** can SmartDelivery credits be pooled/shared across our 4 workspaces under one billing relationship? If yes, that beats buying per-account.
+4. **What we will NOT do:** connect BW/Darlean/Mythic mailboxes into the PRECISE_LEADS account to borrow its credits. Technically possible, but it doubles mailbox billing and — more dangerously — would have two accounts running conflicting warmup on the same inbox now that warmup is automated. Not worth it.
+
+**Verified fact behind this plan:** the PRECISE_LEADS account contains 345 inboxes across 102 domains — all from the PL family (Melior, Bettrdata, OSC, etc.), **zero** Belardi Wong/Darlean/Mythic inboxes. Tests must run in the account that owns the inbox; credits don't transfer.
+
+**Question for the team:** when we say we "test all clients from the Precise Leads Smartlead" — that's true for the PL family of sub-clients, but BW/Darlean/Mythic manual test results exist in their sheet tabs too. How were those run? (Their own accounts' test campaigns suggest someone tested from within each account — if so, those accounts had credits at some point and just need topping up.)
+
+## Go-live checklist (one-time, on the Render server)
+
+Set these environment variables — then the whole system runs automatically for ALL 4 accounts every day:
+- `HEALTH_NOTIFY_CHANNEL=C0AGVSUNEFP` (new Slack channel — already test-posted successfully)
+- `BOUNCE_PROTECT_ENABLED=true` · `HEADROOM_FIX_ENABLED=true` · `WARMUP_AUTO_ENABLED=true` · `RETEST_ENABLED=true`
+- Do **not** set `ROTATION_ENABLED` (stays off by decision)
+
+First day live: the other 3 clients get the same correction wave Belardi Wong got today (their warmup/headroom/bounce settings brought to policy). Day-2 sanity check: Belardi Wong's warmup log should plan ~0 changes — proof the system converged and isn't thrashing.
