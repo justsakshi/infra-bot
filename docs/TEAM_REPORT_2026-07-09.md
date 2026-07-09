@@ -82,3 +82,72 @@ New channel connected and test-posted successfully. Daily digest will @-mention 
 1. Turn the job's flag off — it stops touching anything further.
 2. Restore original values from the timestamped snapshot (exact per-inbox numbers on file).
 3. Every change today also has a per-inbox timestamped change log and a git history explaining why.
+
+---
+
+## Appendix — every job's actual Belardi Wong run data (2026-07-09)
+
+This is what each job did or found when run against the real account today. This is exactly what "live" looks like.
+
+### 1. Daily sync
+- 69 unique inboxes (deduped from 241 campaign-rows), 31 campaigns
+- All 69 scored and written to the Inbox Health tab; 69 history records saved
+- 23 domains DNS-audited (SPF/DKIM/DMARC) — audit now completes in seconds (was a 20+ minute stall before this week's fix)
+- Health findings: **9 inboxes on 3 domains currently failing placement tests** (belardiwongs.com, bwdirectmail.com, heybelardiwong.com — likely tied to their blacklist listings, human action needed: pause + investigate links/DNS + delist); 6 more inboxes with stale tests (reachbw.com, sendbw.com)
+
+### 2. Blacklist monitor
+- **23 of 23 sending domains listed on SURBL (ABUSE)** — 100% of this client's fleet
+- Zero on Spamhaus DBL or URIBL
+- Detection only — delisting/replacement is a human decision, tracked separately
+
+### 3. Capacity planner
+- Demand: 20.4 sends/day (7-day average of actual campaign sends)
+- Safe capacity: 330/day across healthy campaign-attached inboxes — **16× demand, plenty of room**
+- Bench: 39 warm spare inboxes vs. a target of 5 — deep bench
+- Advisory: "order 5 domains" — driven entirely by the 5 currently-broken inboxes needing replacement, NOT a capacity shortage (label wording fix planned)
+- Also seeded the domain-age registry (130 domains fleet-wide on record)
+
+### 4. Reply-rate monitor
+- 5 domains had active-campaign sending stats; snapshots stored to Mongo
+- 0 alerts — expected on early runs; its main "drop vs. own baseline" alert needs ~a week of daily history before it can fire
+
+### 5. Auto-retest
+- 2 stale-test inboxes selected (samlonsdale@reachbw.com, saml@sendbw.com)
+- **0 tests created, 0 credits spent** — both inboxes are benched with no campaign attached, and a placement test physically sends through a campaign's sequence. The executor correctly refused rather than forcing it. Follow-up: standing test campaign for bench inboxes.
+
+### 6. Warmup manager — 55 inboxes changed live, 0 turned off
+Breakdown of the 55 (all "retune" — volume corrected to state profile):
+- ~44 bench/idle inboxes: mixed 10 or 40/day → **20/day** (maintenance level)
+- 6 campaign-attached inboxes: 40/day → **20/day + auto-adjust ON** (warmup yields to campaign volume in real time)
+- 5 new/ramping inboxes (reachbw.com, sendbw.com): 10/day → **ramping to 40/day cap**
+- Reply-rate setting standardized: 20% → **25%** everywhere
+- Verified by reading values back from Smartlead after writing
+- (First attempt hit a Smartlead API quirk — 50 writes rejected over one parameter; diagnosed, fixed, retried clean the same hour. The fix is now permanent in the code.)
+
+### 7. Headroom fix — 15 inboxes, exact before → after
+
+| Inbox | Before | After |
+|---|---|---|
+| sam / saml / samlonsdale @ swiftbybelardiwong.com | 10 | 30 |
+| sam / saml / samlonsdale @ newbelardiwong.com | 10 | 30 |
+| sam / saml / samlonsdale @ reachbelardiwong.com | 30 | 45 |
+| sam / saml / samlonsdale @ realbelardiwong.com | 30 | 45 |
+| sam / saml / samlonsdale @ justbelardiwong.com | 30 | 45 |
+
+(The 30→ group was initially set to 50 by the original formula; caught in review the same hour and corrected to 45 — the cap is now permanent so no inbox's total can exceed 45/day.)
+
+### 8. Bounce protection — 3 campaigns, before: none → after: auto-pause at 3%
+- Hospitality - Multi-Property Chains (3375601)
+- Hospitality - Multi-Property Chains Revised (3422152)
+- Hospitality - Multi-Property Chains manager Level (3512952)
+
+### 9. Rotation
+- 0 swaps needed today (no broken sender currently attached to a live campaign meets the swap criteria)
+- **Kept OFF by decision** — it moves leads between senders, the hardest action to reverse
+
+### 10. Slack digest
+- New channel wired and confirmed with a live test post
+- Daily digest will list each client's action items, @-mentioning the responsible manager (Anjali / Varsha / Balasankar)
+
+### Cross-check that ties it together
+The 9 failing-placement inboxes (job 1) sit exactly on 3 of the SURBL-listed domains (job 2) — the system's signals corroborate each other and point to one root cause per domain, which is what makes the daily workbook actionable rather than noisy.
