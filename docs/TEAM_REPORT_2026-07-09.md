@@ -170,16 +170,17 @@ The 9 failing-placement inboxes (job 1) sit exactly on 3 of the SURBL-listed dom
 
 **Where testing works today:** PRECISE_LEADS (92 credits) — the auto-tester is live there, first real test (475859) created today through a live campaign; result flows automatically into the deliverability sheet when Smartlead finishes running it (tests through a multi-sender campaign take 1-2 hours; the daily 11 AM cycle picks results up with no human involvement).
 
-**Where it's blocked and the plan to unblock (Belardi Wong / DARLEAN / MYTHIC):**
+**How the other clients (Belardi Wong / DARLEAN / MYTHIC) get tested — current understanding:**
 
-1. **Buy SmartDelivery credits in each of the 3 accounts** ← the recommended path. Everything else is already in place: each account has its own "Deliverability test Campaign", the auto-tester code works there (proven on BW right up to the credit wall), and results flow to each client's own sheet tab. Budget guide: at the tester's pace (max 2/client/day, only for stale/untested inboxes) expect ~20-40 credits/month per account.
-2. **One-time 2-minute prep per account (free, do this regardless):** add one dummy lead to each account's "Deliverability test Campaign" — we learned live that Smartlead refuses to run a test through a campaign with zero leads ("No leads available"). One dummy lead fixes it permanently.
-3. **In parallel, ask Smartlead support:** can SmartDelivery credits be pooled/shared across our 4 workspaces under one billing relationship? If yes, that beats buying per-account.
-4. **What we will NOT do:** connect BW/Darlean/Mythic mailboxes into the PRECISE_LEADS account to borrow its credits. Technically possible, but it doubles mailbox billing and — more dangerously — would have two accounts running conflicting warmup on the same inbox now that warmup is automated. Not worth it.
+Credits exist ONLY in the PRECISE_LEADS account (confirmed — BW's account rejected a test with "insufficient credits" today). The team's working process, as we understand it: **temporarily add the client's inboxes to the PRECISE_LEADS workspace, run the placement test there, then remove them.** This is consistent with everything we verified: PL currently contains 345 inboxes across 102 domains with zero BW/Darlean/Mythic inboxes present (they'd be removed after each test), while those clients' manual test results do exist in their sheet tabs.
 
-**Verified fact behind this plan:** the PRECISE_LEADS account contains 345 inboxes across 102 domains — all from the PL family (Melior, Bettrdata, OSC, etc.), **zero** Belardi Wong/Darlean/Mythic inboxes. Tests must run in the account that owns the inbox; credits don't transfer.
+**⚠️ To confirm with the team tomorrow:** is temporary-add-to-PL exactly the process? Any gotchas (e.g. which test campaign is used, are inboxes always removed afterward)? *Important safety note now that warmup is automated: inboxes should NOT be left permanently connected in two workspaces — two accounts managing warmup on the same inbox would conflict. Temporary add → test → remove is fine.*
 
-**Question for the team:** when we say we "test all clients from the Precise Leads Smartlead" — that's true for the PL family of sub-clients, but BW/Darlean/Mythic manual test results exist in their sheet tabs too. How were those run? (Their own accounts' test campaigns suggest someone tested from within each account — if so, those accounts had credits at some point and just need topping up.)
+**Can the auto-tester replicate this?** Not yet. Adding an inbox to the PL workspace requires the inbox's SMTP/IMAP credentials (or OAuth), which the automation doesn't hold. Possible future build: pull credentials via Zapmail's export API → auto-connect → test → auto-remove. Until then:
+- **PRECISE_LEADS family:** fully automated testing, live today.
+- **BW / Darlean / Mythic:** the team continues the manual temporary-add process; results entered in the sheet tabs flow into the system exactly as before.
+- **Free prep worth doing regardless:** add one dummy lead to each test campaign used for testing — we learned live that Smartlead refuses to run a test through a campaign with zero leads ("No leads available").
+- **Alternative worth one email to Smartlead support:** can SmartDelivery credits be pooled across our 4 workspaces? If yes, each client's account tests natively and even the manual add/remove step disappears.
 
 ## Go-live checklist (one-time, on the Render server)
 
