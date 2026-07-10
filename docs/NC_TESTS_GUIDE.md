@@ -62,3 +62,15 @@ produced in one blast).
   webmail — that address isn't in any account). For those, only manual send +
   robot ingestion applies; the campaign-send path requires the inbox to live in
   one of our four Smartlead accounts.
+
+## Suggestion phase (added same day)
+
+Once a day (~9:15 IST run) the executor writes worst-first **NEEDS TEST** rows
+into the tab for the credit-poor clients (`NC_SUGGEST_CLIENTS`, default
+`Belardi Wong,MYTHIC` — BW's SmartDelivery credits are confirmed exhausted,
+Mythic's balance is unknown/low; Darlean + PL keep the fully-automatic
+connected tester). Cap 5 per client (`NC_SUGGEST_CAP`), untested before stale,
+never anything tested <7 days ago, never a duplicate of a row already in the
+tab. The human works top-down: create the PL test for each NEEDS TEST row,
+paste Track-ID + seeds, done — the robot takes it from there. Proven live
+2026-07-10: 10 suggestions written (5 BW stale, 5 Mythic untested).

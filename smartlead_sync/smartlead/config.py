@@ -125,6 +125,18 @@ NC_MIN_GAP_MINUTES: int = int(os.getenv("NC_MIN_GAP_MINUTES", "3"))
 # Extra slots added on top of the seed count when temporarily raising the
 # inbox's daily limit for the send day (restored when the test completes).
 NC_LIMIT_BUFFER: int = int(os.getenv("NC_LIMIT_BUFFER", "5"))
+# Suggestion phase: which clients get worst-first "NEEDS TEST" rows written
+# into the NC Tests tab (advisory — runs even in dry-run, like the capacity
+# planner). Default = the credit-poor accounts: BW confirmed exhausted, Mythic
+# balance unknown/low. Darlean + PL keep the fully-automatic connected tester.
+NC_SUGGEST_CLIENTS: list[str] = [
+    c.strip() for c in os.getenv("NC_SUGGEST_CLIENTS", "Belardi Wong,MYTHIC").split(",")
+    if c.strip()
+]
+NC_SUGGEST_CAP: int = int(os.getenv("NC_SUGGEST_CAP", "5"))
+# Health-row building is expensive — run the suggestion phase only on the run
+# whose UTC hour matches this (9:15 IST = 03:45 UTC -> default 3), once a day.
+NC_SUGGEST_HOUR_UTC: int = int(os.getenv("NC_SUGGEST_HOUR_UTC", "3"))
 
 # ── Auto inbox rotation (swap broken senders for healthy bench inboxes) ─────
 # DRY-RUN by default: logs every intended add/reassign/remove, mutates nothing.

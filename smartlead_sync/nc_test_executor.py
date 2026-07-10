@@ -45,7 +45,9 @@ from smartlead.config import (
     NC_TEST_ENABLED, NC_TAB_NAME, NC_TEST_ACCOUNT, NC_CAMPAIGN_PREFIX,
     NC_MIN_GAP_MINUTES, NC_LIMIT_BUFFER, TEST_SHEET_ID,
     SMARTDELIVERY_BASE_URL, RETEST_INBOX_THRESHOLD,
+    NC_SUGGEST_CLIENTS, NC_SUGGEST_CAP, NC_SUGGEST_HOUR_UTC,
 )
+from smartlead.retest_targets import select_targets
 from smartlead.smart_delivery import SmartDeliveryClient, SmartDeliveryError
 from smartlead.placement_store import PlacementStore
 from smartlead.placement_sheet import append_api_result
@@ -255,6 +257,42 @@ async def _finish_sent(accounts, pl_key: str, store: PlacementStore, ws, r: dict
                 print(f"  [NC] cleanup failed for {r['email']}: {exc}")
 
 
+async def _suggest_targets(accounts, ws, rows: list[dict]) -> None:
+    """Advisory phase: write worst-first 'NEEDS TEST' rows for the credit-poor
+    clients so the human opens the tab and sees exactly which inboxes to create
+    non-connected tests for. Runs once a day (NC_SUGGEST_HOUR_UTC) because
+    health-row building is expensive; runs even in dry-run — it's read-only
+    with respect to Smartlead, same policy as the capacity planner."""
+    if datetime.utcnow().hour != NC_SUGGEST_HOUR_UTC:
+        return
+    # never suggest an email already anywhere in the tab (any status)
+    already = {r["email"] for r in rows}
+    from retest_executor import _health_rows_for
+    suggestions: list[list[str]] = []
+    for acc in accounts:
+        if acc.name not in NC_SUGGEST_CLIENTS:
+            continue
+        try:
+            health, _ = await _health_rows_for(acc)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [NC] suggest: health rows for {acc.name} failed: {exc}")
+            continue
+        for t in select_targets(health, NC_SUGGEST_CAP, already):
+            already.add(t["email"])
+            suggestions.append([
+                t["email"], "", "", "NEEDS TEST", "", "", "", "", "", "",
+                f"{t['client']}: {t['reason']} — create a non-connected test in "
+                "the PL UI named exactly this email, paste Track-ID + seeds here",
+                _now(),
+            ])
+    if suggestions:
+        ws.append_rows(suggestions)
+        print(f"[NC] suggested {len(suggestions)} inbox(es) to test "
+              f"(clients: {', '.join(NC_SUGGEST_CLIENTS)})")
+    else:
+        print("[NC] suggest: nothing new to test")
+
+
 async def main() -> None:
     accounts = discover_accounts()
     pl = next((a for a in accounts if a.name == NC_TEST_ACCOUNT), None)
@@ -265,12 +303,13 @@ async def main() -> None:
 
     ws = _open_tab()
     rows = _load_rows(ws)
-    pending = [r for r in rows if r["status"] in ("", "PENDING")]
+    pending = [r for r in rows if r["status"] in ("", "PENDING", "NEEDS TEST")]
     sent = [r for r in rows if r["status"] == "SENT"]
     print(f"[NC] {len(rows)} row(s): {len(pending)} pending, {len(sent)} sent, "
           f"{len(rows) - len(pending) - len(sent)} done/other"
           f"{' (DRY-RUN)' if not NC_TEST_ENABLED else ''}")
     if not pending and not sent:
+        await _suggest_targets(accounts, ws, rows)
         return
 
     tests = await _pl_tests(pl.api_key)
@@ -278,6 +317,11 @@ async def main() -> None:
     for r in pending:
         test = _match_test(tests, r["email"])
         if not test:
+            if r["status"] == "NEEDS TEST":
+                # suggestion the human hasn't acted on yet — keep its
+                # instruction note intact, just log
+                print(f"  [NC] {r['email']}: suggested, awaiting PL test")
+                continue
             _update_row(ws, r["row"],
                         {"Status": "PENDING",
                          "Notes": f"no PL test named '{r['email']}' — create the "
@@ -295,6 +339,9 @@ async def main() -> None:
             await _ingest_completed(pl.api_key, store, ws, r, test)
             continue
         if not r["track_id"] or not r["seeds"]:
+            if r["status"] == "NEEDS TEST":
+                print(f"  [NC] {r['email']}: PL test exists, awaiting Track-ID + seeds")
+                continue
             _update_row(ws, r["row"], {"Status": "PENDING",
                                        "Notes": "missing Track ID or Seed Emails"})
             print(f"  [NC] {r['email']}: row incomplete (needs Track ID + seeds)")
@@ -318,6 +365,7 @@ async def main() -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"  [NC] finish failed for {r['email']}: {exc}")
 
+    await _suggest_targets(accounts, ws, rows)
     print("[NC] run complete.")
 
 
