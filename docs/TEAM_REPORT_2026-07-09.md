@@ -157,7 +157,7 @@ The 9 failing-placement inboxes (job 1) sit exactly on 3 of the SURBL-listed dom
 
 ## Placement testing — what we ran, what we learned, and the account/credit reality
 
-**Tests completed: 1 — RESULT: 100% INBOX PLACEMENT (test 475859: 35/35 Office365 + 25/25 G Suite in the inbox, 0 spam).** The result flowed fully automatically: Smartlead finished the test → the system polled it, wrote it to the database, and appended it to the deliverability sheet — the complete human-like loop, closed end to end with zero human touches. A second test (475933) was auto-created for the next stale sender and is running. Credits spent: 2 of 92. The attempts along the way, each informative:
+**Tests completed: 2 — BOTH 100% INBOX PLACEMENT** (test 475859: 35/35 Office365 + 25/25 G Suite; test 475933: same result). Both results flowed fully automatically: Smartlead finished each test → the system polled it, wrote it to the database, and appended it to the deliverability sheet — the complete human-like loop, closed end to end with zero human touches. Credits spent: 2 of 92. The attempts along the way, each informative:
 
 1. **Belardi Wong, attempt 1:** both auto-selected targets were bench inboxes with no campaign attached — and a placement test physically sends through a campaign's sequence. The executor correctly refused. This surfaced the gap.
 2. **Belardi Wong, attempt 2 (after building the fix):** the executor now falls back to the account's standing "Deliverability test Campaign" — it found the campaign, attached the bench inbox, and issued the test-creation call. Smartlead rejected it with **"Insufficient sequence credits"** — the Belardi Wong account has **zero SmartDelivery credits**. The whole code path is proven right up to the credit wall.
@@ -170,11 +170,9 @@ The 9 failing-placement inboxes (job 1) sit exactly on 3 of the SURBL-listed dom
 
 **Where testing works today:** PRECISE_LEADS (92 credits) — the auto-tester is live there, first real test (475859) created today through a live campaign; result flows automatically into the deliverability sheet when Smartlead finishes running it (tests through a multi-sender campaign take 1-2 hours; the daily 11 AM cycle picks results up with no human involvement).
 
-**How the other clients (Belardi Wong / DARLEAN / MYTHIC) get tested — current understanding:**
+**How the other clients (Belardi Wong / DARLEAN / MYTHIC) get tested — CONFIRMED at the July-10 standup:**
 
-Credits exist ONLY in the PRECISE_LEADS account (confirmed — BW's account rejected a test with "insufficient credits" today). The team's working process, as we understand it: **temporarily add the client's inboxes to the PRECISE_LEADS workspace, run the placement test there, then remove them.** This is consistent with everything we verified: PL currently contains 345 inboxes across 102 domains with zero BW/Darlean/Mythic inboxes present (they'd be removed after each test), while those clients' manual test results do exist in their sheet tabs.
-
-**⚠️ To confirm with the team tomorrow:** is temporary-add-to-PL exactly the process? Any gotchas (e.g. which test campaign is used, are inboxes always removed afterward)? *Important safety note now that warmup is automated: inboxes should NOT be left permanently connected in two workspaces — two accounts managing warmup on the same inbox would conflict. Temporary add → test → remove is fine.*
+Manual per-account testing by each client's manager — Anjali tests Belardi Wong's mailboxes directly (23 tested July 9: 3 landing in spam — independently matching our system's finding of exactly 3 failing BW domains the same day), Varsha tests via provider support and external tools (e.g. Mailreach). **Inboxes are NOT imported across accounts** — Avinash explicitly: "don't import." Credits exist only in PRECISE_LEADS (confirmed: BW's account rejected an automated test with "insufficient credits"), so SmartDelivery-credit automation currently covers the PL family only; the manual per-account process continues for the other three, with results entered in their sheet tabs flowing into the system as always.
 
 **Can the auto-tester replicate this?** Not yet. Adding an inbox to the PL workspace requires the inbox's SMTP/IMAP credentials (or OAuth), which the automation doesn't hold. Possible future build: pull credentials via Zapmail's export API → auto-connect → test → auto-remove. Until then:
 - **PRECISE_LEADS family:** fully automated testing, live today.
