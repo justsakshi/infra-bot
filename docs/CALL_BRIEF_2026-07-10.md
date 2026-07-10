@@ -44,12 +44,12 @@ Anjali manually tested 23 BW mailboxes → **3 landing in spam**. Our system, in
 
 **SOLVED — how Anjali tested (verified from the API, no need to ask):** She used Smartlead SmartDelivery on the **PRECISE_LEADS account** in *non-connected mode* — 21 manual tests on July 9 (04:16–12:25), one per BW domain, each named after the domain. Non-connected mode = Smartlead hands you a seed list + a Test-ID string; she logged into each BW mailbox and sent the test email by hand (no import — consistent with "don't import"). Her full per-domain results are in the API and her 3 spam domains match our automated scoring exactly: **heybelardiwong.com 46% spam, bwdirectmail.com 46%, belardiwongs.com 21%** (borderline: topbelardiwong 17%, mybelardiwong 12%, mailbelardiwong 4%).
 
-**Automation picture (what the API recon established):**
-1. **Zero-cost, available now:** the bot can read every manual test Anjali runs (list + results are on the API). We can auto-ingest them into the same pipeline as our auto-tests — domain from the test name → inbox rows → sheet → Test Status → precise-automator. Anjali changes nothing; the recording/eligibility half of her work disappears.
-2. **DARLEAN can be automated today:** its account ran *connected* campaign-mode tests as recently as July 6 — it has its own SmartDelivery credits. Our proven auto-tester works there as-is.
-3. **BW full automation needs credits on the BW account.** Anjali's manual-send step cannot be botted: all 69 BW mailboxes are OAuth-connected (no SMTP credentials exposed), and non-connected test creation is UI-only (not on the public API — `test_with_sl_account` is rejected on the create endpoint).
+**Automation SHIPPED same day (`nc_test_executor.py`, proven live):**
+1. **Anjali's flow, 8 hours → 2 minutes per test.** She still creates the non-connected test in the PL UI (the only step the API refuses) and pastes the seed list + Track-ID into a new **"NC Tests" sheet tab**. The robot does the rest: sends the test email from the inbox via a one-off campaign in the inbox's OWN account (OAuth send — no imports, honoring "don't import"), polls the PL test, writes the result to the sheet + database, cleans up after itself.
+2. **Her manual tests auto-ingest with zero process change:** if she sends by hand as today, the robot just records the result. Proven live on her real test 475632 (heybelardiwong.com → fail, 54% inbox / 46% spam) — flowed to the NC Tests tab, API Tests tab, and Mongo.
+3. **Credit map (from the API):** PRECISE_LEADS ~90 · **DARLEAN has its own credits** (connected tests July 6) · **MYTHIC has its own credits** (connected test July 1) · BW exhausted (last test April). So the existing connected auto-tester works on Darlean + Mythic today; BW runs on the NC flow (PL credits) or gets its own credits.
 
-**⚠ Found during recon: MYTHIC's API key returns 401 Invalid — every bot job for Mythic is currently broken. Need a fresh key from the Mythic Smartlead account (Settings → API).**
+**MYTHIC's API key was invalid (401) — rotated 2026-07-10, new key verified locally (42 accounts visible). Render still needs the new key.**
 
 ## 5. Bugs the live pilot caught (why the careful rollout was worth it)
 
@@ -60,6 +60,8 @@ Anjali manually tested 23 BW mailboxes → **3 landing in spam**. Our system, in
 
 ## 6. What's needed to go fleet-wide (the ask)
 
-On Render, set: `HEALTH_NOTIFY_CHANNEL=C0AGVSUNEFP`, `BOUNCE_PROTECT_ENABLED=true`, `HEADROOM_FIX_ENABLED=true`, `WARMUP_AUTO_ENABLED=true`, `RETEST_ENABLED=true`. Rotation stays OFF (agreed). First live day: DARLEAN/Mythic/PL get the same correction wave BW got. Day-2 check: BW's warmup log plans ~0 changes (converged).
+On Render, set: `HEALTH_NOTIFY_CHANNEL=C0AGVSUNEFP`, `BOUNCE_PROTECT_ENABLED=true`, `HEADROOM_FIX_ENABLED=true`, `WARMUP_AUTO_ENABLED=true`, `RETEST_ENABLED=true`, `NC_TEST_ENABLED=true`, and the **new MYTHIC API key** (`SMARTLEAD_API_KEY_MYTHIC`). Rotation stays OFF (agreed). First live day: DARLEAN/Mythic/PL get the same correction wave BW got. Day-2 check: BW's warmup log plans ~0 changes (converged).
+
+One decision to take on the call: **BW testing going forward** — (a) NC flow on PL credits (shipped, Anjali 2 min/test), or (b) buy BW its own SmartDelivery credits (~20-40/month) and the fully-automatic tester runs there with zero human steps. Both keep "don't import".
 
 Full details: TEAM_REPORT_2026-07-09.md (shareable) · OPERATOR_PLAYBOOK.md (runbook).
