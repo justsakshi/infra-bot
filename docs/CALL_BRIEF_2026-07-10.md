@@ -42,7 +42,14 @@ Anjali manually tested 23 BW mailboxes → **3 landing in spam**. Our system, in
 - **Testing-process clarification (from the standup):** manual tests are done per-account by the managers (Anjali for BW, Varsha via provider support / Mailreach, etc.) — NOT by importing inboxes into PL (Avinash: "don't import"). SmartDelivery-credit automation currently works only where credits exist (PL). For BW/Darlean/Mythic the manual per-account testing continues; if we want those automated too, those accounts need their own SmartDelivery credits (~20-40/month each at the auto-tester's pace).
 - One free prep item: each account's "Deliverability test Campaign" needs one dummy lead added (Smartlead refuses to test through an empty campaign — found live).
 
-**Question for Anjali (2 minutes, unlocks automation):** which tool did you use for the 23-mailbox BW test? If it's Mailreach/GlockApps/similar (both have APIs), we can automate that exact flow — trigger the test, poll the result, write it into the same sheet tab your manual results go to — and the rest of the pipeline (sheet → sync → Test Status → precise-automator) already works. That would give BW/Darlean/Mythic automated testing WITHOUT buying SmartDelivery credits. Alternative remains: credits per account (~20-40/month each), zero new code needed.
+**SOLVED — how Anjali tested (verified from the API, no need to ask):** She used Smartlead SmartDelivery on the **PRECISE_LEADS account** in *non-connected mode* — 21 manual tests on July 9 (04:16–12:25), one per BW domain, each named after the domain. Non-connected mode = Smartlead hands you a seed list + a Test-ID string; she logged into each BW mailbox and sent the test email by hand (no import — consistent with "don't import"). Her full per-domain results are in the API and her 3 spam domains match our automated scoring exactly: **heybelardiwong.com 46% spam, bwdirectmail.com 46%, belardiwongs.com 21%** (borderline: topbelardiwong 17%, mybelardiwong 12%, mailbelardiwong 4%).
+
+**Automation picture (what the API recon established):**
+1. **Zero-cost, available now:** the bot can read every manual test Anjali runs (list + results are on the API). We can auto-ingest them into the same pipeline as our auto-tests — domain from the test name → inbox rows → sheet → Test Status → precise-automator. Anjali changes nothing; the recording/eligibility half of her work disappears.
+2. **DARLEAN can be automated today:** its account ran *connected* campaign-mode tests as recently as July 6 — it has its own SmartDelivery credits. Our proven auto-tester works there as-is.
+3. **BW full automation needs credits on the BW account.** Anjali's manual-send step cannot be botted: all 69 BW mailboxes are OAuth-connected (no SMTP credentials exposed), and non-connected test creation is UI-only (not on the public API — `test_with_sl_account` is rejected on the create endpoint).
+
+**⚠ Found during recon: MYTHIC's API key returns 401 Invalid — every bot job for Mythic is currently broken. Need a fresh key from the Mythic Smartlead account (Settings → API).**
 
 ## 5. Bugs the live pilot caught (why the careful rollout was worth it)
 
