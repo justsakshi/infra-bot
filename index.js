@@ -1638,6 +1638,26 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Non-connected (Anjali-style) placement tests: hourly 9:00-21:00 IST at
+    // :15. Watches the "NC Tests" sheet tab — a human creates the non-connected
+    // test in the PL UI and pastes seed list + Track-ID; this executor sends
+    // from the inbox via its own account's campaign, polls the PL test, and
+    // writes results. Ships DRY-RUN (NC_TEST_ENABLED=false) — logs the plan,
+    // mutates nothing until explicitly enabled via the NC_TEST_ENABLED env var.
+    cron.schedule('15 9-21 * * *', () => {
+      console.log(`[CRON] NC placement-test firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['nc_test_executor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[nc-test] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[nc-test] ${d}`));
+      proc.on('close', code => console.log(`[nc-test] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Auto-warmup executor at 11:30 AM IST daily. Ships DRY-RUN
     // (WARMUP_AUTO_ENABLED=false) — logs would-change, applies nothing until
     // explicitly enabled via the WARMUP_AUTO_ENABLED env var.

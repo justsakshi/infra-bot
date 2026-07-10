@@ -105,6 +105,27 @@ RETEST_MIN_TIME_MINUTES: int = 5   # SmartDelivery business rule: >= 5
 PLACEMENT_TESTS_COLLECTION: str = os.getenv("PLACEMENT_TESTS_COLLECTION", "placement_tests")
 PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "placement_results")
 
+# ── Non-connected (Anjali-style) placement tests ─────────────────────────────
+# Semi-automated flow: a human creates a NON-CONNECTED SmartDelivery test in the
+# PRECISE_LEADS UI (the only step the public API cannot do — verified 2026-07-10:
+# `test_with_sl_account` is rejected on the create endpoint, and connected mode
+# requires the sender imported into the same account, which is vetoed). The
+# human names the test EXACTLY the inbox email and pastes the seed list +
+# Track-ID into the "NC Tests" sheet tab. The executor does the rest: sends the
+# test email from the inbox via a one-off campaign in the inbox's OWN Smartlead
+# account, polls the PL test, writes results to Mongo + the API Tests tab.
+# DRY-RUN by default: logs the full plan, mutates nothing.
+NC_TEST_ENABLED: bool = os.getenv("NC_TEST_ENABLED", "false").lower() == "true"
+NC_TAB_NAME: str = os.getenv("NC_TAB_NAME", "NC Tests")
+# Which account's SmartDelivery holds the non-connected tests (the credit pool).
+NC_TEST_ACCOUNT: str = os.getenv("NC_TEST_ACCOUNT", "PRECISE_LEADS")
+NC_CAMPAIGN_PREFIX: str = "NC Placement Test"
+# Minutes between seed sends inside the one-off campaign (Smartlead minimum 3).
+NC_MIN_GAP_MINUTES: int = int(os.getenv("NC_MIN_GAP_MINUTES", "3"))
+# Extra slots added on top of the seed count when temporarily raising the
+# inbox's daily limit for the send day (restored when the test completes).
+NC_LIMIT_BUFFER: int = int(os.getenv("NC_LIMIT_BUFFER", "5"))
+
 # ── Auto inbox rotation (swap broken senders for healthy bench inboxes) ─────
 # DRY-RUN by default: logs every intended add/reassign/remove, mutates nothing.
 ROTATION_ENABLED: bool = os.getenv("ROTATION_ENABLED", "false").lower() == "true"

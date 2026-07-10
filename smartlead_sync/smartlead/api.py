@@ -231,6 +231,50 @@ class SmartleadClient:
         """Pause a lead's sequence (policy B fallback for in-flight leads)."""
         return await self._request_json("POST", f"/campaigns/{campaign_id}/leads/{lead_id}/pause", {})
 
+    # ── campaign creation (non-connected placement-test sender campaigns) ──
+    async def create_campaign(self, name: str, client_id: int | None = None) -> dict:
+        """Create an empty campaign (POST /campaigns/create). Returns {id, name, ...}."""
+        body: dict = {"name": name}
+        if client_id is not None:
+            body["client_id"] = int(client_id)
+        return await self._request_json("POST", "/campaigns/create", body)
+
+    async def save_campaign_sequences(self, campaign_id: str, subject: str, email_body: str) -> dict:
+        """Save a single-step sequence (POST /campaigns/{id}/sequences)."""
+        body = {
+            "sequences": [{
+                "seq_number": 1,
+                "seq_delay_details": {"delay_in_days": 0},
+                "seq_variants": [{
+                    "subject": subject,
+                    "email_body": email_body,
+                    "variant_label": "A",
+                }],
+            }]
+        }
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences", body)
+
+    async def add_campaign_leads(self, campaign_id: str, emails: list[str]) -> dict:
+        """Add leads by email (POST /campaigns/{id}/leads). Ignores block/dup lists
+        — seed addresses must never be filtered out."""
+        body = {
+            "lead_list": [{"email": e} for e in emails],
+            "settings": {
+                "ignore_global_block_list": True,
+                "ignore_unsubscribe_list": True,
+                "ignore_duplicate_leads_in_other_campaign": True,
+            },
+        }
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/leads", body)
+
+    async def update_campaign_schedule(self, campaign_id: str, schedule: dict) -> dict:
+        """Set campaign schedule (POST /campaigns/{id}/schedule)."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/schedule", schedule)
+
+    async def set_campaign_status(self, campaign_id: str, status: str) -> dict:
+        """Set campaign status (POST /campaigns/{id}/status). status: START|PAUSED|STOPPED."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/status", {"status": status})
+
     async def update_campaign_settings(self, campaign_id: str, settings: dict) -> dict:
         """Partial-update campaign general settings
         (POST /campaigns/{id}/settings — documented fields incl.
