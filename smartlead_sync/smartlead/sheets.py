@@ -508,6 +508,33 @@ class DeliverabilityReader:
         return gsuite or outlook or "Unknown"
 
 
+def read_master_inboxes(sheet_id: str, clients: list[str]) -> list[dict]:
+    """Read the CURRENT 'All Inboxes' tab and return the rows belonging to
+    *clients*, mapped back to internal column keys. Used to salvage a failed
+    account's previous rows so a sync failure never erases a whole client from
+    the master tab (downstream tools read it as live inventory). Never raises."""
+    if not clients:
+        return []
+    try:
+        gc = _authorize()
+        ws = gc.open_by_key(sheet_id).worksheet(MASTER_TAB_NAME)
+        values = ws.get_all_values()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Sheets] salvage read failed for {sheet_id}: {exc}")
+        return []
+    if len(values) < 2:
+        return []
+    label_to_key = {v: k for k, v in _HEADER_LABELS.get(MASTER_TAB_NAME, {}).items()}
+    header = [label_to_key.get(h, h.strip().lower().replace(" ", "_")) for h in values[0]]
+    wanted = {c.strip().lower() for c in clients}
+    out: list[dict] = []
+    for raw in values[1:]:
+        row = {header[i]: raw[i] for i in range(min(len(header), len(raw)))}
+        if str(row.get("client", "")).strip().lower() in wanted:
+            out.append(row)
+    return out
+
+
 # ── Dashboard Writer ─────────────────────────────────────────────────────────
 
 class SheetsWriter:

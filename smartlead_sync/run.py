@@ -147,6 +147,7 @@ async def main() -> None:
     smartlead_campaigns_for_metrics: list = []
 
     # Process each account sequentially with its own deliverability data
+    failed_accounts: list = []
     for acc in accounts:
         try:
             tab_names = ACCOUNT_DELIVERABILITY_TABS.get(acc.name, [TEST_TAB_NAME])
@@ -174,6 +175,7 @@ async def main() -> None:
                 smartlead_campaigns_for_metrics.append((acc, campaigns))
         except Exception as exc:
             print(f"[!] Account {acc.name} failed: {exc}")
+            failed_accounts.append(acc)
 
     # Write shared tabs once (glossary + last sync)
     end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -184,10 +186,32 @@ async def main() -> None:
     except Exception as exc:
         print(f"[!] Shared tabs failed: {exc}")
 
-    # One 'All Inboxes' master tab per distinct sheet (per workspace)
+    # One 'All Inboxes' master tab per distinct sheet (per workspace).
+    # A failed account must NOT silently vanish from the master tab — downstream
+    # tools (precise-automator / Campaign Desk) read it live, and a missing
+    # client reads as "0 inboxes exist" (real incident 2026-07-10: MYTHIC 401 +
+    # a transient BW failure left the tab with only Darlean + PL, and Campaign
+    # Desk showed 'No eligible FREE inboxes' for Belardi Wong). Salvage the
+    # failed clients' rows from the tab's previous contents: one-day-stale data
+    # beats a client disappearing.
+    failed_by_sheet: dict[str, list[str]] = {}
+    for facc in failed_accounts:
+        failed_by_sheet.setdefault(facc.sheet_id, []).append(facc.name)
     for sheet_id, rows in rows_by_sheet.items():
         try:
             writer = SheetsWriter(sheet_id)
+            stale_clients = failed_by_sheet.get(sheet_id, [])
+            if stale_clients:
+                from smartlead.sheets import read_master_inboxes
+                salvaged = read_master_inboxes(sheet_id, stale_clients)
+                if salvaged:
+                    rows = rows + salvaged
+                    print(f"[!] Salvaged {len(salvaged)} stale row(s) for failed "
+                          f"account(s) {stale_clients} from the previous master tab")
+                else:
+                    print(f"[!] WARNING: account(s) {stale_clients} failed and no "
+                          "previous master rows found — they will be missing from "
+                          f"'{MASTER_TAB_NAME}' until the next successful sync")
             writer.write_master_inboxes(rows)
             print(f"[*] Master tab '{MASTER_TAB_NAME}' written to sheet {sheet_id} from {len(rows)} campaign-rows")
         except Exception as exc:
