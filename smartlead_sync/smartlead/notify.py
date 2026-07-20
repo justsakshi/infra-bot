@@ -30,7 +30,8 @@ def build_digest(rows: list[dict], sheet_url: str) -> str:
         items.sort(key=lambda r: _PRIORITY_ORDER.get(r["priority"], 9))
         mgr_slack = next((i.get("_mgr_slack") for i in items if i.get("_mgr_slack")), "")
         mgr_name = items[0].get("manager", "Unassigned")
-        who = f"<{mgr_slack}>" if mgr_slack.startswith("U") else (mgr_slack or mgr_name)
+        # Slack member mentions need the <@U…> form; a bare <U…> renders literally
+        who = f"<@{mgr_slack}>" if mgr_slack.startswith("U") else (mgr_slack or mgr_name)
         p0 = sum(1 for i in items if i["priority"] == "P0")
         lines.append(f"*{client}* — {who} · {len(items)} item(s){f', {p0} 🔴 P0' if p0 else ''}")
         for i in items[:8]:

@@ -22,5 +22,15 @@ FOUNDERS: dict[str, str] = {
 }
 
 
+def _norm(name: str) -> str:
+    """Client names arrive in several spellings ('PRECISE_LEADS' account name,
+    'Precise Leads' human label, 'DARLEAN' from env-var casing) — normalize
+    case/underscores so every spelling resolves to the same manager."""
+    return name.strip().lower().replace("_", " ")
+
+
+_NORMALIZED_MAP: dict[str, dict] = {_norm(k): v for k, v in MANAGER_MAP.items()}
+
+
 def resolve_manager(client: str) -> dict:
-    return MANAGER_MAP.get(client, {"name": "Unassigned", "slack": ""})
+    return _NORMALIZED_MAP.get(_norm(client), {"name": "Unassigned", "slack": ""})
