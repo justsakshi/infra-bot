@@ -303,10 +303,15 @@ async def fetch_account_data(
             # Aggregate true load per unique mailbox across all campaigns
             inbox_aggregate_load[email] = inbox_aggregate_load.get(email, 0.0) + stats["true_load"]
 
-            inbox_data.append(_build_inbox_row(
+            row = _build_inbox_row(
                 full, email, c_name, c_status, stats, deliverability_map,
                 dns_audit_map=dns_audit_map, client=name,
-            ))
+            )
+            # PL is an agency account: attribute the row to its real client
+            # (Melior/Bettrdata/OSC) via the campaign's Smartlead client_id
+            from smartlead.manager_map import resolve_sub_client
+            row["sub_client"] = resolve_sub_client(name, campaign.get("client_id"), email)
+            inbox_data.append(row)
 
     # 4b. Inactive campaigns: basic summary row only (no API calls for analytics/inboxes)
     if active_only:
@@ -324,13 +329,16 @@ async def fetch_account_data(
         email = acc.get("from_email", "")
         if email in seen_emails:
             continue
-        inbox_data.append(_build_inbox_row(
+        row = _build_inbox_row(
             acc, email, "N/A (No active campaign)", "N/A",
             {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0},
             deliverability_map,
             dns_audit_map=dns_audit_map,
             client=name,
-        ))
+        )
+        from smartlead.manager_map import resolve_sub_client
+        row["sub_client"] = resolve_sub_client(name, None, email)  # bench: domain hint
+        inbox_data.append(row)
         seen_emails.add(email)
         orphan_count += 1
     if orphan_count:

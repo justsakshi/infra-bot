@@ -228,11 +228,15 @@ def build_health_rows(inbox_rows: list[dict], today, store, resolve_manager) -> 
         act = resolve_action(snap, hs["score"])
         prior = store.prior_score(client, email, 7, today) if store else None
         tr = compute_trend(hs["score"], prior)
-        mgr = resolve_manager(client)
+        # manager ownership follows the SUB-client (Melior/Bettrdata/OSC inside
+        # the PL agency account), not the Smartlead account name
+        sub_client = snap.get("sub_client") or client
+        mgr = resolve_manager(sub_client)
         drivers = hs["drivers"]
         rows.append({
             "priority": act["priority"],
             "client": client,
+            "sub_client": sub_client,
             "email": email,
             "domain": _domain(email),
             "provider": snap.get("provider", ""),

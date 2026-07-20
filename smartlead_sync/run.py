@@ -226,7 +226,7 @@ async def main() -> None:
         for sheet_id, rows in rows_by_sheet.items():
             hrows = build_health_rows(rows, today_d, store, resolve_manager)
             for hr in hrows:
-                hr["_mgr_slack"] = resolve_manager(hr["client"]).get("slack", "")
+                hr["_mgr_slack"] = resolve_manager(hr.get("sub_client") or hr["client"]).get("slack", "")
             health_rows_by_sheet[sheet_id] = hrows
             all_health_rows.extend(hrows)
             try:
@@ -242,7 +242,7 @@ async def main() -> None:
             primary = accounts[0].sheet_id
             sheet_url = f"https://docs.google.com/spreadsheets/d/{primary}"
             digest = _notify.build_digest(all_health_rows, sheet_url)
-            if _notify.post_digest(digest):
+            if _notify.post_digest(digest, _notify.build_full_lists(all_health_rows)):
                 print("[*] Inbox Health Slack digest posted")
         except Exception as exc:
             print(f"[!] Inbox Health notify failed: {exc}")

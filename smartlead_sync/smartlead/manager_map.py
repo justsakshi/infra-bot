@@ -22,6 +22,45 @@ FOUNDERS: dict[str, str] = {
 }
 
 
+# PRECISE_LEADS is an agency account holding THREE real Smartlead clients plus
+# internal campaigns (verified from GET /client + campaign client_ids, 2026-07-10):
+#   12256  Ryan Markman (ryan@getmelior.com)   -> Melior     (215 campaigns)
+#   456214 Aaron dix (aaron.dix@bettrdata.io)  -> Bettrdata  (5 campaigns)
+#   145916 Srivatsan (srivatsan@svsg.co)       -> OSC        (32 campaigns)
+#   client_id None                              -> Precise Leads internal (369)
+SUB_CLIENT_BY_ID: dict[int, str] = {
+    12256: "Melior",
+    456214: "Bettrdata",
+    145916: "OSC",
+}
+
+# Fallback for bench inboxes (no campaign -> no client_id): infer from domain.
+_DOMAIN_HINTS: list[tuple[str, str]] = [
+    ("melior", "Melior"),
+    ("bettr", "Bettrdata"),
+    ("svsg", "OSC"),
+]
+
+
+def resolve_sub_client(account_name: str, client_id=None, email: str = "") -> str:
+    """Best-effort sub-client for an inbox row. Only the PRECISE_LEADS agency
+    account has sub-clients; every other account IS the client."""
+    if _norm(account_name) != "precise leads":
+        return account_name
+    if client_id is not None:
+        try:
+            mapped = SUB_CLIENT_BY_ID.get(int(client_id))
+            if mapped:
+                return mapped
+        except (TypeError, ValueError):
+            pass
+    domain = email.split("@", 1)[1].lower() if "@" in email else ""
+    for hint, label in _DOMAIN_HINTS:
+        if hint in domain:
+            return label
+    return "Precise Leads"
+
+
 def _norm(name: str) -> str:
     """Client names arrive in several spellings ('PRECISE_LEADS' account name,
     'Precise Leads' human label, 'DARLEAN' from env-var casing) — normalize
