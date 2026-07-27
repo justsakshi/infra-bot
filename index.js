@@ -1659,6 +1659,24 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // EmailGuard placement tests at 11:20 IST daily (after the Smartlead
+    // retest job). Credit-free testing that works for every client from one
+    // workspace pool — Pass A scores finished tests, Pass B creates new ones
+    // worst-first. Ships DRY-RUN (EG_TEST_ENABLED=false).
+    cron.schedule('20 11 * * *', () => {
+      console.log(`[CRON] EmailGuard placement test firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['eg_test_executor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[eg-test] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[eg-test] ${d}`));
+      proc.on('close', code => console.log(`[eg-test] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Non-connected (Anjali-style) placement tests: hourly 9:00-21:00 IST at
     // :15. Watches the "NC Tests" sheet tab — a human creates the non-connected
     // test in the PL UI and pastes seed list + Track-ID; this executor sends

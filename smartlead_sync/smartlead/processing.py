@@ -525,10 +525,16 @@ def _build_inbox_row(
         and not account.get("is_suspended", False)
     )
 
+    # A domain missing from the audit map means the DNS check did not run or
+    # failed — NOT that its records are fine. Defaulting these to True granted
+    # full authentication credit on a silent failure (the same fail-open shape
+    # as the blacklist checker reporting "clean" when its resolver was blocked).
+    # Mark it unknown instead: the message says so, and health scoring treats a
+    # missing record as unproven rather than passing.
     dns_info = (dns_audit_map or {}).get(domain) or {
-        "spf_ok": True, "spf_msg": "",
-        "dkim_ok": True, "dkim_msg": "",
-        "dmarc_ok": True, "dmarc_msg": ""
+        "spf_ok": None, "spf_msg": "DNS audit did not run for this domain",
+        "dkim_ok": None, "dkim_msg": "DNS audit did not run for this domain",
+        "dmarc_ok": None, "dmarc_msg": "DNS audit did not run for this domain",
     }
 
     return {

@@ -112,6 +112,7 @@ async def main() -> None:
     # recent stored cumulative snapshot, BEFORE writing today's own
     # cumulative snapshot (order matters: read prior state first).
     alerts_total = 0
+    alert_lines: list[str] = []
     baseline_start = (date.today() - timedelta(days=14)).isoformat()
     for dom, cur in sorted(fleet.items()):
         prior = _yesterdays_cumulative(col, dom, yesterday)
@@ -143,6 +144,7 @@ async def main() -> None:
         for alert in evaluate_alerts(dom, current_delta, daily_history):
             alerts_total += 1
             print(f"  [ALERT] {dom} ({cur.get('client', '')}): {alert}")
+            alert_lines.append(f"   • *{dom}* ({cur.get('client', '')}): {alert}")
 
     if col is not None and fleet:
         # store today's CUMULATIVE snapshot (as Smartlead reports it) after
@@ -161,6 +163,17 @@ async def main() -> None:
     else:
         print(f"[ReplyMon] {alerts_total} alert(s) - check the domains above "
               "(pause/investigate per OPERATOR_PLAYBOOK daily P0 flow).")
+        # A reply-rate collapse is the EARLIEST warning this system produces —
+        # roughly 48h ahead of opens/bounces moving. Printing it to a cron log
+        # nobody reads wasted that lead time entirely, so push it to Slack.
+        # Silent when no channel is configured.
+        try:
+            from smartlead.notify import post_digest
+            post_digest("*📉 Reply-rate alert — earliest deliverability warning*\n"
+                        + "\n".join(alert_lines[:25])
+                        + ("\n   • …and more, see the job log" if len(alert_lines) > 25 else ""))
+        except Exception as exc:  # noqa: BLE001 - alerting must never break the job
+            print(f"  [ReplyMon] Slack alert failed (non-fatal): {exc}")
 
 
 if __name__ == "__main__":

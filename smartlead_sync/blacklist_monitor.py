@@ -304,6 +304,24 @@ async def main() -> None:
                   f"clients: {', '.join(r['clients'])}")
         print("  ACTION: pause campaigns on these domains, submit delisting request, "
               "escalate to Zapmail if DNS-related. Domain <30d old -> replace instead.")
+        # Alert on Spamhaus DBL ONLY. DBL listings genuinely suppress inbox
+        # placement and are rare (0 of 121 as of 2026-07-27). SURBL ABUSE hits
+        # ~99 of our domains, affects URLs inside message bodies rather than
+        # sender reputation, and paging anyone about it every week would train
+        # the team to ignore this alert entirely.
+        serious = [r for r in listed
+                   if any("spamhaus" in s.lower() for s in r["listed_on"])]
+        if serious:
+            try:
+                from smartlead.notify import post_digest
+                post_digest(
+                    "*🚨 Spamhaus DBL listing — inbox placement at risk*\n"
+                    + "\n".join(f"   • *{r['domain']}* ({', '.join(r['clients'])}) "
+                                f"— {', '.join(r['listed_on'])}" for r in serious[:20])
+                    + "\n\nPause campaigns on these domains and file a delisting "
+                      "request. Domains under 30 days old: replace instead.")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [Blacklist] Slack alert failed (non-fatal): {exc}")
     else:
         print("[Blacklist] ✅ all domains clean.")
     errs = sum(1 for r in results if r["lookup_errors"])

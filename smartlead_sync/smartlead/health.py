@@ -83,17 +83,20 @@ def _bounce_points(snapshot: dict) -> int:
 
 
 def _connection_points(snapshot: dict) -> int:
+    """Connectivity + authentication. A record that is None means the DNS audit
+    did not run for that domain — that is unproven, not passing, so it costs
+    half of what an outright failure costs rather than nothing at all."""
     maxp = HEALTH_WEIGHTS["connection"]
     if not snapshot.get("connection_ok", True):
         return 0
-    score = maxp
-    if not snapshot.get("dns_spf_ok", True):
-        score -= 5
-    if not snapshot.get("dns_dkim_ok", True):
-        score -= 5
-    if not snapshot.get("dns_dmarc_ok", True):
-        score -= 3
-    return max(0, score)
+    score = float(maxp)
+    for key, penalty in (("dns_spf_ok", 8), ("dns_dkim_ok", 8), ("dns_dmarc_ok", 5)):
+        val = snapshot.get(key, True)
+        if val is None:
+            score -= penalty / 2   # unknown: partial credit withheld
+        elif not val:
+            score -= penalty
+    return max(0, round(score))
 
 
 def _grade(score: int) -> str:
@@ -114,6 +117,12 @@ def compute_health_score(snapshot: dict, today: date) -> dict:
         "connection": _connection_points(snapshot),
     }
     score = int(sum(drivers.values()))
+    # A disconnected inbox cannot send at all, so no amount of good placement
+    # history or warmup reputation should let it grade as usable. Without this
+    # floor a broken mailbox scored 75/B purely on stale credit from the other
+    # components.
+    if not snapshot.get("connection_ok", True):
+        score = min(score, 25)
     return {"score": score, "grade": _grade(score), "drivers": drivers}
 
 

@@ -77,7 +77,20 @@ HEALTH_HISTORY_DB: str = os.getenv("HEALTH_HISTORY_DB", "infrabot")
 HEALTH_HISTORY_COLLECTION: str = os.getenv("HEALTH_HISTORY_COLLECTION", "inbox_health_history")
 
 # Health score weights (sum = 100) and thresholds. Tune after seeing real data.
-HEALTH_WEIGHTS: dict[str, int] = {"placement": 40, "warmup": 25, "bounce": 20, "connection": 15}
+# Reweighted 2026-07-27 after measuring what these components actually
+# discriminate:
+#   - bounce was 20 points awarded UNCONDITIONALLY (no bounce_rate is collected
+#     anywhere), i.e. a flat 20-point gift that hid real differences. Dropped to
+#     0 until a genuine per-inbox bounce signal exists; re-weight when it does.
+#   - warmup reputation proved near-useless as a deliverability proxy:
+#     sam@heybelardiwong.com showed 125 warmup sends, 125 inboxed, 100%
+#     reputation, while real seed mail from that same mailbox was spam-foldered
+#     4/4 by Microsoft. Warmup measures a friendly network's acceptance, not the
+#     open internet's. Cut 25 -> 15.
+#   - placement testing is the only ground truth we have, and EmailGuard makes
+#     it cheap enough to run continuously. Raised 40 -> 60.
+# Weights must sum to 100.
+HEALTH_WEIGHTS: dict[str, int] = {"placement": 60, "warmup": 15, "bounce": 0, "connection": 25}
 HEALTH_TEST_STALE_DAYS: int = 14   # test older than this starts decaying placement credit
 HEALTH_TEST_DEAD_DAYS: int = 28    # test older than this treated as untested (neutral)
 HEALTH_WARMUP_FULL: float = 99.0   # rep >= this -> full warmup credit
