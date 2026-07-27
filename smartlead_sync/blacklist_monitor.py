@@ -168,6 +168,10 @@ _CONTROLS = {
     "multi.uribl.com": "test.uribl.com",
 }
 
+# A zone's DoH path must pass EVERY control probe to be trusted for the run;
+# anything less means intermittent blocking and we use the authoritative NS.
+_CONTROL_PROBES: int = 3
+
 
 async def _pick_strategies(client: httpx.AsyncClient) -> dict[str, dict]:
     """Per zone: {'mode': 'doh'|'auth', 'ns_ip': str|None} for the first lookup
@@ -176,10 +180,22 @@ async def _pick_strategies(client: httpx.AsyncClient) -> dict[str, dict]:
     for zone in BLACKLIST_ZONES:
         control = _CONTROLS.get(zone)
         if control:
-            via_doh = await _listed_ips(client, control, zone)
-            if via_doh:
+            # DoH answers for these zones are INTERMITTENT (measured 2026-07-10:
+            # dbltest.com resolved on 4 of 6 consecutive attempts, NXDOMAIN on
+            # the rest). One failed probe must not silently disable a zone, and
+            # one lucky probe must not certify a flaky path — retry before
+            # falling back, and prefer the stable authoritative path when DoH
+            # proves unreliable.
+            doh_hits = 0
+            for _ in range(_CONTROL_PROBES):
+                if await _listed_ips(client, control, zone):
+                    doh_hits += 1
+            if doh_hits == _CONTROL_PROBES:
                 out[zone] = {"mode": "doh", "ns_ip": None}
                 continue
+            if doh_hits:
+                print(f"  [Blacklist] {zone}: DoH flaky ({doh_hits}/{_CONTROL_PROBES} "
+                      "control probes) - preferring authoritative NS")
             ns_ip = await _zone_ns_ip(client, zone)
             if ns_ip and await _listed_ips_auth(ns_ip, control, zone):
                 out[zone] = {"mode": "auth", "ns_ip": ns_ip}
