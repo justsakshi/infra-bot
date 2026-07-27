@@ -1,0 +1,97 @@
+askmelior.com	PRECISE_LEADS	dmarc6@atomynow.com
+belardiwongconnect.com	Belardi Wong	samlonsdale@belardiwongconnect.com
+belardiwongdm.com	Belardi Wong	samlonsdale@belardiwongdm.com
+belardiwongzone.com	Belardi Wong	sam@belardiwongzone.com
+buildmelior.com	PRECISE_LEADS	dmarc6@atomynow.com
+bwdirectmail.com	Belardi Wong	samlonsdale@bwdirectmail.com
+callmelior.com	PRECISE_LEADS	dmarc6@atomynow.com
+clientfieldpro.co	DARLEAN	mia@clientfieldpro.co
+clientgo.co	DARLEAN	isla@clientgo.co
+clientismapp.co	DARLEAN	tatum.bishop@clientismapp.co
+clientprogo.co	DARLEAN	teagan.snyder@clientprogo.co
+connectmythic.us	MYTHIC	dmarc_rua@onsecureserver.net
+darleanadmin.com	DARLEAN	dmitrii.korchagin@darleanadmin.com
+darleanai.com	DARLEAN	adam.pitts@darleanai.com
+darleanassists.com	DARLEAN	adam.pitts@darleanassists.com
+darleanbusiness.com	DARLEAN	dmitrii.korchagin@darleanbusiness.com
+darleancloud.com	DARLEAN	dejan.lukic@darleancloud.com
+darleanenterprise.com	DARLEAN	adam.pitts@darleanenterprise.com
+darleanfirst.com	DARLEAN	dejan.lukic@darleanfirst.com
+darleanofficial.com	DARLEAN	adam.pitts@darleanofficial.com
+darleanoperations.com	DARLEAN	adam.pitts@darleanoperations.com
+darleanprocess.com	DARLEAN	dmitrii.korchagin@darleanprocess.com
+darleansecure.com	DARLEAN	dmitrii@darleansecure.com
+darleanservices.com	DARLEAN	dejan.lukic@darleanservices.com
+darleansolution.com	DARLEAN	dejan.lukic@darleansolution.com
+darleansuite.com	DARLEAN	dejan.lukic@darleansuite.com
+darleansystems.com	DARLEAN	dejan.lukic@darleansystems.com
+darleantech.com	DARLEAN	adam.pitts@darleantech.com
+darleantool.com	DARLEAN	dmitrii.korchagin@darleantool.com
+darleanui.com	DARLEAN	dmitrii.korchagin@darleanui.com
+darleanworkspace.com	DARLEAN	adam.pitts@darleanworkspace.com
+findbelardiwong.com	Belardi Wong	samlonsdale@findbelardiwong.com
+findmelior.com	PRECISE_LEADS	dmarc6@atomynow.com
+getbelardiwong.com	Belardi Wong	sam@getbelardiwong.com
+getdarlean.com	DARLEAN	dmitrii.korchagin@getdarlean.com
+getmythic.us	MYTHIC	dmarc_rua@onsecureserver.net
+getmythicnow.com	MYTHIC	scott.luther@getmythicnow.com
+getmythicus.com	MYTHIC	david.soliday@getmythicus.com
+gobelardiwong.com	Belardi Wong	samlonsdale@gobelardiwong.com
+godarlean.com	DARLEAN	dejan.lukic@godarlean.com
+gomythicdigital.com	MYTHIC	scott.luther@gomythicdigital.com
+gomythicnow.com	MYTHIC	david.soliday@gomythicnow.com
+gopreciseleads.com	PRECISE_LEADS	dmarc8@atomynow.com
+growmelior.com	PRECISE_LEADS	dmarc5@atomynow.com
+growpreciseleads.com	PRECISE_LEADS	dmarc8@atomynow.com
+hellodarlean.com	DARLEAN	dejan.lukic@hellodarlean.com
+heybelardiwong.com	Belardi Wong	zachary.riegle@heybelardiwong.com
+heydarlean.com	DARLEAN	dejan.lukic@heydarlean.com
+hubmelior.com	PRECISE_LEADS	dmarc6@atomynow.com
+joindarlean.com	DARLEAN	dmitrii.korchagin@joindarlean.com
+justbelardiwong.com	Belardi Wong	samlonsdale@justbelardiwong.com
+linkmelior.com	PRECISE_LEADS	dmarc6@atomynow.com
+mailbelardiwong.com	Belardi Wong	samlonsdale@mailbelardiwong.com
+meetbelardiwong.com	Belardi Wong	samlonsdale@meetbelardiwong.com
+meetdarlean.com	DARLEAN	dejan.lukic@meetdarlean.com
+meetmythic.us	MYTHIC	dmarc_rua@onsecureserver.net
+meetmythiconline.com	MYTHIC	david.soliday@meetmythiconline.com
+meetpreciseleads.com	PRECISE_LEADS	dmarc8@atomynow.com
+meliorbase.com	PRECISE_LEADS	dmarc5@atomynow.com
+meliorbuild.com	PRECISE_LEADS	dmarc6@atomynow.com
+meliorflow.com	PRECISE_LEADS	dmarc6@atomynow.com
+meliorforge.com	PRECISE_LEADS	dmarc6@atomynow.com
+meliorgrow.com	PRECISE_LEADS	dmarc6@atomynow.com
+mybelardiwong.com	Belardi Wong	zachary.riegle@mybelardiwong.com
+mydarlean.com	DARLEAN	adam.pitts@mydarlean.com
+mymythicdigital.com	MYTHIC	david.soliday@mymythicdigital.com
+mythicdigitalonline.com	MYTHIC	scott.luther@mythicdigitalonline.com
+newbelardiwong.com	Belardi Wong	saml@newbelardiwong.com
+ourdarlean.com	DARLEAN	dmitrii.korchagin@ourdarlean.com
+preciseleadsagency.com	PRECISE_LEADS	dmarc8@atomynow.com
+preciseleadscentral.com	PRECISE_LEADS	dmarc8@atomynow.com
+preciseleadsco.com	PRECISE_LEADS	dmarc8@atomynow.com
+preciseleadsconnect.com	PRECISE_LEADS	dmarc8@atomynow.com
+preciseleadsgroup.com	PRECISE_LEADS	dmarc8@atomynow.com
+preciseleadshq.com	PRECISE_LEADS	dmarc8@atomynow.com
+preciseleadspro.com	PRECISE_LEADS	dmarc8@atomynow.com
+preciseleadsworks.com	PRECISE_LEADS	dmarc8@atomynow.com
+reachbelardiwong.com	Belardi Wong	sam@reachbelardiwong.com
+reachbw.com	Belardi Wong	zacharyr@reachbw.com
+realbelardiwong.com	Belardi Wong	samlonsdale@realbelardiwong.com
+seepreciseleads.com	PRECISE_LEADS	dmarc8@atomynow.com
+sendbw.com	Belardi Wong	zachary.riegle@sendbw.com
+startpreciseleads.com	PRECISE_LEADS	dmarc8@atomynow.com
+swiftbybelardiwong.com	Belardi Wong	samlonsdale@swiftbybelardiwong.com
+swiftbybw.com	Belardi Wong	samlonsdale@swiftbybw.com
+teambelardiwong.com	Belardi Wong	samlonsdale@teambelardiwong.com
+themythicagency.com	MYTHIC	scott.luther@themythicagency.com
+themythicdigital.com	MYTHIC	scott.luther@themythicdigital.com
+theteammythic.com	MYTHIC	scott.luther@theteammythic.com
+topbelardiwong.com	Belardi Wong	zachary.riegle@topbelardiwong.com
+trybelardiwong.com	Belardi Wong	samlonsdale@trybelardiwong.com
+trydarlean.com	DARLEAN	dmitrii.korchagin@trydarlean.com
+trymythiconline.com	MYTHIC	david.soliday@trymythiconline.com
+usdarlean.com	DARLEAN	adam.pitts@usdarlean.com
+usedarlean.com	DARLEAN	dmitrii.korchagin@usedarlean.com
+usepreciseleads.com	PRECISE_LEADS	dmarc8@atomynow.com
+wemythic.com	MYTHIC	david.soliday@wemythic.com
