@@ -430,17 +430,18 @@ def process_inbox_availability(
         state = item.get("warmup_state", "off")
         if state == "warming":
             capacity = 0.0
-        elif state == "ramped":
-            from smartlead.config import WARMUP_HEADROOM, HEADROOM_TOTAL_CAP, WARMUP_ACTIVE_PER_DAY
-            effective_limit = min(inbox_limit + WARMUP_HEADROOM, HEADROOM_TOTAL_CAP)
-            capacity = max(0.0, round(effective_limit - WARMUP_ACTIVE_PER_DAY - total_true_load, 1))
         else:
+            # message_per_day is the CAMPAIGN budget only — warmup draws from its
+            # own separate allowance (warmup_details.max_email_per_day). Proven
+            # live 2026-07-10: inboxes capped at 10 campaign emails/day were
+            # sending 41-43 warmup emails/day, which a shared bucket makes
+            # impossible. So no warmup reservation is subtracted here; doing so
+            # understated real campaign capacity by ~20/day per ramped inbox.
             capacity = max(0.0, round(inbox_limit - total_true_load, 1))
 
-        # Provider-aware cold-send ceiling: the raised warmup bucket must not
-        # become extra COLD capacity. Outlook inboxes were deliberately kept
-        # at 10/day cold (fragile provider) — that intent survives the bucket
-        # raise via this cap, regardless of the raw limit.
+        # Provider-aware cold-send ceiling. Outlook tolerates far less cold
+        # volume than Gmail, so no tool may assign more than these per-day
+        # figures regardless of what the raw Smartlead limit says.
         from smartlead.config import CAMPAIGN_CAP_OUTLOOK, CAMPAIGN_CAP_GMAIL, CAMPAIGN_CAP_DEFAULT
         provider_cap = {"Outlook": CAMPAIGN_CAP_OUTLOOK,
                         "Gmail": CAMPAIGN_CAP_GMAIL}.get(item.get("provider"), CAMPAIGN_CAP_DEFAULT)

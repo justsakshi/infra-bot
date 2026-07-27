@@ -2,6 +2,19 @@
 
 **Date:** 2026-07-09 · **Scope of live changes:** Belardi Wong only (pilot client) · **Shareable:** yes, written for the whole team
 
+> **⚠ CORRECTION (2026-07-10, later the same day):** the shared-bucket premise
+> below is WRONG. Smartlead's API reference says `max_email_per_day` includes
+> warmup, but the live data disproves it: each account carries a SEPARATE
+> `warmup_details.max_email_per_day`, and inboxes capped at 10 campaign
+> emails/day were observed sending 41-43 warmup emails/day. Warmup was never
+> being squeezed. The 15 daily-limit raises were rolled back to their snapshot
+> values (verified per inbox), the headroom job was deleted, and the capacity
+> calculation no longer reserves warmup out of campaign budget. Everything else
+> in this document — warmup profiles, provider cold caps, bounce protection,
+> placement testing — is unaffected.
+
+
+
 ---
 
 ## The one-paragraph version

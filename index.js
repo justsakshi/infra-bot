@@ -1713,22 +1713,13 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
-    // Warmup-headroom fix at 12:15 PM IST daily (before bounce-protect). Ships
-    // DRY-RUN (HEADROOM_FIX_ENABLED=false) — raises max_email_per_day on ACTIVE
-    // inboxes so campaign + warmup share a bucket with actual room in it.
-    cron.schedule('15 12 * * *', () => {
-      console.log(`[CRON] Headroom fix firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['headroom_fix_executor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[headroom] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[headroom] ${d}`));
-      proc.on('close', code => console.log(`[headroom] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    // NOTE: the warmup-headroom job that used to run at 12:15 IST was REMOVED
+    // on 2026-07-10. It raised max_email_per_day to make room for warmup inside
+    // what we believed was one shared daily bucket. That premise was wrong:
+    // warmup has its own separate allowance (warmup_details.max_email_per_day)
+    // — proven live, inboxes capped at 10 campaign emails/day were sending
+    // 41-43 warmup emails/day. The job only ever raised the COLD ceiling for no
+    // benefit, and its 15 live changes were rolled back from the snapshot.
 
     // Bounce auto-protection sweep at 12:30 PM IST daily. Ships DRY-RUN
     // (BOUNCE_PROTECT_ENABLED=false) — logs ACTIVE campaigns missing the

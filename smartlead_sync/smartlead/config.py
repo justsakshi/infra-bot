@@ -251,22 +251,18 @@ CAMPAIGN_CAP_OUTLOOK: int = int(os.getenv("CAMPAIGN_CAP_OUTLOOK", "10"))
 CAMPAIGN_CAP_GMAIL: int = int(os.getenv("CAMPAIGN_CAP_GMAIL", "25"))
 CAMPAIGN_CAP_DEFAULT: int = int(os.getenv("CAMPAIGN_CAP_DEFAULT", "15"))  # SMTP/other
 
-# ── Warmup headroom fix (2026-07-07 finding) ─────────────────────────────────
-# Smartlead's max_email_per_day is ONE shared bucket for warmup + campaign sends
-# (confirmed via their own API docs). Every real inbox we checked caps at <=30,
-# which leaves 0 room for the ACTIVE-state 20/day warmup target -> auto-adjust
-# has nothing to trim from. Fix: on ACTIVE inboxes only, raise max_email_per_day
-# to (current campaign cap + WARMUP_HEADROOM) so warmup has real room to send.
-# DRY-RUN by default: logs would-raise, changes nothing.
-HEADROOM_FIX_ENABLED: bool = os.getenv("HEADROOM_FIX_ENABLED", "false").lower() == "true"
-WARMUP_HEADROOM: int = int(os.getenv("WARMUP_HEADROOM", "20"))  # matches WARMUP_ACTIVE_PER_DAY
-# Hard ceiling on the RESULTING total daily limit. 45 = Avi's stated max
-# (meeting 2026-07-07: "should not go beyond 45") and sits inside Smartlead's
-# own 20-49/day optimal band (88% placement) with margin, instead of riding
-# the 50 boundary. An inbox already at 30 campaign sends gets 45 (not 50);
-# an inbox at 10 still gets the full +20 -> 30.
-HEADROOM_TOTAL_CAP: int = int(os.getenv("HEADROOM_TOTAL_CAP", "45"))
-HEADROOM_FIX_PER_RUN_CAP: int = int(os.getenv("HEADROOM_FIX_PER_RUN_CAP", "50"))
+# ── REMOVED 2026-07-10: warmup "headroom" fix ────────────────────────────────
+# The premise was that max_email_per_day is ONE shared bucket for warmup +
+# campaign sends (Smartlead's API reference does say "including warmup and
+# campaign emails"). That is WRONG — or at least no longer true. Proven live:
+# the account object carries a separate warmup allowance at
+# warmup_details.max_email_per_day, and inboxes whose campaign cap was 10 were
+# sending 41-43 warmup emails/day, which one shared bucket makes impossible.
+# The job therefore only raised the COLD ceiling for no benefit; its 15 live
+# changes were rolled back from the timestamped snapshot and the executor,
+# cron entry, and capacity-side warmup reservation were all removed.
+# Campaign volume is governed by CAMPAIGN_CAP_* below; warmup volume by the
+# WARMUP_*_PER_DAY profiles.
 
 # ── Bounce auto-protection sweep (plan §5.4) ────────────────────────────────
 # DRY-RUN by default: logs which ACTIVE campaigns would get the Smartlead

@@ -2,6 +2,19 @@
 
 **The one thing to land in this call:** Smartlead's daily sending limit is ONE shared pool for campaign emails AND warmup emails. This is Smartlead's design, not our configuration — and it means our inboxes were sending zero warmup whenever they were on campaigns. We fixed it on Belardi Wong yesterday, safely, with receipts.
 
+> **⚠ CORRECTION (2026-07-10, later the same day):** the shared-bucket premise
+> below is WRONG. Smartlead's API reference says `max_email_per_day` includes
+> warmup, but the live data disproves it: each account carries a SEPARATE
+> `warmup_details.max_email_per_day`, and inboxes capped at 10 campaign
+> emails/day were observed sending 41-43 warmup emails/day. Warmup was never
+> being squeezed. The 15 daily-limit raises were rolled back to their snapshot
+> values (verified per inbox), the headroom job was deleted, and the capacity
+> calculation no longer reserves warmup out of campaign budget. Everything else
+> in this document — warmup profiles, provider cold caps, bounce protection,
+> placement testing — is unaffected.
+
+
+
 ---
 
 ## 1. The proof that the pool is shared (Avinash: "that's not how we had configured")
