@@ -281,6 +281,9 @@ BLACKLIST_ZONES: dict[str, str] = {
     "multi.uribl.com": "URIBL",
 }
 BLACKLIST_COLLECTION: str = os.getenv("BLACKLIST_COLLECTION", "blacklist_checks")
+# Smartlead's campaign GET does not return bounce_autopause_threshold, so the
+# only way to know protection is already on is to remember setting it.
+BOUNCE_PROTECT_COLLECTION: str = os.getenv("BOUNCE_PROTECT_COLLECTION", "bounce_protect_applied")
 
 # ── API-key health watchdog (read-only, no enable flag) ─────────────────────
 KEY_HEALTH_COLLECTION: str = os.getenv("KEY_HEALTH_COLLECTION", "key_health_checks")
