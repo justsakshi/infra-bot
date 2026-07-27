@@ -112,6 +112,7 @@ async def main() -> None:
     today = date.today()
     out_rows: list[dict] = []
     all_rows: list[dict] = []
+    broken: list[str] = []
     for acc in discover_accounts():
         try:
             dmap = await _deliverability_map(acc)
@@ -120,6 +121,7 @@ async def main() -> None:
                 demand = await _demand_per_day(c, today)
         except Exception as exc:  # noqa: BLE001
             print(f"  [Capacity] {acc.name} failed: {exc}")
+            broken.append(acc.name)
             continue
         inbox = [r for r in inbox if not is_excluded_inbox(r)]
         for r in inbox:
@@ -138,12 +140,25 @@ async def main() -> None:
     registered = _register_domains(all_rows, today.isoformat())
     print(f"[Capacity] domain registry: {registered} domain(s) on record")
 
+    # The Capacity tab is cleared and rewritten in full, so a client missing
+    # because its fetch broke is indistinguishable from a client that has no
+    # capacity problem. Carry a visible placeholder row instead of dropping it.
+    for client in broken:
+        out_rows.append({
+            "client": client, "status": "UNKNOWN — data fetch failed",
+            "demand_per_day": "?", "safe_capacity": "?", "headroom_pct": "?",
+            "sendable_inboxes": "?", "bench": "?", "bench_target": "?",
+            "churn_per_month": "?", "order_inboxes": "?", "order_domains": "?",
+            "order_by": "check API key / Smartlead availability",
+        })
+
     try:
         writer = SheetsWriter(DEFAULT_SHEET_ID)
         writer.write_capacity(out_rows)
     except Exception as exc:  # noqa: BLE001
         print(f"[Capacity] Sheets write failed: {exc}")
-    print(f"[Capacity] done: {len(out_rows)} client(s).")
+    print(f"[Capacity] done: {len(out_rows) - len(broken)} client(s) planned"
+          + (f", {len(broken)} UNKNOWN (fetch failed): {', '.join(broken)}" if broken else "."))
 
 
 if __name__ == "__main__":

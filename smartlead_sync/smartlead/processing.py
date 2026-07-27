@@ -10,6 +10,21 @@ from smartlead.dns_checker import audit_domain_dns
 
 PAUSED_STALE_DAYS = 7  # paused campaigns older than this are treated as finished
 
+# Above this share of campaign-detail fetch failures, an account's load/capacity
+# numbers are too understated to publish — fail the account instead so the
+# caller keeps the previous known-good data.
+CAMPAIGN_DETAIL_FAILURE_ABORT_PCT = 0.20
+
+
+class AccountFetchError(RuntimeError):
+    """A required fetch for an account failed, so its data is INCOMPLETE.
+
+    Raised instead of returning empty results: callers must be able to tell
+    "this account is broken/blind" from "this account genuinely has nothing",
+    because the two demand opposite responses — the first means keep the last
+    known-good data and alert a human, the second means write the empty state.
+    """
+
 
 def _is_active_status(status: str) -> bool:
     """Return True if status should be treated as active/paused for drill-in."""
@@ -138,11 +153,18 @@ async def fetch_account_data(
     print(f"  [{name}] key={client.masked_key}")
 
     # 1. Campaigns
+    #
+    # A failed fetch must NOT look like "this account has no campaigns".
+    # Returning empty here made a broken account indistinguishable from an idle
+    # one: the daily sync dropped the client from the master sheet (downstream
+    # tools read that as "0 inboxes exist"), and every executor planned "0
+    # changes" for it while printing a reassuring log line. Raise instead — the
+    # callers already catch per-account failures and can salvage/report.
     try:
         all_campaigns = await client.list_campaigns()
     except Exception as exc:
         print(f"  [!] Campaigns fetch failed: {exc}")
-        return [], [], []
+        raise AccountFetchError(f"{name}: campaigns fetch failed: {exc}") from exc
 
     # Split into active vs inactive campaigns
     # Paused campaigns older than PAUSED_STALE_DAYS are treated as finished
@@ -180,15 +202,31 @@ async def fetch_account_data(
         print(f"  [{name}] Fetching details for {len(detail_campaign_summaries)} campaigns...")
         detail_ids = [str(c["id"]) for c in detail_campaign_summaries if c.get("id") is not None]
         detail_campaigns = await client.fetch_all_campaign_details(detail_ids)
+        # Every dropped campaign silently removes its share of load from the
+        # inboxes that send it, so those inboxes look EMPTIER than they are and
+        # can be handed more cold volume. A few misses are tolerable and
+        # reported; a large gap means the numbers are not trustworthy at all.
+        missing = len(detail_ids) - len(detail_campaigns)
+        if missing:
+            pct = missing / len(detail_ids)
+            msg = (f"{missing}/{len(detail_ids)} campaign detail(s) unavailable — "
+                   "inbox load is understated for their senders")
+            if pct > CAMPAIGN_DETAIL_FAILURE_ABORT_PCT:
+                raise AccountFetchError(f"{name}: {msg} ({pct:.0%} of campaigns)")
+            print(f"  [!] [{name}] {msg}")
 
     # 3. All email-account details (bulk)
+    # Same rule as campaigns: a failure here means we cannot see this client's
+    # inboxes at all. Swallowing it to [] previously produced a normal-looking
+    # return with zero inboxes, which slipped past the caller's salvage path
+    # (that only triggers on a raised exception) and erased the client.
     try:
         raw_accounts = await client.list_email_accounts()
         all_accounts = await client.fetch_all_account_details(raw_accounts) if raw_accounts else []
         print(f"  [{name}] {len(all_accounts)}/{len(raw_accounts)} account details fetched")
     except Exception as exc:
         print(f"  [!] Account detail fetch failed: {exc}")
-        all_accounts = []
+        raise AccountFetchError(f"{name}: account detail fetch failed: {exc}") from exc
 
     account_map: dict[str, dict] = {str(a["id"]): a for a in all_accounts}
 

@@ -1638,6 +1638,27 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // API-key health watchdog at 09:45 IST daily — 15 minutes before the sync,
+    // so a rotated/revoked key is reported BEFORE the day's jobs run blind on
+    // it. Read-only, no enable flag. Exit code 2 = dead key, 1 = unreachable.
+    cron.schedule('45 9 * * *', () => {
+      console.log(`[CRON] API-key health check firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['key_health_monitor.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[key-health] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[key-health] ${d}`));
+      proc.on('close', code => {
+        if (code === 2) console.error('[key-health] 🚨 DEAD API KEY(S) — clients are blind until fixed');
+        else if (code === 1) console.warn('[key-health] ⚠ Smartlead unreachable for one or more accounts');
+        else console.log('[key-health] all keys valid');
+      });
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Non-connected (Anjali-style) placement tests: hourly 9:00-21:00 IST at
     // :15. Watches the "NC Tests" sheet tab — a human creates the non-connected
     // test in the PL UI and pastes seed list + Track-ID; this executor sends

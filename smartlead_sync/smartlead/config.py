@@ -286,6 +286,9 @@ BLACKLIST_ZONES: dict[str, str] = {
 }
 BLACKLIST_COLLECTION: str = os.getenv("BLACKLIST_COLLECTION", "blacklist_checks")
 
+# ── API-key health watchdog (read-only, no enable flag) ─────────────────────
+KEY_HEALTH_COLLECTION: str = os.getenv("KEY_HEALTH_COLLECTION", "key_health_checks")
+
 # ── Capacity planner (read-only Monday advisory) ─────────────────────────────
 CAPACITY_TAB_NAME: str = os.getenv("CAPACITY_TAB_NAME", "Capacity")
 CAPACITY_PER_INBOX_CAP: int = int(os.getenv("CAPACITY_PER_INBOX_CAP", "30"))   # sends/day counted per healthy inbox
