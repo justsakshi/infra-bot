@@ -79,9 +79,13 @@ HEALTH_HISTORY_COLLECTION: str = os.getenv("HEALTH_HISTORY_COLLECTION", "inbox_h
 # Health score weights (sum = 100) and thresholds. Tune after seeing real data.
 # Reweighted 2026-07-27 after measuring what these components actually
 # discriminate:
-#   - bounce was 20 points awarded UNCONDITIONALLY (no bounce_rate is collected
-#     anywhere), i.e. a flat 20-point gift that hid real differences. Dropped to
-#     0 until a genuine per-inbox bounce signal exists; re-weight when it does.
+#   - bounce was 20 points awarded UNCONDITIONALLY because nothing populated
+#     bounce_rate. The data existed all along at
+#     /campaigns/{id}/mailbox-statistics (sent_count + sender_bounce_count per
+#     mailbox); it is now aggregated per inbox across every campaign it sends
+#     on, so bounce is a REAL signal again and carries 20 points. Live BW data
+#     on wiring it up: individual inboxes at 6.7% and 10% bounce, far past the
+#     3% auto-pause threshold.
 #   - warmup reputation proved near-useless as a deliverability proxy:
 #     sam@heybelardiwong.com showed 125 warmup sends, 125 inboxed, 100%
 #     reputation, while real seed mail from that same mailbox was spam-foldered
@@ -90,7 +94,11 @@ HEALTH_HISTORY_COLLECTION: str = os.getenv("HEALTH_HISTORY_COLLECTION", "inbox_h
 #   - placement testing is the only ground truth we have, and EmailGuard makes
 #     it cheap enough to run continuously. Raised 40 -> 60.
 # Weights must sum to 100.
-HEALTH_WEIGHTS: dict[str, int] = {"placement": 60, "warmup": 15, "bounce": 0, "connection": 25}
+HEALTH_WEIGHTS: dict[str, int] = {"placement": 45, "warmup": 10, "bounce": 25, "connection": 20}
+# Per-inbox bounce rate at/above this raises a P0. Matches Smartlead's own 3%
+# campaign auto-pause threshold, so the inbox-level alarm and the campaign-level
+# safety net fire on the same number.
+HEALTH_BOUNCE_P0_PCT: float = float(os.getenv("HEALTH_BOUNCE_P0_PCT", "3.0"))
 HEALTH_TEST_STALE_DAYS: int = 14   # test older than this starts decaying placement credit
 HEALTH_TEST_DEAD_DAYS: int = 28    # test older than this treated as untested (neutral)
 HEALTH_WARMUP_FULL: float = 99.0   # rep >= this -> full warmup credit

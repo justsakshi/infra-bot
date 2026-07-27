@@ -245,9 +245,9 @@ async def fetch_account_data(
                 # inside audit_domain_dns and not cached; this catches bugs.)
                 print(f"  [!] DNS check failed for {dom}: {res}")
                 dns_audit_map[dom] = {
-                    "spf_ok": True, "spf_msg": "DNS check errored - status UNKNOWN",
-                    "dkim_ok": True, "dkim_msg": "DNS check errored - status UNKNOWN",
-                    "dmarc_ok": True, "dmarc_msg": "DNS check errored - status UNKNOWN",
+                    "spf_ok": None, "spf_msg": "DNS check errored - status UNKNOWN",
+                    "dkim_ok": None, "dkim_msg": "DNS check errored - status UNKNOWN",
+                    "dmarc_ok": None, "dmarc_msg": "DNS check errored - status UNKNOWN",
                 }
             else:
                 dns_audit_map[dom] = res
@@ -263,6 +263,34 @@ async def fetch_account_data(
 
     # 3b. Analytics for every detail campaign (fetched once, concurrently)
     analytics_map = await client.fetch_campaign_analytics_map(detail_ids)
+
+    # 3c. PER-INBOX bounce rate, aggregated across every campaign the mailbox
+    # sends on. Smartlead exposes this at /campaigns/{id}/mailbox-statistics
+    # (sent_count + bounce_count per from_email) — the health score previously
+    # awarded full bounce credit to everyone because nothing ever populated
+    # this field, even though the data was one call away and already used by
+    # the reply monitor. Bounce rate is the single most direct cause of domain
+    # damage, so it must be a real signal rather than a constant.
+    bounce_by_email: dict[str, dict[str, int]] = {}
+    for cid_ in detail_ids:
+        try:
+            for row in await client.get_campaign_mailbox_statistics(cid_):
+                em = str(row.get("from_email", "")).strip().lower()
+                if not em:
+                    continue
+                agg = bounce_by_email.setdefault(em, {"sent": 0, "bounced": 0})
+                agg["sent"] += int(row.get("sent_count") or 0)
+                # sender_bounce_count counts bounces attributed to THIS mailbox;
+                # bounce_count is the campaign-level figure on the same row.
+                agg["bounced"] += int(row.get("sender_bounce_count")
+                                      or row.get("bounce_count") or 0)
+        except Exception as exc:  # noqa: BLE001 - one campaign must not kill the sync
+            print(f"  [!] [{name}] mailbox stats for campaign {cid_} failed: {exc}")
+    if bounce_by_email:
+        total_sent = sum(v["sent"] for v in bounce_by_email.values())
+        total_b = sum(v["bounced"] for v in bounce_by_email.values())
+        print(f"  [{name}] bounce data for {len(bounce_by_email)} mailbox(es): "
+              f"{total_b}/{total_sent} = {100*total_b/total_sent if total_sent else 0:.2f}% fleet bounce")
 
     # 4a. Build FULL campaign summary (all campaigns - active get analytics, inactive get basic info)
     campaign_summary: list[dict] = []
@@ -344,6 +372,7 @@ async def fetch_account_data(
             row = _build_inbox_row(
                 full, email, c_name, c_status, stats, deliverability_map,
                 dns_audit_map=dns_audit_map, client=name,
+                bounce_stats=bounce_by_email.get(email.strip().lower()),
             )
             # PL is an agency account: attribute the row to its real client
             # (Melior/Bettrdata/OSC) via the campaign's Smartlead client_id
@@ -507,6 +536,7 @@ def _build_inbox_row(
     deliverability_map: dict[str, dict],
     dns_audit_map: dict[str, dict] = None,
     client: str = "",
+    bounce_stats: dict[str, int] | None = None,
 ) -> dict:
     email_key = email.strip().lower()
     domain = get_domain_from_email(email)
@@ -537,10 +567,22 @@ def _build_inbox_row(
         "dmarc_ok": None, "dmarc_msg": "DNS audit did not run for this domain",
     }
 
+    # Bounce rate over this mailbox's whole campaign history. Left as None (not
+    # 0) when the mailbox has never sent — "no bounces yet" and "no data" score
+    # differently, and pretending an unsent inbox is proven-clean is exactly the
+    # fail-open that made this component worthless before.
+    bounce_rate = None
+    if bounce_stats and int(bounce_stats.get("sent") or 0) > 0:
+        bounce_rate = round(100.0 * int(bounce_stats.get("bounced") or 0)
+                            / int(bounce_stats["sent"]), 2)
+
     return {
         "email": email,
         "name": account.get("from_name", ""),
         "provider": detect_provider(account.get("type", "")),
+        "bounce_rate": bounce_rate,
+        "bounce_sent": (bounce_stats or {}).get("sent", 0),
+        "bounce_count": (bounce_stats or {}).get("bounced", 0),
         "campaign_name": campaign_name,
         "campaign_status": campaign_status,
         "daily_limit": format_daily_limit(account),

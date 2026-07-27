@@ -7,7 +7,7 @@ from smartlead.config import (
     HEALTH_WEIGHTS, HEALTH_TEST_STALE_DAYS, HEALTH_TEST_DEAD_DAYS,
     HEALTH_WARMUP_FULL, HEALTH_WARMUP_ZERO, HEALTH_TREND_DROP,
     HEALTH_SPAM_FLAG_ENABLED, HEALTH_SPAM_COUNT_THRESHOLD,
-    VOLUME_SAFE_MAX,
+    HEALTH_BOUNCE_P0_PCT, VOLUME_SAFE_MAX,
 )
 
 _FAIL = {"fail", "spam"}
@@ -67,16 +67,23 @@ def _warmup_points(snapshot: dict) -> int:
 
 
 def _bounce_points(snapshot: dict) -> int:
-    """20 max. Bounce is campaign-level; inbox rows lack it -> do not penalize.
-    If a bounce rate is present (%), <1%=full, >5%=0, linear between."""
+    """Per-inbox bounce rate, aggregated across every campaign the mailbox sends
+    on (populated in processing.py from /campaigns/{id}/mailbox-statistics).
+
+    Scale: <1% full credit, >=5% zero, linear between. 3% is Smartlead's
+    auto-pause threshold, so an inbox at or above it lands near half credit.
+
+    A mailbox that has never sent gets NEUTRAL credit, not full — unproven is
+    not the same as clean. Awarding full marks for absent data is what made
+    this component meaningless before."""
     maxp = HEALTH_WEIGHTS["bounce"]
     raw = snapshot.get("bounce_rate")
     if raw in (None, ""):
-        return maxp  # no per-inbox bounce signal -> do not penalize
+        return maxp // 2  # no sending history yet -> neutral, not a free pass
     br = _num(raw)
     if br < 1.0:
         return maxp
-    if br > 5.0:
+    if br >= 5.0:
         return 0
     frac = 1 - (br - 1.0) / 4.0
     return round(frac * maxp)
@@ -123,6 +130,13 @@ def compute_health_score(snapshot: dict, today: date) -> dict:
     # components.
     if not snapshot.get("connection_ok", True):
         score = min(score, 25)
+    # Likewise, an inbox bouncing at or above the auto-pause threshold is
+    # actively damaging its domain with every send. It must not grade as
+    # healthy just because its other components are strong — the grade is what
+    # people scan, and a "B" next to a P0 alarm teaches them to ignore both.
+    bounce = snapshot.get("bounce_rate")
+    if bounce not in (None, "") and _num(bounce) >= HEALTH_BOUNCE_P0_PCT:
+        score = min(score, 45)
     return {"score": score, "grade": _grade(score), "drivers": drivers}
 
 
@@ -142,6 +156,19 @@ def resolve_action(snapshot: dict, score: int) -> dict:
         return item("P0", "Landing in spam during warmup",
                     "Pause inbox; audit copy + auth (SPF/DKIM/DMARC); check Google Postmaster complaint rate; retest.",
                     "1-7 days", "human", "deliverability-incident-response")
+
+    # High bounce is the fastest way to burn a domain, and unlike a failed
+    # placement test it is actively damaging reputation with every send. Above
+    # Smartlead's own 3% auto-pause threshold this outranks everything except
+    # live spam landings.
+    bounce = snapshot.get("bounce_rate")
+    if bounce not in (None, "") and _num(bounce) >= HEALTH_BOUNCE_P0_PCT:
+        sent = int(_num(snapshot.get("bounce_sent", 0)))
+        return item("P0", f"High bounce rate ({_num(bounce):.1f}% of {sent} sent)",
+                    "Stop this inbox's campaigns and clean the lead list before sending again — "
+                    "bounces at this level damage domain reputation with every send. "
+                    "Verify the list source, then resume at low volume.",
+                    "1-2 days", "human", "deliverability-incident-response")
 
     if "failed_test" in reasons or status in _FAIL:
         return item("P0", "Failed placement test",
