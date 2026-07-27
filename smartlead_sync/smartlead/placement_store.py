@@ -52,8 +52,11 @@ class PlacementStore:
             out.update(t.get("emails", []))
         return out
 
-    def record_created(self, test_id: int, client: str, campaign_id: int, emails: list[str],
+    def record_created(self, test_id, client: str, campaign_id, emails: list[str],
                        warmup_off_ids: list[str] | None = None) -> None:
+        # test_id is an int for Smartlead SmartDelivery tests and a uuid string
+        # for EmailGuard tests — both are stored as-is and disambiguated by the
+        # `source` tag (see tag_source).
         if self._tests is None:
             return
         try:
@@ -84,6 +87,21 @@ class PlacementStore:
         except PyMongoError as exc:
             print(f"  [Retest] stale_tests failed: {exc}")
             return []
+
+    def tag_source(self, test_id, source: str, eg_uuid: str = "") -> None:
+        """Mark which system owns a test. Smartlead and EmailGuard tests live in
+        the same collection but are polled by different executors against
+        different APIs — without this tag each would try to poll the other's
+        ids and log a stream of failures."""
+        if self._tests is None:
+            return
+        try:
+            fields = {"source": source}
+            if eg_uuid:
+                fields["eg_uuid"] = eg_uuid
+            self._tests.update_one({"test_id": test_id}, {"$set": fields})
+        except PyMongoError as exc:
+            print(f"  [Retest] tag_source failed: {exc}")
 
     def mark_abandoned(self, test_id: int) -> None:
         if self._tests is None:

@@ -285,6 +285,20 @@ BLACKLIST_COLLECTION: str = os.getenv("BLACKLIST_COLLECTION", "blacklist_checks"
 # ── API-key health watchdog (read-only, no enable flag) ─────────────────────
 KEY_HEALTH_COLLECTION: str = os.getenv("KEY_HEALTH_COLLECTION", "key_health_checks")
 
+# ── EmailGuard placement testing (credit-free alternative to SmartDelivery) ──
+# Placement truth is 40% of every inbox's health score, but Smartlead bills
+# tests per account, so most inboxes carried stale or missing results.
+# EmailGuard bills against a workspace-level quota and exposes the whole loop
+# over an API, so testing runs unattended for every client from one pool.
+# DRY-RUN by default: selects and logs targets, creates nothing.
+EG_TEST_ENABLED: bool = os.getenv("EG_TEST_ENABLED", "false").lower() == "true"
+EG_PER_RUN_CAP: int = int(os.getenv("EG_PER_RUN_CAP", "2"))
+# Never spend the workspace down to zero — leave credits for a human to run an
+# urgent ad-hoc test during an incident.
+EG_MIN_QUOTA_RESERVE: int = int(os.getenv("EG_MIN_QUOTA_RESERVE", "1"))
+# Smartlead rejects a campaign schedule with min_time_btw_emails < 3.
+EG_SEND_GAP_MINUTES: int = int(os.getenv("EG_SEND_GAP_MINUTES", "3"))
+
 # ── Capacity planner (read-only Monday advisory) ─────────────────────────────
 CAPACITY_TAB_NAME: str = os.getenv("CAPACITY_TAB_NAME", "Capacity")
 CAPACITY_PER_INBOX_CAP: int = int(os.getenv("CAPACITY_PER_INBOX_CAP", "30"))   # sends/day counted per healthy inbox

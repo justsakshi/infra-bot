@@ -80,6 +80,10 @@ async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) ->
 
     completed = 0
     for t in store.pending_tests():
+        # EmailGuard tests live in the same collection but are polled by
+        # eg_test_executor against a different API — skip them here.
+        if t.get("source") == "emailguard":
+            continue
         client = t.get("client", "")
         api_key = key_by_client.get(client)
         if not api_key:
