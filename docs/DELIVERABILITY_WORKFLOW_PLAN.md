@@ -34,12 +34,31 @@ simply stop. Belardi Wong has **321 leads mid-sequence** today; pulling their se
 
 This changes the design substantially — rotation IS possible without losing leads or breaking threads.
 
-**The catch: it is UI-only.** Support stated "Reallocation through the campaign UI is the supported way," and
-we verified this against the API — there is no reallocate endpoint, and the lead-update endpoint explicitly
-rejects `email_account_id` ("not allowed"). The `resume` endpoint does not reassign senders either.
+**The catch: it is UI-only, confirmed explicitly by Smartlead support (2026-07-28):**
 
-**Design consequence:** rotation is a human action, not an automated one. The system's job is to detect, decide,
-and tell a human exactly which mailbox to reallocate to which — not to perform the swap.
+> "Currently, mailbox reallocation is only available through the Smartlead UI. There is no supported API
+> endpoint available to perform lead reallocation or move leads from one sender mailbox to another
+> programmatically... There is no supported API alternative to achieve the same behavior without using the UI
+> flow."
+
+We had already verified this independently: no reallocate endpoint exists, and `POST /campaigns/{id}/leads/{id}`
+explicitly rejects `email_account_id` with "not allowed". Support also confirmed the `resume` endpoint performs
+no sender reassignment. They noted the use case is valid and "can be considered for future improvements", so
+this may change, but we must design for manual today.
+
+**One useful detail they confirmed:** for leads already waiting between sequence steps, "the existing sequence
+timing will continue after reallocation and will not restart from the beginning." So reallocation is genuinely
+lossless — thread, sequence position, and timing all survive.
+
+**The supported swap procedure (manual, 3 steps):**
+1. Remove/disconnect the old mailbox from the campaign
+2. Add the replacement mailbox to the campaign
+3. Campaign menu (three dots) → Reallocate Mailboxes → map old sender → new sender
+
+**Design consequence — this is the hinge of the whole workflow.** Rotation cannot be automated end to end. The
+bot detects, decides, and hands a human a precise instruction; the human performs a 3-step UI action. Every
+build item below is shaped by that constraint: the goal is to make the human step rare, fast, and unambiguous,
+not to eliminate it.
 
 ---
 
@@ -208,6 +227,33 @@ success but bad deliverability guarantees failure." That matches what our bounce
 | 4 | **Slack swap instruction** — names the dead mailbox, the recommended bench replacement, and the campaign, with the Reallocate Mailboxes steps inline | Reallocation is UI-only, so the bot's job is to make the human step instant and unambiguous rather than to automate it | #2, #3 |
 | 5 | **Open-tracking guard** — flag any campaign with tracking on and no custom tracking domain | Cheap, and it is already a stated rule being violated | none |
 | 6 | **Cohort-aware campaign builder** | The real rotation mechanism; largest build, needs #1-4 proven first | all above |
+
+---
+
+## 5b. The swap alert — exact shape
+
+Because the human does the swap, the alert has to carry everything needed to act without investigation. Target:
+under 60 seconds from reading to done.
+
+```
+🔴 SWAP NEEDED — Belardi Wong
+
+Dead:        sam@reachbw.com  (0/8 inbox, 2 consecutive failed tests)
+Campaign:    BW Webinar - August 13, 2026   (4 steps, 162 leads mid-sequence)
+Replace with: sam@teambelardiwong.com
+             (bench, last tested 2026-07-20: 8/8 inbox, warmup 100%, 0% bounce)
+
+Do this:
+1. Campaign → Email Accounts → remove sam@reachbw.com
+2. Add sam@teambelardiwong.com
+3. Three dots → Reallocate Mailboxes → sam@reachbw.com → sam@teambelardiwong.com
+
+Threads and sequence timing are preserved. 162 leads will resume on the new sender.
+[ Mark done ]  [ Not now ]
+```
+
+Everything in that message comes from data we already collect. The only thing missing today is the bench
+recommendation, which needs bench domains to have been tested (build item #3).
 
 ---
 
