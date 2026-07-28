@@ -46,9 +46,32 @@ explicitly rejects `email_account_id` with "not allowed". Support also confirmed
 no sender reassignment. They noted the use case is valid and "can be considered for future improvements", so
 this may change, but we must design for manual today.
 
-**One useful detail they confirmed:** for leads already waiting between sequence steps, "the existing sequence
-timing will continue after reallocation and will not restart from the beginning." So reallocation is genuinely
-lossless — thread, sequence position, and timing all survive.
+**What reallocation actually preserves — walked back on follow-up (2026-07-28):**
+
+Their first reply said reallocation "maintains the existing email thread." Pressed on what the recipient sees,
+they narrowed it considerably:
+
+> "The conversation continuity is maintained **from the campaign perspective**, meaning the lead remains in the
+> same sequence and the follow-up step continues as expected. However, the sender address will reflect the new
+> mailbox after reallocation... For the exact Gmail/Outlook conversation view behavior, it can vary depending on
+> how the recipient's email provider handles conversation grouping, as this is controlled by Gmail/Outlook
+> rather than Smartlead."
+
+They did **not** answer whether the follow-up carries the original `In-Reply-To` / `References` headers, or
+whether quoted history is included — both of which are entirely within Smartlead's control and are what actually
+determine threading. Deflecting to "Gmail decides" is only true once correct headers are sent.
+
+**So the honest position:**
+- ✅ Sequence position preserved — no restart from Email 1
+- ✅ Sequence timing preserved — leads mid-wait keep their existing schedule
+- ✅ Follow-ups resume, from the new mailbox's From address
+- ❓ **Header-level threading: UNCONFIRMED.** May appear as a new message from a different person.
+- ⚠️ **Reply-tracking gap they did confirm:** "if the lead replies to the old sender mailbox it may not be
+  tracked." A prospect replying to an earlier email in the chain can be silently lost.
+
+**This must be settled by test, not by support.** Run a 2-step campaign to a seed address we control, reallocate
+after Email 1, and inspect Email 2's raw headers in the receiving inbox. One hour of work; it decides whether
+replacement is cheap or carries a real prospect-experience cost.
 
 **The supported swap procedure (manual, 3 steps):**
 1. Remove/disconnect the old mailbox from the campaign
@@ -248,7 +271,9 @@ Do this:
 2. Add sam@teambelardiwong.com
 3. Three dots → Reallocate Mailboxes → sam@reachbw.com → sam@teambelardiwong.com
 
-Threads and sequence timing are preserved. 162 leads will resume on the new sender.
+Sequence position and timing are preserved. 162 leads resume on the new sender.
+Note: follow-ups will come from a different address; replies sent to the old
+mailbox may not be tracked.
 [ Mark done ]  [ Not now ]
 ```
 
