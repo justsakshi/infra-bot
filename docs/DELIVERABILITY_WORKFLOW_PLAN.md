@@ -16,12 +16,30 @@ Verified two ways:
   ([article 101](https://helpcenter.smartlead.ai/en/articles/101-what-happens-to-the-sequence-if-we-assign-an-email-address-and-then-remove-that-email-address-from-the-campaign),
   [article 102](https://helpcenter.smartlead.ai/en/articles/102-what-happens-if-i-disconnectremove-a-mailbox-mid-campaign))
 
-**Consequence: weekly in/out rotation of inboxes is incompatible with multi-step sequences on Smartlead.**
-There is no "hand this lead's follow-ups to a different mailbox" operation. Right now Belardi Wong alone has
-**321 leads mid-sequence** across 4 active campaigns. Pulling their senders would strand all 321 silently —
-no error, no alert, they simply stop receiving follow-ups.
+**CONFIRMED BY SMARTLEAD SUPPORT (2026-07-28)** — their exact answer:
 
-This is why the naive rotation design has to be replaced, not tuned.
+> "When a sender mailbox picks up a lead from a campaign with multiple steps, the sender mailbox remains
+> assigned to that lead for the entire sequence... If Mailbox A is removed from the campaign after sending the
+> first email, the remaining follow-ups will not be sent. The lead will not automatically switch to another
+> mailbox."
+
+So removing a mailbox does **not** cause follow-ups to fire from a different sender on a broken thread. They
+simply stop. Belardi Wong has **321 leads mid-sequence** today; pulling their senders would freeze all 321.
+
+**BUT there is a supported way through, which we did not know about:** the campaign menu has a
+**"Reallocate Mailboxes"** function (three dots → Reallocate Mailboxes). Per support:
+
+> "The affected leads will be assigned to the new mailbox. The remaining follow-up emails will continue in the
+> same existing email thread. The sequence will not restart from Email 1."
+
+This changes the design substantially — rotation IS possible without losing leads or breaking threads.
+
+**The catch: it is UI-only.** Support stated "Reallocation through the campaign UI is the supported way," and
+we verified this against the API — there is no reallocate endpoint, and the lead-update endpoint explicitly
+rejects `email_account_id` ("not allowed"). The `resume` endpoint does not reassign senders either.
+
+**Design consequence:** rotation is a human action, not an automated one. The system's job is to detect, decide,
+and tell a human exactly which mailbox to reallocate to which — not to perform the swap.
 
 ---
 
@@ -126,10 +144,15 @@ from vendor blogs with no published methodology.
 3. **Shorter sequences shrink the exposure window.** Spam-complaint rate roughly triples by follow-up #4, and
    58% of replies come from email 1. Moving from 4 steps to 2-3 both improves deliverability and makes cohort
    rotation land more often. Our BW campaigns are at 4 steps.
-4. **Emergency removal is the one exception.** If a domain is confirmed dead, pull it immediately and accept the
-   stranding — but resume those leads onto a persona-matched sender so they are not silently abandoned. The
-   existing rotation executor already implements this (`resume_lead` on stranded leads); it stays OFF by default
-   and behind the Slack approve-button Avinash asked for.
+4. **Emergency swap uses Reallocate Mailboxes, and it is a human step.** If a domain is confirmed dead, the
+   sequence is: add the replacement mailbox to the campaign → remove the dead one → three dots → Reallocate
+   Mailboxes → map old sender to new. Threads and sequence position survive. Because there is no API for it,
+   the bot cannot do this. What the bot CAN do is post a Slack message naming the dead mailbox, the recommended
+   replacement from the bench pool, and the affected campaign, so the human action is one click and no thinking.
+
+   Note: the existing `resume_lead` path in our rotation executor does **not** reassign senders (support
+   confirmed the resume endpoint has no reassignment behaviour). That code should be re-pointed at the
+   reallocation instruction flow rather than attempting an automated fix that does not work.
 
 ---
 
@@ -182,7 +205,7 @@ success but bad deliverability guarantees failure." That matches what our bounce
 | 1 | **Per-domain placement test scheduler** on the tiered cadence in §4 | Detection is the whole workflow's input; everything else is guesswork without it | EmailGuard paid plan |
 | 2 | **Two-strike retirement rule** + Slack alert naming the domain and its replacement | Turns detection into a decision; single tests are too noisy to act on | #1 |
 | 3 | **Bench health tracking** — test spares before they are needed | A never-tested spare is not a spare | #1 |
-| 4 | **Slack approve-button swap** (Avinash approved this design) | Makes replacement one click instead of a manual multi-step job | #2, #3 |
+| 4 | **Slack swap instruction** — names the dead mailbox, the recommended bench replacement, and the campaign, with the Reallocate Mailboxes steps inline | Reallocation is UI-only, so the bot's job is to make the human step instant and unambiguous rather than to automate it | #2, #3 |
 | 5 | **Open-tracking guard** — flag any campaign with tracking on and no custom tracking domain | Cheap, and it is already a stated rule being violated | none |
 | 6 | **Cohort-aware campaign builder** | The real rotation mechanism; largest build, needs #1-4 proven first | all above |
 
