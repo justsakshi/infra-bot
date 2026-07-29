@@ -117,8 +117,20 @@ The fix is tracking **spam-complaint rate per domain over time**, and alerting w
 
 **Good news on #1:** the automated testing system already exists and has been proven end to end — it creates
 tests, polls for results, writes them to the database and the sheet, and feeds the campaign tool. It has been
-switched off only because credits existed on one account. Once every client has Smart Delivery, it is a
-configuration change rather than a build.
+switched off only for lack of credits. Once every client has Smart Delivery, it is a configuration change rather
+than a build.
+
+### Credit status, checked live 2026-07-29
+
+| Account | Smart Delivery credits | Evidence |
+|---|---|---|
+| Belardi Wong | **None** | Test creation rejected: "Insufficient sequence credits". No test since 1 April |
+| DARLEAN | **Yes** | Test created successfully today |
+| MYTHIC | **Yes** | Test created successfully today |
+| PRECISE_LEADS | **Exhausted** | Creation rejected. Had ~90 credits three weeks ago, spent by the team |
+
+**So the purchase covers Belardi Wong and Precise Leads.** Darlean and Mythic can start automated testing
+immediately — no purchase, no build, just switching the job on for those two accounts.
 
 ### Testing cadence
 
