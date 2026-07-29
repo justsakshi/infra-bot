@@ -97,7 +97,15 @@ async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) ->
             except SmartDeliveryError as exc:
                 print(f"  [Retest] poll/report failed for {t['test_id']}: {exc}")
                 continue
-        status = "inbox" if rep["inbox_pct"] >= RETEST_INBOX_THRESHOLD else "fail"
+        # Judge on the WORST provider, not the blend. A domain at 100% Google /
+        # 0% Microsoft averages to 50% and would otherwise be scored the same as
+        # one that is uniformly mediocre — they need opposite responses.
+        judged_pct = rep.get("worst_provider_inbox_pct", rep["inbox_pct"])
+        status = "inbox" if judged_pct >= RETEST_INBOX_THRESHOLD else "fail"
+        if rep.get("by_provider"):
+            detail = " · ".join(f"{p}: {v['inbox_pct']:.0f}% inbox"
+                                for p, v in sorted(rep["by_provider"].items()))
+            print(f"  [Retest] test {t['test_id']} per-provider -> {detail}")
         today = date.today().strftime("%Y-%m-%d")
         for email in t.get("emails", []):
             store.save_result(email, _domain(email), status, today, "api")
