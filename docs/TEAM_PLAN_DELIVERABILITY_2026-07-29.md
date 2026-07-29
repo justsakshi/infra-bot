@@ -146,13 +146,19 @@ Build #0 settles this by testing it ourselves.
 
 ## 6. Outside services, and what each is actually for
 
-| Service | What it does for us | Verdict |
-|---|---|---|
-| **Smartlead** | Sends everything; where campaigns and mailboxes live | Core, no change |
-| **Zapmail** | Sells and hosts our domains and mailboxes; controls our DNS | Core, but the source of the fingerprinting problem |
-| **EmailGuard** | Placement testing split by provider; DMARC reports | Worth buying for testing only — see below |
-| **Google Postmaster Tools** | Free. Google's own view of our spam-complaint rate | Yes, but needs DNS changes from Zapmail |
-| **Microsoft SNDS / JMRP** | Would give the Microsoft equivalent | **Not available to us**, we do not own our IPs |
+| Service | What it does for us | Can we automate it? | Verdict |
+|---|---|---|---|
+| **Smartlead** | Sends everything; where campaigns and mailboxes live | Partly — mailbox swaps are **UI-only** | Core, no change |
+| **Zapmail** | Sells and hosts our domains and mailboxes; controls our DNS | **No** — placement tests are dashboard-only, no health API | Core, but the source of the fingerprinting problem |
+| **EmailGuard** | Placement testing split by provider; DMARC reports | **Yes** — full API on every plan | Worth buying for testing only — see below |
+| **Google Postmaster Tools** | Free. Google's own view of our spam-complaint rate | Yes, once domains are verified | Yes, but needs DNS changes from Zapmail |
+| **Microsoft SNDS / JMRP** | Would give the Microsoft equivalent | — | **Not available to us**, we do not own our IPs |
+| **Aerosend** | Alternative domain/mailbox supplier | Provisioning API only, no deliverability data | Worth a 2-domain test to break the fingerprint |
+
+**A pattern worth naming:** almost every deliverability capability our vendors offer is **UI-only** — Smartlead's
+mailbox reallocation, Zapmail's placement tests, EmailGuard's non-connected testing mode. Confirmed with each of
+them directly. That means the automation has to live in our own system, with vendors used as data sources where
+they allow it. It also means any workflow we design must assume a human performs the final action.
 
 ### On EmailGuard specifically
 
