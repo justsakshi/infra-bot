@@ -103,17 +103,22 @@ The fix is tracking **spam-complaint rate per domain over time**, and alerting w
 
 ### Build order
 
-| # | What | Why here |
-|---|---|---|
-| **0** | **One-hour test**: what does a prospect see when we move them to a new mailbox mid-sequence? | Everything about replacing domains depends on this |
-| **1** | **Automatic placement testing per domain**, on a schedule | Every decision downstream needs trustworthy detection |
-| **1b** | **Spam-complaint trend tracking** via Google Postmaster Tools | The early warning we are missing |
-| **2** | **Two-strike rule** — retire only after two consecutive failures | One test is too noisy, as 9 July proved |
-| **3** | **Test our 390 spare mailboxes** before we need them | An untested spare is a guess, not a spare |
-| **4** | **Slack alert naming exactly what to swap** | Replacement is manual — make it a 60-second job |
-| **5** | **Guardrails** — no open tracking without a custom domain, link rules | Cheap, and rules we already agreed but do not enforce |
-| **6** | **Rotate at batch boundaries, control volume continuously** | The real long-term rotation mechanism |
-| **7** | **Break the pattern on the next domain batch** | Different suppliers, staggered dates, no obvious naming |
+| # | What | Status | Why here |
+|---|---|---|---|
+| **0** | **One-hour test**: what does a prospect see when we move them to a new mailbox mid-sequence? | Not started | Everything about replacing domains depends on this |
+| **1** | **Automatic placement testing per domain** on a schedule, via Smart Delivery | **Code already built** (`retest_executor`) — needs credits on all 4 accounts, then switch on | Every decision downstream needs trustworthy detection |
+| **1b** | **Spam-complaint trend tracking** via Google Postmaster Tools | Blocked on Zapmail DNS | The early warning we are missing |
+| **2** | **Two-strike rule** — retire only after two consecutive failures | To build | One test is too noisy, as 9 July proved |
+| **3** | **Test our 390 spare mailboxes** before we need them | To build | An untested spare is a guess, not a spare |
+| **4** | **Slack alert naming exactly what to swap** | To build | Replacement is manual — make it a 60-second job |
+| **5** | **Guardrails** — no open tracking without a custom domain, link rules | To build | Cheap, and rules we already agreed but do not enforce |
+| **6** | **Rotate at batch boundaries, control volume continuously** | To build | The real long-term rotation mechanism |
+| **7** | **Break the pattern on the next domain batch** | Provisioning policy | Different suppliers, staggered dates, no obvious naming |
+
+**Good news on #1:** the automated testing system already exists and has been proven end to end — it creates
+tests, polls for results, writes them to the database and the sheet, and feeds the campaign tool. It has been
+switched off only because credits existed on one account. Once every client has Smart Delivery, it is a
+configuration change rather than a build.
 
 ### Testing cadence
 
@@ -159,31 +164,42 @@ domains that are actually dead, we do not rotate on a schedule for its own sake.
 
 | Service | What it does for us | Can we automate it? | Verdict |
 |---|---|---|---|
-| **Smartlead** | Sends everything; campaigns and mailboxes live here | Partly — swaps are **UI-only** | Core, no change |
+| **Smartlead** | Sends everything; campaigns and mailboxes live here. **Smart Delivery is now our testing layer** | Testing **yes**; mailbox swaps are **UI-only** | Core. Every client gets Smart Delivery credits |
 | **Zapmail** | Sells and hosts domains and mailboxes; controls our DNS | **No** — tests are dashboard-only, no health API | Core, but the source of the fingerprint problem |
-| **EmailGuard** | Placement testing split by provider; DMARC reports | **Yes** — full API on every plan | Worth buying, for testing only |
 | **Google Postmaster** | Free. Google's own view of our complaint rate | Yes, once domains are verified | Yes — needs DNS work from Zapmail |
 | **Microsoft SNDS / JMRP** | Would be the Microsoft equivalent | — | **Not available**, we do not own our IPs |
-| **Aerosend** | Alternative domain/mailbox supplier | Provisioning only, no deliverability data | Worth a 2-domain test |
+| **EmailGuard** | Placement testing; DMARC reports | Yes, full API | **Not proceeding** — see below |
+| **Aerosend** | Alternative domain/mailbox supplier | Provisioning only, no deliverability data | Worth a 2-domain test to break the fingerprint |
 
-**A pattern worth naming:** nearly every deliverability capability our vendors offer is **UI-only** — Smartlead's
-reallocation, Zapmail's placement tests, EmailGuard's non-connected mode. Confirmed with each directly. The
-automation has to live in our own system, with vendors as data sources where permitted.
+### Decision: Smart Delivery, not EmailGuard
 
-### On EmailGuard specifically
+**Every client is being moved onto Smartlead Smart Delivery**, so testing happens where the sending already
+happens. That removes the reason we were considering EmailGuard: its one real advantage was per-provider testing
+without per-account credits, and once every account has credits that advantage disappears.
 
-We trialled it, and it found the Microsoft problem. But several features we hoped for do not apply:
+For the record, the rest of EmailGuard did not apply to us:
+- **Domain masking** turned out to mean making a domain display a website in a browser — nothing to do with spam
+  placement, and it was one of the two features we were most interested in
+- **Spamhaus Intelligence** returns a score, not a reason, so it cannot explain *why* Microsoft rejects us
+- **Contact verification** duplicates what we already do
 
-- **Domain masking** turned out to mean making a domain display a website in a browser. Nothing to do with spam
-  placement — and it was one of the two features we were most interested in.
-- **Spamhaus Intelligence** returns a score, not a reason. It will not explain *why* Microsoft rejects us.
-- **Contact verification** duplicates what we already do.
+The trial still earned its keep: it produced the four-domain finding that overturned our retirement list.
 
-**What is genuinely worth paying for is placement testing split by provider.** No other tool we have separates
-Google from Microsoft, and that split produced every useful finding this week. At $49/month it covers 25 domains
-and we have 175, so this is a per-client purchase.
+### A fix this decision forced, already shipped
 
-Before committing, compare it against Smartlead's own Smart Delivery on the same domains — Anjali has that data.
+Smart Delivery reports results per provider, but our code was **averaging them into one number**. Checking a real
+past test proved how dangerous that is: a test that reads **54% inbox blended** is actually **0% at G Suite and
+100% at Office365**. A domain that reaches one provider and not the other is half-dead, not mediocre — and the
+two need opposite responses.
+
+The parser now records every provider separately and **judges pass/fail on the worst one**. Interesting detail:
+that Smart Delivery test failed at Google while our EmailGuard test on the same domain failed at Microsoft, which
+tells us different seed lists probe different things — another reason to keep the breakdown rather than a single
+score.
+
+**A pattern worth naming:** nearly every deliverability capability our vendors sell is **UI-only** — Smartlead's
+mailbox reallocation, Zapmail's placement tests, EmailGuard's non-connected mode. Confirmed with each directly.
+The automation has to live in our own system, with vendors as data sources where permitted.
 
 ---
 
@@ -196,9 +212,10 @@ Before committing, compare it against Smartlead's own Smart Delivery on the same
 
 **Zapmail — the open disagreement:**
 They ran their own placement test and reported our Microsoft mailboxes as fine. **We measured the opposite on the
-same domains the same day.** They have asked us to test repeatedly over several days rather than rely on one
-snapshot, and offered to investigate if the pattern holds. That is a fair offer and we should take it — it costs
-about 12 placement tests.
+same domains the same day.** They asked us to test repeatedly over several days rather than rely on one snapshot,
+and offered to investigate if the pattern holds. That is a fair request, and **moving every client onto Smart
+Delivery resolves it for free** — we can run those four domains daily on our own credits and send them the
+series. Until that is done we should not pause those mailboxes on the strength of one disputed test.
 
 **Zapmail — DNS work the build depends on:**
 - Point DMARC reports at an address we can read. Every domain currently sends them to mailboxes that do not
@@ -209,8 +226,9 @@ about 12 placement tests.
 asking whether it extends to Belardi Wong and Mythic.
 
 **Internal decisions needed:**
-1. Approve EmailGuard, or decide Smart Delivery is sufficient
-2. Stop sending from reachbw.com and bwdirectmail.com? (6 mailboxes, confirmed zero placement)
+1. ~~Approve EmailGuard~~ — **decided: Smart Delivery on every client instead**
+2. Stop sending from reachbw.com and bwdirectmail.com? (6 mailboxes, confirmed zero placement — hold until the
+   repeat tests settle the Zapmail disagreement)
 3. Confirm new domain purchases shift toward Google-hosted
 4. Approve a 2-domain trial with a second supplier to test the fingerprint theory
 
