@@ -349,9 +349,11 @@ _HEADER_LABELS = {
         "test_date": "Test Date",
     },
     "Campaign Metrics": {
+        "client": "Client",
         "campaign": "Campaign name", "platform": "Platform", "status": "Campaign Status",
         "total_leads": "Total leads", "leads_added_month": "Leads added this month",
         "leads_added_yesterday": "Leads added yesterday", "leads_in_progress": "Leads in progress",
+        "leads_not_started": "Leads not started",
         "connections_sent": "Connections sent", "connections_accepted": "Connections accepted",
         "msg_sent": "Msg Sent", "positive_responses_yesterday": "Positive Responses Yesterday",
         "total_responses_month": "Total Responses this month",

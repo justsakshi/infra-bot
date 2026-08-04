@@ -143,8 +143,12 @@ async def main() -> None:
     # gets its own consolidated master tab (a separate-workspace client on its
     # own sheet gets an isolated 'All Inboxes'; clients sharing a sheet share one).
     rows_by_sheet: dict[str, list[dict]] = {}
-    # (account, campaign_summary) pairs for accounts included in the metrics tab
-    smartlead_campaigns_for_metrics: list = []
+    # Metrics fetch campaigns independently. The full inbox pipeline can take
+    # several minutes or fail on one mailbox; that must not erase Smartlead
+    # rows while HeyReach still reaches the shared Campaign Metrics tab.
+    smartlead_accounts_for_metrics = [
+        acc for acc in accounts if acc.name in CAMPAIGN_METRICS_CLIENTS
+    ]
 
     # Process each account sequentially with its own deliverability data
     failed_accounts: list = []
@@ -171,8 +175,6 @@ async def main() -> None:
             deliverability_map = apply_api_results(deliverability_map)
             rows, campaigns = await process_account(acc.api_key, acc.sheet_id, acc.name, deliverability_map, active_only)
             rows_by_sheet.setdefault(acc.sheet_id, []).extend(rows)
-            if acc.name in CAMPAIGN_METRICS_CLIENTS:
-                smartlead_campaigns_for_metrics.append((acc, campaigns))
         except Exception as exc:
             print(f"[!] Account {acc.name} failed: {exc}")
             failed_accounts.append(acc)
@@ -260,10 +262,11 @@ async def main() -> None:
 
         # Smartlead rows (DARLEAN account(s))
         week_start_str = (today.replace(day=max(1, today.day - 7))).strftime("%Y-%m-%d")
-        for acc, campaigns in smartlead_campaigns_for_metrics:
+        for acc in smartlead_accounts_for_metrics:
             async with SmartleadClient(acc.api_key, acc.name) as slc:
+                campaigns = await slc.list_campaigns()
                 for camp in campaigns:
-                    cid = str(camp.get("campaign_id") or camp.get("id") or "")
+                    cid = str(camp.get("id") or "")
                     if not cid:
                         continue
                     try:
@@ -278,12 +281,15 @@ async def main() -> None:
                     if not cm.should_include_smartlead_campaign(camp, week_sent, month_sent):
                         continue
                     try:
+                        analytics = await slc.get_campaign_analytics(cid)
                         leads = await slc.get_campaign_leads(cid)
                     except Exception as exc:
-                        print(f"  [metrics] Smartlead campaign {cid} leads failed: {exc}")
-                        leads = []
+                        print(f"  [metrics] Smartlead campaign {cid} details failed: {exc}")
+                        continue
+                    summary = cm.smartlead_summary_from_analytics(analytics)
                     metric_rows.append(cm.smartlead_metric_row(
-                        camp, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
+                        summary, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
+                        client=acc.name,
                         month_sent=month_sent, start_dt=reporting_start, end_dt=reporting_end))
 
         # HeyReach rows (all workspaces; currently DARLEAN)
@@ -307,14 +313,18 @@ async def main() -> None:
                         if not cm.should_include_heyreach_campaign(camp, by_day):
                             continue
                         metric_rows.append(cm.heyreach_metric_row(
-                            camp, oa, om, leads, today, start_dt=reporting_start, end_dt=reporting_end))
+                            camp, oa, om, leads, today, client=ws.name,
+                            start_dt=reporting_start, end_dt=reporting_end))
             except Exception as exc:
                 print(f"  [metrics] HeyReach workspace {ws.name} failed: {exc}")
 
         if metric_rows:
-            metric_rows.append(cm.total_row(metric_rows))
+            campaign_count = len(metric_rows)
+            metric_rows = cm.rows_with_totals(metric_rows)
             SheetsWriter(CAMPAIGN_METRICS_SHEET_ID).write_campaign_metrics(metric_rows, month_name=month_name)
-            print(f"[*] Campaign Metrics tab written: {len(metric_rows) - 1} campaigns")
+            clients = sorted({str(r.get("client", "")) for r in metric_rows if r.get("client")})
+            print(f"[*] Campaign Metrics tab written: {campaign_count} campaigns "
+                  f"across {len(clients)} client(s): {', '.join(clients)}")
     except Exception as exc:
         print(f"[!] Campaign Metrics dashboard failed: {exc}")
 

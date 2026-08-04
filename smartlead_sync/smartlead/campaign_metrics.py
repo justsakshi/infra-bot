@@ -4,15 +4,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 COLUMNS = [
-    "campaign", "platform", "status", "total_leads", "leads_added_month",
-    "leads_added_yesterday", "leads_in_progress", "connections_sent",
+    # `client` was added once the tab covered more than one account — without it
+    # a shared tab mixes clients' campaigns with no way to tell them apart, and
+    # the Total row silently sums across unrelated businesses.
+    "client", "campaign", "platform", "status", "total_leads", "leads_added_month",
+    "leads_added_yesterday", "leads_in_progress", "leads_not_started", "connections_sent",
     "connections_accepted", "msg_sent", "positive_responses_yesterday",
     "total_responses_month", "positive_neutral_month",
 ]
 
 # numeric columns summed in the Total row
 _NUMERIC = [
-    "total_leads", "leads_added_month", "leads_added_yesterday", "leads_in_progress",
+    "total_leads", "leads_added_month", "leads_added_yesterday", "leads_in_progress", "leads_not_started",
     "connections_sent", "connections_accepted", "msg_sent",
     "positive_responses_yesterday", "total_responses_month", "positive_neutral_month",
 ]
@@ -116,6 +119,20 @@ def _int(v) -> int:
         return 0
 
 
+def smartlead_summary_from_analytics(analytics: dict) -> dict:
+    """Map lightweight campaign analytics to the summary shape metrics uses."""
+    lead_stats = analytics.get("campaign_lead_stats", {}) or {}
+    return {
+        "campaign_id": analytics.get("id"),
+        "name": analytics.get("name", ""),
+        "status": analytics.get("status", ""),
+        "total_leads": _int(lead_stats.get("total", 0)),
+        "in_progress": _int(lead_stats.get("inprogress", 0)),
+        "not_started": _int(lead_stats.get("notStarted", 0)),
+        "sent": _int(analytics.get("sent_count", 0)),
+    }
+
+
 _INACTIVE_STATUSES = {"DRAFTED", "DRAFT"}
 _STALE_STATUSES = {"PAUSED", "COMPLETED", "COMPLETE", "STOPPED", "STOP"}
 _STALE_DAYS = 7
@@ -146,6 +163,7 @@ def should_include_heyreach_campaign(campaign: dict, month_by_day: dict) -> bool
 
 def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                          yest_replies: int, today: datetime, positive_ids: set[int],
+                         client: str = "",
                          month_sent: int = 0, start_dt: datetime | None = None,
                          end_dt: datetime | None = None) -> dict:
     added_month = added_yest = pos_neutral = 0
@@ -162,6 +180,7 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         if lead.get("lead_category_id") in positive_ids:
             pos_neutral += 1
     return {
+        "client": client,
         "campaign": summary.get("name", ""),
         "platform": "Smartlead",
         "status": summary.get("status", ""),
@@ -169,6 +188,7 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         "leads_added_month": added_month,
         "leads_added_yesterday": added_yest,
         "leads_in_progress": _int(summary.get("in_progress", 0)),
+        "leads_not_started": _int(summary.get("not_started", 0)),
         "connections_sent": "-",
         "connections_accepted": "-",
         "msg_sent": _int(summary.get("sent", 0)) or month_sent,
@@ -179,7 +199,8 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
 
 
 def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: dict,
-                        leads: list[dict], today: datetime, start_dt: datetime | None = None,
+                        leads: list[dict], today: datetime, client: str = "",
+                        start_dt: datetime | None = None,
                         end_dt: datetime | None = None) -> dict:
     ps = campaign.get("progressStats", {}) or {}
     oa = (overall_alltime or {}).get("overallStats", {}) or {}
@@ -207,6 +228,7 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
             break
 
     return {
+        "client": client,
         "campaign": campaign.get("name", ""),
         "platform": "Heyreach",
         "status": campaign.get("status", ""),
@@ -214,6 +236,7 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         "leads_added_month": added_month,
         "leads_added_yesterday": added_yest,
         "leads_in_progress": _int(ps.get("totalUsersInProgress", 0)),
+        "leads_not_started": "-",
         "connections_sent": _int(oa.get("connectionsSent", 0)),
         "connections_accepted": _int(oa.get("connectionsAccepted", 0)),
         "msg_sent": _int(oa.get("messagesSent", 0)),
@@ -223,9 +246,34 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
     }
 
 
-def total_row(rows: list[dict]) -> dict:
+def total_row(rows: list[dict], client: str = "") -> dict:
     out = {c: "" for c in COLUMNS}
-    out["campaign"] = "Total"
+    out["client"] = client
+    out["campaign"] = f"Total — {client}" if client else "Total"
     for col in _NUMERIC:
         out[col] = sum(r.get(col, 0) for r in rows if isinstance(r.get(col), int))
+    return out
+
+
+def rows_with_totals(rows: list[dict]) -> list[dict]:
+    """Group rows by client, append a per-client subtotal after each group, and
+    finish with a grand total.
+
+    A single mixed Total across unrelated clients is not a number anyone can
+    use — Darlean's lead count summed with BettrData's answers no question. The
+    per-client subtotal is the figure that matches how the team reports.
+    """
+    if not rows:
+        return []
+    by_client: dict[str, list[dict]] = {}
+    for r in rows:
+        by_client.setdefault(str(r.get("client", "")), []).append(r)
+
+    out: list[dict] = []
+    for client in sorted(by_client):
+        group = by_client[client]
+        out.extend(group)
+        out.append(total_row(group, client))
+    if len(by_client) > 1:
+        out.append(total_row(rows, ""))   # grand total across all clients
     return out
