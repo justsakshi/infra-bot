@@ -1,4 +1,30 @@
-"""Assemble per-campaign metric rows (Smartlead + HeyReach) with UTC date buckets."""
+"""Assemble per-campaign metric rows (Smartlead + HeyReach) with UTC date buckets.
+
+Feeds the "Campaign Metrics" sheet tab, which mirrors the table the team keeps
+by hand. Rows come from two platforms with different capabilities, so a column
+can be exact on one and unavailable on the other — "-" means the platform does
+not report it, and is deliberately not 0.
+
+Trust levels, so nobody reads a soft number as hard:
+
+  EXACT (straight from the API)
+    total_leads, leads_in_progress, leads_not_started,
+    leads_added_month, leads_added_yesterday,
+    connections_sent, connections_accepted (HeyReach only), status
+
+  APPROXIMATE (platform auto-categorisation, no human check)
+    positive_neutral_month  - Smartlead category ids 1/2/5, HeyReach autoTagged
+    total_responses_month   - counts auto-replies, OOO and bounces too
+
+  UNRESOLVED
+    msg_sent - ours is all-time and does not match the team's manual sheet.
+               See the note at the field itself before "fixing" it.
+    positive_responses_yesterday - Smartlead exposes no per-day figure; blank
+               rather than inferred. HeyReach reports it properly.
+
+Dates are bucketed in UTC. "Yesterday" therefore means the UTC day, which can
+differ from an IST reading day near midnight.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -139,7 +165,13 @@ _STALE_DAYS = 7
 
 
 def should_include_smartlead_campaign(summary: dict, week_sent: int, month_sent: int = 0) -> bool:
-    """Exclude DRAFTs. For PAUSED/COMPLETED: include if sent this month or this week."""
+    """Exclude DRAFTs. For PAUSED/COMPLETED: include if sent this month or this week.
+
+    Why not simply list every campaign: an account accumulates dozens of drafts
+    and long-dead campaigns, and a report padded with permanent zero rows stops
+    being read. A paused campaign that still sent this month is real work and
+    belongs in the table; one that has sent nothing does not.
+    """
     status = str(summary.get("status", "")).upper()
     if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
         return False
@@ -189,11 +221,28 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         "leads_added_yesterday": added_yest,
         "leads_in_progress": _int(summary.get("in_progress", 0)),
         "leads_not_started": _int(summary.get("not_started", 0)),
+        # LinkedIn-only concepts; "-" rather than 0 so nobody reads a real zero.
         "connections_sent": "-",
         "connections_accepted": "-",
+        # ALL-TIME sends for the campaign, falling back to the reporting month
+        # when the all-time figure is missing. NOTE (2026-07-30): this does not
+        # match the team's manual sheet — for "Legal Firms Roundtable" we report
+        # 1068 (all-time) where the manual sheet shows 374. Smartlead offers
+        # all-time 1068, July-only 694 and unique 833, none of which is 374, so
+        # the manual column is measuring a different window. Confirm the
+        # intended definition with whoever maintains that sheet before changing
+        # this line.
         "msg_sent": _int(summary.get("sent", 0)) or month_sent,
+        # Smartlead exposes no per-day positive-reply count. It could be
+        # inferred from lead categories plus timestamps, but that would be a
+        # guess presented as a number, so it stays blank until we can source it
+        # properly. HeyReach does report this, so its rows carry a real value.
         "positive_responses_yesterday": "-",
+        # Raw reply count for the month — includes auto-replies, out-of-office
+        # and bounces, so it reads higher than a human counting real responses.
         "total_responses_month": _int(month_replies),
+        # Smartlead's own auto-categorisation (Interested / Meeting Request /
+        # Information Request). Machine-tagged, not human-verified.
         "positive_neutral_month": pos_neutral,
     }
 
@@ -236,12 +285,17 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         "leads_added_month": added_month,
         "leads_added_yesterday": added_yest,
         "leads_in_progress": _int(ps.get("totalUsersInProgress", 0)),
+        # HeyReach has no "not started" concept — leads are either in the
+        # sequence or not in the campaign at all.
         "leads_not_started": "-",
         "connections_sent": _int(oa.get("connectionsSent", 0)),
         "connections_accepted": _int(oa.get("connectionsAccepted", 0)),
+        # All-time, matching the Smartlead column's basis.
         "msg_sent": _int(oa.get("messagesSent", 0)),
+        # HeyReach reports this per day, so unlike Smartlead it is a real value.
         "positive_responses_yesterday": pos_yest,
         "total_responses_month": _int(om.get("totalMessageReplies", 0)),
+        # HeyReach's own auto-tagging, same caveat as the Smartlead column.
         "positive_neutral_month": _int(om.get("autoTaggedInterested", 0)),
     }
 
