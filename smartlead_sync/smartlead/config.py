@@ -43,12 +43,39 @@ DELIVERABILITY_QUEUE_TAB_NAME: str = os.getenv("DELIVERABILITY_QUEUE_TAB_NAME", 
 
 # Account name -> deliverability test tab name(s). Maps are merged; "fail" wins.
 # (Moved out of run.py so adding a client is a config edit, not a code edit.)
-ACCOUNT_DELIVERABILITY_TABS: dict[str, list[str]] = {
+_ACCOUNT_DELIVERABILITY_TABS_RAW: dict[str, list[str]] = {
     "Belardi Wong": ["Belardiwong"],
     "PRECISE_LEADS": ["Melior", "Precise Leads", "Bettrdata"],  # Avench(old), OSC+StaffAI(paused Q3) dropped
     "DARLEAN": ["Darlean new"],
     "MYTHIC": ["Mythic "],  # Note: trailing space in actual tab name
+    # BettrData became its own Smartlead account (previously a PRECISE_LEADS
+    # sub-client). Without an entry here it fell through to the default tab,
+    # which meant reading another client's deliverability results.
+    "BETTRDATA": ["Bettrdata"],
 }
+
+
+class _CaseInsensitiveTabs(dict):
+    """Account-name -> deliverability tabs, tolerant of key casing.
+
+    Account names come from env-var suffixes, and Windows upper-cases env-var
+    names while Linux preserves them. So SMARTLEAD_API_KEY_Darlean produces
+    "DARLEAN" locally and "Darlean" on Render — a plain dict lookup then finds
+    the tabs in dev and silently returns the default in production, which reads
+    as "this client has no deliverability data" rather than as an error.
+    """
+
+    def get(self, key, default=None):  # type: ignore[override]
+        if key in self:
+            return self[key]
+        want = str(key).strip().lower()
+        for k, v in self.items():
+            if k.strip().lower() == want:
+                return v
+        return default
+
+
+ACCOUNT_DELIVERABILITY_TABS = _CaseInsensitiveTabs(_ACCOUNT_DELIVERABILITY_TABS_RAW)
 
 # Old/inactive clients — exclude their inboxes from ALL tracking (health score,
 # workbook, placement tests, warmup). Matched against an inbox's tags AND domain

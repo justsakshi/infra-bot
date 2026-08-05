@@ -270,7 +270,9 @@ async def _suggest_targets(accounts, ws, rows: list[dict]) -> None:
     from retest_executor import _health_rows_for
     suggestions: list[list[str]] = []
     for acc in accounts:
-        if acc.name not in NC_SUGGEST_CLIENTS:
+        # Case-insensitive: account names derive from env-var suffixes, and
+        # Windows upper-cases those while Linux does not (see config.py).
+        if acc.name.upper() not in {c.upper() for c in NC_SUGGEST_CLIENTS}:
             continue
         try:
             health, _ = await _health_rows_for(acc)

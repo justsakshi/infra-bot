@@ -50,7 +50,11 @@ async def main() -> None:
     print(f"[Metrics] clients: {', '.join(sorted(CAMPAIGN_METRICS_CLIENTS))}")
 
     rows: list[dict] = []
-    accounts = [a for a in discover_accounts() if a.name in CAMPAIGN_METRICS_CLIENTS]
+    # Case-insensitive: Windows upper-cases env var names, Linux does not, so
+    # the same SMARTLEAD_API_KEY_Darlean yields "DARLEAN" locally and "Darlean"
+    # on Render. See the note in run.py.
+    accounts = [a for a in discover_accounts()
+                if a.name.upper() in CAMPAIGN_METRICS_CLIENTS]
     if not accounts:
         print("[Metrics] no matching accounts — check CAMPAIGN_METRICS_CLIENTS")
 

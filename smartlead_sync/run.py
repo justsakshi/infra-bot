@@ -146,8 +146,13 @@ async def main() -> None:
     # Metrics fetch campaigns independently. The full inbox pipeline can take
     # several minutes or fail on one mailbox; that must not erase Smartlead
     # rows while HeyReach still reaches the shared Campaign Metrics tab.
+    # Match case-insensitively. Windows upper-cases environment variable names,
+    # Linux does not, so SMARTLEAD_API_KEY_Darlean yields an account called
+    # "DARLEAN" locally but "Darlean" on Render. A case-sensitive comparison
+    # therefore passed every local test and silently dropped Darlean from the
+    # metrics tab in production — HeyReach rows appeared, Smartlead rows did not.
     smartlead_accounts_for_metrics = [
-        acc for acc in accounts if acc.name in CAMPAIGN_METRICS_CLIENTS
+        acc for acc in accounts if acc.name.upper() in CAMPAIGN_METRICS_CLIENTS
     ]
 
     # Process each account sequentially with its own deliverability data
