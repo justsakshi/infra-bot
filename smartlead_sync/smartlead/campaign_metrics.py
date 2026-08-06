@@ -271,8 +271,14 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
                         leads: list[dict], today: datetime, client: str = "",
                         start_dt: datetime | None = None,
                         end_dt: datetime | None = None) -> dict:
+    """Build the metrics row for one HeyReach campaign.
+
+    `overall_alltime` is accepted but no longer read: every activity column is
+    month-to-date so the row lines up with the Smartlead rows beside it. The
+    parameter stays so the two call sites keep working unchanged, and because
+    an all-time column may well be wanted again later.
+    """
     ps = campaign.get("progressStats", {}) or {}
-    oa = (overall_alltime or {}).get("overallStats", {}) or {}
     om = (overall_month or {}).get("overallStats", {}) or {}
     by_day = (overall_month or {}).get("byDayStats", {}) or {}
 
@@ -308,10 +314,13 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         # HeyReach has no "not started" concept — leads are either in the
         # sequence or not in the campaign at all.
         "leads_not_started": "-",
-        "connections_sent": _int(oa.get("connectionsSent", 0)),
-        "connections_accepted": _int(oa.get("connectionsAccepted", 0)),
-        # All-time, matching the Smartlead column's basis.
-        "msg_sent": _int(oa.get("messagesSent", 0)),
+        # Month-to-date, matching the Smartlead column. These read from `om`
+        # (the month window) not `oa` (all-time): a Total row that adds
+        # all-time LinkedIn activity to month-to-date email activity is a
+        # number with no meaning.
+        "connections_sent": _int(om.get("connectionsSent", 0)),
+        "connections_accepted": _int(om.get("connectionsAccepted", 0)),
+        "msg_sent": _int(om.get("messagesSent", 0)),
         # HeyReach reports this per day, so unlike Smartlead it is a real value.
         "positive_responses_yesterday": pos_yest,
         "total_responses_month": _int(om.get("totalMessageReplies", 0)),

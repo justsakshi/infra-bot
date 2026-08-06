@@ -73,7 +73,10 @@ camp = {"name": "HR Camp", "status": "IN_PROGRESS",
         "progressStats": {"totalUsers": 99, "totalUsersInProgress": 35}}
 overall_all = {"overallStats": {"connectionsSent": 25, "connectionsAccepted": 4,
                "messagesSent": 12, "totalMessageReplies": 9, "autoTaggedInterested": 3}}
-overall_month = {"overallStats": {"totalMessageReplies": 4, "autoTaggedInterested": 2},
+# Deliberately different from the all-time block above: the row must read the
+# month window, so these are the values it has to pick up.
+overall_month = {"overallStats": {"connectionsSent": 20, "connectionsAccepted": 3,
+                 "messagesSent": 8, "totalMessageReplies": 4, "autoTaggedInterested": 2},
                  "byDayStats": {"2026-06-14T00:00:00Z": {"autoTaggedInterested": 1, "totalMessageReplies": 1}}}
 hr_leads = [{"creationTime": "2026-06-14T09:00:00Z"}, {"creationTime": "2026-06-02T09:00:00Z"},
             {"creationTime": "2026-05-30T09:00:00Z"}]
@@ -82,8 +85,12 @@ ok(hrr["platform"] == "Heyreach", "platform hr")
 ok(hrr["total_leads"] == 99, "hr total_leads")
 ok(hrr["leads_in_progress"] == 35, "hr in progress")
 ok(hrr["leads_not_started"] == "-", "HeyReach leads-not-started is not available")
-ok(hrr["connections_sent"] == 25, "hr connections sent")
-ok(hrr["msg_sent"] == 12, "hr msg sent")
+# Month-to-date, not all-time — the all-time block offers 25/4/12 and these
+# must not be picked up. Verified against the team's sheet: Consulting Firms
+# shows 127 connections sent, which is the month figure (all-time is 180).
+ok(hrr["connections_sent"] == 20, f"hr connections sent is month-to-date (got {hrr['connections_sent']})")
+ok(hrr["connections_accepted"] == 3, f"hr connections accepted is month-to-date (got {hrr['connections_accepted']})")
+ok(hrr["msg_sent"] == 8, f"hr msg sent is month-to-date (got {hrr['msg_sent']})")
 ok(hrr["leads_added_yesterday"] == 1, f"hr leads yest==1 (got {hrr['leads_added_yesterday']})")
 ok(hrr["leads_added_month"] == 2, f"hr leads month==2 (got {hrr['leads_added_month']})")
 ok(hrr["total_responses_month"] == 4, "hr responses month")
@@ -94,7 +101,7 @@ ok(hrr["positive_neutral_month"] == 2, "hr positive month")
 tr = total_row([slr, hrr])
 ok(tr["campaign"] == "Total", "total label")
 ok(tr["total_leads"] == 299, f"total leads sum==299 (got {tr['total_leads']})")
-ok(tr["msg_sent"] == 112, f"msg sent sum (100+12)==112 (got {tr['msg_sent']})")
+ok(tr["msg_sent"] == 108, f"msg sent sum (100 SL + 8 HR)==108 (got {tr['msg_sent']})")
 ok(set(COLUMNS) >= {"campaign", "platform", "status", "total_leads", "leads_not_started"}, "COLUMNS defined")
 
 # --- Reporting Range ---
