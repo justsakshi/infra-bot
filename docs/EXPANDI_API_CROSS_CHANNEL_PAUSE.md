@@ -3,13 +3,14 @@
 **Written 2026-08-06.** Endpoint shapes below come from the live OpenAPI spec at
 `https://api.liaufa.com/open-swagger.json`, not from the marketing docs.
 
-**Status: not yet usable.** The `EXPANDEE_API_KEY` / `EXPANDEE_SECRET` pair in
-`.env` returns `{"error": "invalid credentials"}`. Both values are well-formed
-UUIDs with no whitespace damage, and the endpoint answers with a structured
-error rather than an auth wall, so the request shape is right and the
-credentials themselves are the problem — most likely not yet activated, or
-issued for a different workspace. **Every request example below is unverified
-until that is resolved.** See [Before you trust this](#before-you-trust-this).
+**Status: authenticated and reading live data** (2026-08-06). The credentials in
+`.env` work against two LinkedIn accounts — Kenny Roush (`182607`) and Aaron Dix
+(`154923`), 20 campaigns between them.
+
+The **read** paths below are verified against live data. The **write** paths
+(add / pause / remove contact) are documented from the spec but have not been
+executed — doing so changes a real campaign. Test on one contact you control
+before wiring anything up.
 
 ---
 
@@ -201,8 +202,8 @@ retrofit unless a specific campaign justifies the manual work.
 
 ## Sketch: the pause path
 
-Unverified — credentials do not yet authenticate. Written to be read, not
-pasted.
+The auth and request shape are verified; the PATCH itself has not been executed
+against a live campaign. Written to be read, not pasted.
 
 ```python
 import os, json, urllib.request
@@ -260,18 +261,72 @@ system will show you it happened.
 
 ---
 
-## What the API cannot do
+## Campaign stats — available, but undocumented
 
-Reporting still has to come from somewhere else. The spec has **18 endpoints
-and two GETs** — one lists campaigns, one lists messages in a conversation.
+**The OpenAPI spec under-describes this response.** It lists the campaign object
+as `id`, `created`, `updated`, `name`, `li_account`, which is what led to an
+earlier conclusion here that the API exposes no statistics. The live response
+actually carries a populated `stats` object per campaign, so a dashboard *is*
+buildable from `GET /li_accounts/{id}/campaign_instances/` alone.
 
-The campaign object returns `id`, `created`, `updated`, `name`, `li_account`.
-**No counts, no connections sent or accepted, no reply totals.** There is no
-statistics endpoint at any path.
+Verified 2026-08-06 against the two live accounts (Kenny Roush, Aaron Dix).
 
-So this API is for *pushing leads into Expandi and pausing them* — it cannot
-populate a metrics dashboard. Those numbers come from webhooks (events only,
-from go-live forward) or a manual CSV export.
+```json
+"stats": {
+  "people_in_campaign": 60,   "in_queue": 0,
+  "initiated": 60,            "connected": 7,
+  "contacted_people": 60,     "finished": 6,
+  "stopped": 0,               "step_count": 12,
+  "replied_msg": 0,           "replied_excl_msg": 0,
+  "replied_first_action": 0,  "replied_other_actions": 0,
+  "interested_people": 0,     "maybe_people": 0,
+  "not_interested_people": 0, "latest_action_id": 32709337
+}
+```
+
+Mapping onto the Campaign Metrics columns:
+
+| Column | Expandi field |
+| --- | --- |
+| `total_leads` | `people_in_campaign` |
+| `leads_in_progress` | `in_queue` |
+| `connections_sent` | `initiated` |
+| `connections_accepted` | `connected` |
+| `msg_sent` | `contacted_people` |
+| `total_responses_month` | `replied_msg` + `replied_excl_msg` |
+| `positive_neutral_month` | `interested_people` |
+
+### The catch: all-time only
+
+**These counters are cumulative for the life of the campaign, and there is no
+date filter.** `start_date`/`end_date` and `date_from`/`date_to` are both
+accepted and both silently ignored — verified by comparing filtered and
+unfiltered responses, which came back identical.
+
+`stats_datetime` is when Expandi last recomputed the snapshot (it appears to
+refresh on a ~15-minute cycle), *not* a window boundary.
+
+This matters because the rest of the Campaign Metrics tab is month-to-date. An
+Expandi row dropped in as-is would put all-time LinkedIn activity in the same
+column as month-to-date email activity, and the Total row would add them
+together — the exact defect fixed in `52c7239`.
+
+Two honest options:
+
+1. **Snapshot daily and difference.** Store each day's counters, report the
+   delta. Gives a real month-to-date figure, but only from the first snapshot
+   onward — there is no history to backfill from.
+2. **Label the column as all-time** and keep it visibly separate from the
+   month-to-date columns.
+
+Option 1 is the one that matches the existing sheet. It needs a daily job and a
+small store before the numbers mean anything.
+
+### Pagination
+
+`GET /li_accounts/{id}/campaign_instances/` is paginated and **`count` is not
+the page size** — one live account returns 14 campaigns across 2 pages. Follow
+`next` until it is null, or you will silently report only the first page.
 
 ---
 
@@ -280,7 +335,7 @@ from go-live forward) or a manual CSV export.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/li_accounts/` | List LinkedIn accounts |
-| GET | `/li_accounts/{id}/campaign_instances/` | List campaigns for an account |
+| GET | `/li_accounts/{id}/campaign_instances/` | List campaigns **+ per-campaign `stats`** (paginated) |
 | GET | `/li_accounts/messengers/{id}/messages/` | Messages with one lead |
 | POST | `/li_accounts/campaign_instances/{id}/create_contact/` | Add contact to campaign |
 | PATCH | `/li_accounts/campaign_instances/{id}/update_contact/` | **Pause / resume** (`active`) |
