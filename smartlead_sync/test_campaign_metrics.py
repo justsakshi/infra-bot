@@ -68,6 +68,24 @@ ok(not should_include_smartlead_campaign(
 ok(should_include_smartlead_campaign(
     {"status": "COMPLETED", "total_leads": 119}, 0, 0), "completed campaign with leads is included")
 
+# Name exclusions. Smartlead campaign names carry stray double spaces, so both
+# the name and the pattern are whitespace-collapsed before matching — without
+# that, a pattern copied from the UI silently never matches and the row stays
+# in the report.
+from smartlead.campaign_metrics import is_excluded_campaign_name  # noqa: E402
+_PATS = ["marketing agenc", "architecture & interior design  - new"]
+ok(is_excluded_campaign_name("Architecture & interior design  - New", _PATS),
+   "double-space name matches its pattern")
+ok(is_excluded_campaign_name("Architecture & interior design - New", _PATS),
+   "single-space variant of the same name also matches")
+ok(not is_excluded_campaign_name("Architecture & interior design campaign (New inboxes)", _PATS),
+   "the live replacement campaign is NOT excluded")
+ok(is_excluded_campaign_name("Marketing agencies - AI Features", _PATS),
+   "prefix pattern matches")
+ok(not is_excluded_campaign_name("Legal Firms Roundtable", _PATS),
+   "unrelated campaign is kept")
+ok(not is_excluded_campaign_name("anything", []), "empty pattern list excludes nothing")
+
 # --- HeyReach ---
 camp = {"name": "HR Camp", "status": "IN_PROGRESS",
         "progressStats": {"totalUsers": 99, "totalUsersInProgress": 35}}

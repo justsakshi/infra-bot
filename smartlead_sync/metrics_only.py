@@ -31,6 +31,7 @@ from smartlead.config import (
     CAMPAIGN_METRICS_EXCLUDE,
     SMARTLEAD_POSITIVE_CATEGORY_IDS,
 )
+from smartlead.expandi_rows import build_expandi_rows
 from smartlead.heyreach import HeyReachClient
 from smartlead.heyreach_accounts import discover_heyreach_workspaces
 from smartlead.sheets import SheetsWriter
@@ -122,6 +123,8 @@ async def main() -> None:
                         start_dt=start_dt, end_dt=end_dt))
         except Exception as exc:  # noqa: BLE001
             print(f"[!] HeyReach workspace {ws.name} failed: {exc}")
+
+    rows.extend(await build_expandi_rows(today, start_dt))
 
     if not rows:
         print("[Metrics] no campaigns qualified — nothing written.")

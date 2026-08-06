@@ -86,6 +86,10 @@ EXCLUDED_CLIENTS: set[str] = {"avench", "monarch", "capsule", "gofloater",
 
 # ── HeyReach ─────────────────────────────────────────────────────────────────
 HEYREACH_BASE_URL: str = "https://api.heyreach.io/api/public"
+# Expandi is served from liaufa.com — that is correct, not a misconfiguration.
+# The `/open-api/v2` suffix matters: `/api/v1` alone 401s on every endpoint,
+# which looks like an auth failure but is a wrong path.
+EXPANDI_BASE_URL: str = "https://api.liaufa.com/api/v1/open-api/v2"
 
 # ── Campaign Metrics dashboard ───────────────────────────────────────────────
 CAMPAIGN_METRICS_TAB_NAME: str = os.getenv("CAMPAIGN_METRICS_TAB_NAME", "Campaign Metrics")
@@ -110,6 +114,11 @@ INBOX_HEALTH_TAB_NAME: str = os.getenv("INBOX_HEALTH_TAB_NAME", "Inbox Health")
 HEALTH_NOTIFY_CHANNEL: str = os.getenv("HEALTH_NOTIFY_CHANNEL", os.getenv("REMINDER_CHANNEL", ""))
 HEALTH_HISTORY_DB: str = os.getenv("HEALTH_HISTORY_DB", "infrabot")
 HEALTH_HISTORY_COLLECTION: str = os.getenv("HEALTH_HISTORY_COLLECTION", "inbox_health_history")
+# Daily snapshots of Expandi's all-time campaign counters. The API has no date
+# filter (every spelling is accepted and silently ignored), so month-to-date is
+# only obtainable by differencing today's snapshot against the first one on or
+# before the month start.
+EXPANDI_SNAPSHOT_COLLECTION: str = os.getenv("EXPANDI_SNAPSHOT_COLLECTION", "expandi_campaign_snapshots")
 
 # Health score weights (sum = 100) and thresholds. Tune after seeing real data.
 # Reweighted 2026-07-27 after measuring what these components actually
@@ -202,11 +211,22 @@ NC_SUGGEST_CAP: int = int(os.getenv("NC_SUGGEST_CAP", "5"))
 #   "marketing agenc" / "marketing agency" - vertical not on the report
 #   "test copy"                            - copy tests, not real sends
 #   "darlean-hvac"                         - 13-lead scratch campaign
+#
+# The remaining four are superseded runs: each vertical was relaunched on new
+# inboxes and the manual sheet reports only the current run. Excluding them is
+# what closes the last gap against that sheet (26,458 vs 26,255). They are
+# matched on their full names because the replacement campaigns share a prefix
+# — "non profits ai features" alone would also match the live
+# "Non Profits AI Features (New inboxes)" and remove the wrong row.
 CAMPAIGN_METRICS_EXCLUDE: list[str] = [
     s.strip().lower()
     for s in os.getenv(
         "CAMPAIGN_METRICS_EXCLUDE",
-        "marketing agenc,test copy,darlean-hvac",
+        "marketing agenc,test copy,darlean-hvac,"
+        "non profits ai features campaign,"
+        "events - ai features campaign,"
+        "architecture & interior design  - new,"
+        "construction - new",
     ).split(",")
     if s.strip()
 ]

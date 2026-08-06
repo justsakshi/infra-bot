@@ -40,6 +40,7 @@ from smartlead.config import (
     SMARTLEAD_POSITIVE_CATEGORY_IDS,
 )
 from smartlead.sheets import DeliverabilityReader, SheetsWriter
+from smartlead.expandi_rows import build_expandi_rows
 from smartlead.heyreach import HeyReachClient
 from smartlead.heyreach_accounts import discover_heyreach_workspaces
 from smartlead import campaign_metrics as cm
@@ -331,6 +332,9 @@ async def main() -> None:
                             start_dt=reporting_start, end_dt=reporting_end))
             except Exception as exc:
                 print(f"  [metrics] HeyReach workspace {ws.name} failed: {exc}")
+
+        metric_rows.extend(await build_expandi_rows(
+            today, reporting_start, log="  [metrics]"))
 
         if metric_rows:
             campaign_count = len(metric_rows)

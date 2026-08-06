@@ -172,8 +172,12 @@ def is_excluded_campaign_name(name: str, patterns: list[str] | None = None) -> b
     """
     if not patterns:
         return False
+    # Both sides get whitespace-collapsed. Campaign names in Smartlead contain
+    # stray double spaces ("Architecture & interior design  - New"), so a
+    # pattern copied from the UI would otherwise never match — and the failure
+    # is silent, leaving the row in the report.
     n = " ".join(str(name or "").lower().split())
-    return any(p in n for p in patterns)
+    return any(" ".join(p.split()) in n for p in patterns)
 
 
 def should_include_smartlead_campaign(summary: dict, week_sent: int, month_sent: int = 0) -> bool:
@@ -326,6 +330,59 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         "total_responses_month": _int(om.get("totalMessageReplies", 0)),
         # HeyReach's own auto-tagging, same caveat as the Smartlead column.
         "positive_neutral_month": _int(om.get("autoTaggedInterested", 0)),
+    }
+
+
+def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | None,
+                       client: str = "") -> dict:
+    """Build the metrics row for one Expandi campaign.
+
+    Expandi reports cumulative lifetime counters and has no working date filter,
+    so the month-to-date columns are today's counters minus a snapshot taken at
+    or before the month start (see expandi_store).
+
+    When no baseline exists — the campaign is newer than the snapshot history,
+    or Mongo is unavailable — the month columns are "?" rather than a number.
+    Showing the all-time figure there would silently inflate the Total row and
+    read as a real month; "?" says the value is not yet knowable, which is the
+    honest answer until a baseline accumulates.
+    """
+    stats = campaign.get("stats") or {}
+
+    def delta(field: str, since: dict | None):
+        if since is None:
+            return "?"
+        return max(0, _int(stats.get(field)) - _int(since.get(field)))
+
+    replied_now = _int(stats.get("replied_msg")) + _int(stats.get("replied_excl_msg"))
+    if baseline is None:
+        replied_month = "?"
+    else:
+        replied_before = _int(baseline.get("replied_msg")) + _int(baseline.get("replied_excl_msg"))
+        replied_month = max(0, replied_now - replied_before)
+
+    return {
+        "client": client,
+        "campaign": campaign.get("name", ""),
+        "platform": "Expandi",
+        # Expandi exposes `active` as a bool, not a status string. Mapped onto
+        # the same vocabulary the other platforms use so the column stays
+        # sortable and filterable.
+        "status": "IN_PROGRESS" if campaign.get("active") else "PAUSED",
+        # All-time and correct as-is: a lead count is a standing total, not an
+        # activity figure, so it needs no differencing.
+        "total_leads": _int(stats.get("people_in_campaign")),
+        "leads_added_month": delta("people_in_campaign", baseline),
+        "leads_added_yesterday": delta("people_in_campaign", prev_day),
+        "leads_in_progress": _int(stats.get("in_queue")),
+        # No "not started" concept — a contact is queued or it is not.
+        "leads_not_started": "-",
+        "connections_sent": delta("initiated", baseline),
+        "connections_accepted": delta("connected", baseline),
+        "msg_sent": delta("contacted_people", baseline),
+        "positive_responses_yesterday": delta("interested_people", prev_day),
+        "total_responses_month": replied_month,
+        "positive_neutral_month": delta("interested_people", baseline),
     }
 
 

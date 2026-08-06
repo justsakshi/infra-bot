@@ -1,5 +1,53 @@
 # Deploy & Verify — Final Steps
 
+---
+
+## Update 2026-08-06 — Expandi (BettrData) on the Campaign Metrics tab
+
+### Render env vars — two required, one already set
+
+| Variable | Required? | Notes |
+|---|---|---|
+| `EXPANDEE_API_KEY` | **yes** | Expandi/Liaufa key. Without it the Expandi block is skipped entirely — no error, no rows. |
+| `EXPANDEE_SECRET` | **yes** | Both are needed; a key without its secret is skipped with a warning. |
+| `MONGO_URI` | already set | Reused for snapshots. If it were missing, Expandi rows would still appear but every month-to-date cell would read `?`. |
+
+Add `BETTRDATA` to `CAMPAIGN_METRICS_CLIENTS` as well, or the workspace is
+discovered and then filtered straight back out.
+
+### Why the first days look wrong — and why that is correct
+
+Expandi reports **cumulative lifetime counters and has no working date filter**
+(every spelling of `start_date` / `date_from` is accepted and silently ignored).
+Month-to-date is therefore computed by differencing a stored daily snapshot
+against today's counters.
+
+Consequences, in order of when you will notice them:
+
+1. **Day 1: month columns show `?`.** No baseline exists yet. This is
+   deliberate — printing the all-time figure there would inflate the Total row
+   and read as a real month.
+2. **Day 2 onward: `?` becomes a real number**, covering the period since the
+   first snapshot.
+3. **Full month-to-date is only correct from the first snapshot of a month.**
+   There is no history to backfill, so August will under-report if snapshots
+   started mid-month. September onward is exact.
+
+`total_leads`, `leads_in_progress`, and `status` are correct immediately — they
+are standing totals, not activity windows, so they need no differencing.
+
+### Verify
+
+```bash
+python3 metrics_only.py --dry-run     # look for the "Expandi BETTRDATA" line
+```
+
+Expect `Expandi BETTRDATA: 2 account(s), N campaign(s)` and rows with
+`platform=Expandi`. On the first run the month columns will be `?`; run it again
+the next day and they become numbers.
+
+---
+
 **What to add on Render, how to verify nothing broke, and the exact script to run yourself for a live check. Written so you can do this without me.**
 
 Created: 2026-07-08. Deployed commit: `4443a3f` (pushed to `main`, Render should auto-deploy).
