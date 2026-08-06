@@ -254,11 +254,31 @@ class SmartleadClient:
         }
         return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences", body)
 
-    async def add_campaign_leads(self, campaign_id: str, emails: list[str]) -> dict:
+    async def add_campaign_leads(self, campaign_id: str, emails: list[str],
+                                 linkedin_urls: dict[str, str] | None = None) -> dict:
         """Add leads by email (POST /campaigns/{id}/leads). Ignores block/dup lists
-        — seed addresses must never be filtered out."""
+        — seed addresses must never be filtered out.
+
+        `linkedin_urls` maps email -> LinkedIn profile URL and is written to each
+        lead's `linkedin_profile` field. Policy (2026-08-06) is to supply it
+        whenever the URL is known: Smartlead keys leads by email and Expandi keys
+        them by profile URL, so this field is the only join between the two. It
+        cannot be backfilled once a campaign is running, and without it a lead who
+        replies on LinkedIn keeps receiving email.
+
+        Seed/placement-test callers pass emails only, which is correct — those
+        addresses have no LinkedIn counterpart.
+        """
+        linkedin_urls = linkedin_urls or {}
+        lead_list: list[dict] = []
+        for e in emails:
+            lead: dict = {"email": e}
+            url = linkedin_urls.get(e)
+            if url:
+                lead["linkedin_profile"] = url
+            lead_list.append(lead)
         body = {
-            "lead_list": [{"email": e} for e in emails],
+            "lead_list": lead_list,
             "settings": {
                 "ignore_global_block_list": True,
                 "ignore_unsubscribe_list": True,

@@ -167,25 +167,35 @@ Smartlead identifies a lead by **email**. Expandi identifies them by **LinkedIn
 profile URL**. To pause across channels you need a mapping between the two, and
 neither system will give it to you.
 
-Three ways to get one, best first:
+### The policy (decided 2026-08-06)
 
-1. **Carry the LinkedIn URL into Smartlead as a custom field** when the lead is
-   uploaded. If both channels are built from the same source list, you have the
-   URL already — store it and the mapping is exact, permanent, and free. **Do
-   this if you can.** It is the only option that does not degrade over time.
+**Every lead uploaded to Smartlead carries its LinkedIn profile URL as a custom
+field. Every lead pushed into Expandi carries its email address.** In each case,
+whenever that value is available.
 
-2. **Keep a local mapping table** (`email ↔ profile_link`), populated at upload
-   time. Equivalent to (1) but external to Smartlead — useful if you cannot add
-   fields to existing campaigns.
+This makes the join exact and permanent, and it costs nothing when both channels
+are built from the same source list — the identifier is already in hand at
+upload time.
 
-3. **Match on name + company at pause time.** Last resort. Names are not unique,
-   companies are spelled inconsistently, and people change jobs. This will pause
-   the wrong person occasionally. If you use it, log every match for review
-   rather than pausing silently.
+### Two rules that follow from it
 
-Options 1 and 2 need to be in place *before* the campaigns launch. Retrofitting
-a mapping onto leads already in flight means falling back to option 3 for
-everyone already uploaded.
+**Populate at upload time, not later.** The mapping cannot be reconstructed
+after the fact. A lead uploaded without its counterpart identifier stays
+unmappable for the life of the campaign.
+
+**Skip loudly when an identifier is missing.** Log and move on; never guess. A
+wrong pause silently stops outreach to someone who never replied, and nothing in
+either system will show you it happened. A missed pause is the cheaper error.
+
+### Leads already in flight
+
+Anything uploaded before this policy has no mapping. For those, matching on name
++ company is the only fallback — and it is a poor one: names are not unique,
+company names are spelled inconsistently, and people change jobs. If you use it,
+log every match for human review rather than pausing on it directly.
+
+This backlog shrinks on its own as old campaigns finish. It is not worth a
+retrofit unless a specific campaign justifies the manual work.
 
 ---
 
@@ -227,7 +237,9 @@ Wiring it to replies, in both directions:
 ```python
 # Smartlead reply -> pause in Expandi
 for lead in replied_leads_from_smartlead():
-    profile = linkedin_url_for(lead["email"])   # the mapping from above
+    # Reads the LinkedIn URL custom field set at upload. Empty means the lead
+    # predates the identity policy, or had no URL available.
+    profile = linkedin_url_for(lead["email"])
     if not profile:
         log.warning("no LinkedIn URL for %s — cannot pause in Expandi", lead["email"])
         continue                                 # skip loudly; never guess
