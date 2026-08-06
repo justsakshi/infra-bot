@@ -1,11 +1,33 @@
 from datetime import datetime, timezone
 from smartlead.campaign_metrics import (
-    smartlead_metric_row, heyreach_metric_row, total_row, COLUMNS,
+    smartlead_metric_row, smartlead_summary_from_analytics,
+    heyreach_metric_row, total_row, COLUMNS,
+    should_include_smartlead_campaign,
 )
 
 def ok(c, m): print(f"  {'PASS' if c else 'FAIL'}: {m}"); assert c, m
 
 TODAY = datetime(2026, 6, 15, tzinfo=timezone.utc)  # yesterday = 2026-06-14; month = June
+
+# Regression: Campaign Metrics must be buildable directly from Smartlead's
+# lightweight campaign analytics, without waiting for the full inbox sync.
+analytics = {
+    "id": 3716545,
+    "name": "Field Services Consolidated Roundtable - V3",
+    "status": "ACTIVE",
+    "sent_count": "3122",
+    "campaign_lead_stats": {"total": 2987, "inprogress": 1920, "notStarted": 819},
+}
+summary_from_analytics = smartlead_summary_from_analytics(analytics)
+ok(summary_from_analytics == {
+    "campaign_id": 3716545,
+    "name": "Field Services Consolidated Roundtable - V3",
+    "status": "ACTIVE",
+    "total_leads": 2987,
+    "in_progress": 1920,
+    "not_started": 819,
+    "sent": 3122,
+}, "Smartlead analytics maps to the campaign summary consumed by metrics")
 
 # --- Smartlead ---
 summary = {"name": "SL Camp", "status": "ACTIVE", "total_leads": 200,
@@ -15,15 +37,36 @@ leads = [
     {"created_at": "2026-06-14T00:00:00Z", "lead_category_id": 3},   # yesterday, not positive
     {"created_at": "2026-05-20T00:00:00Z", "lead_category_id": 1},   # last month
 ]
+# month_sent is what Msg Sent reports — the campaign's all-time `sent` (100)
+# is deliberately NOT used, so the sheet matches the team's month-to-date sheet.
 slr = smartlead_metric_row(summary, leads, month_replies=5, yest_replies=1,
-                           today=TODAY, positive_ids={1, 2, 5})
+                           today=TODAY, positive_ids={1, 2, 5}, month_sent=100)
 ok(slr["platform"] == "Smartlead", "platform")
 ok(slr["total_leads"] == 200, "total_leads")
 ok(slr["leads_added_month"] == 2, f"leads added this month==2 (got {slr['leads_added_month']})")
 ok(slr["leads_added_yesterday"] == 1, f"leads added yesterday==1 (got {slr['leads_added_yesterday']})")
+ok(slr["leads_not_started"] == 0, "Smartlead leads-not-started defaults to zero")
 ok(slr["connections_sent"] == "-", "connections '-' for smartlead")
 ok(slr["total_responses_month"] == 5, "total responses month")
 ok(slr["positive_neutral_month"] == 2, f"positive/neutral (cat 1 x2)==2 (got {slr['positive_neutral_month']})")
+
+# Msg Sent is month-to-date, never the all-time figure. Verified against the
+# team's sheet (Legal Firms 374 month vs 1068 all-time). Here `sent` is 100 and
+# month_sent is 7, so 7 is correct and 100 would be the old bug.
+_mtd = smartlead_metric_row(summary, leads, month_replies=0, yest_replies=0,
+                            today=TODAY, positive_ids={1, 2, 5}, month_sent=7)
+ok(_mtd["msg_sent"] == 7, f"msg_sent is month-to-date, not all-time (got {_mtd['msg_sent']})")
+
+# A paused campaign that sent nothing this month still holds real leads, so it
+# must appear. Only drafts and empty shells are dropped.
+ok(should_include_smartlead_campaign(
+    {"status": "PAUSED", "total_leads": 6905}, 0, 0), "paused campaign with leads is included")
+ok(not should_include_smartlead_campaign(
+    {"status": "PAUSED", "total_leads": 0}, 0, 0), "paused empty shell is dropped")
+ok(not should_include_smartlead_campaign(
+    {"status": "DRAFTED", "total_leads": 500}, 0, 0), "draft is dropped even with leads")
+ok(should_include_smartlead_campaign(
+    {"status": "COMPLETED", "total_leads": 119}, 0, 0), "completed campaign with leads is included")
 
 # --- HeyReach ---
 camp = {"name": "HR Camp", "status": "IN_PROGRESS",
@@ -38,6 +81,7 @@ hrr = heyreach_metric_row(camp, overall_all, overall_month, hr_leads, today=TODA
 ok(hrr["platform"] == "Heyreach", "platform hr")
 ok(hrr["total_leads"] == 99, "hr total_leads")
 ok(hrr["leads_in_progress"] == 35, "hr in progress")
+ok(hrr["leads_not_started"] == "-", "HeyReach leads-not-started is not available")
 ok(hrr["connections_sent"] == 25, "hr connections sent")
 ok(hrr["msg_sent"] == 12, "hr msg sent")
 ok(hrr["leads_added_yesterday"] == 1, f"hr leads yest==1 (got {hrr['leads_added_yesterday']})")
@@ -51,7 +95,7 @@ tr = total_row([slr, hrr])
 ok(tr["campaign"] == "Total", "total label")
 ok(tr["total_leads"] == 299, f"total leads sum==299 (got {tr['total_leads']})")
 ok(tr["msg_sent"] == 112, f"msg sent sum (100+12)==112 (got {tr['msg_sent']})")
-ok(set(COLUMNS) >= {"campaign", "platform", "status", "total_leads"}, "COLUMNS defined")
+ok(set(COLUMNS) >= {"campaign", "platform", "status", "total_leads", "leads_not_started"}, "COLUMNS defined")
 
 # --- Reporting Range ---
 from smartlead.campaign_metrics import get_reporting_range
@@ -82,4 +126,3 @@ ok(name == "June", "explicit previous")
 ok(start == datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc), "June start")
 
 print("\nALL PASSED")
-

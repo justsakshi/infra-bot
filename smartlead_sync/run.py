@@ -36,7 +36,8 @@ from smartlead.processing import fetch_account_data
 from smartlead.client_filter import is_excluded_inbox
 from smartlead.config import (
     TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_TAB_NAME,
-    CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_SHEET_ID, SMARTLEAD_POSITIVE_CATEGORY_IDS,
+    CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_SHEET_ID, CAMPAIGN_METRICS_EXCLUDE,
+    SMARTLEAD_POSITIVE_CATEGORY_IDS,
 )
 from smartlead.sheets import DeliverabilityReader, SheetsWriter
 from smartlead.heyreach import HeyReachClient
@@ -274,24 +275,32 @@ async def main() -> None:
                     cid = str(camp.get("id") or "")
                     if not cid:
                         continue
+                    # Drafts and de-scoped verticals never qualify — skip them
+                    # before spending API calls on their analytics.
+                    status = str(camp.get("status", "")).upper()
+                    if status in cm._INACTIVE_STATUSES or status.startswith("DRAFT"):
+                        continue
+                    if cm.is_excluded_campaign_name(camp.get("name", ""),
+                                                    CAMPAIGN_METRICS_EXCLUDE):
+                        continue
+                    # A failed fetch is not "zero activity" — skip the campaign
+                    # rather than writing a fabricated 0 into the sheet.
                     try:
                         week_an = await slc.get_analytics_by_date(cid, week_start_str, today.strftime("%Y-%m-%d"))
                         week_sent = int(float(week_an.get("sent_count", 0) or 0))
                         m_an = await slc.get_analytics_by_date(cid, ms_str, end_str)
                         month_sent = int(float(m_an.get("sent_count", 0) or 0))
                         month_replies = int(float(m_an.get("reply_count", 0) or 0))
-                    except Exception as exc:
-                        print(f"  [metrics] Smartlead campaign {cid} analytics failed: {exc}")
-                        week_sent, month_sent, month_replies = 0, 0, 0
-                    if not cm.should_include_smartlead_campaign(camp, week_sent, month_sent):
-                        continue
-                    try:
                         analytics = await slc.get_campaign_analytics(cid)
                         leads = await slc.get_campaign_leads(cid)
                     except Exception as exc:
-                        print(f"  [metrics] Smartlead campaign {cid} details failed: {exc}")
+                        print(f"  [metrics] Smartlead campaign {cid} "
+                              f"({camp.get('name','')}) skipped — fetch failed: {exc}")
                         continue
+                    # Filter after fetching, so lead counts are available to it.
                     summary = cm.smartlead_summary_from_analytics(analytics)
+                    if not cm.should_include_smartlead_campaign(summary, week_sent, month_sent):
+                        continue
                     metric_rows.append(cm.smartlead_metric_row(
                         summary, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
                         client=acc.name,

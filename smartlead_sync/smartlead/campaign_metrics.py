@@ -164,18 +164,40 @@ _STALE_STATUSES = {"PAUSED", "COMPLETED", "COMPLETE", "STOPPED", "STOP"}
 _STALE_DAYS = 7
 
 
-def should_include_smartlead_campaign(summary: dict, week_sent: int, month_sent: int = 0) -> bool:
-    """Exclude DRAFTs. For PAUSED/COMPLETED: include if sent this month or this week.
+def is_excluded_campaign_name(name: str, patterns: list[str] | None = None) -> bool:
+    """True when the campaign name matches a curated exclusion pattern.
 
-    Why not simply list every campaign: an account accumulates dozens of drafts
-    and long-dead campaigns, and a report padded with permanent zero rows stops
-    being read. A paused campaign that still sent this month is real work and
-    belongs in the table; one that has sent nothing does not.
+    Kept separate from the status/lead rules because it encodes an editorial
+    decision about which verticals get reported, not a fact about the campaign.
+    """
+    if not patterns:
+        return False
+    n = " ".join(str(name or "").lower().split())
+    return any(p in n for p in patterns)
+
+
+def should_include_smartlead_campaign(summary: dict, week_sent: int, month_sent: int = 0) -> bool:
+    """Exclude DRAFTs and campaigns holding no leads. Keep everything else.
+
+    This deliberately keeps PAUSED/COMPLETED campaigns that sent nothing this
+    month. An earlier version dropped them to avoid padding the report with
+    zero rows, but that hid 15,476 leads — a paused campaign still holding
+    5,518 leads in progress is live inventory someone has to act on, and the
+    team's manual sheet lists exactly these rows with a 0 in Msg Sent.
+
+    The zero-lead check is what the activity filter was really reaching for:
+    it drops abandoned shells (0 leads, 0 sends) without hiding real backlog.
+
+    `week_sent`/`month_sent` are no longer used for the decision. They are kept
+    in the signature because callers compute them anyway for `msg_sent`, and
+    dropping them would churn every call site for no gain.
     """
     status = str(summary.get("status", "")).upper()
     if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
         return False
-    if status in _STALE_STATUSES or any(status.startswith(s) for s in _STALE_STATUSES):
+    # Only reachable once totals are known; callers that pass a bare campaign
+    # dict (no lead stats) fall through to True, preserving prior behaviour.
+    if "total_leads" in summary and _int(summary.get("total_leads", 0)) == 0:
         return (week_sent > 0) or (month_sent > 0)
     return True
 
@@ -224,15 +246,13 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         # LinkedIn-only concepts; "-" rather than 0 so nobody reads a real zero.
         "connections_sent": "-",
         "connections_accepted": "-",
-        # ALL-TIME sends for the campaign, falling back to the reporting month
-        # when the all-time figure is missing. NOTE (2026-07-30): this does not
-        # match the team's manual sheet — for "Legal Firms Roundtable" we report
-        # 1068 (all-time) where the manual sheet shows 374. Smartlead offers
-        # all-time 1068, July-only 694 and unique 833, none of which is 374, so
-        # the manual column is measuring a different window. Confirm the
-        # intended definition with whoever maintains that sheet before changing
-        # this line.
-        "msg_sent": _int(summary.get("sent", 0)) or month_sent,
+        # Sends within the reporting month. RESOLVED (2026-08-06): the earlier
+        # note here guessed that the manual sheet used some unknown window. It
+        # is simply the current calendar month. Verified against the team's
+        # sheet across five campaigns — Legal Firms 374, Consulting 518, Field
+        # Services V3 2498, HVAC 32, Plumbing 85 — where month-to-date matches
+        # every value and all-time matches none.
+        "msg_sent": month_sent,
         # Smartlead exposes no per-day positive-reply count. It could be
         # inferred from lead categories plus timestamps, but that would be a
         # guess presented as a number, so it stays blank until we can source it

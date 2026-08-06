@@ -190,6 +190,26 @@ NC_SUGGEST_CLIENTS: list[str] = [
     if c.strip()
 ]
 NC_SUGGEST_CAP: int = int(os.getenv("NC_SUGGEST_CAP", "5"))
+
+# --- Campaign Metrics: campaigns the manual sheet deliberately leaves out ---
+# The team's sheet is curated: it lists the verticals currently being reported
+# on, not every campaign that exists. No status or lead-count rule separates
+# these from the rest — a paused campaign with 3,662 leads is included in one
+# vertical and excluded in another — so the distinction has to be stated, and
+# revisited whenever the reported verticals change.
+#
+# Matched as a case-insensitive substring against the campaign name.
+#   "marketing agenc" / "marketing agency" - vertical not on the report
+#   "test copy"                            - copy tests, not real sends
+#   "darlean-hvac"                         - 13-lead scratch campaign
+CAMPAIGN_METRICS_EXCLUDE: list[str] = [
+    s.strip().lower()
+    for s in os.getenv(
+        "CAMPAIGN_METRICS_EXCLUDE",
+        "marketing agenc,test copy,darlean-hvac",
+    ).split(",")
+    if s.strip()
+]
 # Health-row building is expensive — run the suggestion phase only on the run
 # whose UTC hour matches this (9:15 IST = 03:45 UTC -> default 3), once a day.
 NC_SUGGEST_HOUR_UTC: int = int(os.getenv("NC_SUGGEST_HOUR_UTC", "3"))
