@@ -112,7 +112,8 @@ class ExpandiClient:
 
     async def list_messengers(self, li_account_id: int, campaign_instance_id: int,
                               page_size: int = 100, max_pages: int = 40,
-                              stop_when: "callable | None" = None) -> list[dict]:
+                              stop_when: "callable | None" = None
+                              ) -> tuple[list[dict], bool]:
         """Per-lead rows for one campaign, carrying invited_at / connected_at.
 
         This is the only source of per-day Expandi activity — the campaign
@@ -125,9 +126,15 @@ class ExpandiClient:
         A failure mid-pagination returns what was collected rather than raising:
         a partial page of fresh leads still improves the cache, and the next run
         continues from there.
+
+        Returns (rows, exhausted). `exhausted` is True only when pagination
+        reached the final page — the caller cannot infer this from row counts,
+        because a campaign's `stats.initiated` can exceed the rows this endpoint
+        returns and would otherwise look permanently incomplete.
         """
         assert self._client, "Use `async with ExpandiClient(...)`."
         out: list[dict] = []
+        exhausted = False
         page = 1
         while page <= max_pages:
             url = (f"{EXPANDI_BASE_URL}/li_accounts/{li_account_id}/messengers/"
@@ -143,12 +150,19 @@ class ExpandiClient:
                 break
             rows = data.get("results") or []
             out.extend(rows)
-            if stop_when is not None and stop_when(rows):
-                break
             if not data.get("next"):
+                # Reached the final page: every row this endpoint will ever
+                # return for the campaign has now been seen.
+                exhausted = True
+                break
+            if stop_when is not None and stop_when(rows):
+                # Stopped early on an all-cached page. The tail is already
+                # stored, so the campaign is covered even though this call did
+                # not walk to the last page.
+                exhausted = True
                 break
             page += 1
-        return out
+        return out, exhausted
 
     async def pause_contact(self, campaign_instance_id: int, profile_link: str) -> dict:
         """Stop a campaign from progressing one contact.

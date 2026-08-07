@@ -28,7 +28,7 @@ CAMP = {"name": "BD Select", "active": True, "stats": {
 BASE = {"initiated": 100, "connected": 5, "contacted_people": 100,
         "people_in_campaign": 120}
 FULL = {"cached": 126, "invited_month": 41, "connected_month": 4,
-        "invited_yesterday": 12, "connected_yesterday": 1}
+        "invited_yesterday": 12, "connected_yesterday": 1, "swept": True}
 
 r = expandi_metric_row(CAMP, BASE, None, client="BETTRDATA", lead_counts=FULL)
 ok(r["connections_sent"] == 41,
@@ -40,10 +40,30 @@ ok(r["connections_accepted"] == 4,
 # 40 of 126 leads cached would report 12 invites as the month's total, which is
 # wrong and reads exactly like a genuinely quiet month.
 PARTIAL = {"cached": 40, "invited_month": 12, "connected_month": 1,
-           "invited_yesterday": 3, "connected_yesterday": 0}
+           "invited_yesterday": 3, "connected_yesterday": 0, "swept": False}
 p = expandi_metric_row(CAMP, BASE, None, client="BETTRDATA", lead_counts=PARTIAL)
 ok(p["connections_sent"] == 26,
-   f"partial cache falls back to the snapshot delta 126-100 (got {p['connections_sent']})")
+   f"unswept cache falls back to the snapshot delta 126-100 (got {p['connections_sent']})")
+
+# Completeness is decided by the sweep reaching the last page, NOT by counting
+# rows against stats.initiated. Campaign 722234 reports initiated=60 while the
+# messengers endpoint returns 62 rows of which only 49 carry invited_at —
+# contacts messaged without a connection request are counted by the stats but
+# have no invite timestamp. A count comparison pinned such campaigns to the
+# fallback path forever; they were observed stuck at 43/60, 359/380, 52/64 and
+# 545/591 across repeated runs.
+SHORT = {"cached": 49, "invited_month": 20, "connected_month": 2,
+         "invited_yesterday": 0, "connected_yesterday": 0, "swept": True}
+s_row = expandi_metric_row(CAMP, BASE, None, client="BETTRDATA", lead_counts=SHORT)
+ok(s_row["connections_sent"] == 20,
+   f"swept campaign is trusted even with fewer rows than initiated (got {s_row['connections_sent']})")
+
+# An empty cache must not be trusted just because the flag is set.
+EMPTY_SWEPT = {"cached": 0, "invited_month": 0, "connected_month": 0,
+               "invited_yesterday": 0, "connected_yesterday": 0, "swept": True}
+e_row = expandi_metric_row(CAMP, BASE, None, client="BETTRDATA", lead_counts=EMPTY_SWEPT)
+ok(e_row["connections_sent"] == 26,
+   f"swept but empty cache still falls back (got {e_row['connections_sent']})")
 
 # --- no cache at all falls back cleanly ---
 n = expandi_metric_row(CAMP, BASE, None, client="BETTRDATA", lead_counts={})

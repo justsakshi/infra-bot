@@ -82,6 +82,41 @@ class ExpandiLeadStore:
     def available(self) -> bool:
         return self._col is not None
 
+    def mark_swept(self, workspace: str, campaign_name: str) -> None:
+        """Record that this campaign's messenger pagination ran to the end.
+
+        Needed because cached-row count cannot be compared against
+        `stats.initiated` to decide completeness: for some campaigns the two
+        genuinely disagree. Campaign 722234 reports initiated=60 while the
+        messengers endpoint returns 62 rows of which only 49 carry an
+        `invited_at` — contacts messaged directly, without a connection
+        request, are counted by the stats but have no invite timestamp.
+
+        Comparing against `initiated` therefore leaves such campaigns pinned to
+        the fallback path forever, always "backfilling", never trusted. What
+        actually matters is whether the sweep reached the last page.
+        """
+        if self._col is None:
+            return
+        try:
+            self._col.update_many(
+                {"workspace": workspace, "campaign_name": campaign_name},
+                {"$set": {"sweep_complete": True}})
+        except PyMongoError as exc:  # noqa: BLE001
+            print(f"  [Expandi] mark_swept failed: {exc}")
+
+    def swept_campaigns(self, workspace: str) -> set[str]:
+        """Campaigns whose messenger pagination has been exhausted."""
+        if self._col is None:
+            return set()
+        try:
+            return set(self._col.distinct(
+                "campaign_name",
+                {"workspace": workspace, "sweep_complete": True}))
+        except PyMongoError as exc:  # noqa: BLE001
+            print(f"  [Expandi] swept lookup failed: {exc}")
+            return set()
+
     def known_ids(self, workspace: str) -> set[int]:
         """Messenger ids already cached, so a sweep can stop early."""
         if self._col is None:
@@ -132,7 +167,8 @@ class ExpandiLeadStore:
         into memory on each run.
         """
         empty = {"invited_month": 0, "invited_yesterday": 0,
-                 "connected_month": 0, "connected_yesterday": 0, "cached": 0}
+                 "connected_month": 0, "connected_yesterday": 0, "cached": 0,
+                 "swept": False}
         if self._col is None:
             return empty
         s, e, y = start.isoformat(), end.isoformat(), yesterday.isoformat()
@@ -160,6 +196,10 @@ class ExpandiLeadStore:
                                   {"$lte": ["$connected_day", e]}]}, 1, 0]}},
                     "connected_yesterday": {"$sum": {"$cond": [
                         {"$eq": ["$connected_day", y]}, 1, 0]}},
+                    # True when the sweep has walked this campaign's messengers
+                    # to the last page — see mark_swept for why row counts
+                    # cannot answer this.
+                    "swept": {"$max": {"$ifNull": ["$sweep_complete", False]}},
                 }},
             ])
             for doc in cur:

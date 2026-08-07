@@ -95,8 +95,10 @@ async def _sweep_lead_activity(client, leads, workspace: str,
         return
     known = leads.known_ids(workspace)
     swept = 0
+    exhausted: set[str] = set()
     for camp in campaigns:
         name = str(camp.get("name", "")).strip()
+        instance_done: list[bool] = []
         # Each merged campaign may span several LinkedIn accounts; messengers
         # are per account+instance, so every pairing has to be asked.
         for acc_id, inst_id in camp.get("_instance_refs", []):
@@ -104,7 +106,7 @@ async def _sweep_lead_activity(client, leads, workspace: str,
                 # A page whose ids are all cached means the tail is reached.
                 return bool(rows) and all(r.get("id") in _known for r in rows)
 
-            rows = await client.list_messengers(
+            rows, done = await client.list_messengers(
                 acc_id, inst_id,
                 page_size=EXPANDI_LEAD_PAGE_SIZE,
                 max_pages=EXPANDI_LEAD_PAGES_PER_RUN,
@@ -113,6 +115,12 @@ async def _sweep_lead_activity(client, leads, workspace: str,
                 leads.save(workspace, name, rows)
                 known.update(r.get("id") for r in rows if r.get("id") is not None)
                 swept += len(rows)
+            # A merged campaign spans several instances; it is only complete
+            # once every one of them has been walked to the end.
+            instance_done.append(done)
+        if instance_done and all(instance_done):
+            leads.mark_swept(workspace, name)
+            exhausted.add(name)
     # Always log, including the zero case. In steady state the sweep fetches
     # nothing because stop_when halts on the first fully-cached page, and a
     # silent run is indistinguishable from one that never executed — which is
@@ -193,7 +201,7 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                     lc = leads.counts(ws.name, name, start_dt.date(),
                                       today.date(), yesterday)
                     contacted = int((camp.get("stats") or {}).get("initiated") or 0)
-                    if contacted > 0 and int(lc.get("cached", 0)) < contacted:
+                    if contacted > 0 and not lc.get("swept"):
                         pending.append(f"{name} ({lc.get('cached', 0)}/{contacted})")
                     rows.append(cm.expandi_metric_row(
                         camp,

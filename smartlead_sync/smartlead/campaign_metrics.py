@@ -371,9 +371,14 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
     # than trusted outright — a half-swept campaign would otherwise report, say,
     # 40 of 126 invites as though that were the month's real total, which is
     # both wrong and indistinguishable from a quiet month.
+    # `swept` is set once the messengers endpoint has been paginated to the end
+    # for every instance of the campaign. It is NOT inferred from row counts:
+    # `stats.initiated` can exceed the rows that endpoint returns (contacts
+    # messaged directly, with no connection request, are counted by the stats
+    # but carry no invite timestamp), so a count comparison would leave those
+    # campaigns permanently "incomplete" and pinned to the fallback path.
     lc = lead_counts or {}
-    contacted = _int(stats.get("initiated"))
-    lead_data_complete = bool(lc) and _int(lc.get("cached")) >= contacted > 0
+    lead_data_complete = bool(lc) and bool(lc.get("swept")) and _int(lc.get("cached")) > 0
 
     if lead_data_complete:
         conn_sent_month = _int(lc.get("invited_month"))
