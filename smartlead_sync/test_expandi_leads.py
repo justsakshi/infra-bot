@@ -74,4 +74,39 @@ ok(sorted(m["_instance_refs"]) == [(154923, 812427), (182607, 812428)],
    f"both (account, instance) pairs survive the merge (got {m['_instance_refs']})")
 ok(m["stats"]["initiated"] == 126, "stats still sum across instances")
 
+
+# --- day-range counting must ignore never-invited leads ---
+# invited_day is null for a lead the campaign never contacted. BSON orders null
+# below every string, so a range comparison happens to exclude them — but only
+# implicitly. This exercises it against real Mongo so the behaviour is pinned
+# rather than assumed. Skipped when Mongo is unavailable.
+import os  # noqa: E402
+if os.getenv("MONGO_URI"):
+    from datetime import date  # noqa: E402
+    from smartlead.expandi_leads import ExpandiLeadStore  # noqa: E402
+    _s = ExpandiLeadStore()
+    if _s.available:
+        WS = "TESTWS_NULLCHK"
+        _s._col.delete_many({"workspace": WS})
+        _s.save(WS, "probe", [
+            {"id": 900001, "invited_at": "2026-08-03T10:00:00+0200",
+             "connected_at": "2026-08-04T10:00:00+0200"},
+            {"id": 900002, "invited_at": "2026-08-06T10:00:00+0200", "connected_at": None},
+            {"id": 900003, "invited_at": "2026-07-15T10:00:00+0200", "connected_at": None},
+            {"id": 900004, "invited_at": None, "connected_at": None},
+            {"id": 900005, "invited_at": None, "connected_at": None},
+        ])
+        c = _s.counts(WS, "probe", date(2026, 8, 1), date(2026, 8, 7), date(2026, 8, 6))
+        ok(c["cached"] == 5, f"never-invited leads still count toward coverage (got {c['cached']})")
+        ok(c["invited_month"] == 2,
+           f"July invite and two nulls excluded from August (got {c['invited_month']})")
+        ok(c["invited_yesterday"] == 1, f"Aug 6 invite counted once (got {c['invited_yesterday']})")
+        ok(c["connected_month"] == 1, f"one August accept (got {c['connected_month']})")
+        ok(c["connected_yesterday"] == 0, f"no accepts on Aug 6 (got {c['connected_yesterday']})")
+        _s._col.delete_many({"workspace": WS})
+    else:
+        print("  SKIP: Mongo unavailable — null-handling check not run")
+else:
+    print("  SKIP: no MONGO_URI — null-handling check not run")
+
 print("\nALL PASSED")

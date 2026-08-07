@@ -142,13 +142,21 @@ class ExpandiLeadStore:
                 {"$group": {
                     "_id": None,
                     "cached": {"$sum": 1},
+                    # The explicit string type-check matters: invited_day is
+                    # null for a lead never invited, and BSON orders null below
+                    # every string. Relying on that ordering to exclude nulls
+                    # from a range comparison works, but silently — a future
+                    # change to the bounds could start counting never-invited
+                    # leads as this month's activity with nothing to flag it.
                     "invited_month": {"$sum": {"$cond": [
-                        {"$and": [{"$gte": ["$invited_day", s]},
+                        {"$and": [{"$eq": [{"$type": "$invited_day"}, "string"]},
+                                  {"$gte": ["$invited_day", s]},
                                   {"$lte": ["$invited_day", e]}]}, 1, 0]}},
                     "invited_yesterday": {"$sum": {"$cond": [
                         {"$eq": ["$invited_day", y]}, 1, 0]}},
                     "connected_month": {"$sum": {"$cond": [
-                        {"$and": [{"$gte": ["$connected_day", s]},
+                        {"$and": [{"$eq": [{"$type": "$connected_day"}, "string"]},
+                                  {"$gte": ["$connected_day", s]},
                                   {"$lte": ["$connected_day", e]}]}, 1, 0]}},
                     "connected_yesterday": {"$sum": {"$cond": [
                         {"$eq": ["$connected_day", y]}, 1, 0]}},
