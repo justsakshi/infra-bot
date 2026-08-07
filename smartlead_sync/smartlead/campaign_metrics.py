@@ -341,26 +341,35 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
     so where a snapshot exists the activity columns are today's counters minus
     the snapshot taken at or before the month start (see expandi_store).
 
-    Where no snapshot exists yet, the column falls back to the **all-time**
-    figure rather than a placeholder. This matches the team's manual sheet,
-    which reports these as running totals — its Agencies row shows 140 sent /
-    23 accepted, exactly the all-time counters. An earlier version rendered "?"
-    here, which was accurate but unreadable in a client-facing sheet, and
-    invited the reader to treat the whole column as broken.
+    Windowed columns come from per-lead timestamps where the sweep has covered
+    the campaign, and from snapshot differencing otherwise.
 
-    What must NOT happen is a fabricated 0: with no baseline, "sent this month"
-    of 0 for a campaign that has sent 140 is a false statement, whereas 140 is a
-    true one about a wider window. The trade is that the column mixes windows
-    until snapshots accumulate — recorded in the Column Glossary tab so a reader
-    of the sheet can see it without reading this code.
+    Where neither exists the cell is "-", not a number. An earlier version fell
+    back to the all-time counter on the reasoning that a true figure over a
+    wider window beats a placeholder. That was wrong, and visibly so: every
+    Expandi campaign reported its entire lead history as both "added in August"
+    and "added yesterday" — 4,234 leads across the account all appearing to
+    arrive on the same day. A lifetime total in a month-to-date column is not a
+    conservative estimate, it is a wrong answer with no way for the reader to
+    tell. A fabricated 0 is equally wrong in the other direction, so neither is
+    used: "-" says the window is not knowable for this campaign yet.
+
+    total_leads, leads_in_progress, leads_not_started and the response columns
+    are standing totals and stay populated regardless.
     """
     stats = campaign.get("stats") or {}
 
     def delta(field: str, since: dict | None):
-        # No baseline -> all-time. See the docstring: a true number over a
-        # wider window beats both a placeholder and a fabricated zero.
+        """Windowed count from two snapshots, or "-" when unknowable.
+
+        Returning the all-time counter here was wrong: these columns are
+        month-to-date or yesterday, and a lifetime total placed in them
+        overstates the window without any signal that it has done so. It made
+        every Expandi campaign report its entire lead history as both "added in
+        August" and "added yesterday".
+        """
         if since is None:
-            return _int(stats.get(field))
+            return "-"
         return max(0, _int(stats.get(field)) - _int(since.get(field)))
 
     # Per-lead timestamps are the accurate source: exact day buckets, and they
@@ -383,9 +392,18 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
     if lead_data_complete:
         conn_sent_month = _int(lc.get("invited_month"))
         conn_acc_month = _int(lc.get("connected_month"))
-    else:
+    elif baseline is not None:
+        # A real snapshot exists, so the difference is a genuine month figure.
         conn_sent_month = delta("initiated", baseline)
         conn_acc_month = delta("connected", baseline)
+    else:
+        # Neither per-lead data nor a baseline. The all-time counter is a true
+        # number but answers a different question, and putting it in a
+        # month-to-date column silently overstates the month — the same defect
+        # that made "leads added" report a campaign's entire history as today's
+        # intake. "-" says the month is not knowable for this campaign yet.
+        conn_sent_month = "-"
+        conn_acc_month = "-"
 
     # Responses are reported as running totals, matching how the team's manual
     # sheet reads them — verified against it, where every response figure agrees
@@ -405,8 +423,14 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         # All-time and correct as-is: a lead count is a standing total, not an
         # activity figure, so it needs no differencing.
         "total_leads": _int(stats.get("people_in_campaign")),
-        "leads_added_month": delta("people_in_campaign", baseline),
-        "leads_added_yesterday": delta("people_in_campaign", prev_day),
+        # From each lead's own `created` timestamp. NOT differenced from
+        # people_in_campaign: that is a standing total, so with no snapshot to
+        # subtract, the all-time fallback reported every lead the campaign has
+        # ever held as added this month AND added yesterday — 4,234 leads all
+        # claiming to arrive on the same day. Where the sweep has not covered a
+        # campaign the value is "-", because no honest number exists for it.
+        "leads_added_month": _int(lc.get("added_month")) if lead_data_complete else "-",
+        "leads_added_yesterday": _int(lc.get("added_yesterday")) if lead_data_complete else "-",
         "leads_in_progress": _int(stats.get("in_queue")),
         # Contacts the campaign has never acted on: everyone in it, minus
         # everyone it has initiated contact with. Verified against the team's

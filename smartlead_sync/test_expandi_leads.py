@@ -28,13 +28,25 @@ CAMP = {"name": "BD Select", "active": True, "stats": {
 BASE = {"initiated": 100, "connected": 5, "contacted_people": 100,
         "people_in_campaign": 120}
 FULL = {"cached": 126, "invited_month": 41, "connected_month": 4,
-        "invited_yesterday": 12, "connected_yesterday": 1, "swept": True}
+        "invited_yesterday": 12, "connected_yesterday": 1,
+        "added_month": 30, "added_yesterday": 7, "swept": True}
 
 r = expandi_metric_row(CAMP, BASE, None, client="BETTRDATA", lead_counts=FULL)
 ok(r["connections_sent"] == 41,
    f"per-lead count wins over the snapshot delta of 26 (got {r['connections_sent']})")
 ok(r["connections_accepted"] == 4,
    f"accepted from per-lead data (got {r['connections_accepted']})")
+
+# Leads added come from each lead's own `created` day, never from differencing
+# people_in_campaign. The regression this guards: with no snapshot, the
+# all-time fallback reported a campaign's entire history as both the month's
+# intake and yesterday's, so total == month == yesterday on every row.
+ok(r["leads_added_month"] == 30, f"leads added this month (got {r['leads_added_month']})")
+ok(r["leads_added_yesterday"] == 7, f"leads added yesterday (got {r['leads_added_yesterday']})")
+ok(r["leads_added_yesterday"] != r["total_leads"],
+   "leads added yesterday is never the campaign's whole lead count")
+ok(r["leads_added_month"] != r["total_leads"],
+   "leads added this month is never the campaign's whole lead count")
 
 # --- a partially swept campaign must NOT be trusted ---
 # 40 of 126 leads cached would report 12 invites as the month's total, which is
@@ -68,8 +80,17 @@ ok(e_row["connections_sent"] == 26,
 # --- no cache at all falls back cleanly ---
 n = expandi_metric_row(CAMP, BASE, None, client="BETTRDATA", lead_counts={})
 ok(n["connections_sent"] == 26, "empty lead_counts uses the snapshot delta")
+
+# With neither per-lead data nor a snapshot the window is unknowable, so the
+# cell is "-". Not the all-time counter (which overstates a month-to-date
+# column) and not 0 (which understates it) — both are wrong answers that look
+# like real ones.
 n2 = expandi_metric_row(CAMP, None, None, client="BETTRDATA", lead_counts=None)
-ok(n2["connections_sent"] == 126, "no baseline and no cache -> all-time, never 0")
+ok(n2["connections_sent"] == "-", f"no baseline and no cache -> '-' (got {n2['connections_sent']})")
+ok(n2["leads_added_month"] == "-", f"unknowable month intake -> '-' (got {n2['leads_added_month']})")
+ok(n2["leads_added_yesterday"] == "-", "unknowable yesterday intake -> '-'")
+ok(n2["total_leads"] == 126, "standing totals stay populated regardless")
+ok(n2["leads_in_progress"] == 0, "in-progress is a standing total too")
 
 # A campaign that has sent nothing must not be treated as "complete" just
 # because both numbers are zero — cached >= contacted > 0 guards that.
@@ -79,8 +100,18 @@ ZERO = {"name": "New", "active": True, "stats": {
 z = expandi_metric_row(ZERO, None, None, client="X",
                        lead_counts={"cached": 0, "invited_month": 0,
                                     "connected_month": 0})
-ok(z["connections_sent"] == 0, "a campaign that has sent nothing reports 0")
+ok(z["connections_sent"] == "-",
+   f"unknowable window is '-', not a 0 claiming nothing was sent (got {z['connections_sent']})")
 ok(z["leads_not_started"] == 50, "all 50 leads are not started")
+
+# Once the sweep covers the campaign, a genuine zero IS reported — that is the
+# difference between "we know nothing was sent" and "we do not know".
+z2 = expandi_metric_row(ZERO, None, None, client="X",
+                        lead_counts={"cached": 50, "invited_month": 0,
+                                     "connected_month": 0, "added_month": 50,
+                                     "added_yesterday": 0, "swept": True})
+ok(z2["connections_sent"] == 0, "a swept campaign that sent nothing reports a real 0")
+ok(z2["leads_added_yesterday"] == 0, "and a real 0 for yesterday's intake")
 
 # --- merge keeps (account, instance) pairs for the sweep ---
 INST = [

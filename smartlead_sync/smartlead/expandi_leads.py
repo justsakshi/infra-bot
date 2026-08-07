@@ -142,6 +142,12 @@ class ExpandiLeadStore:
                     "workspace": workspace,
                     "messenger_id": mid,
                     "campaign_name": campaign_name,
+                    # When the lead entered the campaign — the only honest
+                    # source for "leads added". The campaign counter
+                    # people_in_campaign is a standing total, so differencing
+                    # it against a missing snapshot reports every lead the
+                    # campaign has ever held as added today.
+                    "added_day": _day(m.get("created")),
                     "invited_day": _day(m.get("invited_at")),
                     "connected_day": _day(m.get("connected_at")),
                     "first_step_day": _day(m.get("first_step_datetime")),
@@ -167,7 +173,8 @@ class ExpandiLeadStore:
         into memory on each run.
         """
         empty = {"invited_month": 0, "invited_yesterday": 0,
-                 "connected_month": 0, "connected_yesterday": 0, "cached": 0,
+                 "connected_month": 0, "connected_yesterday": 0,
+                 "added_month": 0, "added_yesterday": 0, "cached": 0,
                  "swept": False}
         if self._col is None:
             return empty
@@ -196,6 +203,12 @@ class ExpandiLeadStore:
                                   {"$lte": ["$connected_day", e]}]}, 1, 0]}},
                     "connected_yesterday": {"$sum": {"$cond": [
                         {"$eq": ["$connected_day", y]}, 1, 0]}},
+                    "added_month": {"$sum": {"$cond": [
+                        {"$and": [{"$eq": [{"$type": "$added_day"}, "string"]},
+                                  {"$gte": ["$added_day", s]},
+                                  {"$lte": ["$added_day", e]}]}, 1, 0]}},
+                    "added_yesterday": {"$sum": {"$cond": [
+                        {"$eq": ["$added_day", y]}, 1, 0]}},
                     # True when the sweep has walked this campaign's messengers
                     # to the last page — see mark_swept for why row counts
                     # cannot answer this.

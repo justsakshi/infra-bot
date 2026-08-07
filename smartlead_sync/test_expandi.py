@@ -44,22 +44,31 @@ ok(r["total_responses_month"] == 3, f"replies 2+1==3 all-time (got {r['total_res
 ok(r["positive_neutral_month"] == 3, f"interested==3 all-time (got {r['positive_neutral_month']})")
 # not-started is people minus initiated; in_queue is the send queue, not this.
 ok(r["leads_not_started"] == 16, f"45-29==16 not started (got {r['leads_not_started']})")
-ok(r["leads_added_yesterday"] == 1, f"45-44==1 vs prev day (got {r['leads_added_yesterday']})")
+# Leads added now come from each lead's own `created` day, not from
+# differencing people_in_campaign against a snapshot. Without swept per-lead
+# data the value is "-" rather than a number derived from a standing total.
+ok(r["leads_added_yesterday"] == "-",
+   f"no swept lead data -> '-' for yesterday's intake (got {r['leads_added_yesterday']})")
 ok(r["positive_responses_yesterday"] == 1, f"interested 3-2==1 (got {r['positive_responses_yesterday']})")
 
 # --- no baseline: month columns must NOT fall back to all-time ---
 nb = expandi_metric_row(CAMP, None, None, client="BETTRDATA")
-# No baseline falls back to the all-time counter, matching the manual sheet
-# (its Agencies row shows the all-time 140/23). A fabricated 0 would be a false
-# statement about a campaign that has sent; the all-time figure is a true one
-# over a wider window.
-ok(nb["connections_sent"] == 29, f"no baseline -> all-time 29 (got {nb['connections_sent']})")
-ok(nb["connections_accepted"] == 4, f"no baseline -> all-time 4 (got {nb['connections_accepted']})")
-ok(nb["msg_sent"] == 29, f"no baseline -> all-time 29 (got {nb['msg_sent']})")
-ok(nb["leads_added_yesterday"] == 45, "no prev day -> all-time lead count")
+# With neither per-lead data nor a snapshot, windowed columns are "-".
+# An earlier version substituted the all-time counter on the reasoning that a
+# true number over a wider window beats a placeholder. In the sheet that read
+# as a month figure and overstated every campaign — most visibly on leads
+# added, where a campaign's whole history appeared as both this month's intake
+# and yesterday's. A lifetime total in a month column is a wrong answer the
+# reader cannot detect.
+ok(nb["connections_sent"] == "-", f"no baseline -> '-' (got {nb['connections_sent']})")
+ok(nb["connections_accepted"] == "-", f"no baseline -> '-' (got {nb['connections_accepted']})")
+ok(nb["msg_sent"] == "-", f"no baseline -> '-' (got {nb['msg_sent']})")
+ok(nb["leads_added_yesterday"] == "-", "no per-lead data -> '-' for yesterday")
+ok(nb["leads_added_month"] == "-", "no per-lead data -> '-' for the month")
+# Standing totals are unaffected — they answer a question that needs no window.
 ok(nb["total_leads"] == 45, "total_leads still real without a baseline")
-# The one thing that must never happen: a zero implying no activity.
-ok(nb["connections_sent"] != 0, "never reports 0 sent for a campaign that has sent")
+ok(nb["total_responses_month"] == 3, "responses are running totals, still real")
+ok(nb["leads_not_started"] == 16, "not-started is a standing total, still real")
 # Running totals need no baseline, so these are real from the very first run —
 # only the windowed columns depend on snapshot history.
 ok(nb["total_responses_month"] == 3, f"responses real without a baseline (got {nb['total_responses_month']})")
@@ -68,16 +77,21 @@ ok(nb["leads_not_started"] == 16, "not-started real without a baseline")
 
 # A '?' must not be summed into the Total row as a zero or crash it.
 tot = total_row([r, nb], client="BETTRDATA")
-# Both rows are numeric now (9 from the differenced row, 29 from the all-time
-# fallback), so the total sums them rather than skipping a placeholder.
-ok(tot["connections_sent"] == 38, f"total sums 9+29 (got {tot['connections_sent']})")
+# The '-' row contributes nothing, so the total reflects only campaigns whose
+# window is actually known. Previously it added an all-time counter here and
+# reported 38 for a month in which 9 connections were sent.
+ok(tot["connections_sent"] == 9,
+   f"total counts only known windows, skipping '-' (got {tot['connections_sent']})")
 ok(tot["total_leads"] == 90, f"total_leads 45+45 (got {tot['total_leads']})")
 
 # A non-numeric cell must still be skipped rather than crashing the total —
 # Smartlead rows carry "-" in the LinkedIn-only columns.
 dashed = {**r, "connections_sent": "-"}
-ok(total_row([dashed, nb], client="X")["connections_sent"] == 29,
-   "non-numeric cells are skipped in the Total row")
+ok(total_row([dashed, nb], client="X")["connections_sent"] == 0,
+   "a Total over only '-' rows is 0, not a crash")
+# And a mix still sums just the known values.
+ok(total_row([dashed, r], client="X")["connections_sent"] == 9,
+   "mixed '-' and numeric rows sum only the numeric ones")
 
 # --- counters must never go backwards ---
 # Expandi can restate a counter downward (contacts removed from a campaign).
