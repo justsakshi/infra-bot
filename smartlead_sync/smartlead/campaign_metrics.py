@@ -334,7 +334,7 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
 
 
 def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | None,
-                       client: str = "") -> dict:
+                       client: str = "", lead_counts: dict | None = None) -> dict:
     """Build the metrics row for one Expandi campaign.
 
     Expandi reports cumulative lifetime counters and has no working date filter,
@@ -362,6 +362,25 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         if since is None:
             return _int(stats.get(field))
         return max(0, _int(stats.get(field)) - _int(since.get(field)))
+
+    # Per-lead timestamps are the accurate source: exact day buckets, and they
+    # cover history from before this code existed. Snapshot differencing is the
+    # fallback for campaigns the lead cache has not swept yet.
+    #
+    # `cached` is compared against the campaign's own contacted count rather
+    # than trusted outright — a half-swept campaign would otherwise report, say,
+    # 40 of 126 invites as though that were the month's real total, which is
+    # both wrong and indistinguishable from a quiet month.
+    lc = lead_counts or {}
+    contacted = _int(stats.get("initiated"))
+    lead_data_complete = bool(lc) and _int(lc.get("cached")) >= contacted > 0
+
+    if lead_data_complete:
+        conn_sent_month = _int(lc.get("invited_month"))
+        conn_acc_month = _int(lc.get("connected_month"))
+    else:
+        conn_sent_month = delta("initiated", baseline)
+        conn_acc_month = delta("connected", baseline)
 
     # Responses are reported as running totals, matching how the team's manual
     # sheet reads them — verified against it, where every response figure agrees
@@ -393,8 +412,14 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         # contacted everyone.
         "leads_not_started": max(0, _int(stats.get("people_in_campaign"))
                                  - _int(stats.get("initiated"))),
-        "connections_sent": delta("initiated", baseline),
-        "connections_accepted": delta("connected", baseline),
+        # From per-lead invited_at/connected_at where the lead cache has swept
+        # this campaign; snapshot differencing otherwise.
+        "connections_sent": conn_sent_month,
+        "connections_accepted": conn_acc_month,
+        # Expandi sends its first message as the connection request, so
+        # contacted_people tracks initiated. Kept on the stats/snapshot path
+        # because a later sequence step is not a new messenger row and so is
+        # not visible in the per-lead data.
         "msg_sent": delta("contacted_people", baseline),
         "positive_responses_yesterday": delta("interested_people", prev_day),
         # Running totals, not month deltas — see the note above.

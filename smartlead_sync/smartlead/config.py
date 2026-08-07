@@ -159,6 +159,19 @@ HEALTH_HISTORY_COLLECTION: str = os.getenv("HEALTH_HISTORY_COLLECTION", "inbox_h
 # only obtainable by differencing today's snapshot against the first one on or
 # before the month start.
 EXPANDI_SNAPSHOT_COLLECTION: str = os.getenv("EXPANDI_SNAPSHOT_COLLECTION", "expandi_campaign_snapshots")
+# Per-lead invite/accept timestamps from the messengers endpoint. Cached
+# because that endpoint returns ~4.6 rows/second whatever the page size, and
+# the accounts hold ~11k leads — a full sweep is ~98 minutes, far too slow to
+# repeat daily. The cached fields never change once set, so later runs only
+# fetch what is new.
+EXPANDI_LEADS_COLLECTION: str = os.getenv("EXPANDI_LEADS_COLLECTION", "expandi_lead_activity")
+# Pages of messengers to pull per campaign per run. The first runs backfill
+# history; once caught up a day's new activity is far below this. Raise it to
+# backfill faster, at the cost of a longer sync.
+EXPANDI_LEAD_PAGES_PER_RUN: int = int(os.getenv("EXPANDI_LEAD_PAGES_PER_RUN", "40"))
+# Rows per page. 100 is ~10x fewer requests than the default 10 for the same
+# throughput, which means far fewer chances to hit a transient 500.
+EXPANDI_LEAD_PAGE_SIZE: int = int(os.getenv("EXPANDI_LEAD_PAGE_SIZE", "100"))
 
 # Health score weights (sum = 100) and thresholds. Tune after seeing real data.
 # Reweighted 2026-07-27 after measuring what these components actually

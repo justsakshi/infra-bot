@@ -110,6 +110,46 @@ class ExpandiClient:
         """Campaigns for one LinkedIn account, each carrying a `stats` dict."""
         return await self._paginate(f"/li_accounts/{li_account_id}/campaign_instances/")
 
+    async def list_messengers(self, li_account_id: int, campaign_instance_id: int,
+                              page_size: int = 100, max_pages: int = 40,
+                              stop_when: "callable | None" = None) -> list[dict]:
+        """Per-lead rows for one campaign, carrying invited_at / connected_at.
+
+        This is the only source of per-day Expandi activity — the campaign
+        `stats` are lifetime counters with no working date filter.
+
+        `stop_when` receives each page and returns True to stop early. The
+        caller uses it to halt once a page holds nothing new, which is what
+        keeps a daily run cheap after the first backfill.
+
+        A failure mid-pagination returns what was collected rather than raising:
+        a partial page of fresh leads still improves the cache, and the next run
+        continues from there.
+        """
+        assert self._client, "Use `async with ExpandiClient(...)`."
+        out: list[dict] = []
+        page = 1
+        while page <= max_pages:
+            url = (f"{EXPANDI_BASE_URL}/li_accounts/{li_account_id}/messengers/"
+                   f"?campaign_instance_id={campaign_instance_id}"
+                   f"&page={page}&page_size={page_size}")
+            try:
+                data = await self._get(url)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [EX {self.workspace_name}] messengers page {page} "
+                      f"failed ({type(exc).__name__}) — keeping {len(out)} row(s)")
+                break
+            if not isinstance(data, dict):
+                break
+            rows = data.get("results") or []
+            out.extend(rows)
+            if stop_when is not None and stop_when(rows):
+                break
+            if not data.get("next"):
+                break
+            page += 1
+        return out
+
     async def pause_contact(self, campaign_instance_id: int, profile_link: str) -> dict:
         """Stop a campaign from progressing one contact.
 

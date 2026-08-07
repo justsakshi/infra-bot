@@ -7,12 +7,14 @@ different numbers.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from smartlead import campaign_metrics as cm
-from smartlead.config import CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_EXCLUDE
+from smartlead.config import (CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_EXCLUDE,
+                              EXPANDI_LEAD_PAGES_PER_RUN, EXPANDI_LEAD_PAGE_SIZE)
 from smartlead.expandi import ExpandiClient
 from smartlead.expandi_accounts import discover_expandi_workspaces
+from smartlead.expandi_leads import ExpandiLeadStore
 from smartlead.expandi_store import ExpandiStore
 
 
@@ -56,6 +58,10 @@ def _merge_by_name(campaigns: list[dict]) -> list[dict]:
             copy = dict(camp)
             copy["stats"] = dict(camp.get("stats") or {})
             copy["_instance_ids"] = [camp.get("id")]
+            # (li_account_id, campaign_instance_id) pairs — the messengers
+            # endpoint is keyed on both, so the owning account has to survive
+            # the merge or the per-lead sweep cannot address the instance.
+            copy["_instance_refs"] = [(camp.get("li_account"), camp.get("id"))]
             merged[name] = copy
             continue
         stats = existing["stats"]
@@ -67,7 +73,48 @@ def _merge_by_name(campaigns: list[dict]) -> list[dict]:
         # Archived only when every instance is.
         existing["archived"] = bool(existing.get("archived")) and bool(camp.get("archived"))
         existing["_instance_ids"].append(camp.get("id"))
+        existing["_instance_refs"].append((camp.get("li_account"), camp.get("id")))
     return list(merged.values())
+
+
+async def _sweep_lead_activity(client, leads, workspace: str,
+                               campaigns: list[dict], log: str) -> None:
+    """Top up the per-lead activity cache for each campaign.
+
+    Bounded work per run. The messengers endpoint returns ~4.6 rows/second
+    whatever the page size, so a full sweep of ~11k leads takes about 98
+    minutes — unacceptable daily. Instead each campaign fetches at most
+    EXPANDI_LEAD_PAGES_PER_RUN pages and stops as soon as a page contains
+    nothing new, which after the initial backfill is the first page.
+
+    Cached rows are immutable in practice (a lead invited on 28 July keeps that
+    timestamp), so stopping early cannot miss an update to an existing row — it
+    can only defer rows not yet seen, which the next run picks up.
+    """
+    if not leads.available:
+        return
+    known = leads.known_ids(workspace)
+    swept = 0
+    for camp in campaigns:
+        name = str(camp.get("name", "")).strip()
+        # Each merged campaign may span several LinkedIn accounts; messengers
+        # are per account+instance, so every pairing has to be asked.
+        for acc_id, inst_id in camp.get("_instance_refs", []):
+            def stop_when(rows, _known=known):
+                # A page whose ids are all cached means the tail is reached.
+                return bool(rows) and all(r.get("id") in _known for r in rows)
+
+            rows = await client.list_messengers(
+                acc_id, inst_id,
+                page_size=EXPANDI_LEAD_PAGE_SIZE,
+                max_pages=EXPANDI_LEAD_PAGES_PER_RUN,
+                stop_when=stop_when)
+            if rows:
+                leads.save(workspace, name, rows)
+                known.update(r.get("id") for r in rows if r.get("id") is not None)
+                swept += len(rows)
+    if swept:
+        print(f"{log} Expandi {workspace}: cached {swept} lead row(s)")
 
 
 async def build_expandi_rows(today: datetime, start_dt: datetime,
@@ -85,8 +132,9 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
         return rows
 
     store = ExpandiStore()
+    leads = ExpandiLeadStore()
     if not store.available:
-        print(f"{log} Expandi: no Mongo — month-to-date columns will show '?'")
+        print(f"{log} Expandi: no Mongo — activity columns fall back to all-time")
 
     for ws in workspaces:
         if CAMPAIGN_METRICS_CLIENTS and ws.name.upper() not in CAMPAIGN_METRICS_CLIENTS:
@@ -117,6 +165,7 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                 if dropped:
                     print(f"{log} Expandi {ws.name}: purged {dropped} stale snapshot(s)")
 
+                reportable = []
                 for camp in campaigns:
                     if camp.get("archived"):
                         continue
@@ -128,12 +177,21 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                     # Smartlead side applies, so the tab stays consistent.
                     if not int(stats.get("people_in_campaign") or 0):
                         continue
+                    reportable.append(camp)
+
+                await _sweep_lead_activity(exc_client, leads, ws.name,
+                                           reportable, log)
+
+                for camp in reportable:
                     name = str(camp.get("name", "")).strip()
+                    yesterday = (today - timedelta(days=1)).date()
                     rows.append(cm.expandi_metric_row(
                         camp,
                         store.baseline(ws.name, name, start_dt.date()),
                         store.previous_day(ws.name, name, today.date()),
                         client=ws.name,
+                        lead_counts=leads.counts(ws.name, name, start_dt.date(),
+                                                 today.date(), yesterday),
                     ))
         except Exception as exc:  # noqa: BLE001
             print(f"[!] Expandi workspace {ws.name} failed: {exc}")

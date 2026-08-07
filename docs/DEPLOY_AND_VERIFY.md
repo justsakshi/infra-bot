@@ -22,6 +22,32 @@ Note this list gates **all three platforms**. `BETTRDATA` brings in both its
 Expandi (LinkedIn) campaigns and its Smartlead (email) campaigns — the account
 exists on both, and there is no per-platform filter.
 
+### Per-lead activity (the accurate source)
+
+Expandi's campaign `stats` are lifetime counters with no working date filter, so
+they cannot answer "this month". The `messengers` endpoint carries per-lead
+`invited_at` and `connected_at` timestamps, which can — exactly, and for history
+that predates this code.
+
+Verified against campaign 812428: 60 rows with `invited_at` versus a stats
+counter of 60 initiated; 7 with `connected_at` versus 7 connected.
+
+**It is slow, so it is cached.** The endpoint yields ~4.6 rows/second regardless
+of page size (a 200-row page just takes 20x longer), and the two BettrData
+accounts hold ~11,000 leads — a full sweep is ~98 minutes. Cached rows are
+immutable in practice, so each run tops up the tail and stops as soon as a page
+holds nothing new.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXPANDI_LEAD_PAGES_PER_RUN` | `40` | Pages per campaign per run. Raise to backfill faster, at the cost of a longer sync. |
+| `EXPANDI_LEAD_PAGE_SIZE` | `100` | Rows per page. 100 means ~10x fewer requests than the default 10, so fewer chances to hit a transient 500. |
+
+**The first few runs are long** while history backfills, then settle. Until a
+campaign is fully swept its row falls back to snapshot differencing — a
+partially-swept campaign is never reported as if complete, since 40 of 126
+leads would understate the month and read exactly like a quiet one.
+
 ### Why the first days look wrong — and why that is correct
 
 Expandi reports **cumulative lifetime counters and has no working date filter**
