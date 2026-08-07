@@ -147,6 +147,8 @@ async def main() -> None:
     # `rows`, not `out`: `out` already carries subtotal/total rows, which the
     # per-client writer regenerates for each tab.
     writer.write_campaign_metrics_per_client(rows, month_name=month_name)
+    # No-ops unless CAMPAIGN_METRICS_CLIENT_SHEETS names a spreadsheet.
+    SheetsWriter.write_campaign_metrics_client_sheets(rows, month_name=month_name)
     print(f"\n[Metrics] written to sheet {CAMPAIGN_METRICS_SHEET_ID}")
 
 

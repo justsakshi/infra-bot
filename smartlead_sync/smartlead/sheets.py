@@ -662,6 +662,56 @@ class SheetsWriter:
         self._write_tab(CAMPAIGN_METRICS_TAB_NAME, projected, custom_headers=custom_headers)
         print(f"  [Sheets] Campaign Metrics tab written: {len(rows)} rows")
 
+    @staticmethod
+    def write_campaign_metrics_client_sheets(rows: list[dict],
+                                             month_name: str | None = None) -> None:
+        """Write each client's rows into that client's own spreadsheet.
+
+        A per-client *tab* still lives in a file containing every other client,
+        so it cannot be shared with the client — sharing the tab shares the
+        file. This writes a standalone spreadsheet per client for that purpose.
+
+        Only clients listed in CAMPAIGN_METRICS_CLIENT_SHEETS get one; the rest
+        are untouched. Each client is written independently so one bad sheet id
+        or a missing permission costs that client their file and nothing more.
+        """
+        from smartlead.config import (CAMPAIGN_METRICS_CLIENT_SHEETS,
+                                      CAMPAIGN_METRICS_TAB_NAME)
+        from smartlead.campaign_metrics import COLUMNS, rows_with_totals
+        if not CAMPAIGN_METRICS_CLIENT_SHEETS:
+            return
+        if not rows:
+            print("  [Sheets] No campaign metrics rows - skipping client sheets.")
+            return
+
+        by_client: dict[str, list[dict]] = {}
+        for r in rows:
+            name = str(r.get("client", "")).strip()
+            if name:
+                by_client.setdefault(name.upper(), []).append(r)
+
+        custom_headers = {}
+        if month_name:
+            custom_headers["leads_added_month"] = f"Leads added in {month_name}"
+
+        for client, sheet_id in sorted(CAMPAIGN_METRICS_CLIENT_SHEETS.items()):
+            client_rows = by_client.get(client)
+            if not client_rows:
+                # Writing an empty tab here would read as "this client had no
+                # campaigns today", which is a different claim from "we did not
+                # collect anything for them".
+                print(f"  [Sheets] {client}: no rows — leaving their sheet untouched")
+                continue
+            out = rows_with_totals(client_rows)
+            projected = [{c: r.get(c, "") for c in COLUMNS if c != "client"} for r in out]
+            try:
+                writer = SheetsWriter(sheet_id)
+                writer._write_tab(CAMPAIGN_METRICS_TAB_NAME, projected,
+                                  custom_headers=custom_headers)
+                print(f"  [Sheets] {client} own sheet: {len(client_rows)} campaign(s)")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [Sheets] {client} own sheet ({sheet_id}) failed: {exc}")
+
     def write_campaign_metrics_per_client(self, rows: list[dict],
                                           month_name: str | None = None) -> None:
         """Write one 'Campaign Metrics — <CLIENT>' tab per client.
@@ -879,13 +929,15 @@ class SheetsWriter:
             ["", "Score Drivers", "Points breakdown behind the score", "test x/40 - warmup x/25 - bounce x/20 - conn x/15"],
             ["", "Owner Skill", "Playbook used to fix this problem type", ""],
             # ── Campaign Metrics ─────────────────────────────
-            ["Campaign Metrics", "Campaign / Platform / Status", "Campaign name, Smartlead (email) or Heyreach (LinkedIn), state", ""],
-            ["", "Total leads", "Leads loaded in the campaign", ""],
+            ["Campaign Metrics", "Campaign / Platform / Status", "Campaign name, Smartlead (email), Heyreach or Expandi (LinkedIn), state", ""],
+            ["", "Total leads", "Leads loaded in the campaign", "Expandi: campaigns run from several sender profiles are merged into one row"],
             ["", "Leads added this month / yesterday", "New leads added in the reporting window", ""],
             ["", "Leads in progress", "Leads currently mid-sequence", ""],
-            ["", "Connections sent / accepted", "LinkedIn connection requests (HeyReach only)", "'-' for Smartlead"],
+            ["", "Leads not started", "Leads the campaign has not yet contacted", "Expandi: total leads minus contacted"],
+            ["", "Connections sent / accepted", "LinkedIn connection requests (Heyreach + Expandi)", "'-' for Smartlead (email has no connections)"],
             ["", "Msg Sent", "Emails / LinkedIn messages sent", "COMPLETED campaigns show month totals from analytics"],
-            ["", "Total Responses this month", "All replies in the reporting month", "API counts include auto-replies"],
+            ["", "Total Responses this month", "All replies in the reporting month", "API counts include auto-replies. Expandi reports a running total, not a month figure"],
+            ["", "(Expandi window note)", "Expandi has no date filter, so activity columns are month-to-date only once daily snapshots exist", "Until then they show all-time totals, never a fabricated 0"],
             ["", "Positive/Neutral responses", "Interested + Meeting Request + Info Request", "auto-categorized; humans can refine"],
             # ── API Tests (deliverability sheet) ─────────────
             ["API Tests (deliverability sheet)", "Date / Client / Domain", "When the robot ran a placement test + for whom", ""],

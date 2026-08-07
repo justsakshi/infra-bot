@@ -94,6 +94,40 @@ EXPANDI_BASE_URL: str = "https://api.liaufa.com/api/v1/open-api/v2"
 # ── Campaign Metrics dashboard ───────────────────────────────────────────────
 CAMPAIGN_METRICS_TAB_NAME: str = os.getenv("CAMPAIGN_METRICS_TAB_NAME", "Campaign Metrics")
 CAMPAIGN_METRICS_SHEET_ID: str = os.getenv("CAMPAIGN_METRICS_SHEET_ID", DEFAULT_SHEET_ID)
+
+
+def _parse_client_sheets(raw: str) -> dict[str, str]:
+    """Parse "CLIENT:sheet_id,CLIENT2:sheet_id2" into {CLIENT: sheet_id}.
+
+    A malformed entry is skipped with a warning rather than raising: one typo
+    should cost that client their standalone sheet, not stop the whole metrics
+    run for everyone else.
+    """
+    out: dict[str, str] = {}
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        client, sep, sheet_id = chunk.partition(":")
+        client, sheet_id = client.strip().upper(), sheet_id.strip()
+        if not sep or not client or not sheet_id:
+            print(f"[config] CAMPAIGN_METRICS_CLIENT_SHEETS: ignoring malformed "
+                  f"entry {chunk!r} (want CLIENT:sheet_id)")
+            continue
+        out[client] = sheet_id
+    return out
+
+
+# Per-client standalone spreadsheets, so a client's numbers can be shared
+# without exposing another client's campaigns — a tab in a shared file cannot
+# be shared on its own, the whole file goes with it.
+#
+# Format: "BETTRDATA:1AbC...,DARLEAN:1XyZ..."
+# A client absent here still appears on the shared tab and its per-client tab;
+# it just has no standalone file. The service account must be an Editor on each
+# spreadsheet or the write fails with a permission error naming that sheet.
+CAMPAIGN_METRICS_CLIENT_SHEETS: dict[str, str] = _parse_client_sheets(
+    os.getenv("CAMPAIGN_METRICS_CLIENT_SHEETS", ""))
 # Smartlead accounts (by discovered name) to include in the metrics tab.
 # Names come from discover_accounts(), which upper-cases the env-var suffix:
 # SMARTLEAD_API_KEY_BettrData -> "BETTRDATA".

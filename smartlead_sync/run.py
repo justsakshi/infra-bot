@@ -343,6 +343,9 @@ async def main() -> None:
             writer = SheetsWriter(CAMPAIGN_METRICS_SHEET_ID)
             writer.write_campaign_metrics(metric_rows, month_name=month_name)
             writer.write_campaign_metrics_per_client(campaign_rows, month_name=month_name)
+            # No-ops unless CAMPAIGN_METRICS_CLIENT_SHEETS names a spreadsheet.
+            SheetsWriter.write_campaign_metrics_client_sheets(
+                campaign_rows, month_name=month_name)
             clients = sorted({str(r.get("client", "")) for r in metric_rows if r.get("client")})
             print(f"[*] Campaign Metrics tab written: {campaign_count} campaigns "
                   f"across {len(clients)} client(s): {', '.join(clients)}")

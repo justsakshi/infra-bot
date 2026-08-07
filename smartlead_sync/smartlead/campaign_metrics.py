@@ -338,20 +338,29 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
     """Build the metrics row for one Expandi campaign.
 
     Expandi reports cumulative lifetime counters and has no working date filter,
-    so the month-to-date columns are today's counters minus a snapshot taken at
-    or before the month start (see expandi_store).
+    so where a snapshot exists the activity columns are today's counters minus
+    the snapshot taken at or before the month start (see expandi_store).
 
-    When no baseline exists — the campaign is newer than the snapshot history,
-    or Mongo is unavailable — the month columns are "?" rather than a number.
-    Showing the all-time figure there would silently inflate the Total row and
-    read as a real month; "?" says the value is not yet knowable, which is the
-    honest answer until a baseline accumulates.
+    Where no snapshot exists yet, the column falls back to the **all-time**
+    figure rather than a placeholder. This matches the team's manual sheet,
+    which reports these as running totals — its Agencies row shows 140 sent /
+    23 accepted, exactly the all-time counters. An earlier version rendered "?"
+    here, which was accurate but unreadable in a client-facing sheet, and
+    invited the reader to treat the whole column as broken.
+
+    What must NOT happen is a fabricated 0: with no baseline, "sent this month"
+    of 0 for a campaign that has sent 140 is a false statement, whereas 140 is a
+    true one about a wider window. The trade is that the column mixes windows
+    until snapshots accumulate — recorded in the Column Glossary tab so a reader
+    of the sheet can see it without reading this code.
     """
     stats = campaign.get("stats") or {}
 
     def delta(field: str, since: dict | None):
+        # No baseline -> all-time. See the docstring: a true number over a
+        # wider window beats both a placeholder and a fabricated zero.
         if since is None:
-            return "?"
+            return _int(stats.get(field))
         return max(0, _int(stats.get(field)) - _int(since.get(field)))
 
     # Responses are reported as running totals, matching how the team's manual

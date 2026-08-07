@@ -49,10 +49,17 @@ ok(r["positive_responses_yesterday"] == 1, f"interested 3-2==1 (got {r['positive
 
 # --- no baseline: month columns must NOT fall back to all-time ---
 nb = expandi_metric_row(CAMP, None, None, client="BETTRDATA")
-ok(nb["connections_sent"] == "?", f"no baseline -> '?' not 29 (got {nb['connections_sent']})")
-ok(nb["msg_sent"] == "?", f"no baseline -> '?' (got {nb['msg_sent']})")
-ok(nb["leads_added_yesterday"] == "?", "no prev day -> '?'")
+# No baseline falls back to the all-time counter, matching the manual sheet
+# (its Agencies row shows the all-time 140/23). A fabricated 0 would be a false
+# statement about a campaign that has sent; the all-time figure is a true one
+# over a wider window.
+ok(nb["connections_sent"] == 29, f"no baseline -> all-time 29 (got {nb['connections_sent']})")
+ok(nb["connections_accepted"] == 4, f"no baseline -> all-time 4 (got {nb['connections_accepted']})")
+ok(nb["msg_sent"] == 29, f"no baseline -> all-time 29 (got {nb['msg_sent']})")
+ok(nb["leads_added_yesterday"] == 45, "no prev day -> all-time lead count")
 ok(nb["total_leads"] == 45, "total_leads still real without a baseline")
+# The one thing that must never happen: a zero implying no activity.
+ok(nb["connections_sent"] != 0, "never reports 0 sent for a campaign that has sent")
 # Running totals need no baseline, so these are real from the very first run —
 # only the windowed columns depend on snapshot history.
 ok(nb["total_responses_month"] == 3, f"responses real without a baseline (got {nb['total_responses_month']})")
@@ -61,8 +68,16 @@ ok(nb["leads_not_started"] == 16, "not-started real without a baseline")
 
 # A '?' must not be summed into the Total row as a zero or crash it.
 tot = total_row([r, nb], client="BETTRDATA")
-ok(tot["connections_sent"] == 9, f"total skips '?' rows (got {tot['connections_sent']})")
+# Both rows are numeric now (9 from the differenced row, 29 from the all-time
+# fallback), so the total sums them rather than skipping a placeholder.
+ok(tot["connections_sent"] == 38, f"total sums 9+29 (got {tot['connections_sent']})")
 ok(tot["total_leads"] == 90, f"total_leads 45+45 (got {tot['total_leads']})")
+
+# A non-numeric cell must still be skipped rather than crashing the total —
+# Smartlead rows carry "-" in the LinkedIn-only columns.
+dashed = {**r, "connections_sent": "-"}
+ok(total_row([dashed, nb], client="X")["connections_sent"] == 29,
+   "non-numeric cells are skipped in the Total row")
 
 # --- counters must never go backwards ---
 # Expandi can restate a counter downward (contacts removed from a campaign).

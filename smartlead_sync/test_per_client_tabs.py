@@ -70,4 +70,35 @@ plats = {r["platform"] for r in g["BETTRDATA"]}
 ok(plats == {"Expandi", "Smartlead"},
    f"BettrData tab spans both its platforms (got {plats})")
 
+
+# --- per-client standalone spreadsheets ---
+from smartlead.config import _parse_client_sheets  # noqa: E402
+
+p = _parse_client_sheets("BETTRDATA:1AbC,DARLEAN:1XyZ")
+ok(p == {"BETTRDATA": "1AbC", "DARLEAN": "1XyZ"}, f"parses CLIENT:id pairs (got {p})")
+ok(_parse_client_sheets("bettrdata:1AbC") == {"BETTRDATA": "1AbC"},
+   "client names are upper-cased to match row/client values")
+ok(_parse_client_sheets(" BETTRDATA : 1AbC ") == {"BETTRDATA": "1AbC"},
+   "surrounding whitespace is tolerated")
+ok(_parse_client_sheets("") == {}, "empty config disables the feature")
+
+# One malformed entry must not cost the other clients their sheets.
+mixed = _parse_client_sheets("BETTRDATA:1AbC,garbage,:noclient,CLIENT:")
+ok(mixed == {"BETTRDATA": "1AbC"},
+   f"malformed entries are skipped, valid ones survive (got {mixed})")
+
+# Grouping for standalone sheets upper-cases, so it matches config keys even
+# when a row's client field is cased differently.
+def group_upper(rows):
+    out = {}
+    for r in rows:
+        n = str(r.get("client", "")).strip()
+        if n:
+            out.setdefault(n.upper(), []).append(r)
+    return out
+
+gu = group_upper(ROWS + [_row("bettrdata", "lowercase client", "Expandi", 5)])
+ok(len(gu["BETTRDATA"]) == 3,
+   f"rows match their config key regardless of case (got {len(gu['BETTRDATA'])})")
+
 print("\nALL PASSED")
