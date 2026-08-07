@@ -13,7 +13,7 @@ import asyncio
 import argparse
 import sys
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Fix Windows console encoding for Polars unicode table output
 if sys.platform == "win32":
@@ -269,6 +269,7 @@ async def main() -> None:
 
         # Smartlead rows (DARLEAN account(s))
         week_start_str = (today.replace(day=max(1, today.day - 7))).strftime("%Y-%m-%d")
+        yest_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         for acc in smartlead_accounts_for_metrics:
             async with SmartleadClient(acc.api_key, acc.name) as slc:
                 campaigns = await slc.list_campaigns()
@@ -292,6 +293,8 @@ async def main() -> None:
                         m_an = await slc.get_analytics_by_date(cid, ms_str, end_str)
                         month_sent = int(float(m_an.get("sent_count", 0) or 0))
                         month_replies = int(float(m_an.get("reply_count", 0) or 0))
+                        y_an = await slc.get_analytics_by_date(cid, yest_str, yest_str)
+                        yest_sent = int(float(y_an.get("sent_count", 0) or 0))
                         analytics = await slc.get_campaign_analytics(cid)
                         leads = await slc.get_campaign_leads(cid)
                     except Exception as exc:
@@ -305,7 +308,9 @@ async def main() -> None:
                     metric_rows.append(cm.smartlead_metric_row(
                         summary, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
                         client=acc.name,
-                        month_sent=month_sent, start_dt=reporting_start, end_dt=reporting_end))
+                        month_sent=month_sent, start_dt=reporting_start, end_dt=reporting_end,
+                        yest_sent=yest_sent,
+                        launch_date=str(camp.get("created_at", ""))[:10]))
 
         # HeyReach rows (all workspaces; currently DARLEAN)
         for ws in discover_heyreach_workspaces():
@@ -320,16 +325,20 @@ async def main() -> None:
                                 start=reporting_start.isoformat().replace("+00:00", "Z"),
                                 end=reporting_end.isoformat().replace("+00:00", "Z"),
                             )
+                            oy = await hrc.get_overall_stats(
+                                cid, start=f"{yest_str}T00:00:00Z",
+                                end=f"{yest_str}T23:59:59Z")
                             leads = await hrc.get_campaign_leads(cid)
                         except Exception as exc:
                             print(f"  [metrics] HeyReach campaign {cid} failed: {exc}")
-                            oa, om, leads = {}, {}, []
+                            oa, om, oy, leads = {}, {}, {}, []
                         by_day = (om or {}).get("byDayStats", {}) or {}
                         if not cm.should_include_heyreach_campaign(camp, by_day):
                             continue
                         metric_rows.append(cm.heyreach_metric_row(
                             camp, oa, om, leads, today, client=ws.name,
-                            start_dt=reporting_start, end_dt=reporting_end))
+                            start_dt=reporting_start, end_dt=reporting_end,
+                            overall_yesterday=oy))
             except Exception as exc:
                 print(f"  [metrics] HeyReach workspace {ws.name} failed: {exc}")
 

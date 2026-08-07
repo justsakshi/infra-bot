@@ -86,6 +86,46 @@ ok(not is_excluded_campaign_name("Legal Firms Roundtable", _PATS),
    "unrelated campaign is kept")
 ok(not is_excluded_campaign_name("anything", []), "empty pattern list excludes nothing")
 
+# --- launch date and yesterday-only activity ---
+# A campaign launched yesterday legitimately shows total == month == yesterday.
+# Without a launch date on the row that pattern reads as broken data — it was
+# reported as such when it was correct — so the date has to be carried.
+_sl = smartlead_metric_row(
+    {"name": "New camp", "status": "ACTIVE", "total_leads": 200, "in_progress": 0},
+    [], month_replies=0, yest_replies=0, today=TODAY, positive_ids={1},
+    month_sent=94, yest_sent=94, launch_date="2026-08-06")
+ok(_sl["launch_date"] == "2026-08-06", f"launch date carried (got {_sl['launch_date']})")
+ok(_sl["msg_sent_yesterday"] == 94, f"yesterday-only sends (got {_sl['msg_sent_yesterday']})")
+ok(_sl["connections_sent_yesterday"] == "-",
+   "connections-yesterday is '-' for Smartlead: email has no connections")
+
+# HeyReach answers a real date range, so yesterday is queried, not differenced.
+_hr = heyreach_metric_row(
+    {"name": "HR", "status": "IN_PROGRESS", "creationTime": "2026-06-01T10:00:00Z",
+     "progressStats": {"totalUsers": 50, "totalUsersInProgress": 10}},
+    {"overallStats": {"connectionsSent": 900}},
+    {"overallStats": {"connectionsSent": 127, "messagesSent": 40}},
+    [], today=TODAY,
+    overall_yesterday={"overallStats": {"connectionsSent": 31, "messagesSent": 5}})
+ok(_hr["connections_sent"] == 127, f"month window unchanged (got {_hr['connections_sent']})")
+ok(_hr["connections_sent_yesterday"] == 31,
+   f"yesterday from its own window, not all-time 900 (got {_hr['connections_sent_yesterday']})")
+ok(_hr["msg_sent_yesterday"] == 5, f"messages yesterday (got {_hr['msg_sent_yesterday']})")
+ok(_hr["launch_date"] == "2026-06-01", f"HeyReach launch date (got {_hr['launch_date']})")
+
+# Missing yesterday data must not fabricate a number.
+_hr2 = heyreach_metric_row(
+    {"name": "HR", "status": "IN_PROGRESS",
+     "progressStats": {"totalUsers": 50, "totalUsersInProgress": 10}},
+    {"overallStats": {"connectionsSent": 900}},
+    {"overallStats": {"connectionsSent": 127}}, [], today=TODAY)
+ok(_hr2["connections_sent_yesterday"] == 0,
+   "absent yesterday window counts as zero activity, never the all-time figure")
+ok(_hr2["launch_date"] == "", "no creationTime -> blank launch date, not a guess")
+
+ok(set(_sl.keys()) == set(COLUMNS) and set(_hr.keys()) == set(COLUMNS),
+   "both platforms emit exactly the sheet's columns")
+
 # --- HeyReach ---
 camp = {"name": "HR Camp", "status": "IN_PROGRESS",
         "progressStats": {"totalUsers": 99, "totalUsersInProgress": 35}}

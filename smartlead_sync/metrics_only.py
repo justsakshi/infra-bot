@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 if sys.platform == "win32":
     try:
@@ -48,6 +48,7 @@ async def main() -> None:
     start_dt, end_dt, month_name = cm.get_reporting_range(args.month, today)
     ms_str, end_str = start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
     week_start = (today.replace(day=max(1, today.day - 7))).strftime("%Y-%m-%d")
+    yest_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
     print(f"[Metrics] range {ms_str} -> {end_str} ({month_name})")
     print(f"[Metrics] clients: {', '.join(sorted(CAMPAIGN_METRICS_CLIENTS))}")
 
@@ -84,6 +85,8 @@ async def main() -> None:
                     mo = await slc.get_analytics_by_date(cid, ms_str, end_str)
                     month_sent = int(float(mo.get("sent_count", 0) or 0))
                     month_replies = int(float(mo.get("reply_count", 0) or 0))
+                    yd = await slc.get_analytics_by_date(cid, yest_str, yest_str)
+                    yest_sent = int(float(yd.get("sent_count", 0) or 0))
                     analytics = await slc.get_campaign_analytics(cid)
                     leads = await slc.get_campaign_leads(cid)
                 except Exception as exc:  # noqa: BLE001
@@ -96,7 +99,9 @@ async def main() -> None:
                 rows.append(cm.smartlead_metric_row(
                     summary, leads, month_replies, 0,
                     today, SMARTLEAD_POSITIVE_CATEGORY_IDS, client=acc.name,
-                    month_sent=month_sent, start_dt=start_dt, end_dt=end_dt))
+                    month_sent=month_sent, start_dt=start_dt, end_dt=end_dt,
+                    yest_sent=yest_sent,
+                    launch_date=str(camp.get("created_at", ""))[:10]))
 
     for ws in discover_heyreach_workspaces():
         if CAMPAIGN_METRICS_CLIENTS and ws.name.upper() not in CAMPAIGN_METRICS_CLIENTS:
@@ -112,15 +117,20 @@ async def main() -> None:
                         om = await hrc.get_overall_stats(
                             cid, start=start_dt.isoformat().replace("+00:00", "Z"),
                             end=end_dt.isoformat().replace("+00:00", "Z"))
+                        # HeyReach honours a date range, so yesterday is a real
+                        # query rather than a difference between snapshots.
+                        oy = await hrc.get_overall_stats(
+                            cid, start=f"{yest_str}T00:00:00Z",
+                            end=f"{yest_str}T23:59:59Z")
                         leads = await hrc.get_campaign_leads(cid)
                     except Exception as exc:  # noqa: BLE001
                         print(f"  [!] HeyReach {cid} failed: {exc}")
-                        oa, om, leads = {}, {}, []
+                        oa, om, oy, leads = {}, {}, {}, []
                     if not cm.should_include_heyreach_campaign(camp, (om or {}).get("byDayStats", {}) or {}):
                         continue
                     rows.append(cm.heyreach_metric_row(
                         camp, oa, om, leads, today, client=ws.name,
-                        start_dt=start_dt, end_dt=end_dt))
+                        start_dt=start_dt, end_dt=end_dt, overall_yesterday=oy))
         except Exception as exc:  # noqa: BLE001
             print(f"[!] HeyReach workspace {ws.name} failed: {exc}")
 

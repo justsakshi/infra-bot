@@ -33,18 +33,22 @@ COLUMNS = [
     # `client` was added once the tab covered more than one account — without it
     # a shared tab mixes clients' campaigns with no way to tell them apart, and
     # the Total row silently sums across unrelated businesses.
-    "client", "campaign", "platform", "status", "total_leads", "leads_added_month",
+    "client", "campaign", "platform", "launch_date", "status", "total_leads",
+    "leads_added_month",
     "leads_added_yesterday", "leads_in_progress", "leads_not_started", "connections_sent",
-    "connections_accepted", "msg_sent", "positive_responses_yesterday",
+    "connections_sent_yesterday", "connections_accepted", "msg_sent",
+    "msg_sent_yesterday", "positive_responses_yesterday",
     "total_responses_month", "positive_neutral_month",
 ]
 
 # numeric columns summed in the Total row
 _NUMERIC = [
     "total_leads", "leads_added_month", "leads_added_yesterday", "leads_in_progress", "leads_not_started",
-    "connections_sent", "connections_accepted", "msg_sent",
+    "connections_sent", "connections_sent_yesterday", "connections_accepted", "msg_sent",
+    "msg_sent_yesterday",
     "positive_responses_yesterday", "total_responses_month", "positive_neutral_month",
 ]
+# launch_date is deliberately absent from _NUMERIC — summing dates is meaningless.
 
 
 def _parse(dt: str) -> datetime | None:
@@ -223,7 +227,8 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                          yest_replies: int, today: datetime, positive_ids: set[int],
                          client: str = "",
                          month_sent: int = 0, start_dt: datetime | None = None,
-                         end_dt: datetime | None = None) -> dict:
+                         end_dt: datetime | None = None,
+                         yest_sent: int = 0, launch_date: str = "") -> dict:
     added_month = added_yest = pos_neutral = 0
     if start_dt is None or end_dt is None:
         start_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -241,6 +246,10 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         "client": client,
         "campaign": summary.get("name", ""),
         "platform": "Smartlead",
+        # When the campaign was created. Without it, a campaign launched
+        # yesterday shows total == month == yesterday and reads as a bug —
+        # that exact pattern was reported as broken data when it was correct.
+        "launch_date": launch_date,
         "status": summary.get("status", ""),
         "total_leads": _int(summary.get("total_leads", 0)),
         "leads_added_month": added_month,
@@ -249,6 +258,7 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         "leads_not_started": _int(summary.get("not_started", 0)),
         # LinkedIn-only concepts; "-" rather than 0 so nobody reads a real zero.
         "connections_sent": "-",
+        "connections_sent_yesterday": "-",
         "connections_accepted": "-",
         # Sends within the reporting month. RESOLVED (2026-08-06): the earlier
         # note here guessed that the manual sheet used some unknown window. It
@@ -257,6 +267,8 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         # Services V3 2498, HVAC 32, Plumbing 85 — where month-to-date matches
         # every value and all-time matches none.
         "msg_sent": month_sent,
+        # Yesterday-only sends, from Smartlead's dated analytics endpoint.
+        "msg_sent_yesterday": _int(yest_sent),
         # Smartlead exposes no per-day positive-reply count. It could be
         # inferred from lead categories plus timestamps, but that would be a
         # guess presented as a number, so it stays blank until we can source it
@@ -274,7 +286,8 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
 def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: dict,
                         leads: list[dict], today: datetime, client: str = "",
                         start_dt: datetime | None = None,
-                        end_dt: datetime | None = None) -> dict:
+                        end_dt: datetime | None = None,
+                        overall_yesterday: dict | None = None) -> dict:
     """Build the metrics row for one HeyReach campaign.
 
     `overall_alltime` is accepted but no longer read: every activity column is
@@ -306,10 +319,15 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
             pos_yest = _int(v.get("autoTaggedInterested", 0))
             break
 
+    oy = (overall_yesterday or {}).get("overallStats", {}) or {}
+
     return {
         "client": client,
         "campaign": campaign.get("name", ""),
         "platform": "Heyreach",
+        # HeyReach exposes campaign creation as `creationTime`.
+        "launch_date": (_parse(campaign.get("creationTime", "")) or today).date().isoformat()
+        if campaign.get("creationTime") else "",
         "status": campaign.get("status", ""),
         "total_leads": _int(ps.get("totalUsers", 0)),
         "leads_added_month": added_month,
@@ -323,8 +341,12 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         # all-time LinkedIn activity to month-to-date email activity is a
         # number with no meaning.
         "connections_sent": _int(om.get("connectionsSent", 0)),
+        # Yesterday-only window from the same endpoint — HeyReach honours a
+        # date range, so this is a real figure rather than a difference.
+        "connections_sent_yesterday": _int(oy.get("connectionsSent", 0)),
         "connections_accepted": _int(om.get("connectionsAccepted", 0)),
         "msg_sent": _int(om.get("messagesSent", 0)),
+        "msg_sent_yesterday": _int(oy.get("messagesSent", 0)),
         # HeyReach reports this per day, so unlike Smartlead it is a real value.
         "positive_responses_yesterday": pos_yest,
         "total_responses_month": _int(om.get("totalMessageReplies", 0)),
@@ -416,6 +438,8 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         "client": client,
         "campaign": campaign.get("name", ""),
         "platform": "Expandi",
+        # Expandi's campaign object carries `created`.
+        "launch_date": str(campaign.get("created", ""))[:10],
         # Expandi exposes `active` as a bool, not a status string. Mapped onto
         # the same vocabulary the other platforms use so the column stays
         # sortable and filterable.
@@ -444,12 +468,21 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         # From per-lead invited_at/connected_at where the lead cache has swept
         # this campaign; snapshot differencing otherwise.
         "connections_sent": conn_sent_month,
+        # From each lead's own invited_at day where the sweep has covered the
+        # campaign. Expandi has no date filter, so without that data there is
+        # no honest yesterday figure and the cell is "-".
+        "connections_sent_yesterday": (_int(lc.get("invited_yesterday"))
+                                       if lead_data_complete else "-"),
         "connections_accepted": conn_acc_month,
         # Expandi sends its first message as the connection request, so
         # contacted_people tracks initiated. Kept on the stats/snapshot path
         # because a later sequence step is not a new messenger row and so is
         # not visible in the per-lead data.
         "msg_sent": delta("contacted_people", baseline),
+        # Expandi sends its first message as the connection request, so a
+        # message-per-day figure would double-count the invite. Left blank
+        # rather than repeating connections_sent_yesterday under another name.
+        "msg_sent_yesterday": "-",
         "positive_responses_yesterday": delta("interested_people", prev_day),
         # Running totals, not month deltas — see the note above.
         "total_responses_month": replied_total,
