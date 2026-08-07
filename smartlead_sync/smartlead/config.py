@@ -97,11 +97,17 @@ CAMPAIGN_METRICS_SHEET_ID: str = os.getenv("CAMPAIGN_METRICS_SHEET_ID", DEFAULT_
 # Smartlead accounts (by discovered name) to include in the metrics tab.
 # Names come from discover_accounts(), which upper-cases the env-var suffix:
 # SMARTLEAD_API_KEY_BettrData -> "BETTRDATA".
-# Darlean only until the numbers are verified against the team's manual sheet;
-# add clients here (or via the env var) once accuracy is confirmed.
+# This one list gates all three platforms — Smartlead accounts, HeyReach
+# workspaces and Expandi workspaces are each filtered by name against it. A
+# client missing here is discovered and then dropped with no error and no rows,
+# which is indistinguishable from "that client has no campaigns", so the
+# default carries every client the tab actually reports on.
+#
+# BETTRDATA pulls in both its Expandi (LinkedIn) and Smartlead (email)
+# campaigns, since the name matches on both platforms.
 CAMPAIGN_METRICS_CLIENTS: set[str] = {
     c.strip().upper()
-    for c in os.getenv("CAMPAIGN_METRICS_CLIENTS", "DARLEAN").split(",")
+    for c in os.getenv("CAMPAIGN_METRICS_CLIENTS", "DARLEAN,BETTRDATA").split(",")
     if c.strip()
 }
 # Smartlead lead-category ids treated as positive/neutral (from /leads/fetch-categories):

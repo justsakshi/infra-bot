@@ -11,9 +11,16 @@
 | `EXPANDEE_API_KEY` | **yes** | Expandi/Liaufa key. Without it the Expandi block is skipped entirely — no error, no rows. |
 | `EXPANDEE_SECRET` | **yes** | Both are needed; a key without its secret is skipped with a warning. |
 | `MONGO_URI` | already set | Reused for snapshots. If it were missing, Expandi rows would still appear but every month-to-date cell would read `?`. |
+| `CAMPAIGN_METRICS_CLIENTS` | no | Defaults to `DARLEAN,BETTRDATA`, which is what the tab reports on. Only set it to override. |
 
-Add `BETTRDATA` to `CAMPAIGN_METRICS_CLIENTS` as well, or the workspace is
-discovered and then filtered straight back out.
+**If `CAMPAIGN_METRICS_CLIENTS` is already set on Render to `DARLEAN`, it must
+be changed to `DARLEAN,BETTRDATA`** — an explicit env var overrides the default,
+and a client missing from this list is discovered and then dropped with no error
+and no rows. That failure looks exactly like "BettrData has no campaigns".
+
+Note this list gates **all three platforms**. `BETTRDATA` brings in both its
+Expandi (LinkedIn) campaigns and its Smartlead (email) campaigns — the account
+exists on both, and there is no per-platform filter.
 
 ### Why the first days look wrong — and why that is correct
 
