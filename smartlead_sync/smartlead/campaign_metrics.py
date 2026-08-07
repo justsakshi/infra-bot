@@ -354,12 +354,12 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
             return "?"
         return max(0, _int(stats.get(field)) - _int(since.get(field)))
 
-    replied_now = _int(stats.get("replied_msg")) + _int(stats.get("replied_excl_msg"))
-    if baseline is None:
-        replied_month = "?"
-    else:
-        replied_before = _int(baseline.get("replied_msg")) + _int(baseline.get("replied_excl_msg"))
-        replied_month = max(0, replied_now - replied_before)
+    # Responses are reported as running totals, matching how the team's manual
+    # sheet reads them — verified against it, where every response figure agrees
+    # exactly (1/1, 3/3, 3/3, 1/1). Differencing them to a month window would
+    # show 0 for a campaign that has replies but none since the month started,
+    # which reads as "no one answered" rather than "no new answers".
+    replied_total = _int(stats.get("replied_msg")) + _int(stats.get("replied_excl_msg"))
 
     return {
         "client": client,
@@ -375,14 +375,22 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         "leads_added_month": delta("people_in_campaign", baseline),
         "leads_added_yesterday": delta("people_in_campaign", prev_day),
         "leads_in_progress": _int(stats.get("in_queue")),
-        # No "not started" concept — a contact is queued or it is not.
-        "leads_not_started": "-",
+        # Contacts the campaign has never acted on: everyone in it, minus
+        # everyone it has initiated contact with. Verified against the team's
+        # sheet, where the campaigns that have reached every contact
+        # (BD Select 126/126, Persona 2 129/129) show 0 exactly.
+        # `in_queue` is NOT this figure — that is the active send queue, and
+        # using it reports 30 "not started" for a campaign that has already
+        # contacted everyone.
+        "leads_not_started": max(0, _int(stats.get("people_in_campaign"))
+                                 - _int(stats.get("initiated"))),
         "connections_sent": delta("initiated", baseline),
         "connections_accepted": delta("connected", baseline),
         "msg_sent": delta("contacted_people", baseline),
         "positive_responses_yesterday": delta("interested_people", prev_day),
-        "total_responses_month": replied_month,
-        "positive_neutral_month": delta("interested_people", baseline),
+        # Running totals, not month deltas — see the note above.
+        "total_responses_month": replied_total,
+        "positive_neutral_month": _int(stats.get("interested_people")),
     }
 
 

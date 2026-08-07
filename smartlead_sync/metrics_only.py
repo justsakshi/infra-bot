@@ -142,7 +142,11 @@ async def main() -> None:
     if args.dry_run:
         print("\n[Metrics] --dry-run: sheet not written.")
         return
-    SheetsWriter(CAMPAIGN_METRICS_SHEET_ID).write_campaign_metrics(out, month_name=month_name)
+    writer = SheetsWriter(CAMPAIGN_METRICS_SHEET_ID)
+    writer.write_campaign_metrics(out, month_name=month_name)
+    # `rows`, not `out`: `out` already carries subtotal/total rows, which the
+    # per-client writer regenerates for each tab.
+    writer.write_campaign_metrics_per_client(rows, month_name=month_name)
     print(f"\n[Metrics] written to sheet {CAMPAIGN_METRICS_SHEET_ID}")
 
 

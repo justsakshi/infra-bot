@@ -662,6 +662,51 @@ class SheetsWriter:
         self._write_tab(CAMPAIGN_METRICS_TAB_NAME, projected, custom_headers=custom_headers)
         print(f"  [Sheets] Campaign Metrics tab written: {len(rows)} rows")
 
+    def write_campaign_metrics_per_client(self, rows: list[dict],
+                                          month_name: str | None = None) -> None:
+        """Write one 'Campaign Metrics — <CLIENT>' tab per client.
+
+        The shared tab stacks every client with subtotals between them, which is
+        right for an internal overview but awkward to hand to a client — they
+        should not have to scroll past another company's campaigns, and they
+        should not see them at all.
+
+        Rows carry their own `client`, so this groups on that rather than taking
+        a client list: a client with no rows gets no tab, instead of an empty one
+        implying the data failed to load.
+        """
+        from smartlead.config import CAMPAIGN_METRICS_TAB_NAME
+        from smartlead.campaign_metrics import COLUMNS, rows_with_totals
+        if not rows:
+            print("  [Sheets] No campaign metrics rows - skipping per-client tabs.")
+            return
+
+        by_client: dict[str, list[dict]] = {}
+        for r in rows:
+            name = str(r.get("client", "")).strip()
+            if not name:
+                continue  # a Total row, or a row that lost its client
+            by_client.setdefault(name, []).append(r)
+
+        custom_headers = {}
+        if month_name:
+            custom_headers["leads_added_month"] = f"Leads added in {month_name}"
+
+        for client, client_rows in sorted(by_client.items()):
+            # rows_with_totals appends the subtotal; with one client that is the
+            # only total, so the tab ends with a single meaningful figure.
+            out = rows_with_totals(client_rows)
+            # `client` is dropped: every row on the tab is that client, so the
+            # column is a wasted first column on a client-facing sheet.
+            projected = [{c: r.get(c, "") for c in COLUMNS if c != "client"} for r in out]
+            tab = f"{CAMPAIGN_METRICS_TAB_NAME} — {client}"
+            try:
+                self._write_tab(tab, projected, custom_headers=custom_headers)
+                print(f"  [Sheets] {tab}: {len(client_rows)} campaign(s)")
+            except Exception as exc:  # noqa: BLE001
+                # One client's tab failing must not cost the others theirs.
+                print(f"  [Sheets] {tab} failed: {exc}")
+
     CAPACITY_COLUMNS = [
         "client", "status", "demand_per_day", "safe_capacity", "headroom_pct",
         "sendable_inboxes", "bench", "bench_target", "churn_per_month",
@@ -711,7 +756,11 @@ class SheetsWriter:
         num_rows = len(data) + 1  # +1 for header
 
         # Build header row with pretty labels
-        labels = dict(_HEADER_LABELS.get(tab_key, {}))
+        # Exact key first, then longest matching prefix — the per-client tabs
+        # ("Campaign Metrics — DARLEAN") share the base tab's column labels.
+        labels = dict(_HEADER_LABELS.get(tab_key) or next(
+            (v for k, v in sorted(_HEADER_LABELS.items(), key=lambda kv: -len(kv[0]))
+             if tab_key.startswith(k)), {}))
         if custom_headers:
             labels.update(custom_headers)
         header = [labels.get(c, c.replace("_", " ").title()) for c in columns]
@@ -914,7 +963,10 @@ class SheetsWriter:
                     reqs.append(_format_range(sheet_id, ri, ri + 1, col_idx, col_idx + 1,
                                               bg=bg, fg=fg, bold=True, h_align="CENTER"))
 
-        if tab_key == CAMPAIGN_METRICS_TAB_NAME and "status" in columns:
+        # startswith, not ==: the per-client tabs are named
+        # "Campaign Metrics — DARLEAN" and would otherwise silently lose their
+        # status colouring while still writing correct data.
+        if tab_key.startswith(CAMPAIGN_METRICS_TAB_NAME) and "status" in columns:
             col_idx = columns.index("status")
             for ri, row in enumerate(data, start=1):
                 bg, fg = _status_style(str(row.get("status", "")).upper())

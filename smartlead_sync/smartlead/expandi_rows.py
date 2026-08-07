@@ -16,6 +16,60 @@ from smartlead.expandi_accounts import discover_expandi_workspaces
 from smartlead.expandi_store import ExpandiStore
 
 
+# Counters that are summed when the same campaign runs on several LinkedIn
+# accounts. Deliberately not the whole stats dict: step_count is a property of
+# the sequence, not a total, and summing it would report a 12-step campaign as
+# 24-step.
+_SUMMED = (
+    "people_in_campaign", "in_queue", "initiated", "connected",
+    "contacted_people", "replied_msg", "replied_excl_msg",
+    "interested_people", "finished", "stopped",
+)
+
+
+def _merge_by_name(campaigns: list[dict]) -> list[dict]:
+    """Combine campaign instances that share a name across LinkedIn accounts.
+
+    Expandi runs one campaign from several sender profiles, and the API returns
+    each as its own instance under its own account. "BD Select : Data Providers
+    (Tier B)" comes back twice — 60 connections from one profile, 66 from the
+    other. Listed separately they read as two half-sized campaigns; the team's
+    manual sheet reports the one campaign at 126, which is what the client
+    recognises.
+
+    Verified against that sheet: four campaigns match exactly once merged, and
+    the three that do not are higher only in `initiated` (activity since the
+    sheet was made) with accepted counts still matching exactly.
+
+    The first instance seen supplies the identity fields; `id` is kept from it
+    so the snapshot store has a stable key across runs. Sorting by id makes that
+    choice deterministic rather than dependent on account iteration order.
+    """
+    merged: dict[str, dict] = {}
+    for camp in sorted(campaigns, key=lambda c: (str(c.get("name", "")).strip(),
+                                                 c.get("id") or 0)):
+        name = str(camp.get("name", "")).strip()
+        if not name:
+            continue
+        existing = merged.get(name)
+        if existing is None:
+            copy = dict(camp)
+            copy["stats"] = dict(camp.get("stats") or {})
+            copy["_instance_ids"] = [camp.get("id")]
+            merged[name] = copy
+            continue
+        stats = existing["stats"]
+        incoming = camp.get("stats") or {}
+        for field in _SUMMED:
+            stats[field] = int(stats.get(field) or 0) + int(incoming.get(field) or 0)
+        # Active on any profile means the campaign is still running.
+        existing["active"] = bool(existing.get("active")) or bool(camp.get("active"))
+        # Archived only when every instance is.
+        existing["archived"] = bool(existing.get("archived")) and bool(camp.get("archived"))
+        existing["_instance_ids"].append(camp.get("id"))
+    return list(merged.values())
+
+
 async def build_expandi_rows(today: datetime, start_dt: datetime,
                              log: str = "[Metrics]") -> list[dict]:
     """Snapshot today's counters, then build one row per campaign.
@@ -40,19 +94,28 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
         try:
             async with ExpandiClient(ws.api_key, ws.api_secret, ws.name) as exc_client:
                 accounts = await exc_client.list_li_accounts()
-                campaigns: list[dict] = []
+                raw: list[dict] = []
                 for acc in accounts:
                     acc_id = acc.get("id")
                     if acc_id is None:
                         continue
-                    campaigns.extend(await exc_client.list_campaigns(acc_id))
+                    raw.extend(await exc_client.list_campaigns(acc_id))
 
+                campaigns = _merge_by_name(raw)
                 print(f"{log} Expandi {ws.name}: {len(accounts)} account(s), "
-                      f"{len(campaigns)} campaign(s)")
+                      f"{len(raw)} campaign instance(s) -> {len(campaigns)} campaign(s)")
 
                 saved = store.save_snapshot(ws.name, campaigns, today.date())
                 if saved:
                     print(f"{log} Expandi {ws.name}: snapshotted {saved} campaign(s)")
+                # Drop any of today's rows for names no longer reported — see
+                # purge_stale. Without this a renamed or newly-merged campaign
+                # leaves a half-sized row that a later baseline lookup can find.
+                dropped = store.purge_stale(
+                    ws.name, [str(c.get("name", "")).strip() for c in campaigns],
+                    today.date())
+                if dropped:
+                    print(f"{log} Expandi {ws.name}: purged {dropped} stale snapshot(s)")
 
                 for camp in campaigns:
                     if camp.get("archived"):
@@ -65,11 +128,11 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                     # Smartlead side applies, so the tab stays consistent.
                     if not int(stats.get("people_in_campaign") or 0):
                         continue
-                    cid = camp.get("id")
+                    name = str(camp.get("name", "")).strip()
                     rows.append(cm.expandi_metric_row(
                         camp,
-                        store.baseline(ws.name, cid, start_dt.date()),
-                        store.previous_day(ws.name, cid, today.date()),
+                        store.baseline(ws.name, name, start_dt.date()),
+                        store.previous_day(ws.name, name, today.date()),
                         client=ws.name,
                     ))
         except Exception as exc:  # noqa: BLE001

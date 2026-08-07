@@ -338,8 +338,11 @@ async def main() -> None:
 
         if metric_rows:
             campaign_count = len(metric_rows)
+            campaign_rows = metric_rows  # keep the pre-totals rows for the per-client tabs
             metric_rows = cm.rows_with_totals(metric_rows)
-            SheetsWriter(CAMPAIGN_METRICS_SHEET_ID).write_campaign_metrics(metric_rows, month_name=month_name)
+            writer = SheetsWriter(CAMPAIGN_METRICS_SHEET_ID)
+            writer.write_campaign_metrics(metric_rows, month_name=month_name)
+            writer.write_campaign_metrics_per_client(campaign_rows, month_name=month_name)
             clients = sorted({str(r.get("client", "")) for r in metric_rows if r.get("client")})
             print(f"[*] Campaign Metrics tab written: {campaign_count} campaigns "
                   f"across {len(clients)} client(s): {', '.join(clients)}")

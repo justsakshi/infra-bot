@@ -38,20 +38,26 @@ ok(r["leads_in_progress"] == 11, "in_queue -> leads_in_progress")
 ok(r["connections_sent"] == 9, f"initiated 29-20==9 (got {r['connections_sent']})")
 ok(r["connections_accepted"] == 3, f"connected 4-1==3 (got {r['connections_accepted']})")
 ok(r["msg_sent"] == 9, f"contacted 29-20==9 (got {r['msg_sent']})")
-ok(r["total_responses_month"] == 2, f"replies (2+1)-(1+0)==2 (got {r['total_responses_month']})")
-ok(r["positive_neutral_month"] == 2, f"interested 3-1==2 (got {r['positive_neutral_month']})")
+# Responses are running totals, not month deltas — verified against the team's
+# sheet, where every response figure matched the all-time count exactly.
+ok(r["total_responses_month"] == 3, f"replies 2+1==3 all-time (got {r['total_responses_month']})")
+ok(r["positive_neutral_month"] == 3, f"interested==3 all-time (got {r['positive_neutral_month']})")
+# not-started is people minus initiated; in_queue is the send queue, not this.
+ok(r["leads_not_started"] == 16, f"45-29==16 not started (got {r['leads_not_started']})")
 ok(r["leads_added_yesterday"] == 1, f"45-44==1 vs prev day (got {r['leads_added_yesterday']})")
 ok(r["positive_responses_yesterday"] == 1, f"interested 3-2==1 (got {r['positive_responses_yesterday']})")
-ok(r["leads_not_started"] == "-", "no not-started concept in Expandi")
 
 # --- no baseline: month columns must NOT fall back to all-time ---
 nb = expandi_metric_row(CAMP, None, None, client="BETTRDATA")
 ok(nb["connections_sent"] == "?", f"no baseline -> '?' not 29 (got {nb['connections_sent']})")
 ok(nb["msg_sent"] == "?", f"no baseline -> '?' (got {nb['msg_sent']})")
-ok(nb["total_responses_month"] == "?", f"no baseline -> '?' (got {nb['total_responses_month']})")
-ok(nb["positive_neutral_month"] == "?", "no baseline -> '?'")
 ok(nb["leads_added_yesterday"] == "?", "no prev day -> '?'")
 ok(nb["total_leads"] == 45, "total_leads still real without a baseline")
+# Running totals need no baseline, so these are real from the very first run —
+# only the windowed columns depend on snapshot history.
+ok(nb["total_responses_month"] == 3, f"responses real without a baseline (got {nb['total_responses_month']})")
+ok(nb["positive_neutral_month"] == 3, "positive/neutral real without a baseline")
+ok(nb["leads_not_started"] == 16, "not-started real without a baseline")
 
 # A '?' must not be summed into the Total row as a zero or crash it.
 tot = total_row([r, nb], client="BETTRDATA")
@@ -99,5 +105,71 @@ finally:
         if k.startswith("EXPANDEE_"):
             os.environ.pop(k, None)
     os.environ.update(saved)
+
+
+# --- merging campaign instances across LinkedIn accounts ---
+# Expandi runs one campaign from several sender profiles and returns each as its
+# own instance. Real numbers: "BD Select" came back as 60 and 66 connections,
+# and the team's sheet reports the single campaign at 126.
+from smartlead.expandi_rows import _merge_by_name  # noqa: E402
+
+INSTANCES = [
+    {"id": 812428, "name": "BD Select : Data Providers (Tier B)", "active": True,
+     "stats": {"initiated": 60, "connected": 7, "people_in_campaign": 60,
+               "replied_msg": 0, "step_count": 12}},
+    {"id": 812427, "name": "BD Select : Data Providers (Tier B)", "active": False,
+     "stats": {"initiated": 66, "connected": 2, "people_in_campaign": 66,
+               "replied_msg": 1, "step_count": 12}},
+    {"id": 813723, "name": "Bettrdata- Retail", "active": True,
+     "stats": {"initiated": 29, "connected": 4, "people_in_campaign": 45,
+               "replied_msg": 0, "step_count": 12}},
+]
+m = _merge_by_name(INSTANCES)
+ok(len(m) == 2, f"3 instances -> 2 campaigns (got {len(m)})")
+bd = next(c for c in m if c["name"].startswith("BD Select"))
+ok(bd["stats"]["initiated"] == 126, f"60+66==126, matching the manual sheet (got {bd['stats']['initiated']})")
+ok(bd["stats"]["connected"] == 9, f"7+2==9 (got {bd['stats']['connected']})")
+ok(bd["stats"]["replied_msg"] == 1, "replies summed across instances")
+ok(bd["stats"]["step_count"] == 12,
+   f"step_count is NOT summed - a 12-step campaign stays 12 (got {bd['stats']['step_count']})")
+ok(bd["active"] is True, "active on any profile means the campaign is running")
+ok(len(bd["_instance_ids"]) == 2, "both instance ids retained")
+ok(bd["id"] == 812427, f"lowest id wins, so the snapshot key is stable (got {bd['id']})")
+
+# Merging must not disturb a campaign that runs on only one profile.
+retail = next(c for c in m if c["name"] == "Bettrdata- Retail")
+ok(retail["stats"]["initiated"] == 29, "single-instance campaign is unchanged")
+
+# Merging must not mutate the caller's data — build_expandi_rows snapshots the
+# merged list, and a mutated input would corrupt the stored counters.
+ok(INSTANCES[0]["stats"]["initiated"] == 60, "input instances are not mutated")
+
+
+# --- the snapshot store keys on name, not id ---
+# Merging picks one instance's id to survive, and which one can change between
+# runs. An id-keyed snapshot then writes a second row for the same campaign,
+# and a later baseline lookup can find the stale half-sized one — reporting a
+# delta of +66 connections that never happened. Caught in production: the store
+# held id=812428/initiated=60 beside id=812427/initiated=126 for one campaign.
+import inspect  # noqa: E402
+from smartlead import expandi_store as _es  # noqa: E402
+
+_save = inspect.getsource(_es.ExpandiStore.save_snapshot)
+ok('"campaign_name": doc["campaign_name"]' in _save,
+   "save_snapshot upserts on campaign_name")
+ok('"campaign_id"' not in _save.split("UpdateOne")[1].split("{\"$set\"")[0],
+   "save_snapshot filter does not key on campaign_id")
+
+_init = inspect.getsource(_es.ExpandiStore.__init__)
+ok('("campaign_name", 1)' in _init, "unique index is on campaign_name")
+ok('("campaign_id", 1)' not in _init, "unique index is not on campaign_id")
+
+for fn in ("baseline", "previous_day"):
+    src = inspect.getsource(getattr(_es.ExpandiStore, fn))
+    ok("campaign_name" in src, f"{fn} looks up by campaign_name")
+    ok("campaign_id" not in src, f"{fn} does not look up by campaign_id")
+
+ok(hasattr(_es.ExpandiStore, "purge_stale"),
+   "store can purge snapshots for names no longer reported")
 
 print("\nALL PASSED")

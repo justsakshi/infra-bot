@@ -46,8 +46,14 @@ class ExpandiStore:
             client = MongoClient(uri, serverSelectionTimeoutMS=5000)
             client.admin.command("ping")
             self._col = client[HEALTH_HISTORY_DB][EXPANDI_SNAPSHOT_COLLECTION]
+            # Keyed on campaign NAME, not id. Campaigns are merged across
+            # LinkedIn accounts before being stored, so the unit being tracked
+            # is the name; the surviving instance's id can change between runs
+            # and an id-keyed snapshot then leaves a stale half-sized row
+            # alongside the merged one, which a later baseline lookup can pick
+            # up and report as a huge fake delta.
             self._col.create_index(
-                [("workspace", 1), ("campaign_id", 1), ("date", 1)], unique=True)
+                [("workspace", 1), ("campaign_name", 1), ("date", 1)], unique=True)
         except Exception as exc:  # noqa: BLE001
             print(f"  [Expandi] Mongo connect failed ({exc}) - month-to-date disabled.")
             self._col = None
@@ -74,7 +80,7 @@ class ExpandiStore:
             for f in COUNTER_FIELDS:
                 doc[f] = int(stats.get(f) or 0)
             ops.append(UpdateOne(
-                {"workspace": workspace, "campaign_id": doc["campaign_id"],
+                {"workspace": workspace, "campaign_name": doc["campaign_name"],
                  "date": doc["date"]},
                 {"$set": doc}, upsert=True))
         try:
@@ -84,7 +90,7 @@ class ExpandiStore:
             print(f"  [Expandi] snapshot save failed: {exc}")
             return 0
 
-    def baseline(self, workspace: str, campaign_id: int,
+    def baseline(self, workspace: str, campaign_name: str,
                  month_start: date) -> dict | None:
         """The latest snapshot at or before `month_start`, or None.
 
@@ -96,7 +102,7 @@ class ExpandiStore:
             return None
         try:
             return self._col.find_one(
-                {"workspace": workspace, "campaign_id": campaign_id,
+                {"workspace": workspace, "campaign_name": campaign_name,
                  "date": {"$lte": month_start.isoformat()}},
                 sort=[("date", -1)],
             )
@@ -104,7 +110,7 @@ class ExpandiStore:
             print(f"  [Expandi] baseline lookup failed: {exc}")
             return None
 
-    def previous_day(self, workspace: str, campaign_id: int,
+    def previous_day(self, workspace: str, campaign_name: str,
                      today: date) -> dict | None:
         """The most recent snapshot strictly before today — used for the
         'yesterday' columns."""
@@ -112,10 +118,32 @@ class ExpandiStore:
             return None
         try:
             return self._col.find_one(
-                {"workspace": workspace, "campaign_id": campaign_id,
+                {"workspace": workspace, "campaign_name": campaign_name,
                  "date": {"$lt": today.isoformat()}},
                 sort=[("date", -1)],
             )
         except PyMongoError as exc:  # noqa: BLE001
             print(f"  [Expandi] previous-day lookup failed: {exc}")
             return None
+
+    def purge_stale(self, workspace: str, keep_names: list[str], day: date) -> int:
+        """Delete a day's snapshots whose campaign_name is no longer reported.
+
+        Needed once because pre-merge snapshots were keyed by id, leaving
+        half-sized rows for names that now resolve to a single merged campaign.
+        Left in place because the same thing happens whenever a campaign is
+        renamed — the old name's row would otherwise sit in the collection
+        forever and could still be picked up as a baseline.
+        """
+        if self._col is None:
+            return 0
+        try:
+            res = self._col.delete_many({
+                "workspace": workspace,
+                "date": day.isoformat(),
+                "campaign_name": {"$nin": keep_names},
+            })
+            return res.deleted_count or 0
+        except PyMongoError as exc:  # noqa: BLE001
+            print(f"  [Expandi] stale purge failed: {exc}")
+            return 0
