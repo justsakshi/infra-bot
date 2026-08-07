@@ -271,6 +271,13 @@ NC_SUGGEST_CAP: int = int(os.getenv("NC_SUGGEST_CAP", "5"))
 # matched on their full names because the replacement campaigns share a prefix
 # — "non profits ai features" alone would also match the live
 # "Non Profits AI Features (New inboxes)" and remove the wrong row.
+# "bds/bddm" covers the four inherited Expandi campaigns (Outreach and
+# Outreach 2, each Main Flow and Happy Path). They predate this team's work —
+# the oldest launched 2025-08-27 — and carry 1,122 of Expandi's 2,210 leads, so
+# leaving them in makes the client's own activity unreadable. Confirmed with
+# the account owner 2026-08-07. Everything else on Expandi is kept: Agencies
+# twain, all four Data Provider campaigns (including BD Select), and the four
+# August campaigns.
 CAMPAIGN_METRICS_EXCLUDE: list[str] = [
     s.strip().lower()
     for s in os.getenv(
@@ -279,7 +286,8 @@ CAMPAIGN_METRICS_EXCLUDE: list[str] = [
         "non profits ai features campaign,"
         "events - ai features campaign,"
         "architecture & interior design  - new,"
-        "construction - new",
+        "construction - new,"
+        "bds/bddm",
     ).split(",")
     if s.strip()
 ]

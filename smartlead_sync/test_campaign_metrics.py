@@ -86,6 +86,25 @@ ok(not is_excluded_campaign_name("Legal Firms Roundtable", _PATS),
    "unrelated campaign is kept")
 ok(not is_excluded_campaign_name("anything", []), "empty pattern list excludes nothing")
 
+# The four inherited Expandi campaigns are excluded by name. The pattern is
+# "bds/bddm" and NOT a looser "bd" — "BD Select : Data Providers (Tier B)" is
+# the client's own campaign and shares the prefix, so a broader pattern would
+# silently delete 126 real leads from the dashboard.
+from smartlead.config import CAMPAIGN_METRICS_EXCLUDE as _EX  # noqa: E402
+for _n in ["BDS/BDDM Product Outreach - Main Flow",
+           "BDS/BDDM Product Outreach - Happy Path",
+           "BDS/BDDM Product Outreach 2 - Main Flow",
+           "BDS/BDDM Product Outreach 2 - Happy Path"]:
+    ok(is_excluded_campaign_name(_n, _EX), f"inherited campaign excluded: {_n[:34]}")
+for _n in ["BD Select : Data Providers (Tier B)",
+           "Data Providers-Ingest  | Bettrdata",
+           "Data Provider-Ingest | V-2 | Bettrdata",
+           "Data Provider(Persona 2) Select | Bettrdata",
+           "Agencies twain campaign",
+           "Market Place: Agencies", "Bettrdata- Retail",
+           "Bettrdata - Financial Services", "Bettrdata- Healthcare"]:
+    ok(not is_excluded_campaign_name(_n, _EX), f"client's own campaign kept: {_n[:34]}")
+
 # --- launch date and yesterday-only activity ---
 # A campaign launched yesterday legitimately shows total == month == yesterday.
 # Without a launch date on the row that pattern reads as broken data — it was
