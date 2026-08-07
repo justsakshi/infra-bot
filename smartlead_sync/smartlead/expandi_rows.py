@@ -113,8 +113,12 @@ async def _sweep_lead_activity(client, leads, workspace: str,
                 leads.save(workspace, name, rows)
                 known.update(r.get("id") for r in rows if r.get("id") is not None)
                 swept += len(rows)
-    if swept:
-        print(f"{log} Expandi {workspace}: cached {swept} lead row(s)")
+    # Always log, including the zero case. In steady state the sweep fetches
+    # nothing because stop_when halts on the first fully-cached page, and a
+    # silent run is indistinguishable from one that never executed — which is
+    # exactly the ambiguity that makes a daily job hard to trust.
+    print(f"{log} Expandi {workspace}: lead sweep fetched {swept} row(s), "
+          f"cache holds {len(known)}")
 
 
 async def build_expandi_rows(today: datetime, start_dt: datetime,
@@ -182,17 +186,30 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                 await _sweep_lead_activity(exc_client, leads, ws.name,
                                            reportable, log)
 
+                pending = []
                 for camp in reportable:
                     name = str(camp.get("name", "")).strip()
                     yesterday = (today - timedelta(days=1)).date()
+                    lc = leads.counts(ws.name, name, start_dt.date(),
+                                      today.date(), yesterday)
+                    contacted = int((camp.get("stats") or {}).get("initiated") or 0)
+                    if contacted > 0 and int(lc.get("cached", 0)) < contacted:
+                        pending.append(f"{name} ({lc.get('cached', 0)}/{contacted})")
                     rows.append(cm.expandi_metric_row(
                         camp,
                         store.baseline(ws.name, name, start_dt.date()),
                         store.previous_day(ws.name, name, today.date()),
                         client=ws.name,
-                        lead_counts=leads.counts(ws.name, name, start_dt.date(),
-                                                 today.date(), yesterday),
+                        lead_counts=lc,
                     ))
+                if pending:
+                    # These rows are on the less accurate snapshot path. Naming
+                    # them means an incomplete backfill is visible in the log
+                    # rather than quietly reported as a finished figure.
+                    print(f"{log} Expandi {ws.name}: {len(pending)} campaign(s) "
+                          f"still backfilling, using snapshot deltas: "
+                          f"{'; '.join(pending[:5])}"
+                          f"{' …' if len(pending) > 5 else ''}")
         except Exception as exc:  # noqa: BLE001
             print(f"[!] Expandi workspace {ws.name} failed: {exc}")
     return rows
