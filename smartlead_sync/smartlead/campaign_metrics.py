@@ -444,9 +444,21 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         # the same vocabulary the other platforms use so the column stays
         # sortable and filterable.
         "status": "IN_PROGRESS" if campaign.get("active") else "PAUSED",
-        # All-time and correct as-is: a lead count is a standing total, not an
-        # activity figure, so it needs no differencing.
-        "total_leads": _int(stats.get("people_in_campaign")),
+        # Deliberately blank. `people_in_campaign` counts the batch currently
+        # assigned to the sending instances (120 for Market Place: Agencies),
+        # not the leads uploaded to the Shared Campaign (1,146 in the Expandi
+        # UI). Reporting the former under "Total leads" invites a direct
+        # comparison with the Smartlead rows, where that column does mean the
+        # full list — and it read as a bug when the manual sheet disagreed.
+        #
+        # The uploaded total lives on Expandi's internal app API
+        # (/api/v1/campaign-contacts/?batch__campaign=<id>), which rejects the
+        # Open API key/secret and needs a short-lived browser Bearer token. See
+        # docs/superpowers/specs/2026-08-10-expandi-shared-campaign-total-design.md
+        # and docs/EXPANDI_SUPPORT_QUESTION.md. Until that is reachable, an
+        # empty cell says "not available" rather than asserting a wrong number.
+        # Every activity column below is real and verified against the API.
+        "total_leads": "-",
         # From each lead's own `created` timestamp. NOT differenced from
         # people_in_campaign: that is a standing total, so with no snapshot to
         # subtract, the all-time fallback reported every lead the campaign has
@@ -456,15 +468,12 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         "leads_added_month": _int(lc.get("added_month")) if lead_data_complete else "-",
         "leads_added_yesterday": _int(lc.get("added_yesterday")) if lead_data_complete else "-",
         "leads_in_progress": _int(stats.get("in_queue")),
-        # Contacts the campaign has never acted on: everyone in it, minus
-        # everyone it has initiated contact with. Verified against the team's
-        # sheet, where the campaigns that have reached every contact
-        # (BD Select 126/126, Persona 2 129/129) show 0 exactly.
-        # `in_queue` is NOT this figure — that is the active send queue, and
-        # using it reports 30 "not started" for a campaign that has already
-        # contacted everyone.
-        "leads_not_started": max(0, _int(stats.get("people_in_campaign"))
-                                 - _int(stats.get("initiated"))),
+        # Blank for the same reason as total_leads: this was
+        # people_in_campaign minus initiated, so it measured what is left of
+        # the *assigned batch*, not of the uploaded list. With the uploaded
+        # total unavailable there is no honest "not started" figure — the real
+        # backlog is whatever sits in the Shared Campaign, which we cannot see.
+        "leads_not_started": "-",
         # From per-lead invited_at/connected_at where the lead cache has swept
         # this campaign; snapshot differencing otherwise.
         "connections_sent": conn_sent_month,

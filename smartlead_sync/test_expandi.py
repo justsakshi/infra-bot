@@ -33,7 +33,11 @@ PREV = {"people_in_campaign": 44, "initiated": 27, "connected": 3,
 r = expandi_metric_row(CAMP, BASE, PREV, client="BETTRDATA")
 ok(r["platform"] == "Expandi", "platform")
 ok(r["status"] == "IN_PROGRESS", "active True -> IN_PROGRESS")
-ok(r["total_leads"] == 45, f"total_leads is all-time (got {r['total_leads']})")
+# total_leads is blank for Expandi: people_in_campaign counts the batch
+# assigned to the sending instances, not the leads uploaded to the Shared
+# Campaign, and only the latter is comparable with the Smartlead rows.
+ok(r["total_leads"] == "-", f"total_leads blank for Expandi (got {r['total_leads']})")
+ok(r["leads_not_started"] == "-", "not-started blank: it was derived from the same batch figure")
 ok(r["leads_in_progress"] == 11, "in_queue -> leads_in_progress")
 ok(r["connections_sent"] == 9, f"initiated 29-20==9 (got {r['connections_sent']})")
 ok(r["connections_accepted"] == 3, f"connected 4-1==3 (got {r['connections_accepted']})")
@@ -43,7 +47,7 @@ ok(r["msg_sent"] == 9, f"contacted 29-20==9 (got {r['msg_sent']})")
 ok(r["total_responses_month"] == 3, f"replies 2+1==3 all-time (got {r['total_responses_month']})")
 ok(r["positive_neutral_month"] == 3, f"interested==3 all-time (got {r['positive_neutral_month']})")
 # not-started is people minus initiated; in_queue is the send queue, not this.
-ok(r["leads_not_started"] == 16, f"45-29==16 not started (got {r['leads_not_started']})")
+
 # Leads added now come from each lead's own `created` day, not from
 # differencing people_in_campaign against a snapshot. Without swept per-lead
 # data the value is "-" rather than a number derived from a standing total.
@@ -66,14 +70,14 @@ ok(nb["msg_sent"] == "-", f"no baseline -> '-' (got {nb['msg_sent']})")
 ok(nb["leads_added_yesterday"] == "-", "no per-lead data -> '-' for yesterday")
 ok(nb["leads_added_month"] == "-", "no per-lead data -> '-' for the month")
 # Standing totals are unaffected — they answer a question that needs no window.
-ok(nb["total_leads"] == 45, "total_leads still real without a baseline")
+ok(nb["total_leads"] == "-", "total_leads blank regardless of baseline")
 ok(nb["total_responses_month"] == 3, "responses are running totals, still real")
-ok(nb["leads_not_started"] == 16, "not-started is a standing total, still real")
+ok(nb["leads_not_started"] == "-", "not-started blank regardless of baseline")
 # Running totals need no baseline, so these are real from the very first run —
 # only the windowed columns depend on snapshot history.
 ok(nb["total_responses_month"] == 3, f"responses real without a baseline (got {nb['total_responses_month']})")
 ok(nb["positive_neutral_month"] == 3, "positive/neutral real without a baseline")
-ok(nb["leads_not_started"] == 16, "not-started real without a baseline")
+
 
 # A '?' must not be summed into the Total row as a zero or crash it.
 tot = total_row([r, nb], client="BETTRDATA")
@@ -82,7 +86,7 @@ tot = total_row([r, nb], client="BETTRDATA")
 # reported 38 for a month in which 9 connections were sent.
 ok(tot["connections_sent"] == 9,
    f"total counts only known windows, skipping '-' (got {tot['connections_sent']})")
-ok(tot["total_leads"] == 90, f"total_leads 45+45 (got {tot['total_leads']})")
+ok(tot["total_leads"] == 0, "Total row skips the blank Expandi lead counts")
 
 # A non-numeric cell must still be skipped rather than crashing the total —
 # Smartlead rows carry "-" in the LinkedIn-only columns.

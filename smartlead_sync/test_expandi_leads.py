@@ -43,10 +43,8 @@ ok(r["connections_accepted"] == 4,
 # intake and yesterday's, so total == month == yesterday on every row.
 ok(r["leads_added_month"] == 30, f"leads added this month (got {r['leads_added_month']})")
 ok(r["leads_added_yesterday"] == 7, f"leads added yesterday (got {r['leads_added_yesterday']})")
-ok(r["leads_added_yesterday"] != r["total_leads"],
-   "leads added yesterday is never the campaign's whole lead count")
-ok(r["leads_added_month"] != r["total_leads"],
-   "leads added this month is never the campaign's whole lead count")
+ok(r["leads_added_yesterday"] == 7, "leads added yesterday is a real per-day count")
+ok(r["leads_added_month"] == 30, "leads added this month is a real per-day count")
 
 # --- a partially swept campaign must NOT be trusted ---
 # 40 of 126 leads cached would report 12 invites as the month's total, which is
@@ -89,7 +87,7 @@ n2 = expandi_metric_row(CAMP, None, None, client="BETTRDATA", lead_counts=None)
 ok(n2["connections_sent"] == "-", f"no baseline and no cache -> '-' (got {n2['connections_sent']})")
 ok(n2["leads_added_month"] == "-", f"unknowable month intake -> '-' (got {n2['leads_added_month']})")
 ok(n2["leads_added_yesterday"] == "-", "unknowable yesterday intake -> '-'")
-ok(n2["total_leads"] == 126, "standing totals stay populated regardless")
+ok(n2["total_leads"] == "-", "total_leads blank: assigned batch is not the uploaded list")
 ok(n2["leads_in_progress"] == 0, "in-progress is a standing total too")
 
 # A campaign that has sent nothing must not be treated as "complete" just
@@ -102,7 +100,7 @@ z = expandi_metric_row(ZERO, None, None, client="X",
                                     "connected_month": 0})
 ok(z["connections_sent"] == "-",
    f"unknowable window is '-', not a 0 claiming nothing was sent (got {z['connections_sent']})")
-ok(z["leads_not_started"] == 50, "all 50 leads are not started")
+ok(z["leads_not_started"] == "-", "not-started blank: derived from the same batch figure")
 
 # Once the sweep covers the campaign, a genuine zero IS reported — that is the
 # difference between "we know nothing was sent" and "we do not know".
