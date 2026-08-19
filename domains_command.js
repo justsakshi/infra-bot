@@ -29,11 +29,11 @@ const DOMAIN_HELP = [
   '',
   '*Example:* `/domains betterdata.com ingest,clarity,signal,accuracy need=6`',
   '',
-  '*Already-owned domains*',
-  'Domains live in Smartlead are excluded automatically — nothing to do.',
-  'For domains bought but not yet connected to an inbox, record them once:',
-  '`/domains own boughtlastweek.com,another.com`',
-  '`/domains owned` — show what has been recorded.',
+  '*Already-owned domains — nothing to maintain*',
+  'Every domain in the infra asset tracker (`/infra add`) and every Smartlead',
+  'sending domain is excluded automatically, across all clients.',
+  '`/domains owned` — show what it is checking against.',
+  '`/domains own <domains>` — only for a domain that is in neither place yet.',
   '',
   'This suggests names only — buying still happens manually in Zapmail.'
 ].join('\n');
@@ -41,6 +41,9 @@ const DOMAIN_HELP = [
 // Zapmail allows 10 domain searches per 30 minutes. Asking for more than that
 // just yields unchecked names, so cap the request rather than pretend.
 const MAX_NEED = 15;
+
+// Slack renders a literal newline inside these strings.
+const NL = String.fromCharCode(10);
 
 function parseDomainsArgs(text) {
   const tokens = (text || '').trim().split(/\s+/).filter(Boolean);
@@ -271,6 +274,32 @@ function formatDomainResult(r) {
     });
   }
 
+  const est = r.estate || {};
+  const estTotal = Object.values(est).reduce(function (a, b) { return a + b; }, 0);
+  if (estTotal) {
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: (r.estate_complete === false ? ':warning: ' : '')
+            + 'Checked against ' + estTotal + ' domains we already own ('
+            + (est.asset_tracker || 0) + ' from the infra tracker, '
+            + (est.smartlead || 0) + ' from Smartlead)'
+            + (r.estate_complete === false
+               ? ' — a source failed, so this may be incomplete.' : '.')
+      }]
+    });
+  } else if (r.estate_complete === false) {
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: ':warning: Could not read our owned-domain list, so these names '
+            + 'were NOT checked against what we already have.'
+      }]
+    });
+  }
+
   blocks.push({
     type: 'context',
     elements: [{
@@ -310,15 +339,18 @@ function registerDomainsCommand(app, baseDir) {
         if (opts.mode === 'list') {
           const seed = res.seed_file || [];
           const rec = res.registered || [];
+          const tracker = res.asset_tracker || [];
           return respond({
             response_type: 'ephemeral',
-            text: '*Domains recorded as already owned* (' + res.total + ' total)\n'
-                + '\n*Added from Slack* (' + rec.length + '): '
+            text: '*Domains we already own* (' + res.total + ' known)' + NL
+                + NL + '*From the infra asset tracker* (' + tracker.length + ')'
+                + (res.asset_tracker_ok ? '' : '  :warning: _read failed_')
+                + ' — everything added with `/infra add`. No extra work needed.'
+                + NL + '*Added ad hoc* (' + rec.length + '): '
                 + (rec.join(', ') || '_none_')
-                + '\n*From the seed file* (' + seed.length + '): '
+                + NL + '*Seed file* (' + seed.length + '): '
                 + (seed.join(', ') || '_none_')
-                + '\n\n_Domains live in Smartlead are excluded automatically and '
-                + 'are not listed here._'
+                + NL + NL + '_Smartlead sending domains are excluded automatically too._'
           });
         }
         const saved = res.saved || [];

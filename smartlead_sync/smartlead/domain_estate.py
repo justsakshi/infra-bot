@@ -1,16 +1,28 @@
 """Domains already in the estate, so the generator never re-suggests one.
 
-Four sources, merged:
+The team already records every domain they buy in infrabot's asset tracker
+(`/infra add`), including purchase and expiry dates they renew against. That
+tracker is the source of truth, so this module reads it directly rather than
+asking anyone to maintain a second list — a duplicate-entry step nobody would
+keep up, and the one most likely to be skipped precisely when it matters.
 
+Sources, merged (all read-only):
+
+  * **`assets` where type=DOMAIN** — what the team registers by hand. The
+    authoritative list, and the only one that knows about a domain bought but
+    not yet connected to any inbox.
+  * **`assets` where type=INBOX** — each inbox row carries the domain it
+    belongs to, which catches domains added as inboxes without a DOMAIN row.
+  * **`domain_registry`** — written by the deliverability pipeline from live
+    sending data; catches anything in flight that never got a manual entry.
   * **Smartlead** — every sending domain across every configured account.
-    Authoritative for anything already live, and nobody maintains it by hand.
-    Its blind spot: a domain bought but not yet connected to an inbox is
-    invisible, which is exactly the window where a duplicate purchase happens.
-  * **Mongo (`owned_domains`)** — domains the team registers from Slack with
-    `/domains own <domains>`. Covers the blind spot above without a deploy.
-  * **A seed file** (`owned_domains.txt`) — bulk entries checked into the repo,
-    for a list you would rather review in a diff than type into Slack.
+  * **A seed file** (`owned_domains.txt`) — optional, for entries worth
+    reviewing in a diff.
   * **A caller-supplied list** — `exclude=` on a single run, for one-offs.
+
+Every status counts as owned, including Inactive and expired. A lapsed domain
+is safe to re-buy, but a still-registered one is a wasted purchase, and the
+status field cannot reliably tell the two apart.
 
 Deliberately NOT scoped per-client. A domain we own for one client must not be
 suggested for another: the estate is shared, and reusing a name across senders
@@ -37,6 +49,11 @@ except ImportError:  # pragma: no cover
     UpdateOne = None
 
 OWNED_COLLECTION: str = os.getenv("OWNED_DOMAINS_COLLECTION", "owned_domains")
+# infrabot's own asset tracker — what /infra add writes, and what the team
+# already maintains with purchase and expiry dates.
+ASSETS_COLLECTION: str = os.getenv("ASSETS_COLLECTION", "assets")
+DOMAIN_REGISTRY_COLLECTION: str = os.getenv("DOMAIN_REGISTRY_COLLECTION",
+                                            "domain_registry")
 
 # Checked into the repo next to this package's parent, so a bulk list can be
 # reviewed in a diff. Slack-added domains live in Mongo instead.
@@ -96,31 +113,103 @@ def read_seed_file(path: Path = SEED_FILE) -> list[str]:
     return [d for d in (_normalise(line) for line in raw) if d]
 
 
-def _mongo_collection():
-    """The owned_domains collection, or None when Mongo is unavailable."""
+def _mongo_db():
+    """The shared infrabot database, or None when Mongo is unavailable.
+
+    Node connects with mongoose using the database embedded in MONGO_URI, so
+    prefer that database over HEALTH_HISTORY_DB — otherwise this reads an
+    empty database while the asset tracker sits in another one.
+    """
     uri = os.getenv("MONGO_URI", "")
     if not uri or MongoClient is None:
         return None
     try:
         client = MongoClient(uri, serverSelectionTimeoutMS=5000)
         client.admin.command("ping")
-        col = client[HEALTH_HISTORY_DB][OWNED_COLLECTION]
-        col.create_index("domain", unique=True)
-        return col
+        default_db = client.get_default_database()
+        if default_db is not None:
+            return default_db
+        return client[HEALTH_HISTORY_DB]
     except Exception as exc:  # noqa: BLE001
-        print(f"  [Estate] Mongo unavailable ({exc}) — Slack-added domains "
-              "will not be applied", file=sys.stderr)
+        print(f"  [Estate] Mongo unavailable ({exc}) — owned-domain dedupe "
+              "will be incomplete", file=sys.stderr)
         return None
 
 
+def _owned_collection():
+    """The ad-hoc `/domains own` collection, or None."""
+    db = _mongo_db()
+    if db is None:
+        return None
+    try:
+        col = db[OWNED_COLLECTION]
+        col.create_index("domain", unique=True)
+        return col
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Estate] could not open {OWNED_COLLECTION} ({exc})",
+              file=sys.stderr)
+        return None
+
+
+def read_asset_tracker() -> tuple[list[str], bool]:
+    """``(domains, ok)`` from infrabot's own asset tracker.
+
+    Reads three collections in the shared `infrabot` database:
+      * `assets` type=DOMAIN  — the team's manual registrations (`/infra add`)
+      * `assets` type=INBOX   — the `.domain` each inbox belongs to
+      * `domain_registry`     — domains observed by the deliverability pipeline
+
+    ``ok`` is False when the database could not be read at all, so the caller
+    can say "dedupe is degraded" instead of silently suggesting owned domains.
+    """
+    db = _mongo_db()
+    if db is None:
+        return [], False
+
+    found: set[str] = set()
+    ok = False
+    try:
+        assets = db[ASSETS_COLLECTION]
+        # Every status counts, Inactive included — see the module docstring.
+        for row in assets.find({"type": "DOMAIN"}, {"name": 1, "_id": 0}):
+            d = _normalise(str(row.get("name", "")))
+            if d:
+                found.add(d)
+        for row in assets.find({"type": "INBOX"}, {"domain": 1, "_id": 0}):
+            d = _normalise(str(row.get("domain", "")))
+            if d:
+                found.add(d)
+        ok = True
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Estate] could not read the asset tracker ({exc})",
+              file=sys.stderr)
+
+    try:
+        for row in db[DOMAIN_REGISTRY_COLLECTION].find({}, {"domain": 1, "_id": 0}):
+            d = _normalise(str(row.get("domain", "")))
+            if d:
+                found.add(d)
+        ok = True
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Estate] could not read domain_registry ({exc})", file=sys.stderr)
+
+    return sorted(found), ok
+
+
 def read_registered_domains() -> list[str]:
-    """Domains the team added from Slack via `/domains own`."""
-    col = _mongo_collection()
-    if col is None:
+    """Domains recorded ad hoc via `/domains own`.
+
+    Retained for domains that belong nowhere else, but the asset tracker is
+    the primary source — nobody should need this for a domain they already
+    entered with `/infra add`.
+    """
+    db = _mongo_db()
+    if db is None:
         return []
     try:
         return [d for d in (_normalise(str(r.get("domain", "")))
-                            for r in col.find({}, {"domain": 1})) if d]
+                            for r in db[OWNED_COLLECTION].find({}, {"domain": 1}))
+                if d]
     except Exception as exc:  # noqa: BLE001
         print(f"  [Estate] could not read owned domains ({exc})", file=sys.stderr)
         return []
@@ -140,7 +229,7 @@ def register_domains(domains: list[str], added_by: str = "") -> tuple[list[str],
     if not cleaned:
         return [], bad
 
-    col = _mongo_collection()
+    col = _owned_collection()
     if col is None:
         raise RuntimeError("Mongo is not reachable, so the domains were not saved")
 
@@ -154,27 +243,47 @@ def register_domains(domains: list[str], added_by: str = "") -> tuple[list[str],
     return cleaned, bad
 
 
-async def owned_domain_list(extra: list[str] | None = None) -> tuple[list[str], bool]:
-    """``(domains, smartlead_ok)`` — merged estate view.
+async def owned_domain_list(
+    extra: list[str] | None = None,
+) -> tuple[list[str], bool, dict[str, int]]:
+    """``(domains, complete, counts)`` — merged estate view.
 
-    ``smartlead_ok`` is False when Smartlead could not be reached at all, so
-    the caller can warn that dedupe ran on the manual sources only.
+    ``complete`` is False when a source we expected to read failed, so the
+    caller can warn that dedupe is degraded rather than quietly suggesting a
+    domain we already own. ``counts`` reports per-source totals for display.
+
+    The asset tracker is checked first and is the one source whose failure
+    genuinely degrades the result: it is where the team records every purchase.
     """
     merged: set[str] = set()
-    smartlead_ok = True
+    counts: dict[str, int] = {}
+    complete = True
+
+    tracker, tracker_ok = read_asset_tracker()
+    merged.update(tracker)
+    counts["asset_tracker"] = len(tracker)
+    if not tracker_ok:
+        complete = False
+
     try:
         fetched = await fetch_owned_domains()
         merged.update(fetched)
-        if not fetched:
-            smartlead_ok = False
+        counts["smartlead"] = len(fetched)
     except Exception as exc:  # noqa: BLE001
-        print(f"  [Estate] ⚠ Smartlead unreachable ({exc}) — dedupe will use "
-              "only the recorded and passed-in domains", file=sys.stderr)
-        smartlead_ok = False
+        print(f"  [Estate] ⚠ Smartlead unreachable ({exc})", file=sys.stderr)
+        counts["smartlead"] = 0
+        complete = False
 
-    merged.update(read_seed_file())
-    merged.update(read_registered_domains())
-    for d in (_normalise(x) for x in (extra or [])):
-        if d:
-            merged.add(d)
-    return sorted(merged), smartlead_ok
+    seed = read_seed_file()
+    merged.update(seed)
+    counts["seed_file"] = len(seed)
+
+    recorded = read_registered_domains()
+    merged.update(recorded)
+    counts["recorded"] = len(recorded)
+
+    manual = [d for d in (_normalise(x) for x in (extra or [])) if d]
+    merged.update(manual)
+    counts["passed_in"] = len(manual)
+
+    return sorted(merged), complete, counts

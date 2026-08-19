@@ -120,7 +120,9 @@ def _print_plan(purchasable: list[Candidate], registrars: list[str],
 
 def _emit_json(cands: list[Candidate], purchasable: list[Candidate],
                vocab: ClientVocabulary, registrars: list[str],
-               per_batch: int, day_gap: int, checked: bool) -> None:
+               per_batch: int, day_gap: int, checked: bool,
+               estate_counts: dict[str, int] | None = None,
+               estate_ok: bool = True) -> None:
     """Machine-readable result for the Slack bot.
 
     Printed to stdout as a single line so the Node side can parse the last
@@ -130,12 +132,15 @@ def _emit_json(cands: list[Candidate], purchasable: list[Candidate],
     batches = (purchase_schedule([c.domain for c in purchasable], registrars,
                                  per_batch=per_batch, day_gap=day_gap)
                if purchasable else [])
+    estate_counts = estate_counts or {}
     payload = {
         "client": vocab.name,
         "main_domain": vocab.main_domain,
         "vocabulary": vocab.token_bank(),
         "brand_fragments": vocab.brand_fragment_tokens(),
         "availability_checked": checked,
+        "estate": estate_counts,
+        "estate_complete": estate_ok,
         "generated": len(cands),
         "passing": [
             {
@@ -173,20 +178,28 @@ def _run_estate_subcommand(argv: list[str]) -> int:
     arguments — they are estate bookkeeping, not generation.
     """
     from smartlead.domain_estate import (
-        read_registered_domains, read_seed_file, register_domains,
+        read_asset_tracker, read_registered_domains, read_seed_file,
+        register_domains,
     )
     as_json = "--json" in argv
 
     if "--list-owned" in argv:
+        tracker, tracker_ok = read_asset_tracker()
         seed = read_seed_file()
         recorded = read_registered_domains()
+        total = len(set(tracker) | set(seed) | set(recorded))
         if as_json:
-            print(json.dumps({"seed_file": seed, "registered": recorded,
-                              "total": len(set(seed) | set(recorded))}))
+            print(json.dumps({"asset_tracker": tracker,
+                              "asset_tracker_ok": tracker_ok,
+                              "seed_file": seed, "registered": recorded,
+                              "total": total}))
         else:
+            print(f"Asset tracker ({len(tracker)})"
+                  + ("" if tracker_ok else "  [READ FAILED]"))
             print(f"Seed file ({len(seed)}): {', '.join(seed) or '(none)'}")
-            print(f"Added from Slack ({len(recorded)}): "
+            print(f"Added ad hoc ({len(recorded)}): "
                   f"{', '.join(recorded) or '(none)'}")
+            print(f"Total unique: {total}")
         return 0
 
     i = argv.index("--register")
@@ -287,14 +300,19 @@ async def main() -> int:
     # Domains we already own must never be suggested again, for any client.
     owned: list[str] = []
     estate_ok = True
+    estate_counts: dict[str, int] = {}
     if args.no_estate:
         owned = _split(args.exclude)
         estate_ok = False
     else:
-        owned, estate_ok = await owned_domain_list(_split(args.exclude))
+        owned, estate_ok, estate_counts = await owned_domain_list(_split(args.exclude))
     if owned:
-        log(f"[Domains] excluding {len(owned)} domains already in the estate"
-            + ("" if estate_ok else " (Smartlead lookup incomplete — see warnings)"))
+        detail = ", ".join(f"{k}={v}" for k, v in estate_counts.items() if v)
+        log(f"[Domains] excluding {len(owned)} domains already owned"
+            + (f" ({detail})" if detail else "")
+            + ("" if estate_ok else " — WARNING: a source failed, dedupe is incomplete"))
+    elif not args.no_estate:
+        log("[Domains] ⚠ no owned domains found — dedupe is not protecting this run")
     owned_stems = owned_stems_from(owned)
 
     # Generate a surplus: availability kills most real-word .com names.
@@ -317,7 +335,8 @@ async def main() -> int:
     # payload and nothing else.
     if args.json:
         _emit_json(cands, purchasable, vocab, _split(args.registrars),
-                   args.per_batch, args.day_gap, checked=not args.no_network)
+                   args.per_batch, args.day_gap, checked=not args.no_network,
+                   estate_counts=estate_counts, estate_ok=estate_ok)
         return 0
 
     _print_candidates(cands, args.show_rejects)
