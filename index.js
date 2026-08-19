@@ -15,6 +15,7 @@ const csv = require('csv-parser');
 const { Readable } = require('stream');
 const axios = require('axios');
 const { syncAllAssetsToSheet } = require('./sheets');
+const { startDomainsApp } = require('./domains_command');
 
 dayjs.extend(customParseFormat);
 
@@ -51,6 +52,9 @@ const PORT = process.env.PORT || 10000;
 mongoose.set('bufferCommands', false);
 
 /* -------------------- Slack App -------------------- */
+// Started in start(); held at module scope so shutdown() can close its socket.
+let domainsApp = null;
+
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   appToken: process.env.SLACK_APP_TOKEN,
@@ -1583,6 +1587,15 @@ async function start() {
     await app.start();
     console.log('✅ Slack bot running in socket mode');
 
+    // /domains lives on its own Slack app (separate tokens) because the Infra
+    // Bot app is owned by a deactivated user and its commands cannot be
+    // edited. Failure here must not stop the main bot from serving.
+    try {
+      domainsApp = await startDomainsApp(__dirname);
+    } catch (domErr) {
+      console.warn('⚠️  /domains app failed to start:', domErr?.message || domErr);
+    }
+
     expressApp.listen(PORT, '0.0.0.0', () => {
       console.log(`✅ Upload UI running at http://0.0.0.0:${PORT}`);
     });
@@ -1843,6 +1856,10 @@ async function shutdown(signal) {
     // a "server explicit disconnect" on the overlapping old container.
     await app.stop();
     console.log('✅ Slack socket disconnected');
+    if (domainsApp) {
+      await domainsApp.stop();
+      console.log('✅ /domains socket disconnected');
+    }
   } catch (err) {
     console.warn('⚠️  Error stopping Slack app:', err?.message || err);
   }
