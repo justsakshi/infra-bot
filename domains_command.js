@@ -29,7 +29,12 @@ const DOMAIN_HELP = [
   '',
   '*Example:* `/domains betterdata.com ingest,clarity,signal,accuracy need=6`',
   '',
-  'Domains already in Smartlead are excluded automatically.',
+  '*Already-owned domains*',
+  'Domains live in Smartlead are excluded automatically — nothing to do.',
+  'For domains bought but not yet connected to an inbox, record them once:',
+  '`/domains own boughtlastweek.com,another.com`',
+  '`/domains owned` — show what has been recorded.',
+  '',
   'This suggests names only — buying still happens manually in Zapmail.'
 ].join('\n');
 
@@ -40,6 +45,20 @@ const MAX_NEED = 15;
 function parseDomainsArgs(text) {
   const tokens = (text || '').trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return { error: 'help' };
+
+  // Estate bookkeeping: `own <domains>` records domains we already have so
+  // they are never suggested again; `owned` lists what is recorded.
+  const verb = tokens[0].toLowerCase();
+  if (verb === 'own' || verb === 'add') {
+    const domains = tokens.slice(1).join(',');
+    if (!domains) {
+      return { error: 'Give me the domains to record, e.g. `/domains own boughtlastweek.com,another.com`' };
+    }
+    return { mode: 'register', domains };
+  }
+  if (verb === 'owned' || verb === 'list') {
+    return { mode: 'list' };
+  }
 
   const opts = { need: 8, exclude: '', words: '', mainDomain: '', client: '' };
   const positional = [];
@@ -85,18 +104,31 @@ function parseDomainsArgs(text) {
   return opts;
 }
 
-function runDomainGenerator(opts, baseDir) {
+function buildGeneratorArgs(opts, user) {
+  if (opts.mode === 'register') {
+    const args = ['domain_generator.py', '--register', opts.domains, '--json'];
+    if (user) args.push('--added-by', user);
+    return args;
+  }
+  if (opts.mode === 'list') {
+    return ['domain_generator.py', '--list-owned', '--json'];
+  }
+  const args = [
+    'domain_generator.py',
+    '--client', opts.client,
+    '--main-domain', opts.mainDomain,
+    '--value', opts.words,
+    '--need', String(opts.need),
+    '--json'
+  ];
+  if (opts.exclude) args.push('--exclude', opts.exclude);
+  return args;
+}
+
+function runDomainGenerator(opts, baseDir, user) {
   return new Promise((resolve, reject) => {
     const syncDir = path.join(baseDir, 'smartlead_sync');
-    const args = [
-      'domain_generator.py',
-      '--client', opts.client,
-      '--main-domain', opts.mainDomain,
-      '--value', opts.words,
-      '--need', String(opts.need),
-      '--json'
-    ];
-    if (opts.exclude) args.push('--exclude', opts.exclude);
+    const args = buildGeneratorArgs(opts, user);
 
     // In the container `python` is the image interpreter and has every
     // dependency. Locally it usually is not — the deps live in
@@ -265,6 +297,50 @@ function registerDomainsCommand(app, baseDir) {
       return respond({ response_type: 'ephemeral', text: ':x: ' + opts.error });
     }
 
+    const user = (command.user_name || command.user_id || '').toString();
+
+    // Bookkeeping verbs answer immediately and stay ephemeral — they are
+    // admin, not a result the channel needs.
+    if (opts.mode === 'register' || opts.mode === 'list') {
+      try {
+        const res = await runDomainGenerator(opts, baseDir, user);
+        if (res.error) {
+          return respond({ response_type: 'ephemeral', text: ':x: ' + res.error });
+        }
+        if (opts.mode === 'list') {
+          const seed = res.seed_file || [];
+          const rec = res.registered || [];
+          return respond({
+            response_type: 'ephemeral',
+            text: '*Domains recorded as already owned* (' + res.total + ' total)\n'
+                + '\n*Added from Slack* (' + rec.length + '): '
+                + (rec.join(', ') || '_none_')
+                + '\n*From the seed file* (' + seed.length + '): '
+                + (seed.join(', ') || '_none_')
+                + '\n\n_Domains live in Smartlead are excluded automatically and '
+                + 'are not listed here._'
+          });
+        }
+        const saved = res.saved || [];
+        const bad = res.rejected || [];
+        let msg = saved.length
+          ? ':white_check_mark: Recorded ' + saved.length + ' domain(s): '
+            + saved.map(d => '`' + d + '`').join(', ')
+            + '\nThese will never be suggested again, for any client.'
+          : ':warning: Nothing was recorded.';
+        if (bad.length) {
+          msg += '\n:x: Skipped (not valid domains): ' + bad.join(', ');
+        }
+        return respond({ response_type: 'ephemeral', text: msg });
+      } catch (err) {
+        console.error('[domains] estate command failed:', err);
+        return respond({
+          response_type: 'ephemeral',
+          text: ':x: Failed: ' + err.message
+        });
+      }
+    }
+
     await respond({
       response_type: 'in_channel',
       text: 'Generating domains for *' + opts.client + '* — excluding '
@@ -272,7 +348,7 @@ function registerDomainsCommand(app, baseDir) {
     });
 
     try {
-      const result = await runDomainGenerator(opts, baseDir);
+      const result = await runDomainGenerator(opts, baseDir, user);
       await respond({
         response_type: 'in_channel',
         blocks: formatDomainResult(result),

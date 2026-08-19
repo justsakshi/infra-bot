@@ -294,3 +294,30 @@ def test_purchase_batch_is_immutable():
     b = PurchaseBatch(day_offset=0, registrar="A", domains=("a.com",))
     with pytest.raises(Exception):
         b.registrar = "B"  # type: ignore[misc]
+
+
+# ── owned-domain sources (seed file parsing) ─────────────────────────────────
+
+def test_seed_file_normalizes_and_filters(tmp_path):
+    """The seed file is hand-edited, so it must tolerate URLs, casing,
+    trailing space, comments, blanks, and reject non-domains outright."""
+    from smartlead.domain_estate import read_seed_file
+
+    f = tmp_path / "owned_domains.txt"
+    f.write_text(
+        "# a comment\n"
+        "\n"
+        "boughtlastweek.com   \n"
+        "HTTPS://Another.COM/some/path\n"
+        "notadomain\n"
+        "sales@thirdparty.com\n",
+        encoding="utf-8",
+    )
+    assert read_seed_file(f) == [
+        "boughtlastweek.com", "another.com", "thirdparty.com",
+    ]
+
+
+def test_seed_file_missing_is_not_an_error(tmp_path):
+    from smartlead.domain_estate import read_seed_file
+    assert read_seed_file(tmp_path / "does-not-exist.txt") == []

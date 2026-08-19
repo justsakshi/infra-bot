@@ -166,7 +166,67 @@ def _emit_json(cands: list[Candidate], purchasable: list[Candidate],
     print(json.dumps(payload))
 
 
+def _run_estate_subcommand(argv: list[str]) -> int:
+    """`--register` / `--list-owned`: manage the owned-domain list.
+
+    Handled before the main parser because they take no client or vocabulary
+    arguments — they are estate bookkeeping, not generation.
+    """
+    from smartlead.domain_estate import (
+        read_registered_domains, read_seed_file, register_domains,
+    )
+    as_json = "--json" in argv
+
+    if "--list-owned" in argv:
+        seed = read_seed_file()
+        recorded = read_registered_domains()
+        if as_json:
+            print(json.dumps({"seed_file": seed, "registered": recorded,
+                              "total": len(set(seed) | set(recorded))}))
+        else:
+            print(f"Seed file ({len(seed)}): {', '.join(seed) or '(none)'}")
+            print(f"Added from Slack ({len(recorded)}): "
+                  f"{', '.join(recorded) or '(none)'}")
+        return 0
+
+    i = argv.index("--register")
+    if i + 1 >= len(argv):
+        print("ERROR: --register needs a comma-separated domain list",
+              file=sys.stderr)
+        return 2
+
+    added_by = ""
+    if "--added-by" in argv:
+        j = argv.index("--added-by")
+        if j + 1 < len(argv):
+            added_by = argv[j + 1]
+
+    domains = [d for d in argv[i + 1].split(",") if d.strip()]
+    try:
+        saved, bad = register_domains(domains, added_by=added_by)
+    except RuntimeError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps({"saved": saved, "rejected": bad}))
+    else:
+        if saved:
+            print(f"Recorded {len(saved)} domain(s): {', '.join(saved)}")
+        if bad:
+            print(f"Skipped {len(bad)} unusable entr(ies): {', '.join(bad)}")
+    return 0
+
+
+
 async def main() -> int:
+    # Estate bookkeeping short-circuits the generator's own argument contract.
+    if "--register" in sys.argv or "--list-owned" in sys.argv:
+        return _run_estate_subcommand(sys.argv[1:])
+
     ap = argparse.ArgumentParser(description="Generate + screen cold email domains")
     ap.add_argument("--client", required=True, help="Client name (labels only)")
     ap.add_argument("--main-domain", required=True,

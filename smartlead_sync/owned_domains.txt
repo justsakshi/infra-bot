@@ -1,0 +1,21 @@
+# Domains we already own that Smartlead does not know about.
+#
+# Smartlead is the primary source and needs no maintenance: every domain with
+# a connected inbox is excluded automatically. This file covers its blind spot
+# — domains bought but not yet connected — plus anything held outside our
+# Smartlead accounts.
+#
+# The generator will never suggest a domain listed here, for any client.
+#
+# Format: one domain per line. Blank lines and #-comments are ignored, so add
+# a note explaining why a domain is here.
+#
+# Editing this file needs a commit + deploy. To add a domain without one, use
+# Slack instead:
+#
+#     /domains own newdomain.com,another.com
+#
+# Slack-added domains are stored in Mongo and merged with this list.
+
+# Example (delete when you add real entries):
+# boughtlastweek.com     # registered 2026-08-14, inboxes not created yet
