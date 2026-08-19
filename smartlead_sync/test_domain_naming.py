@@ -321,3 +321,67 @@ def test_seed_file_normalizes_and_filters(tmp_path):
 def test_seed_file_missing_is_not_an_error(tmp_path):
     from smartlead.domain_estate import read_seed_file
     assert read_seed_file(tmp_path / "does-not-exist.txt") == []
+
+
+# ── DNS registration gate ────────────────────────────────────────────────────
+#
+# Zapmail's search answers "can I suggest names around this?", not "is this
+# exact name free?" — it reported five registered .com compounds as available
+# on 2026-08-19. DNS is the authority: a registered domain publishes NS
+# records. These tests pin the response decoding, not the network.
+
+import asyncio  # noqa: E402
+
+import pytest  # noqa: E402  (already imported above; kept local for clarity)
+
+from smartlead.domain_availability import _is_registered  # noqa: E402
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeClient:
+    """Stands in for httpx.AsyncClient, returning one canned DNS answer."""
+
+    def __init__(self, payload=None, raises=False):
+        self._payload = payload
+        self._raises = raises
+
+    async def get(self, *_args, **_kwargs):
+        if self._raises:
+            raise RuntimeError("resolver unreachable")
+        return _FakeResponse(self._payload)
+
+
+def _check(payload=None, raises=False):
+    return asyncio.run(_is_registered(_FakeClient(payload, raises), "example.com"))
+
+
+def test_nxdomain_means_not_registered():
+    assert _check({"Status": 3}) is False
+
+
+def test_ns_answer_means_registered():
+    assert _check({"Status": 0, "Answer": [{"type": 2, "data": "ns1.example."}]}) is True
+
+
+def test_noerror_with_authority_only_is_inconclusive():
+    """The name exists but publishes no NS at this level — never call it free."""
+    assert _check({"Status": 0, "Authority": [{"type": 6}]}) is None
+
+
+def test_servfail_is_inconclusive_not_available():
+    """A broken lookup must not be read as 'nobody owns this'."""
+    assert _check({"Status": 2}) is None
+
+
+def test_resolver_error_is_inconclusive():
+    assert _check(raises=True) is None

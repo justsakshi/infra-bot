@@ -201,6 +201,58 @@ class _RateLimited(Exception):
     """Zapmail returned 429; stop spending calls this run."""
 
 
+# ── registration check (authoritative, free) ─────────────────────────────────
+
+async def _is_registered(client: httpx.AsyncClient, domain: str) -> bool | None:
+    """True when the domain resolves NS records, i.e. it is already taken.
+
+    A registered domain has nameservers in the global DNS; an unregistered one
+    returns NXDOMAIN. This is the ground truth Zapmail's search does not give
+    us, it costs nothing, and it is not rate limited.
+
+    Returns None on lookup failure so an unreachable resolver is never read as
+    "available".
+    """
+    try:
+        resp = await client.get(
+            "https://dns.google/resolve",
+            params={"name": domain, "type": "NS"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return None
+
+    status = data.get("Status")
+    if status == 3:  # NXDOMAIN — nobody has registered it
+        return False
+    if status != 0:
+        return None
+    # An NS answer means registered. A SOA-only answer (no NS records) can
+    # still mean registered-but-unconfigured, so treat any answer as taken.
+    if data.get("Answer"):
+        return True
+    # NOERROR with no answer: the name exists in DNS but publishes no NS at
+    # this level. Ambiguous — do not claim it is free.
+    return None if data.get("Authority") else False
+
+
+async def filter_registered(
+    domains: list[str], *, concurrency: int = 10,
+) -> dict[str, bool | None]:
+    """``{domain: is_registered}``. None means the check was inconclusive."""
+    if not domains:
+        return {}
+    sem = asyncio.Semaphore(concurrency)
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        async def one(d: str) -> tuple[str, bool | None]:
+            async with sem:
+                return d, await _is_registered(client, d)
+        return dict(await asyncio.gather(*(one(d) for d in domains)))
+
+
 async def check_availability(
     domains: list[str],
     *,
@@ -315,7 +367,28 @@ async def enrich(
         return candidates
 
     domains = [c.domain for c in passing]
-    avail = await check_availability(domains, max_calls=max_calls)
+
+    # DNS first: it is free, unlimited, and authoritative about registration,
+    # whereas Zapmail's search only tells us whether it can offer SUGGESTIONS
+    # around a name. Measured 2026-08-19: Zapmail reported smarttalent.com,
+    # smartsearch.com and three more as available when all five resolve NS
+    # records and are plainly registered. Anything DNS says is taken is taken,
+    # and no Zapmail call is spent on it.
+    registered = await filter_registered(domains)
+    maybe_free = [d for d in domains
+                  if registered.get(d) is False]
+    unknown_reg = [d for d in domains if registered.get(d) is None]
+    if unknown_reg:
+        print(f"  [Domains] {len(unknown_reg)} name(s) could not be checked in DNS; "
+              "treating as unverified rather than available", file=sys.stderr)
+
+    avail = await check_availability(maybe_free, max_calls=max_calls)
+    # Domains DNS proved registered are unavailable regardless of Zapmail.
+    for d in domains:
+        if registered.get(d) is True:
+            avail[d] = (False, None)
+        elif registered.get(d) is None and d not in avail:
+            avail[d] = (None, None)
 
     listed: dict[str, tuple[str, ...]] = {}
     if not skip_blacklist:

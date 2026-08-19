@@ -212,11 +212,21 @@ function formatDomainResult(r) {
       text: { type: 'mrkdwn', text: '*Available:*\n' + lines.join('\n') }
     });
   } else if (r.availability_checked) {
+    // Almost always the same cause: common two-word English compounds in .com
+    // were all registered years ago. Distinctive or coined words are the fix,
+    // so say that rather than just reporting nothing.
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: ':warning: None of the generated names are available. Try different describing words.'
+        text: ':warning: *All ' + passing.length + ' names are already registered.*' + NL
+            + NL + 'Common two-word `.com` compounds were taken years ago. '
+            + 'Try words that are more specific to this client:' + NL
+            + '• the niche they serve, not the category '
+            + '(`_dental_`, `_hvac_`, not `_business_`)' + NL
+            + '• the outcome, not the activity '
+            + '(`_placed_`, `_retained_`, not `_search_`)' + NL
+            + '• two-word coinages are fine — they only have to read like a brand'
       }
     });
   } else {
