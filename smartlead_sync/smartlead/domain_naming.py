@@ -141,9 +141,12 @@ class ClientVocabulary:
         their own brand — but every name built from one is rejected as a
         permutation, so the caller should surface them rather than let the
         operator wonder why half their vocabulary produced nothing.
+
+        Generic nouns inside the stem are NOT reported: 'data' in 'bettrdata'
+        stays usable, so flagging it would send the operator hunting for a
+        replacement they do not need.
         """
-        stem = self.main_stem()
-        return [t for t in self.token_bank() if len(t) >= 4 and t in stem]
+        return sorted(_stem_fragments(self.main_stem(), tuple(self.token_bank())))
 
 
 def _sld_of(domain: str) -> str:
@@ -156,17 +159,63 @@ def _similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def _stem_fragments(main_stem: str, tokens: tuple[str, ...]) -> set[str]:
-    """Vocabulary tokens that are themselves pieces of the main stem.
+# Generic English nouns that carry no brand identity even when they appear in
+# a client's own domain. 'bettrdata' contains 'data', but 'data' identifies
+# nobody — thousands of companies use it, so a recipient cannot read it as
+# "same sender". The distinctive half ('bettr') is what must never reappear.
+#
+# Only add a word here if seeing it ALONE would not bring one company to mind.
+GENERIC_BRAND_WORDS: frozenset[str] = frozenset({
+    "data", "mail", "email", "lead", "leads", "send", "sales", "market",
+    "marketing", "media", "group", "tech", "digital", "cloud", "soft",
+    "systems", "system", "solutions", "labs", "works", "global", "world",
+    "first", "prime", "core", "next", "smart", "point", "link", "connect",
+    "health", "care", "home", "auto", "food", "travel", "money", "pay",
+    "shop", "store", "trade", "build", "design", "studio", "agency",
+    "partners", "capital", "ventures", "consulting", "services", "service",
+})
 
-    'preciseleads' + vocabulary {precise, leads, signal} yields {precise,
-    leads}. Reusing EITHER of those as a name component rebuilds a visible
-    piece of the brand, which is the pattern recipients and list operators
-    both read as "same sender, new domain".
+
+def _distinctive_stem_parts(main_stem: str) -> set[str]:
+    """What is left of the stem after removing generic nouns.
+
+    'bettrdata' -> {'bettr'}; 'preciseleads' -> {'precise'}; 'melior' ->
+    {'melior'} (nothing generic to strip). These are the pieces that identify
+    the client, so no candidate may contain one.
+
+    Remainders shorter than 4 characters are dropped: they collide with
+    ordinary words too easily to be a reliable brand signal.
     """
     if not main_stem:
         return set()
-    return {t for t in tokens if len(t) >= 4 and t in main_stem}
+    parts = {main_stem}
+    for generic in GENERIC_BRAND_WORDS:
+        if generic in main_stem and generic != main_stem:
+            for piece in main_stem.split(generic):
+                if len(piece) >= 4:
+                    parts.add(piece)
+    return {p for p in parts if len(p) >= 4}
+
+
+
+def _stem_fragments(main_stem: str, tokens: tuple[str, ...]) -> set[str]:
+    """Vocabulary tokens that are DISTINCTIVE pieces of the main stem.
+
+    'preciseleads' + {precise, leads, signal} yields {precise} only: 'precise'
+    identifies the brand, whereas 'leads' is a generic industry noun that
+    thousands of senders use. Reusing a distinctive fragment rebuilds a
+    visible piece of the brand — the pattern recipients and list operators
+    both read as "same sender, new domain". Reusing a generic noun does not.
+
+    This is why 'bettrdata' can still build names from 'data' but never from
+    'bettr'.
+    """
+    if not main_stem:
+        return set()
+    return {
+        t for t in tokens
+        if len(t) >= 4 and t in main_stem and t not in GENERIC_BRAND_WORDS
+    }
 
 
 def _is_brand_permutation(sld: str, main_stem: str,
@@ -188,6 +237,14 @@ def _is_brand_permutation(sld: str, main_stem: str,
         return True
     if main_stem in sld or sld in main_stem:
         return True
+    # The distinctive remainder of the stem, once generic nouns are stripped:
+    # 'bettrdata' minus 'data' leaves 'bettr'. A candidate containing that
+    # remainder is a brand permutation even when the operator never supplied
+    # it as a vocabulary word ('bettringest'), so check the string itself
+    # rather than trusting the token list.
+    for remainder in _distinctive_stem_parts(main_stem):
+        if remainder in sld:
+            return True
     for affix in BANNED_BRAND_AFFIXES:
         if sld == f"{affix}{main_stem}" or sld == f"{main_stem}{affix}":
             return True

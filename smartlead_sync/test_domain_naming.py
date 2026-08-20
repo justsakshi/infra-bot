@@ -70,19 +70,20 @@ def preciseleads() -> ClientVocabulary:
 
 
 def test_brand_fragment_tokens_are_reported(preciseleads):
-    assert set(preciseleads.brand_fragment_tokens()) == {"precise", "leads"}
+    """Only the DISTINCTIVE half is reported. 'leads' is a generic industry
+    noun thousands of senders use, so it stays usable (standup 2026-08-20)."""
+    assert set(preciseleads.brand_fragment_tokens()) == {"precise"}
 
 
 @pytest.mark.parametrize("sld,tokens", [
     ("precisesignal", ("precise", "signal")),
     ("signalprecise", ("signal", "precise")),
     ("leadsprecise", ("leads", "precise")),
-    ("leadsoutbound", ("leads", "outbound")),
     ("preciseoutbound", ("precise", "outbound")),
 ])
 def test_names_reusing_a_brand_fragment_are_rejected(preciseleads, sld, tokens):
-    """Any component that is a piece of the brand stem re-exposes the brand,
-    regardless of which side of the compound it sits on."""
+    """Any component that is a DISTINCTIVE piece of the brand stem re-exposes
+    the brand, regardless of which side of the compound it sits on."""
     c = screen(sld, ".com", preciseleads, source_tokens=tokens)
     assert not c.ok
     assert any("brand-permutation" in r for r in c.rejections), c.rejections
@@ -96,10 +97,17 @@ def test_fragment_free_names_still_pass(preciseleads):
 
 def test_generation_never_emits_a_brand_fragment_name(preciseleads):
     """The whole vocabulary is legal input; the generator must still refuse to
-    build anything that reuses 'precise' or 'leads'."""
+    build anything that reuses the distinctive half of the brand."""
     for c in generate(preciseleads, limit=60):
         assert "precise" not in c.sld, c.domain
-        assert "leads" not in c.sld, c.domain
+
+
+def test_generic_industry_noun_from_the_stem_is_still_usable(preciseleads):
+    """'leads' appears in preciseleads but identifies nobody, so names may
+    use it — the same rule that keeps 'data' usable for bettrdata."""
+    c = screen("leadsoutbound", ".com", preciseleads,
+               source_tokens=("leads", "outbound"))
+    assert c.ok, c.rejections
 
 
 def test_long_compound_sharing_letters_is_not_a_typosquat(preciseleads):
@@ -385,3 +393,69 @@ def test_servfail_is_inconclusive_not_available():
 
 def test_resolver_error_is_inconclusive():
     assert _check(raises=True) is None
+
+
+# ── generic vs distinctive brand words ───────────────────────────────────────
+#
+# Standup 2026-08-20: blocking every word inside the client's domain was too
+# strict. For bettrdata.io, "data" is a common noun thousands of senders use
+# and carries no identity; "bettr" is the brand. Only the distinctive half
+# must stay out of candidate names.
+
+from smartlead.domain_naming import _distinctive_stem_parts  # noqa: E402
+
+
+@pytest.fixture
+def bettrdata() -> ClientVocabulary:
+    return ClientVocabulary(
+        name="Bettrdata",
+        main_domain="bettrdata.io",
+        value_nouns=["data", "ingest", "coherence"],
+        problem_nouns=["accuracy", "coverage"],
+    )
+
+
+def test_generic_word_in_the_stem_stays_usable(bettrdata):
+    """'data' is in bettrdata but identifies nobody, so it may build names."""
+    c = screen("dataingest", ".com", bettrdata, source_tokens=("data", "ingest"))
+    assert c.ok, c.rejections
+
+
+def test_generic_word_is_not_reported_as_blocked(bettrdata):
+    """Flagging 'data' would send the operator hunting for a replacement they
+    do not need."""
+    assert bettrdata.brand_fragment_tokens() == []
+
+
+@pytest.mark.parametrize("sld,tokens", [
+    ("bettringest", ("bettr", "ingest")),
+    ("ingestbettr", ("ingest", "bettr")),
+    ("bettrdata", ("bettr", "data")),
+])
+def test_distinctive_half_is_blocked_anywhere_in_the_name(bettrdata, sld, tokens):
+    """The brand half must be caught by the string itself, not only when the
+    operator happens to supply it as a vocabulary word."""
+    c = screen(sld, ".com", bettrdata, source_tokens=tokens)
+    assert not c.ok
+    assert any("brand-permutation" in r for r in c.rejections), c.rejections
+
+
+def test_generation_uses_the_generic_word_and_avoids_the_brand(bettrdata):
+    produced = [c.domain for c in generate(bettrdata, limit=20)]
+    assert any("data" in d for d in produced), "generic word should be usable"
+    assert all("bettr" not in d for d in produced), "brand half must never appear"
+
+
+@pytest.mark.parametrize("stem,expected", [
+    ("bettrdata", {"bettr", "bettrdata"}),
+    ("preciseleads", {"precise", "preciseleads"}),
+    ("melior", {"melior"}),          # nothing generic to strip
+    ("belardiwong", {"belardiwong"}),
+])
+def test_distinctive_stem_parts(stem, expected):
+    assert _distinctive_stem_parts(stem) == expected
+
+
+def test_short_remainders_are_not_treated_as_brand_signals():
+    """'godata' minus 'data' leaves 'go', too short to identify anyone."""
+    assert "go" not in _distinctive_stem_parts("godata")
