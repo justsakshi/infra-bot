@@ -31,29 +31,38 @@ what the rest of this document is about.
 **Build names from the client's vocabulary, not the client's brand.**
 
 The inversion that matters: the main domain is used *only to reject*
-candidates, never to build them. Instead of permuting `betterdata`, build from
-what the product does and the problem it solves — `dataingest`, `signalclarity`,
+candidates, never to build them. Instead of permuting `bettrdata`, build from
+what the product does and the problem it solves — `dataingest`, `ingestaccuracy`,
 `coveragepipeline`. Each reads as a plausible standalone company to a recipient
 scanning a From: header, and none of them cluster with the others or with the
 main domain.
 
+**Generic nouns inside the brand are still usable.** `bettrdata.io` contains
+`data`, but `data` identifies nobody — thousands of senders use it, so a
+recipient cannot read it as "same sender". The distinctive half (`bettr`) is
+the identity and never reappears. So `dataingest.com` is fine and
+`bettringest.com` is not. Same for `preciseleads.in`: `leads` is usable,
+`precise` is not. A brand with no generic half (`melior`, `belardiwong`) has
+nothing to reuse, so its domains are pure keyword names.
+
 | Rejected | Why |
 |---|---|
-| `getbetterdata.com` | affix + brand stem — the classic batch shape |
-| `betterdatahq.com` | brand stem + affix, same cluster |
-| `betterdta.com` | near-miss misspelling — reads as typosquatting |
-| `precisesignal.com` (for preciseleads.in) | reuses `precise`, a fragment of the brand stem |
+| `gobettrdata.com` | affix + brand stem — the classic batch shape |
+| `bettrdatahq.com` | brand stem + affix, same cluster |
+| `bettrdta.com` | near-miss misspelling — reads as typosquatting |
+| `bettringest.com` | reuses `bettr`, the distinctive half of the brand |
+| `precisesignal.com` (for preciseleads.in) | reuses `precise`, the distinctive half |
 | `br4nd.com` | digit-for-letter substitution — phishing shape |
 | `data-ingest.com` | hyphens read as phishing/bulk |
 | `datablast.com` | bulk-mail vocabulary |
 | `dataingest.xyz` | cheap TLD carries a spam prior no warmup undoes |
 
 The stem-fragment rule is the subtle one and the reason a plain
-string-similarity check is not enough. For `preciseleads.in`, both `precise`
-and `leads` are brand fragments; a name using either re-exposes the brand even
-though the full string similarity looks low. `domain_generator.py` reports
-which of your vocabulary tokens are fragments so you know why they built
-nothing.
+string-similarity check is not enough. `bettringest` scores low against
+`bettrdata` on raw similarity, yet re-exposes the brand outright. The
+generator matches the distinctive half against the candidate string itself,
+so it is caught whether or not anyone typed `bettr` as a vocabulary word, and
+it reports which of your words were skipped so you know why.
 
 **TLD: `.com` only.** Recipients and filters both pattern-match on TLD.
 `.xyz`, `.click`, `.top`, `.info`, `.buzz` are disproportionately spam.
@@ -148,11 +157,10 @@ does not recover, retire and replace.
 
 ```bash
 python3 domain_generator.py \
-    --client "Better Data" \
-    --main-domain betterdata.com \
-    --value ingest,clarity,coherence \
-    --problem signal,accuracy,coverage \
-    --industry pipeline,warehouse \
+    --client "Bettrdata" \
+    --main-domain bettrdata.io \
+    --value data,ingest,coherence \
+    --problem accuracy,coverage,resolve \
     --need 10
 ```
 
@@ -170,3 +178,76 @@ throughput. The tool caches results on disk for 7 days, reports how many calls
 a run will cost before spending them, and stops cleanly at the budget — re-run
 later and cached results carry over. `--max-calls` overrides the per-run
 budget.
+
+---
+
+## Appendix: picking words, per client
+
+Word choice decides the whole result. Three constraints pull against each
+other, and the middle ground is narrow:
+
+1. **Not the client's distinctive brand word.** Rejected automatically.
+2. **Not a generic category word.** `smart`, `search`, `talent`, `business`,
+   `data` on its own — every two-word `.com` built from these was registered
+   years ago. Measured 2026-08-20: `smart,talent,search` for Melior returned
+   **zero** available names.
+3. **Still has to read like a company** in a From: header. `benchslate.com`
+   does; `xk4ventures.com` does not.
+
+Two categories reliably land in the middle:
+
+- **Outcome words** — what the client actually delivers: `placed`, `retained`,
+  `booked`, `sourced`, `resolved`.
+- **Niche words** — who they serve or what they touch: `dental`, `hvac`,
+  `catalog`, `jobsite`, `household`.
+
+Both beat activity and category words, which are exhausted.
+
+**Use 5-6 words, not 3.** The generator builds two-word compounds, so *n*
+words yield *n × (n−1)* candidates: 3 words → 6 names, 6 words → 30. Most are
+taken, so a thin vocabulary produces nothing.
+
+### Starting points
+
+Verified against each client's existing domains. Adjust as you learn what
+survives — these are starting points, not answers.
+
+| Client | Main domain | Try |
+|---|---|---|
+| Bettrdata | `bettrdata.io` | `data,ingest,coherence,accuracy,coverage,resolve` |
+| Melior | `melior.com` | `placed,retained,shortlist,slate,bench,sourced` |
+| Belardiwong | `belardiwong.com` | `catalog,mailer,response,retention,lifetime,household` |
+| Darlean | — | `dispatch,route,technician,jobsite,uptime,fleet` |
+| Mythic | — | `steward,continuity,coverage,region,capacity` |
+
+Darlean and Mythic are inferred from campaign material rather than confirmed
+with the account owner; correct them before spending a Zapmail budget on
+them. Creflo, Incubeta, Innovint and the Srivatsan accounts have no entry yet.
+
+### What the estate looks like today
+
+Every client except OSC was built on the pattern this document warns about —
+one stem, many affixes, bought in batches:
+
+```
+Bettrdata     run / go / hey / send / reach / use / true / best / real /
+              try / one / top / my / live / open  + bettrdata     (15 domains)
+Melior        go / smart / launch / join / lead / mail / run / find /
+              grow / ask / hub / build / call     + melior        (23 domains)
+Belardiwong   connect / dm / go / mail / team / try / meet / base / hq /
+              hub / zone / get / join / reach     + belardiwong   (28 domains)
+```
+
+OSC is the exception and the model to copy: `contactnets.com`,
+`prospectcube.com`, `prospectways.com`, `prospectdock.com` — no brand stem,
+industry-adjacent, each reads as its own company.
+
+Darlean and Incubeta already hold some domains in the right shape
+(`clientzenapp.co`, `accountpointapp.co`, `reachlylabs.com`, `brandant.co`),
+so the shift was already underway before this tool existed.
+
+**This is a hypothesis, not a proven cause.** Batch-permutation domains are
+what Spamhaus/SURBL began clustering on, and the estate is full of them, but
+nothing here establishes that they caused any specific deliverability drop.
+The cheap test is to build the next batch in the OSC shape and compare
+placement against the existing domains for the same client.
