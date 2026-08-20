@@ -61,6 +61,16 @@ AWKWARD_SUBSTRINGS: frozenset[str] = frozenset({
     "sexc", "nigg", "hell", "damn", "kill", "died", "dead", "slut", "anus",
 })
 
+# Short business suffixes used to build tier-2 names when the two-word .com
+# space is exhausted. Each still reads as a company to a recipient
+# ("datalineagehq.com"), unlike a random string. Deliberately excludes the
+# affixes in BANNED_BRAND_AFFIXES that get bolted onto a BRAND - the problem
+# there is the brand stem, not the affix.
+BRAND_SUFFIXES: tuple[str, ...] = (
+    "hq", "works", "group", "labs", "co", "team", "desk", "base", "point",
+    "field", "stack", "grid", "core", "path", "scope",
+)
+
 MAX_SLD_LENGTH: int = 20  # shorter reads as a real brand; hard ceiling
 MIN_SLD_LENGTH: int = 6
 
@@ -354,22 +364,47 @@ def generate(vocab: ClientVocabulary, limit: int = 60,
 
 def generate_with_rejects(vocab: ClientVocabulary, limit: int = 60,
                           owned_stems: frozenset[str] = frozenset()) -> list[Candidate]:
-    """Same as :func:`generate` but keeps rejected candidates for auditing."""
+    """Same as :func:`generate` but keeps rejected candidates for auditing.
+
+    Two tiers, in order of how much they read like a real company:
+
+      1. **word + word** - the best names, and nearly all of them are gone.
+         Measured 2026-08-20: of nine `data`-prefixed compounds for Bettrdata,
+         eight were already registered.
+      2. **word + word + suffix** - the same compound with a short business
+         suffix (`hq`, `works`, `group`, ...). Still reads as a company
+         (`datalineagehq.com`), and the space is far less picked over, so this
+         is what actually yields buyable names.
+
+    Tier 2 only runs when tier 1 cannot fill the request, so a client with
+    available two-word names never sees a suffixed one.
+    """
     tokens = vocab.token_bank()
     seen: set[str] = set()
     out: list[Candidate] = []
 
-    for a, b in itertools.permutations(tokens, 2):
-        sld = f"{a}{b}"
+    def add(sld: str, source: tuple[str, ...]) -> None:
         if sld in seen:
-            continue
+            return
         seen.add(sld)
-        out.append(screen(sld, ".com", vocab, source_tokens=(a, b),
+        out.append(screen(sld, ".com", vocab, source_tokens=source,
                           owned_stems=owned_stems))
-        if len(out) >= limit * 4:  # generate a surplus; screening thins it
+
+    for a, b in itertools.permutations(tokens, 2):
+        add(f"{a}{b}", (a, b))
+        if len(out) >= limit * 4:
             break
 
-    # Shortest passing names first — they read most like real brands.
+    # Tier 2 fills the gap left by an exhausted two-word space.
+    if sum(1 for c in out if c.ok) < limit * 3:
+        for a, b in itertools.permutations(tokens, 2):
+            for suffix in BRAND_SUFFIXES:
+                add(f"{a}{b}{suffix}", (a, b, suffix))
+            if len(out) >= limit * 8:
+                break
+
+    # Shortest passing names first - they read most like real brands, which
+    # also keeps unsuffixed names ahead of suffixed ones.
     out.sort(key=lambda c: (not c.ok, len(c.sld)))
     return out
 
