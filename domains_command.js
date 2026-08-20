@@ -6,9 +6,9 @@
  * only, and no name we already own anywhere in the estate.
  *
  * Slack usage:
- *   /domains betterdata.com ingest,clarity,signal,accuracy
- *   /domains betterdata.com ingest,clarity,signal need=6
- *   /domains betterdata.com ingest,clarity exclude=bought-not-connected.com
+ *   /domains bettrdata.io data,ingest,lineage,dedupe,accuracy
+ *   /domains bettrdata.io data,ingest,lineage need=6
+ *   /domains bettrdata.io data,ingest exclude=bought-not-connected.com
  *
  * Domains already live in Smartlead are excluded automatically, so the same
  * name is never suggested twice across clients. `exclude=` covers domains
@@ -20,22 +20,26 @@ const { spawn } = require('child_process');
 const { App } = require('@slack/bolt');
 
 const DOMAIN_HELP = [
-  '*Usage:* `/domains <main-domain> <words> [need=N] [exclude=a.com,b.com]`',
+  '*Usage:* `/domains <client-main-domain> <words> [need=N]`',
   '',
-  '`<main-domain>` — the client’s REAL domain. Used only to reject lookalikes; we never send from it.',
-  '`<words>` — comma-separated words describing what the client does, or the problem they solve.',
-  '`need=N` — how many domains you want (default 8, max 15).',
-  '`exclude=` — domains we own that are not in Smartlead yet.',
+  '*Example:* `/domains bettrdata.io data,ingest,lineage,dedupe,accuracy need=6`',
   '',
-  '*Example:* `/domains betterdata.com ingest,clarity,signal,accuracy need=6`',
+  '`<client-main-domain>` — their REAL domain. Only used to reject lookalikes; we never send from it.',
+  '`<words>` — 5-6 words describing what they sell or the problem they fix.',
+  '`need=N` — how many you want (default 8, max 15).',
   '',
-  '*Already-owned domains — nothing to maintain*',
-  'Every domain in the infra asset tracker (`/infra add`) and every Smartlead',
-  'sending domain is excluded automatically, across all clients.',
-  '`/domains owned` — show what it is checking against.',
-  '`/domains own <domains>` — only for a domain that is in neither place yet.',
+  '*Word choice decides everything:*',
+  '• *Outcome words* beat activity words — `placed`, `booked`, `dedupe`, not `search`, `data`',
+  '• *Niche words* beat category words — `jobsite`, `catalog`, not `business`, `service`',
+  '• Give 5-6 words. Three words only makes 6 names and most will be taken.',
+  '• Their brand word is rejected automatically — that pattern is what gets domains blacklisted.',
   '',
-  'This suggests names only — buying still happens manually in Zapmail.'
+  '*Nothing to maintain:* every domain in the infra tracker (`/infra add`) and',
+  'in Smartlead is excluded automatically, across all clients.',
+  '`/domains owned` — see what it checks against.',
+  '`/domains own <domains>` — only for a domain in neither place yet.',
+  '',
+  '_Suggests only. Confirm in Zapmail before buying, and buy in the order shown._'
 ].join('\n');
 
 // Zapmail allows 10 domain searches per 30 minutes. Asking for more than that
@@ -90,7 +94,7 @@ function parseDomainsArgs(text) {
   if (!opts.mainDomain.includes('.')) {
     return {
       error: '`' + positional[0] + '` does not look like a domain. Put the client’s '
-           + 'main domain first, e.g. `betterdata.com`.'
+           + 'main domain first, e.g. `bettrdata.io`.'
     };
   }
 
@@ -98,8 +102,9 @@ function parseDomainsArgs(text) {
   const wordCount = opts.words.split(',').map(w => w.trim()).filter(Boolean).length;
   if (wordCount < 3) {
     return {
-      error: 'Need at least 3 describing words. Example: '
-           + '`/domains betterdata.com ingest,clarity,signal`'
+      error: 'Give 5-6 words describing what the client sells or the problem '
+           + 'they fix. Example: '
+           + '`/domains bettrdata.io data,ingest,lineage,dedupe,accuracy`'
     };
   }
 
