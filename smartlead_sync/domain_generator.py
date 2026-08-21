@@ -43,8 +43,8 @@ from smartlead.domain_availability import (
 )
 from smartlead.domain_estate import owned_domain_list
 from smartlead.domain_naming import (
-    Candidate, ClientVocabulary, generate_with_rejects, owned_stems_from,
-    purchase_schedule,
+    Candidate, ClientVocabulary, diversify, generate_with_rejects,
+    owned_stems_from, purchase_schedule,
 )
 
 # Spread purchases across accounts you actually hold. Registrar diversity is
@@ -328,8 +328,14 @@ async def main() -> int:
                              skip_blacklist=args.skip_blacklist,
                              max_calls=args.max_calls)
 
+    # Diversify AFTER availability: most generated names are taken, so a
+    # shortlist chosen before the availability check gets re-expanded into
+    # near-duplicates by whatever happens to survive. Applying it here is what
+    # stops eight names all hanging off one word (Bettrdata, 2026-08-21).
     purchasable = ([] if args.no_network
-                   else [c for c in cands if c.purchasable][:args.need])
+                   else [c for c in diversify(
+                             [c for c in cands if c.purchasable], args.need)
+                         if c.purchasable][:args.need])
 
     # JSON mode short-circuits every human-facing print: stdout must carry the
     # payload and nothing else.

@@ -358,8 +358,75 @@ def generate(vocab: ClientVocabulary, limit: int = 60,
     ONLY candidates that pass screening — rejects are available via
     :func:`generate_with_rejects` when you want to show the reasoning.
     """
-    return [c for c in generate_with_rejects(vocab, limit=limit,
-                                             owned_stems=owned_stems) if c.ok][:limit]
+    cands = generate_with_rejects(vocab, limit=limit, owned_stems=owned_stems)
+    return [c for c in diversify(cands, limit) if c.ok][:limit]
+
+
+def diversify(cands: list[Candidate], limit: int) -> list[Candidate]:
+    """Thin a candidate list so the survivors read as different ideas.
+
+    Two problems make a long list feel like one suggestion repeated, both seen
+    in a live Bettrdata run on 2026-08-21 where eight names produced exactly
+    one the client liked:
+
+      * **Mirror pairs.** `ingestresolve` and `resolveingest` are the same two
+        words swapped. Presenting both wastes a slot and makes the list look
+        padded, so only the first is kept.
+      * **One token everywhere.** All eight names contained `ingest`. Any
+        single word may now anchor at most a third of the shortlist, so the
+        rest of the vocabulary gets represented.
+
+    Rejected candidates pass through untouched: this shapes what we recommend,
+    not what we screened.
+    """
+    passing = [c for c in cands if c.ok]
+    rejected = [c for c in cands if not c.ok]
+
+    # At least 2, so a two-word vocabulary is not thinned to nothing.
+    per_token_cap = max(2, (limit + 2) // 3)
+
+    seen_pairs: set[frozenset[str]] = set()
+    token_use: dict[str, int] = {}
+    kept: list[Candidate] = []
+    overflow: list[Candidate] = []
+
+    for c in passing:
+        words = [t for t in c.source_tokens if t not in BRAND_SUFFIXES]
+        pair = frozenset(words)
+        if len(words) > 1 and pair in seen_pairs:
+            continue  # mirror of a name already kept
+        if any(token_use.get(w, 0) >= per_token_cap for w in words):
+            overflow.append(c)
+            continue
+        seen_pairs.add(pair)
+        for w in words:
+            token_use[w] = token_use.get(w, 0) + 1
+        kept.append(c)
+
+    # Backfill from overflow rather than returning a short list — a capped
+    # name still beats no name when the vocabulary is narrow. Relax the cap in
+    # steps instead of ignoring it, so a full list still cannot end up with one
+    # word anchoring a majority of it.
+    relaxed = per_token_cap
+    while len(kept) < limit and overflow:
+        relaxed += 1
+        still_over: list[Candidate] = []
+        for c in overflow:
+            words = [t for t in c.source_tokens if t not in BRAND_SUFFIXES]
+            if len(kept) >= limit:
+                still_over.append(c)
+                continue
+            if any(token_use.get(w, 0) >= relaxed for w in words):
+                still_over.append(c)
+                continue
+            for w in words:
+                token_use[w] = token_use.get(w, 0) + 1
+            kept.append(c)
+        if len(still_over) == len(overflow):
+            break  # nothing admitted at this level; the vocabulary is spent
+        overflow = still_over
+
+    return kept + rejected
 
 
 def generate_with_rejects(vocab: ClientVocabulary, limit: int = 60,

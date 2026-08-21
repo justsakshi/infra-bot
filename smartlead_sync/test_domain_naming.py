@@ -459,3 +459,52 @@ def test_distinctive_stem_parts(stem, expected):
 def test_short_remainders_are_not_treated_as_brand_signals():
     """'godata' minus 'data' leaves 'go', too short to identify anyone."""
     assert "go" not in _distinctive_stem_parts("godata")
+
+
+# ── shortlist diversity ──────────────────────────────────────────────────────
+#
+# A live Bettrdata run on 2026-08-21 returned eight names that all contained
+# "ingest", including three mirror pairs. The client liked exactly one. The
+# list was long but it was one idea repeated, so the shortlist is now thinned
+# for variety before anyone sees it.
+
+@pytest.fixture
+def wide_vocab() -> ClientVocabulary:
+    return ClientVocabulary(
+        name="Bettrdata",
+        main_domain="bettrdata.io",
+        value_nouns=["data", "ingest", "lineage"],
+        problem_nouns=["accuracy", "coverage", "resolve"],
+    )
+
+
+def test_no_mirror_pairs_in_the_shortlist(wide_vocab):
+    """ingestresolve and resolveingest are one idea, not two."""
+    pairs = [frozenset(c.source_tokens) for c in generate(wide_vocab, limit=10)]
+    assert len(pairs) == len(set(pairs)), "a reversed duplicate survived"
+
+
+def test_no_single_word_dominates_the_shortlist(wide_vocab):
+    """No word may anchor a majority of the list.
+
+    The per-token cap is stricter than this, but the backfill that keeps the
+    list full is allowed to exceed it — a short list is worse than a slightly
+    repetitive one. The majority bound is the guarantee that actually holds,
+    and it is what the failing 2026-08-21 output (8 of 8 on one word) broke.
+    """
+    names = generate(wide_vocab, limit=9)
+    for token in wide_vocab.token_bank():
+        used = sum(1 for c in names if token in c.source_tokens)
+        assert used <= len(names) // 2, f"{token} anchors {used} of {len(names)}"
+
+
+def test_diversity_still_fills_the_request(wide_vocab):
+    """Thinning must not silently return a short list."""
+    assert len(generate(wide_vocab, limit=8)) == 8
+
+
+def test_narrow_vocabulary_still_produces_names():
+    """Two words cannot be diversified; the cap must not empty the result."""
+    v = ClientVocabulary(name="X", main_domain="x.com",
+                         value_nouns=["signal", "intent"])
+    assert generate(v, limit=5), "a two-word vocabulary produced nothing"

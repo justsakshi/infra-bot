@@ -208,13 +208,20 @@ function formatDomainResult(r) {
   });
 
   if (avail.length) {
-    const lines = avail.map(d => {
+    // Numbered so an approval can say "1, 3 and 5" instead of retyping the
+    // domains — asked for in the 2026-08-21 standup, where reading names back
+    // over a call was the slow part.
+    const lines = avail.map((d, i) => {
       const price = (d.price !== null && d.price !== undefined) ? '$' + d.price.toFixed(2) : '—';
-      return '`' + d.domain + '`  ' + price;
+      return '`' + (i + 1) + '.` `' + d.domain + '`  ' + price;
     });
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: '*Available:*\n' + lines.join('\n') }
+      text: {
+        type: 'mrkdwn',
+        text: '*Available:*\n' + lines.join('\n')
+            + '\n\n_Reply with the numbers you want, e.g. "1, 3, 5"._'
+      }
     });
   } else if (r.availability_checked) {
     // Almost always the same cause: common two-word English compounds in .com
@@ -246,10 +253,16 @@ function formatDomainResult(r) {
   }
 
   if ((r.plan || []).length) {
+    // Reuse the numbers from the Available list so "buy 1, 3 and 5" and the
+    // schedule refer to the same domains.
+    const numberOf = new Map(avail.map((d, i) => [d.domain, i + 1]));
     const planLines = r.plan.map(b => {
       const when = b.day_offset === 0 ? 'today' : 'day +' + b.day_offset;
       return '*' + when + '* (' + b.registrar + '): '
-           + b.domains.map(d => '`' + d + '`').join(', ');
+           + b.domains.map(d => {
+               const n = numberOf.get(d);
+               return (n ? '`' + n + '.` ' : '') + '`' + d + '`';
+             }).join(', ');
     });
     blocks.push({
       type: 'section',
