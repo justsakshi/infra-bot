@@ -376,6 +376,31 @@ class SmartleadClient:
             offset += page
         return all_leads
 
+    async def get_campaign_statistics(self, campaign_id: str,
+                                      limit: int = 500) -> list[dict]:
+        """Per-lead send stats (GET /campaigns/{id}/statistics), paginated.
+
+        One row per lead per sequence step, carrying the fields the stagger
+        monitor needs: ``lead_email``, ``reply_time``, ``is_bounced`` and
+        ``lead_category`` (Smartlead's own classification - "Out Of Office",
+        "Do Not Contact", "Interested", "Sender Originated Bounce", ...) plus
+        ``ignore_reply``, which Smartlead sets True for auto-responders.
+
+        Values arrive as strings, including "None" for empty ones - see
+        stagger_monitor.py for the parsing.
+        """
+        out: list[dict] = []
+        offset = 0
+        while True:
+            resp = await self._get(f"/campaigns/{campaign_id}/statistics",
+                                   extra_params={"offset": offset, "limit": limit})
+            rows = resp.get("data", []) if isinstance(resp, dict) else []
+            out.extend(rows)
+            if len(rows) < limit:
+                break
+            offset += limit
+        return out
+
     async def get_analytics_by_date(self, campaign_id: str, start_date: str, end_date: str) -> dict:
         """Range-aggregate analytics for [start_date, end_date] (YYYY-MM-DD). Values may be strings."""
         return await self._get(f"/campaigns/{campaign_id}/analytics-by-date",
