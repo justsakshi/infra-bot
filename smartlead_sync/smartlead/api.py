@@ -13,9 +13,6 @@ from smartlead.config import (
 )
 
 
-# Smartlead caps lead uploads at 400 per request (documented + verified).
-LEADS_PER_REQUEST: int = 400
-
 class SmartleadClient:
     """Thin async wrapper around the Smartlead v1 API.
 
@@ -213,39 +210,6 @@ class SmartleadClient:
             return resp.json()
         resp.raise_for_status()
 
-    # ── campaign cloning (campaign_twin.py) ──────────────────────────────
-    async def get_campaign(self, campaign_id: str) -> dict:
-        """Full campaign record (GET /campaigns/{id}): track_settings,
-        scheduler_cron_value, stop_lead_settings, follow_up_percentage,
-        max_leads_per_day, min_time_btwn_emails, send_as_plain_text, ...
-
-        NOTE: track_settings comes back in a SHORT form (DONT_EMAIL_OPEN,
-        DONT_LINK_CLICK) that the settings POST does not accept - see
-        campaign_twin.to_post_track_settings(). bounce_autopause_threshold is
-        NOT returned at all (verified 2026-07)."""
-        return await self._get(f"/campaigns/{campaign_id}")
-
-    async def get_campaign_sequences(self, campaign_id: str) -> list[dict]:
-        """All sequence steps with nested `sequence_variants`
-        (GET /campaigns/{id}/sequences). Variants may be empty on
-        single-variant campaigns, in which case subject/email_body sit on the
-        step itself."""
-        return await self._get(f"/campaigns/{campaign_id}/sequences")
-
-    async def save_campaign_sequences_full(self, campaign_id: str,
-                                           sequences: list[dict]) -> dict:
-        """Save a complete multi-step, multi-variant sequence
-        (POST /campaigns/{id}/sequences). `sequences` must already be in POST
-        shape: [{seq_number, seq_delay_details:{delay_in_days}, seq_variants:[
-        {subject, email_body, variant_label}]}]."""
-        return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences",
-                                        {"sequences": sequences})
-
-    async def delete_campaign(self, campaign_id: str) -> dict:
-        """Permanently delete a campaign (DELETE /campaigns/{id}). Used only to
-        roll back a half-built twin or clean up a test clone."""
-        return await self._request_json("DELETE", f"/campaigns/{campaign_id}", {})
-
     async def add_campaign_email_accounts(self, campaign_id: str, account_ids: list[int]) -> dict:
         """Attach sender inboxes to a campaign (verified: POST /campaigns/{id}/email-accounts)."""
         return await self._request_json("POST", f"/campaigns/{campaign_id}/email-accounts",
@@ -323,29 +287,6 @@ class SmartleadClient:
         }
         return await self._request_json("POST", f"/campaigns/{campaign_id}/leads", body)
 
-    async def add_campaign_leads_full(self, campaign_id: str,
-                                      leads: list[dict]) -> dict:
-        """Add leads with full field support (POST /campaigns/{id}/leads).
-
-        Unlike :meth:`add_campaign_leads`, which exists for seed addresses and
-        takes emails only, this accepts the documented lead shape: email,
-        first_name, last_name, company_name, website, location,
-        linkedin_profile, company_url, phone_number and a ``custom_fields``
-        dict used by the sequence's {{variables}}.
-
-        Smartlead caps a request at 400 leads; the caller is responsible for
-        chunking. Block/unsubscribe/duplicate lists are NOT ignored here (the
-        opposite of the seed path) because staggered outreach must respect
-        them - a suppressed lead should be skipped, not forced through.
-
-        Returns the API response, which reports upload_count and
-        already_added_to_campaign counts.
-        """
-        if len(leads) > LEADS_PER_REQUEST:
-            raise ValueError(f"{len(leads)} leads exceeds the {LEADS_PER_REQUEST} per-request cap")
-        return await self._request_json("POST", f"/campaigns/{campaign_id}/leads",
-                                        {"lead_list": leads})
-
     async def update_campaign_schedule(self, campaign_id: str, schedule: dict) -> dict:
         """Set campaign schedule (POST /campaigns/{id}/schedule)."""
         return await self._request_json("POST", f"/campaigns/{campaign_id}/schedule", schedule)
@@ -375,31 +316,6 @@ class SmartleadClient:
                 break
             offset += page
         return all_leads
-
-    async def get_campaign_statistics(self, campaign_id: str,
-                                      limit: int = 500) -> list[dict]:
-        """Per-lead send stats (GET /campaigns/{id}/statistics), paginated.
-
-        One row per lead per sequence step, carrying the fields the stagger
-        monitor needs: ``lead_email``, ``reply_time``, ``is_bounced`` and
-        ``lead_category`` (Smartlead's own classification - "Out Of Office",
-        "Do Not Contact", "Interested", "Sender Originated Bounce", ...) plus
-        ``ignore_reply``, which Smartlead sets True for auto-responders.
-
-        Values arrive as strings, including "None" for empty ones - see
-        stagger_monitor.py for the parsing.
-        """
-        out: list[dict] = []
-        offset = 0
-        while True:
-            resp = await self._get(f"/campaigns/{campaign_id}/statistics",
-                                   extra_params={"offset": offset, "limit": limit})
-            rows = resp.get("data", []) if isinstance(resp, dict) else []
-            out.extend(rows)
-            if len(rows) < limit:
-                break
-            offset += limit
-        return out
 
     async def get_analytics_by_date(self, campaign_id: str, start_date: str, end_date: str) -> dict:
         """Range-aggregate analytics for [start_date, end_date] (YYYY-MM-DD). Values may be strings."""

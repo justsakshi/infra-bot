@@ -741,9 +741,6 @@
       <span class="nav-count" id="nav-inboxes">—</span>
     </div>
     <div class="nav-section">Tools</div>
-    <div class="nav-item" data-page="twins" onclick="navigate('twins')">
-      <span class="nav-icon">⧉</span> Campaign twins
-    </div>
     <div class="nav-item" data-page="upload" onclick="navigate('upload')">
       <span class="nav-icon">↑</span> Import CSV
     </div>
@@ -957,16 +954,6 @@ function initTheme() {
   label.textContent = saved === 'light' ? 'Dark mode' : 'Light mode';
 }
 
-// ===== Helpers =====
-function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 // ===== API =====
 async function fetchAssets() {
   const res = await fetch('/api/assets');
@@ -1007,7 +994,7 @@ function navigate(page, opts = {}) {
   sortDir = 'asc';
   currentFilter = { search: '', status: '', client: '', daysFilter: opts.daysFilter || null };
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
-  const titles = { dashboard: 'Dashboard', domains: 'Domains', inboxes: 'Inboxes', upload: 'Import CSV', twins: 'Campaign twins' };
+  const titles = { dashboard: 'Dashboard', domains: 'Domains', inboxes: 'Inboxes', upload: 'Import CSV' };
   document.getElementById('topbar-title').textContent = titles[page] || page;
   renderPage(page);
 }
@@ -1022,7 +1009,6 @@ async function renderPage(page) {
   else if (page === 'domains') renderTable(content, actions, 'DOMAIN');
   else if (page === 'inboxes') renderTable(content, actions, 'INBOX');
   else if (page === 'upload') renderUploadPage(content, actions);
-  else if (page === 'twins') renderCampaignTwins(content, actions);
 }
 
 // ===== Computed expiry display =====
@@ -1834,205 +1820,6 @@ function renderUploadPage(content, actions) {
       </div>
       <button class="btn btn-primary" style="width:100%" onclick="submitUpload2()">Import</button>
       <div id="upload-result" style="margin-top:16px"></div>
-    </div>
-  `;
-}
-
-// ===== Campaign twins =====
-let twinState = { account: '', campaignId: '', campaigns: [], previewedFor: null, lastResult: null };
-
-function renderCampaignTwins(content, actions) {
-  twinState = { account: '', campaignId: '', campaigns: [], previewedFor: null, lastResult: null };
-  content.innerHTML = `
-    <div style="max-width:640px;margin:0 auto">
-      <div class="card" style="margin-bottom:20px">
-        <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">Campaign twins</div>
-        <div style="font-size:12px;color:var(--text2);line-height:1.5">
-          Create a copy of a campaign with open tracking flipped. Same sequence, schedule and inboxes.
-          The twin is NOT started.
-        </div>
-      </div>
-
-      <div class="card" style="margin-bottom:20px">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-          <div class="form-group">
-            <label>Account</label>
-            <select id="twin-account" onchange="onTwinAccountChange()">
-              <option value="">Loading accounts…</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Campaign</label>
-            <select id="twin-campaign" onchange="onTwinCampaignChange()" disabled>
-              <option value="">Select an account first</option>
-            </select>
-          </div>
-        </div>
-        <div style="display:flex;gap:10px;margin-top:16px">
-          <button class="btn btn-ghost" id="twin-preview-btn" onclick="previewTwin()" disabled>Preview</button>
-          <button class="btn btn-primary" id="twin-create-btn" onclick="createTwin()" disabled>Create twin</button>
-        </div>
-      </div>
-
-      <div id="twin-error"></div>
-      <div id="twin-result"></div>
-    </div>
-  `;
-  loadTwinAccounts();
-}
-
-async function loadTwinAccounts() {
-  const sel = document.getElementById('twin-account');
-  try {
-    const res = await fetch('/api/twins/accounts');
-    const data = await res.json();
-    if (data.error) return showTwinError(data.error);
-    const accounts = data.accounts || [];
-    sel.innerHTML = '<option value="">Select account…</option>' +
-      accounts.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
-  } catch (e) {
-    showTwinError('Failed to load accounts: ' + e.message);
-  }
-}
-
-async function onTwinAccountChange() {
-  const account = document.getElementById('twin-account').value;
-  twinState.account = account;
-  twinState.campaignId = '';
-  twinState.previewedFor = null;
-  clearTwinResult();
-  const campSel = document.getElementById('twin-campaign');
-  document.getElementById('twin-preview-btn').disabled = true;
-  document.getElementById('twin-create-btn').disabled = true;
-  if (!account) {
-    campSel.innerHTML = '<option value="">Select an account first</option>';
-    campSel.disabled = true;
-    return;
-  }
-  campSel.innerHTML = '<option value="">Loading campaigns…</option>';
-  campSel.disabled = true;
-  try {
-    const res = await fetch('/api/twins/campaigns?account=' + encodeURIComponent(account));
-    const data = await res.json();
-    if (data.error) { showTwinError(data.error); campSel.innerHTML = '<option value="">Failed to load</option>'; return; }
-    const campaigns = data.campaigns || [];
-    twinState.campaigns = campaigns;
-    campSel.innerHTML = '<option value="">Select campaign…</option>' +
-      campaigns.map(c => `<option value="${c.id}">${c.id} — ${escapeHtml(c.name)} (${escapeHtml(c.status)})</option>`).join('');
-    campSel.disabled = false;
-  } catch (e) {
-    showTwinError('Failed to load campaigns: ' + e.message);
-    campSel.innerHTML = '<option value="">Failed to load</option>';
-  }
-}
-
-function onTwinCampaignChange() {
-  const campaignId = document.getElementById('twin-campaign').value;
-  twinState.campaignId = campaignId;
-  twinState.previewedFor = null;
-  clearTwinResult();
-  document.getElementById('twin-preview-btn').disabled = !campaignId;
-  document.getElementById('twin-create-btn').disabled = true;
-}
-
-function clearTwinResult() {
-  document.getElementById('twin-error').innerHTML = '';
-  document.getElementById('twin-result').innerHTML = '';
-}
-
-function showTwinError(msg) {
-  document.getElementById('twin-error').innerHTML = `
-    <div class="card" style="border-color:var(--red);color:var(--red);font-size:12px;margin-bottom:16px">
-      ${escapeHtml(msg)}
-    </div>
-  `;
-}
-
-async function previewTwin() {
-  await runTwin(true);
-}
-
-async function createTwin() {
-  const camp = twinState.campaigns.find(c => String(c.id) === String(twinState.campaignId));
-  const label = camp ? (camp.id + ' — ' + camp.name) : twinState.campaignId;
-  if (!confirm('Create an open-tracking twin of campaign "' + label + '"? The twin will NOT be started.')) {
-    return;
-  }
-  await runTwin(false);
-}
-
-async function runTwin(dryRun) {
-  const account = twinState.account;
-  const campaignId = twinState.campaignId;
-  if (!account || !campaignId) return;
-
-  clearTwinResult();
-  const previewBtn = document.getElementById('twin-preview-btn');
-  const createBtn = document.getElementById('twin-create-btn');
-  previewBtn.disabled = true;
-  createBtn.disabled = true;
-
-  try {
-    const res = await fetch('/api/twins', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account, campaignId, dryRun })
-    });
-    const data = await res.json();
-    if (data.error) {
-      showTwinError(data.error);
-      previewBtn.disabled = false;
-      return;
-    }
-    twinState.lastResult = data;
-    if (dryRun) {
-      twinState.previewedFor = campaignId;
-      createBtn.disabled = false;
-    } else {
-      twinState.previewedFor = null;
-    }
-    renderTwinResult(data, dryRun);
-    previewBtn.disabled = false;
-  } catch (e) {
-    showTwinError('Request failed: ' + e.message);
-    previewBtn.disabled = false;
-  }
-}
-
-function renderTwinResult(r, dryRun) {
-  const trackedIsSource = String(r.tracked_id) === String(r.source_id);
-  const trackedName = trackedIsSource ? r.source_name : r.twin_name;
-  const trackedId = r.tracked_id;
-  const untrackedIsSource = String(r.untracked_id) === String(r.source_id);
-  const untrackedName = untrackedIsSource ? r.source_name : r.twin_name;
-  const untrackedId = r.untracked_id;
-
-  const notStartedLine = (!dryRun && r.dry_run === false)
-    ? `<div style="font-size:11px;color:var(--text2);margin-top:10px;line-height:1.5">
-         Twin is not started. If the source had a bounce auto-pause threshold, set it on the twin
-         by hand (not copyable via API).
-       </div>`
-    : '';
-
-  document.getElementById('twin-result').innerHTML = `
-    <div class="card" style="margin-bottom:16px">
-      <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:12px">
-        ${dryRun ? 'Preview' : 'Twin created'}
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <span class="badge badge-green">OPEN TRACKING ON</span>
-        <span style="font-size:12px;color:var(--text)">${escapeHtml(trackedName || '')}</span>
-        <span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">id ${escapeHtml(String(trackedId))}</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <span class="badge badge-gray">OPEN TRACKING OFF</span>
-        <span style="font-size:12px;color:var(--text)">${escapeHtml(untrackedName || '')}</span>
-        <span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">id ${escapeHtml(String(untrackedId))}</span>
-      </div>
-      <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">
-        steps: ${escapeHtml(String(r.steps))} · inboxes: ${escapeHtml(String(r.email_accounts))}
-      </div>
-      ${notStartedLine}
     </div>
   `;
 }

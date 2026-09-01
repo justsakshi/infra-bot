@@ -16,7 +16,6 @@ const { Readable } = require('stream');
 const axios = require('axios');
 const { syncAllAssetsToSheet } = require('./sheets');
 const { startDomainsApp } = require('./domains_command');
-const { registerCampaignTwinRoutes } = require('./campaign_twin_routes');
 
 dayjs.extend(customParseFormat);
 
@@ -430,8 +429,6 @@ expressApp.post('/api/assets/:name/renew', async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
-
-registerCampaignTwinRoutes(expressApp, __dirname);
 
 expressApp.get('/upload', (req, res) => {
   res.redirect('/');
@@ -1657,47 +1654,6 @@ async function start() {
     // API-key health watchdog at 09:45 IST daily — 15 minutes before the sync,
     // so a rotated/revoked key is reported BEFORE the day's jobs run blind on
     // it. Read-only, no enable flag. Exit code 2 = dead key, 1 = unreachable.
-    // Staggered lead release at 08:00 IST daily, ahead of every campaign's
-    // sending window. Two steps in order: the monitor folds yesterday's
-    // replies and bounces into company state, then the release picks that
-    // day's leads breadth-first so the cap is spent on as many different
-    // companies as possible. Running the monitor first means the day's send
-    // already reflects yesterday's answers.
-    //
-    // Both are no-ops when no batch exists, so this is safe to ship before
-    // anyone uploads one. STAGGER_ENABLED=false disables the release while
-    // still reporting what it would have done.
-    cron.schedule('0 8 * * *', () => {
-      console.log(`[CRON] Stagger release firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const dryRun = process.env.STAGGER_ENABLED === 'false';
-
-      const run = (script, args, label, next) => {
-        const proc = spawn('python', [script, ...args], {
-          cwd: syncDir,
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-        });
-        proc.stdout.on('data', d => process.stdout.write(`[${label}] ${d}`));
-        proc.stderr.on('data', d => process.stderr.write(`[${label}] ${d}`));
-        proc.on('close', code => {
-          if (code !== 0) {
-            // Do NOT continue to the release if the monitor failed: without
-            // it we cannot tell which companies already replied.
-            console.error(`[${label}] exited ${code} - skipping the rest of the run`);
-            return;
-          }
-          if (next) next();
-        });
-      };
-
-      run('stagger_monitor.py', ['--all'], 'stagger-monitor', () => {
-        const args = ['--release', '--all'];
-        if (dryRun) args.push('--dry-run');
-        run('stagger_executor.py', args, 'stagger-release', null);
-      });
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
     cron.schedule('45 9 * * *', () => {
       console.log(`[CRON] API-key health check firing at ${new Date().toISOString()}`);
       const syncDir = path.join(__dirname, 'smartlead_sync');

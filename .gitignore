@@ -30,4 +30,3 @@ coverage
 *.log
 __pycache__/
 *.pyc
-.frugal-fable/
