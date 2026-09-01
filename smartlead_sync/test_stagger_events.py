@@ -31,19 +31,40 @@ def test_out_of_office_does_not_pause_the_company():
     assert not e.pauses_company
 
 
-def test_human_reply_pauses_the_company():
-    """Live example: lauren@channelforemedia.com, "Do Not Contact",
-    ignore_reply False."""
+def test_do_not_contact_pauses_the_company():
+    """Live example: lauren@channelforemedia.com. An opt-out binds the org."""
     e = classify_row(row(lead_category="Do Not Contact",
                          reply_time="2026-08-31T14:58:17.000Z"))
-    assert e.kind == "reply"
+    assert e.kind == "reply_company"
     assert e.company_state is CompanyState.PAUSED_REPLY
 
 
-def test_positive_reply_also_pauses_the_company():
-    """Sentiment is irrelevant - a company that answered is settled."""
-    assert classify_row(row(lead_category="Interested",
-                            reply_time="x")).company_state is CompanyState.PAUSED_REPLY
+def test_interest_pauses_the_company_so_a_human_can_run_the_thread():
+    """A thread is open; another cold email from the same sender cuts across it."""
+    e = classify_row(row(lead_category="Interested", reply_time="x"))
+    assert e.company_state is CompanyState.PAUSED_REPLY
+
+
+@pytest.mark.parametrize("category", ["Not Interested", "Wrong Person"])
+def test_a_personal_no_keeps_the_company_in_rotation(category):
+    """One person saying the tool is wrong for THEIR role says nothing about
+    a colleague in a different one. "Wrong Person" is literally an
+    instruction to ask someone else at the same company."""
+    e = classify_row(row(lead_category=category, reply_time="x"))
+    assert e.kind == "reply_person"
+    assert e.company_state is None, "colleagues must stay contactable"
+    assert e.pauses_lead_only
+    assert not e.pauses_company
+
+
+def test_company_stop_outranks_a_personal_no_at_the_same_company():
+    """If one person opted the org out and another merely said 'not me', the
+    opt-out wins."""
+    events = classify_rows([
+        row(lead_email="a@acme.com", lead_category="Not Interested", reply_time="x"),
+        row(lead_email="a@acme.com", lead_category="Do Not Contact", reply_time="x"),
+    ])
+    assert events["a@acme.com"].kind == "reply_company"
 
 
 def test_bounce_pauses_the_company():
@@ -94,10 +115,10 @@ def test_auto_reply_wins_over_a_bare_reply_time():
     assert classify_row(row(ignore_reply="True", reply_time="x")).kind == "auto_reply"
 
 
-def test_uncategorised_reply_is_treated_as_human():
-    """Erring towards pausing costs one company; the other way keeps emailing
-    someone who already answered."""
-    assert classify_row(row(reply_time="2026-08-31T00:00:00Z")).kind == "reply"
+def test_uncategorised_reply_stops_the_company():
+    """We cannot tell an opt-out from a personal no, and re-emailing someone
+    who asked us to stop is the worse error."""
+    assert classify_row(row(reply_time="2026-08-31T00:00:00Z")).kind == "reply_company"
 
 
 def test_rows_collapse_to_the_most_consequential_event_per_lead():

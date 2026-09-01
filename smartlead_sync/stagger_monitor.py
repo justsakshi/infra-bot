@@ -2,10 +2,12 @@
 """Pause staggered companies that replied or bounced (daily, before release).
 
 Polls each batch's campaigns for per-lead statistics and folds them into
-company state: a human reply of any sentiment stops the company, so does a
-bounce or a block, and an out-of-office explicitly does not. Smartlead does
-the classification itself (lead_category / ignore_reply), so this makes no
-judgement of its own.
+company state. A reply that binds the organisation ("Do Not Contact",
+"Interested", "Meeting Request") stops the company; a reply that is only that
+person's answer ("Not Interested", "Wrong Person") stops the lead and leaves
+colleagues queued; an out-of-office stops nothing; a bounce or block stops
+the company. Smartlead classifies the replies itself (lead_category /
+ignore_reply), so this makes no judgement of its own.
 
 Polling rather than a webhook is deliberate: a missed webhook would leave a
 company being emailed after it answered, and this is the check that must not
@@ -72,7 +74,7 @@ async def _check_batch(store: StaggerStore, batch: dict, dry_run: bool) -> dict:
     events = classify_rows(rows)
     if not events:
         return {"batch_id": batch_id, "name": name, "replied": 0, "bounced": 0,
-                "auto_replies": 0}
+                "person_only": 0, "auto_replies": 0}
 
     # Only leads in THIS batch matter; a campaign may hold leads from
     # elsewhere, and pausing a company we never staggered would be wrong.
@@ -82,6 +84,7 @@ async def _check_batch(store: StaggerStore, batch: dict, dry_run: bool) -> dict:
 
     paused_reply: list[str] = []
     paused_bounce: list[str] = []
+    person_only: list[str] = []
     autos = 0
 
     for email, event in events.items():
@@ -91,6 +94,17 @@ async def _check_batch(store: StaggerStore, batch: dict, dry_run: bool) -> dict:
         if event.kind == "auto_reply":
             autos += 1
             continue
+
+        # "Not interested" / "wrong person" is one person's answer, not the
+        # company's. Stop contacting THEM and leave their colleagues queued -
+        # holding several leads per company is pointless otherwise.
+        if event.pauses_lead_only:
+            person_only.append(email)
+            if not dry_run:
+                store.mark_lead(batch_id, email, LeadState.REPLIED,
+                                reason=event.detail or event.category)
+            continue
+
         state = event.company_state
         if state is None:
             continue
@@ -110,7 +124,8 @@ async def _check_batch(store: StaggerStore, batch: dict, dry_run: bool) -> dict:
 
     return {"batch_id": batch_id, "name": name,
             "replied": len(set(paused_reply)), "bounced": len(set(paused_bounce)),
-            "auto_replies": autos, "dry_run": dry_run,
+            "person_only": len(person_only), "auto_replies": autos,
+            "dry_run": dry_run,
             "paused_companies": sorted(set(paused_reply) | set(paused_bounce))[:20]}
 
 
@@ -147,7 +162,8 @@ def main() -> int:
         else:
             prefix = "[dry run] " if r.get("dry_run") else ""
             print(f"{prefix}{r['name']}: {r['replied']} company(ies) paused on reply, "
-                  f"{r['bounced']} on bounce, {r['auto_replies']} auto-reply ignored")
+                  f"{r['bounced']} on bounce, {r.get('person_only', 0)} person-only "
+                  f"no (company kept), {r['auto_replies']} auto-reply ignored")
             if r.get("paused_companies"):
                 print("    " + ", ".join(r["paused_companies"]))
     return 0
