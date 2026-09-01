@@ -13,6 +13,9 @@ from smartlead.config import (
 )
 
 
+# Smartlead caps lead uploads at 400 per request (documented + verified).
+LEADS_PER_REQUEST: int = 400
+
 class SmartleadClient:
     """Thin async wrapper around the Smartlead v1 API.
 
@@ -319,6 +322,29 @@ class SmartleadClient:
             },
         }
         return await self._request_json("POST", f"/campaigns/{campaign_id}/leads", body)
+
+    async def add_campaign_leads_full(self, campaign_id: str,
+                                      leads: list[dict]) -> dict:
+        """Add leads with full field support (POST /campaigns/{id}/leads).
+
+        Unlike :meth:`add_campaign_leads`, which exists for seed addresses and
+        takes emails only, this accepts the documented lead shape: email,
+        first_name, last_name, company_name, website, location,
+        linkedin_profile, company_url, phone_number and a ``custom_fields``
+        dict used by the sequence's {{variables}}.
+
+        Smartlead caps a request at 400 leads; the caller is responsible for
+        chunking. Block/unsubscribe/duplicate lists are NOT ignored here (the
+        opposite of the seed path) because staggered outreach must respect
+        them - a suppressed lead should be skipped, not forced through.
+
+        Returns the API response, which reports upload_count and
+        already_added_to_campaign counts.
+        """
+        if len(leads) > LEADS_PER_REQUEST:
+            raise ValueError(f"{len(leads)} leads exceeds the {LEADS_PER_REQUEST} per-request cap")
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/leads",
+                                        {"lead_list": leads})
 
     async def update_campaign_schedule(self, campaign_id: str, schedule: dict) -> dict:
         """Set campaign schedule (POST /campaigns/{id}/schedule)."""
