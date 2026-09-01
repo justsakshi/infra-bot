@@ -210,6 +210,39 @@ class SmartleadClient:
             return resp.json()
         resp.raise_for_status()
 
+    # ── campaign cloning (campaign_twin.py) ──────────────────────────────
+    async def get_campaign(self, campaign_id: str) -> dict:
+        """Full campaign record (GET /campaigns/{id}): track_settings,
+        scheduler_cron_value, stop_lead_settings, follow_up_percentage,
+        max_leads_per_day, min_time_btwn_emails, send_as_plain_text, ...
+
+        NOTE: track_settings comes back in a SHORT form (DONT_EMAIL_OPEN,
+        DONT_LINK_CLICK) that the settings POST does not accept - see
+        campaign_twin.to_post_track_settings(). bounce_autopause_threshold is
+        NOT returned at all (verified 2026-07)."""
+        return await self._get(f"/campaigns/{campaign_id}")
+
+    async def get_campaign_sequences(self, campaign_id: str) -> list[dict]:
+        """All sequence steps with nested `sequence_variants`
+        (GET /campaigns/{id}/sequences). Variants may be empty on
+        single-variant campaigns, in which case subject/email_body sit on the
+        step itself."""
+        return await self._get(f"/campaigns/{campaign_id}/sequences")
+
+    async def save_campaign_sequences_full(self, campaign_id: str,
+                                           sequences: list[dict]) -> dict:
+        """Save a complete multi-step, multi-variant sequence
+        (POST /campaigns/{id}/sequences). `sequences` must already be in POST
+        shape: [{seq_number, seq_delay_details:{delay_in_days}, seq_variants:[
+        {subject, email_body, variant_label}]}]."""
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences",
+                                        {"sequences": sequences})
+
+    async def delete_campaign(self, campaign_id: str) -> dict:
+        """Permanently delete a campaign (DELETE /campaigns/{id}). Used only to
+        roll back a half-built twin or clean up a test clone."""
+        return await self._request_json("DELETE", f"/campaigns/{campaign_id}", {})
+
     async def add_campaign_email_accounts(self, campaign_id: str, account_ids: list[int]) -> dict:
         """Attach sender inboxes to a campaign (verified: POST /campaigns/{id}/email-accounts)."""
         return await self._request_json("POST", f"/campaigns/{campaign_id}/email-accounts",
