@@ -47,7 +47,6 @@ _ACCOUNT_DELIVERABILITY_TABS_RAW: dict[str, list[str]] = {
     "Belardi Wong": ["Belardiwong"],
     "PRECISE_LEADS": ["Melior", "Precise Leads", "Bettrdata"],  # Avench(old), OSC+StaffAI(paused Q3) dropped
     "DARLEAN": ["Darlean new"],
-    "MYTHIC": ["Mythic "],  # Note: trailing space in actual tab name
     # BettrData became its own Smartlead account (previously a PRECISE_LEADS
     # sub-client). Without an entry here it fell through to the default tab,
     # which meant reading another client's deliverability results.
@@ -245,10 +244,11 @@ NC_MIN_GAP_MINUTES: int = int(os.getenv("NC_MIN_GAP_MINUTES", "3"))
 NC_LIMIT_BUFFER: int = int(os.getenv("NC_LIMIT_BUFFER", "5"))
 # Suggestion phase: which clients get worst-first "NEEDS TEST" rows written
 # into the NC Tests tab (advisory — runs even in dry-run, like the capacity
-# planner). Default = the credit-poor accounts: BW confirmed exhausted, Mythic
-# balance unknown/low. Darlean + PL keep the fully-automatic connected tester.
+# planner). Default = the credit-poor accounts: BW confirmed exhausted.
+# MYTHIC removed 2026-09-01 (no longer a client). Darlean + PL keep the
+# fully-automatic connected tester.
 NC_SUGGEST_CLIENTS: list[str] = [
-    c.strip() for c in os.getenv("NC_SUGGEST_CLIENTS", "Belardi Wong,MYTHIC").split(",")
+    c.strip() for c in os.getenv("NC_SUGGEST_CLIENTS", "Belardi Wong").split(",")
     if c.strip()
 ]
 NC_SUGGEST_CAP: int = int(os.getenv("NC_SUGGEST_CAP", "5"))

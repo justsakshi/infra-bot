@@ -271,8 +271,17 @@ async def main() -> None:
         week_start_str = (today.replace(day=max(1, today.day - 7))).strftime("%Y-%m-%d")
         yest_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         for acc in smartlead_accounts_for_metrics:
+          # Each account is isolated like the HeyReach loop below: one
+          # account's outage must not cost every other account's rows, and
+          # a bare `campaigns = []` here previously vanished silently — the
+          # exact failure mode that dropped Darlean's 22 Smartlead rows from
+          # its per-client tab while HeyReach's 13 rows still wrote fine.
+          try:
             async with SmartleadClient(acc.api_key, acc.name) as slc:
                 campaigns = await slc.list_campaigns()
+                if not campaigns:
+                    print(f"  [metrics] Smartlead account {acc.name} returned 0 "
+                          f"campaigns — check this is not silent data loss")
                 for camp in campaigns:
                     cid = str(camp.get("id") or "")
                     if not cid:
@@ -311,6 +320,9 @@ async def main() -> None:
                         month_sent=month_sent, start_dt=reporting_start, end_dt=reporting_end,
                         yest_sent=yest_sent,
                         launch_date=str(camp.get("created_at", ""))[:10]))
+          except Exception as exc:
+            print(f"  [metrics] Smartlead account {acc.name} failed to list "
+                  f"campaigns — its rows are MISSING this run: {exc}")
 
         # HeyReach rows (all workspaces; currently DARLEAN)
         for ws in discover_heyreach_workspaces():

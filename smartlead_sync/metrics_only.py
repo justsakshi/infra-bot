@@ -62,6 +62,9 @@ async def main() -> None:
         print("[Metrics] no matching accounts — check CAMPAIGN_METRICS_CLIENTS")
 
     for acc in accounts:
+      # Isolated per account: one account's outage must not cost every other
+      # account's rows in the same run.
+      try:
         async with SmartleadClient(acc.api_key, acc.name) as slc:
             campaigns = await slc.list_campaigns()
             print(f"[Metrics] {acc.name}: {len(campaigns)} campaign(s) to evaluate")
@@ -102,6 +105,9 @@ async def main() -> None:
                     month_sent=month_sent, start_dt=start_dt, end_dt=end_dt,
                     yest_sent=yest_sent,
                     launch_date=str(camp.get("created_at", ""))[:10]))
+      except Exception as exc:  # noqa: BLE001
+        print(f"[Metrics] Smartlead account {acc.name} failed to list "
+              f"campaigns — its rows are MISSING this run: {exc}")
 
     for ws in discover_heyreach_workspaces():
         if CAMPAIGN_METRICS_CLIENTS and ws.name.upper() not in CAMPAIGN_METRICS_CLIENTS:
