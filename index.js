@@ -16,6 +16,7 @@ const { Readable } = require('stream');
 const axios = require('axios');
 const { syncAllAssetsToSheet } = require('./sheets');
 const { startDomainsApp } = require('./domains_command');
+const { registerCampaignTwinRoutes } = require('./campaign_twin_routes');
 
 dayjs.extend(customParseFormat);
 
@@ -429,6 +430,8 @@ expressApp.post('/api/assets/:name/renew', async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
+registerCampaignTwinRoutes(expressApp, __dirname);
 
 expressApp.get('/upload', (req, res) => {
   res.redirect('/');

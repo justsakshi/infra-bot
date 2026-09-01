@@ -223,7 +223,13 @@ async def create_twin(
         "dry_run": dry_run,
     }
     if dry_run:
+        # Callers (the dashboard preview) label the pair from tracked_id /
+        # untracked_id, so report them here too; the twin's slot is None
+        # because it does not exist yet.
+        src = int(bp.detail["id"])
         summary["twin_id"] = None
+        summary["tracked_id"] = src if bp.open_tracking else None
+        summary["untracked_id"] = None if bp.open_tracking else src
         return summary
 
     created = await client.create_campaign(new_name, client_id=bp.detail.get("client_id"))

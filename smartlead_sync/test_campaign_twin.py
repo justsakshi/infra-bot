@@ -202,3 +202,13 @@ def test_dry_run_creates_nothing():
     s = asyncio.run(create_twin(fc, 42, dry_run=True))
     assert s["twin_id"] is None and s["dry_run"] is True
     assert fc.calls == []
+
+
+def test_dry_run_still_labels_the_pair():
+    """The dashboard preview decides which row gets the ON/OFF badge from
+    tracked_id / untracked_id, so a dry run must report them even though the
+    twin does not exist yet."""
+    fc = FakeClient()  # source has open tracking ON
+    s = asyncio.run(create_twin(fc, 42, dry_run=True))
+    assert s["tracked_id"] == 42
+    assert s["untracked_id"] is None
