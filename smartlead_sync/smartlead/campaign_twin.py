@@ -23,6 +23,10 @@ Two Smartlead quirks this module exists to absorb:
     subject / body / label. Single-variant campaigns put subject and body on
     the step itself and leave the variants list empty.
 
+``send_as_plain_text`` follows tracking rather than the source: open tracking
+needs an HTML pixel, so the tracked copy is HTML and the untracked copy is
+plain text. That matches the pair the team built by hand.
+
 The twin is created but never started. ``bounce_autopause_threshold`` is not
 readable through the API and so is not copied - set it by hand if the source
 had one.
@@ -153,8 +157,13 @@ def settings_from_campaign(detail: dict, *, name: str, open_tracking: bool) -> d
     body: dict[str, Any] = {
         "name": name,
         "track_settings": with_open_tracking(detail.get("track_settings"), open_tracking),
+        # Tied to tracking, not copied from the source. Open tracking needs an
+        # HTML pixel, so the tracked copy sends HTML; the untracked copy sends
+        # plain text for placement. This is how the team's hand-made pair is
+        # set up (BETTRDATA 3867136 html+tracked, 3871482 plain+untracked).
+        "send_as_plain_text": not open_tracking,
     }
-    for key in ("stop_lead_settings", "unsubscribe_text", "send_as_plain_text",
+    for key in ("stop_lead_settings", "unsubscribe_text",
                 "follow_up_percentage", "enable_ai_esp_matching"):
         if detail.get(key) is not None:
             body[key] = detail[key]

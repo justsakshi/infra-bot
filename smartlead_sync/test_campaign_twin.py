@@ -121,6 +121,20 @@ def test_settings_copy_fields_and_set_tracking():
     assert "client_id" not in s, "null client_id must not be sent"
 
 
+@pytest.mark.parametrize("source_plain,open_tracking,expected_plain", [
+    (False, False, True),   # tracked source -> untracked twin goes plain text
+    (True, True, False),    # untracked source -> tracked twin goes HTML
+    (True, False, True),
+    (False, True, False),
+])
+def test_plain_text_follows_tracking_not_source(source_plain, open_tracking, expected_plain):
+    """Open tracking needs an HTML pixel; no tracking sends plain text. This is
+    the second field the team flips by hand (BETTRDATA 3867136 / 3871482)."""
+    detail = {"track_settings": [], "send_as_plain_text": source_plain}
+    s = settings_from_campaign(detail, name="N", open_tracking=open_tracking)
+    assert s["send_as_plain_text"] is expected_plain
+
+
 # ── create_twin against a fake client ───────────────────────────────────────
 
 class FakeClient:
