@@ -171,6 +171,14 @@ EXPANDI_LEAD_PAGES_PER_RUN: int = int(os.getenv("EXPANDI_LEAD_PAGES_PER_RUN", "4
 # Rows per page. 100 is ~10x fewer requests than the default 10 for the same
 # throughput, which means far fewer chances to hit a transient 500.
 EXPANDI_LEAD_PAGE_SIZE: int = int(os.getenv("EXPANDI_LEAD_PAGE_SIZE", "100"))
+# Wall-clock cap on the whole sweep across all campaigns, in seconds. The
+# sweep makes many sequential paginated calls with no per-call progress
+# logging visible to an operator, so a slow API day (429s, Expandi latency)
+# can silently run past any wrapping process timeout with no trace of why —
+# observed 2026-09-01: three separate runs died mid-sweep with no error, no
+# completion log, just gone. This makes the sweep stop itself, log why, and
+# hand back whatever it already fetched rather than vanish.
+EXPANDI_SWEEP_TIME_BUDGET_SEC: float = float(os.getenv("EXPANDI_SWEEP_TIME_BUDGET_SEC", "180"))
 
 # Health score weights (sum = 100) and thresholds. Tune after seeing real data.
 # Reweighted 2026-07-27 after measuring what these components actually

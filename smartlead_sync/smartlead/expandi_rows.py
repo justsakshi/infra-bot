@@ -7,11 +7,13 @@ different numbers.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 
 from smartlead import campaign_metrics as cm
 from smartlead.config import (CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_EXCLUDE,
-                              EXPANDI_LEAD_PAGES_PER_RUN, EXPANDI_LEAD_PAGE_SIZE)
+                              EXPANDI_LEAD_PAGES_PER_RUN, EXPANDI_LEAD_PAGE_SIZE,
+                              EXPANDI_SWEEP_TIME_BUDGET_SEC)
 from smartlead.expandi import ExpandiClient
 from smartlead.expandi_accounts import discover_expandi_workspaces
 from smartlead.expandi_leads import ExpandiLeadStore
@@ -96,8 +98,22 @@ async def _sweep_lead_activity(client, leads, workspace: str,
     known = leads.known_ids(workspace)
     swept = 0
     exhausted: set[str] = set()
-    for camp in campaigns:
+    start_time = time.monotonic()
+    stopped_early = False
+    for i, camp in enumerate(campaigns, start=1):
+        if time.monotonic() - start_time > EXPANDI_SWEEP_TIME_BUDGET_SEC:
+            # Stop rather than run indefinitely. Whatever was cached this run
+            # is kept — the sweep is incremental, so the next run resumes
+            # from here rather than losing this run's progress.
+            print(f"{log} Expandi {workspace}: sweep hit its "
+                  f"{EXPANDI_SWEEP_TIME_BUDGET_SEC:.0f}s time budget after "
+                  f"{i - 1}/{len(campaigns)} campaign(s) — stopping early, "
+                  f"resuming next run")
+            stopped_early = True
+            break
         name = str(camp.get("name", "")).strip()
+        print(f"{log} Expandi {workspace}: sweeping campaign {i}/{len(campaigns)} "
+              f"({name[:40]})")
         instance_done: list[bool] = []
         # Each merged campaign may span several LinkedIn accounts; messengers
         # are per account+instance, so every pairing has to be asked.
@@ -125,8 +141,10 @@ async def _sweep_lead_activity(client, leads, workspace: str,
     # nothing because stop_when halts on the first fully-cached page, and a
     # silent run is indistinguishable from one that never executed — which is
     # exactly the ambiguity that makes a daily job hard to trust.
+    elapsed = time.monotonic() - start_time
+    suffix = " (stopped early on time budget)" if stopped_early else ""
     print(f"{log} Expandi {workspace}: lead sweep fetched {swept} row(s), "
-          f"cache holds {len(known)}")
+          f"cache holds {len(known)}, took {elapsed:.0f}s{suffix}")
 
 
 async def build_expandi_rows(today: datetime, start_dt: datetime,
