@@ -45,6 +45,10 @@ from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeli
 # Domains the team has retired. Testing them spends credits to learn nothing.
 SKIP_STATUSES = ("replaced", "cancel")
 INTERVAL_DAYS = 7
+# Fraction of the dispatched seed panel that must be classified before a result
+# is trustworthy. A handful of seeds out of fifteen is not a verdict: one spam
+# landing in a 2-seed sample reads as 50%.
+MIN_COVERAGE = 0.6
 
 
 def _domain_of(email: str) -> str:
@@ -129,6 +133,21 @@ async def collect_results(acc, store: PlacementStore, schedule: PlacementSchedul
             except SmartDeliveryError as exc:
                 print(f"  [Placement] poll/report {t['test_id']} failed: {exc}")
                 continue
+
+        # Smartlead flips a test to COMPLETED before every seed has been
+        # classified, especially under a large concurrent batch. A report with
+        # no or few classified seeds is "not measured yet", not a failure —
+        # scoring it would write `spam` for a healthy domain. Leave the test
+        # ACTIVE so a later collector run picks up the finished data.
+        if not report.get("has_data"):
+            print(f"  [Placement] test {t['test_id']}: no seeds classified yet "
+                  f"({report.get('classified', 0)}/{report.get('dispatched', 0)}) - leaving open")
+            continue
+        if report.get("coverage", 1.0) < MIN_COVERAGE:
+            print(f"  [Placement] test {t['test_id']}: only "
+                  f"{report.get('classified')}/{report.get('dispatched')} seeds classified "
+                  f"({report.get('coverage', 0):.0%}) - below {MIN_COVERAGE:.0%}, leaving open")
+            continue
 
         judged = report.get("worst_provider_inbox_pct", report["inbox_pct"])
         status = "inbox" if judged >= RETEST_INBOX_THRESHOLD else "fail"
