@@ -1651,6 +1651,42 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Weekly placement batch, Thursdays 10:30 IST. One test per live domain,
+    // rotating through that domain's inboxes week over week. Tests take ~75
+    // minutes, so this only fires them; the collector below writes the results.
+    cron.schedule('30 10 * * 4', () => {
+      console.log(`[CRON] Weekly placement batch firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const args = ['placement_executor.py'];
+      if (process.env.PLACEMENT_ENABLED !== 'true') args.push('--dry-run');
+      const proc = spawn('python', args, {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[placement] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[placement] ${d}`));
+      proc.on('close', code => console.log(`[placement] batch finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // Placement result collector, 12:30 and 16:30 IST daily. Thursday's batch
+    // lands in the first window; the later run catches stragglers, and the
+    // other days pick up any on-demand test. Collect-only: never creates.
+    cron.schedule('30 12,16 * * *', () => {
+      console.log(`[CRON] Placement collector firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['placement_executor.py', '--collect-only'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[placement] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[placement] ${d}`));
+      proc.on('close', code => console.log(`[placement] collect finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // API-key health watchdog at 09:45 IST daily — 15 minutes before the sync,
     // so a rotated/revoked key is reported BEFORE the day's jobs run blind on
     // it. Read-only, no enable flag. Exit code 2 = dead key, 1 = unreachable.
