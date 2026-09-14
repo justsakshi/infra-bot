@@ -254,6 +254,29 @@ class SmartleadClient:
         }
         return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences", body)
 
+    async def save_campaign_sequence_variants(self, campaign_id: str, step_id: int,
+                                              variants: list[dict],
+                                              seq_number: int = 1) -> dict:
+        """Replace one step's variants in place (POST /campaigns/{id}/sequences).
+
+        Each variant carries subject / email_body / variant_label. The write key
+        is `seq_variants`; the read endpoint returns the same data as
+        `sequence_variants`, and posting under that name is a 400 (verified
+        2026-09-14). Passing the step's `id` updates it rather than appending a
+        second step.
+        """
+        body = {"sequences": [{
+            "id": int(step_id),
+            "seq_number": int(seq_number),
+            "seq_delay_details": {"delay_in_days": 0},
+            "seq_variants": [{
+                "subject": v["subject"],
+                "email_body": v["email_body"],
+                "variant_label": v.get("variant_label", "A"),
+            } for v in variants],
+        }]}
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences", body)
+
     async def add_campaign_leads(self, campaign_id: str, emails: list[str],
                                  linkedin_urls: dict[str, str] | None = None) -> dict:
         """Add leads by email (POST /campaigns/{id}/leads). Ignores block/dup lists

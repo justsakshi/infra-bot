@@ -36,7 +36,7 @@ class SmartDeliveryClient:
 
     async def create_test(self, campaign_id: int, sequence_mapping_id: int,
                           sender_emails: list[str], test_name: str,
-                          is_warmup: bool = True) -> int:
+                          is_warmup: bool = True, no_time_gap: bool = False) -> int:
         body = {
             "test_name": test_name,
             "description": f"auto placement test — {test_name}",
@@ -46,11 +46,16 @@ class SmartDeliveryClient:
             "provider_ids": [20, 21],
             "spam_filters": ["spam_assassin"],
             "link_checker": True,
-            "all_email_sent_without_time_gap": False,
-            "min_time_btwn_emails": RETEST_MIN_TIME_MINUTES,
-            "min_time_unit": "minutes",
             "is_warmup": is_warmup,
         }
+        if no_time_gap:
+            # Sending `min_time_unit` alongside no-gap is a 400
+            # ("min_time_unit is not allowed", 2026-09-14).
+            body["all_email_sent_without_time_gap"] = True
+        else:
+            body["all_email_sent_without_time_gap"] = False
+            body["min_time_btwn_emails"] = RETEST_MIN_TIME_MINUTES
+            body["min_time_unit"] = "minutes"
         resp = await self._client.post(self._url("/spam-test/manual"),
                                        headers={"Content-Type": "application/json"}, json=body)
         if resp.status_code >= 400:

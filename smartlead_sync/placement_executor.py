@@ -36,7 +36,10 @@ from smartlead.client_filter import is_excluded_inbox
 from smartlead.config import (
     ACCOUNT_DELIVERABILITY_TABS, TEST_TAB_NAME, TEST_SHEET_ID,
     RETEST_INBOX_THRESHOLD, RETEST_TEST_CAMPAIGN_KEYWORD,
+    PLACEMENT_WAVE_SIZE, PLACEMENT_NO_TIME_GAP, PLACEMENT_DAILY_TEST_CAP,
+    PLACEMENT_MIN_COVERAGE, PLACEMENT_COPY_REFRESH,
 )
+from smartlead.placement_copy import refresh_test_campaign
 from smartlead.placement_grid import write_result
 from smartlead.placement_schedule import PlacementSchedule, select_batch
 from smartlead.placement_store import PlacementStore
@@ -45,10 +48,10 @@ from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeli
 # Domains the team has retired. Testing them spends credits to learn nothing.
 SKIP_STATUSES = ("replaced", "cancel")
 INTERVAL_DAYS = 7
-# Fraction of the dispatched seed panel that must be classified before a result
-# is trustworthy. A handful of seeds out of fifteen is not a verdict: one spam
-# landing in a 2-seed sample reads as 50%.
-MIN_COVERAGE = 0.6
+# A test still open after this long is not going to fill in. Smartlead closes
+# the send window at ~72 minutes; anything unclassified three days later is
+# starved, and the domain should be re-queued rather than left waiting.
+ABANDON_AFTER_DAYS = 3
 
 
 def _domain_of(email: str) -> str:
@@ -143,10 +146,11 @@ async def collect_results(acc, store: PlacementStore, schedule: PlacementSchedul
             print(f"  [Placement] test {t['test_id']}: no seeds classified yet "
                   f"({report.get('classified', 0)}/{report.get('dispatched', 0)}) - leaving open")
             continue
-        if report.get("coverage", 1.0) < MIN_COVERAGE:
+        if report.get("coverage", 1.0) < PLACEMENT_MIN_COVERAGE:
             print(f"  [Placement] test {t['test_id']}: only "
                   f"{report.get('classified')}/{report.get('dispatched')} seeds classified "
-                  f"({report.get('coverage', 0):.0%}) - below {MIN_COVERAGE:.0%}, leaving open")
+                  f"({report.get('coverage', 0):.0%}) - below {PLACEMENT_MIN_COVERAGE:.0%}, "
+                  "leaving open")
             continue
 
         judged = report.get("worst_provider_inbox_pct", report["inbox_pct"])
@@ -168,6 +172,17 @@ async def collect_results(acc, store: PlacementStore, schedule: PlacementSchedul
         if not dry_run:
             store.mark_done(t["test_id"], report["inbox_pct"], status)
         done += 1
+
+    # Only after every collectable test has been read: anything still open
+    # this long is starved and will not fill in. Abandoning before collecting
+    # would discard a test that crossed the coverage bar on its last day.
+    for t in store.stale_tests(max_age_days=ABANDON_AFTER_DAYS):
+        if t.get("client") != acc.name or t.get("source") == "emailguard":
+            continue
+        print(f"  [Placement] test {t['test_id']} open >{ABANDON_AFTER_DAYS}d below "
+              f"coverage - abandoning; domain re-queues next run")
+        if not dry_run:
+            store.mark_abandoned(t["test_id"])
     return done
 
 
@@ -198,6 +213,28 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
         print(f"  [Placement] nothing due for {acc.name}")
         return 0
 
+    # Wave throttle: only fire when the previous wave has mostly cleared. This
+    # is what turns "fire all 19" into a sequence of small batches across the
+    # day without a long-running process.
+    open_now = sum(1 for t in store.pending_tests()
+                   if t.get("client") == acc.name and t.get("source") != "emailguard")
+    room = max(0, PLACEMENT_WAVE_SIZE - open_now)
+    if room == 0:
+        print(f"  [Placement] {open_now} test(s) still open for {acc.name} "
+              f"(wave size {PLACEMENT_WAVE_SIZE}) - waiting for them to clear")
+        return 0
+    # Daily spend ceiling. There is no balance endpoint; this is the brake.
+    spent = store.created_since(acc.name, date.today().isoformat())
+    room = min(room, max(0, PLACEMENT_DAILY_TEST_CAP - spent))
+    if room == 0:
+        print(f"  [Placement] daily cap reached for {acc.name} "
+              f"({spent}/{PLACEMENT_DAILY_TEST_CAP} created today)")
+        return 0
+    if len(batch) > room:
+        print(f"  [Placement] {len(batch)} due, firing {room} this wave "
+              f"({open_now} open, {spent}/{PLACEMENT_DAILY_TEST_CAP} today)")
+        batch = batch[:room]
+
     print(f"  [Placement] {len(batch)} domain(s) due for {acc.name}"
           f"{' (DRY-RUN)' if dry_run else ''}:")
     for b in batch:
@@ -210,6 +247,12 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
     if not args:
         return 0
     campaign_id, sequence_id = args
+
+    copy = {"hash": "", "source": None}
+    if PLACEMENT_COPY_REFRESH:
+        copy = await refresh_test_campaign(acc, campaign_id, sequence_id, store)
+        state = "refreshed" if copy["written"] else "kept previous copy"
+        print(f"  [Placement] test campaign copy {state}: {copy['reason']}")
 
     # Attach any sender not already on the test campaign; create_test rejects
     # senders the campaign does not know about.
@@ -230,7 +273,7 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
                 tid = await sd.create_test(
                     campaign_id, sequence_id, [item["email"]],
                     f"auto-{acc.name}-{item['domain']}-{date.today().isoformat()}",
-                    is_warmup=True)
+                    is_warmup=True, no_time_gap=PLACEMENT_NO_TIME_GAP)
                 return item, tid, None
             except CreditError as exc:
                 return item, None, f"credits: {exc}"
@@ -240,7 +283,9 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
     created = 0
     for item, tid, err in await asyncio.gather(*[fire(b) for b in batch]):
         if tid:
-            store.record_created(tid, acc.name, campaign_id, [item["email"]])
+            store.record_created(tid, acc.name, campaign_id, [item["email"]],
+                                 extra={"copy_hash": copy["hash"],
+                                        "copy_source": copy["source"]})
             created += 1
             print(f"  [Placement] test {tid} created for {item['domain']}")
         else:
@@ -315,7 +360,7 @@ async def fire_single(acc, store: PlacementStore, email: str, dry_run: bool) -> 
         try:
             tid = await sd.create_test(campaign_id, sequence_id, [email],
                                        f"manual-{acc.name}-{email}-{date.today().isoformat()}",
-                                       is_warmup=True)
+                                       is_warmup=True, no_time_gap=PLACEMENT_NO_TIME_GAP)
         except (CreditError, SmartDeliveryError) as exc:
             print(f"  [Placement] create failed for {email}: {exc}")
             return

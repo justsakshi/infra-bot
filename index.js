@@ -1651,10 +1651,11 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
-    // Weekly placement batch, Thursdays 10:30 IST. One test per live domain,
-    // rotating through that domain's inboxes week over week. Tests take ~75
-    // minutes, so this only fires them; the collector below writes the results.
-    cron.schedule('30 10 * * 4', () => {
+    // Weekly placement batch, Thursdays, every two hours from 10:00 IST. Each
+    // run fires at most one wave (PLACEMENT_WAVE_SIZE) and only once the prior
+    // wave has cleared, so ~19 domains cover in four waves without a
+    // long-running process. Firing all at once starved the seed queue.
+    cron.schedule('0 10,12,14,16 * * 4', () => {
       console.log(`[CRON] Weekly placement batch firing at ${new Date().toISOString()}`);
       const syncDir = path.join(__dirname, 'smartlead_sync');
       const args = ['placement_executor.py'];

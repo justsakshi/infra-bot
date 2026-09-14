@@ -19,6 +19,7 @@ class PlacementStore:
     def __init__(self) -> None:
         self._tests = None
         self._results = None
+        self._snapshots = None
         uri = os.getenv("MONGO_URI", "")
         if not uri or MongoClient is None:
             print("  [Retest] Mongo unavailable - state store disabled.")
@@ -29,10 +30,11 @@ class PlacementStore:
             db = client[HEALTH_HISTORY_DB]
             self._tests = db[PLACEMENT_TESTS_COLLECTION]
             self._results = db[PLACEMENT_RESULTS_COLLECTION]
+            self._snapshots = db["placement_copy_snapshots"]
             self._tests.create_index("test_id", unique=True)
         except Exception as exc:  # noqa: BLE001
             print(f"  [Retest] Mongo connect failed ({exc}) - disabled.")
-            self._tests = self._results = None
+            self._tests = self._results = self._snapshots = None
 
     @property
     def available(self) -> bool:
@@ -53,23 +55,46 @@ class PlacementStore:
         return out
 
     def record_created(self, test_id, client: str, campaign_id, emails: list[str],
-                       warmup_off_ids: list[str] | None = None) -> None:
+                       warmup_off_ids: list[str] | None = None,
+                       extra: dict | None = None) -> None:
         # test_id is an int for Smartlead SmartDelivery tests and a uuid string
         # for EmailGuard tests — both are stored as-is and disambiguated by the
         # `source` tag (see tag_source).
         if self._tests is None:
             return
+        fields = {"test_id": test_id, "client": client, "campaign_id": campaign_id,
+                  "emails": emails, "status": "ACTIVE",
+                  "created": _date.today().strftime("%Y-%m-%d"),
+                  "warmup_off_ids": warmup_off_ids or []}
+        fields.update(extra or {})
         try:
-            self._tests.update_one(
-                {"test_id": test_id},
-                {"$set": {"test_id": test_id, "client": client, "campaign_id": campaign_id,
-                          "emails": emails, "status": "ACTIVE",
-                          "created": _date.today().strftime("%Y-%m-%d"),
-                          "warmup_off_ids": warmup_off_ids or []}},
-                upsert=True,
-            )
+            self._tests.update_one({"test_id": test_id}, {"$set": fields}, upsert=True)
         except PyMongoError as exc:
             print(f"  [Retest] record_created failed: {exc}")
+
+    def created_since(self, client: str, since: str) -> int:
+        """Tests created for a client on or after an ISO date. SmartDelivery
+        exposes no credit balance, so our own creation count is the only spend
+        signal there is."""
+        if self._tests is None:
+            return 0
+        try:
+            return self._tests.count_documents(
+                {"client": client, "created": {"$gte": since}})
+        except PyMongoError:
+            return 0
+
+    def save_copy_snapshot(self, client: str, campaign_id, sequence: object) -> None:
+        """Keep the test campaign's sequence as it was before a copy refresh, so
+        a bad refresh is one restore away rather than gone."""
+        if self._snapshots is None:
+            return
+        try:
+            self._snapshots.insert_one({
+                "client": client, "campaign_id": campaign_id,
+                "taken": _date.today().strftime("%Y-%m-%d"), "sequence": sequence})
+        except PyMongoError as exc:
+            print(f"  [Retest] save_copy_snapshot failed: {exc}")
 
     def stale_tests(self, max_age_days: int = 3) -> list[dict]:
         """ACTIVE tests pending longer than max_age_days — candidates for
