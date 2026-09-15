@@ -1688,6 +1688,27 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Fleet placement summary at 09:50 IST daily. Read-only and credit-free —
+    // it reads placement already rolled up across past tests, so drift shows
+    // up the next morning instead of waiting for the weekly test. Exit 2 means
+    // at least one mailbox is below threshold.
+    cron.schedule('50 9 * * *', () => {
+      console.log(`[CRON] Placement summary firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['placement_summary.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[placement-summary] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[placement-summary] ${d}`));
+      proc.on('close', code => {
+        if (code === 2) console.warn('[placement-summary] ⚠ mailbox(es) below placement threshold');
+        else console.log('[placement-summary] all mailboxes above threshold');
+      });
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // API-key health watchdog at 09:45 IST daily — 15 minutes before the sync,
     // so a rotated/revoked key is reported BEFORE the day's jobs run blind on
     // it. Read-only, no enable flag. Exit code 2 = dead key, 1 = unreachable.

@@ -69,6 +69,41 @@ class SmartDeliveryClient:
             raise SmartDeliveryError(f"no test id in response: {data}")
         return int(tid)
 
+    async def get_mailbox_summary(self) -> list[dict]:
+        """Every mailbox's placement across all tests, account-wide.
+
+        Not tied to a test id — this is the rolled-up history, which makes it
+        the cheapest way to spot a mailbox drifting without spending a credit.
+        Percentages arrive as strings ("72.41%"); they are parsed to floats
+        here so callers never have to strip a percent sign.
+        """
+        resp = await self._client.get(self._url("/spam-test/report/mailboxes-summary"))
+        if resp.status_code >= 400:
+            raise SmartDeliveryError(
+                f"mailbox summary failed {resp.status_code}: {resp.text[:150]}")
+        data = resp.json()
+        rows = data if isinstance(data, list) else data.get("data", [])
+        out = []
+        for row in rows:
+            pct = row.get("percentages") or {}
+
+            def _num(key: str) -> float:
+                try:
+                    return float(str(pct.get(key, "0")).rstrip("%"))
+                except ValueError:
+                    return 0.0
+
+            out.append({
+                "email": row.get("from_email", ""),
+                "esp": row.get("esp", ""),
+                "inbox_pct": _num("inbox"), "spam_pct": _num("spam"),
+                "tab_pct": _num("tab"),
+                "dkim_pass_pct": _num("dkim_pass"), "spf_pass_pct": _num("spf_pass"),
+                "tests": int(row.get("placement_count", 0) or 0),
+                "total": int(row.get("adjusted_total_count", 0) or 0),
+            })
+        return out
+
     async def get_sender_report(self, test_id: int) -> dict[str, dict]:
         """Per-sender placement: {sender email: summary}.
 
