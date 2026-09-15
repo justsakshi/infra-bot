@@ -233,15 +233,25 @@ PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "p
 # ── Weekly placement loop (placement_executor.py) ────────────────────────────
 # Tests created per run per client. Firing 19 at once on 2026-09-11 starved
 # the seed queue: 30% coverage after two hours, 60% after three days, while
-# batches of 1-3 filled their panels in ~75 minutes. A run only fires when the
-# client has fewer than this many tests still open, so waves self-throttle.
+# batches of 1-3 filled their panels in ~75 minutes. Smartlead support
+# (2026-09-15) confirmed an internal manual-test limit exists but is not
+# surfaced, and called the 3-day stall unexpected — so this stays conservative
+# until they trace our run. A run only fires when the client has fewer than
+# this many tests still open, so waves self-throttle.
 PLACEMENT_WAVE_SIZE: int = int(os.getenv("PLACEMENT_WAVE_SIZE", "5"))
-# Smartlead closes a test ~72 minutes after creation whatever its progress.
-# Fifteen seeds at the 5-minute minimum gap is 75 minutes of pacing, so a paced
-# test cannot finish inside its own window. No-gap sends every seed at once.
-PLACEMENT_NO_TIME_GAP: bool = os.getenv("PLACEMENT_NO_TIME_GAP", "true").lower() == "true"
-# Ceiling on tests created per client per day. SmartDelivery has no balance
-# endpoint, so counting our own creations is the only spend control there is.
+# A test completes once every seed SEND has been triggered — not when the
+# classifications come back, and not on a timer (Smartlead support,
+# 2026-09-15). The ~72 minutes we measured was just 15 seeds x the 5-minute
+# gap. 5 minutes is the enforced floor, so staggering cannot be made faster;
+# no-gap skips the interval entirely and dispatches the seeds together.
+# Unverified: whether a burst send changes how providers judge placement.
+# Support had no data either way, so this is a controlled experiment we owe
+# ourselves before trusting it fleet-wide.
+PLACEMENT_NO_TIME_GAP: bool = os.getenv("PLACEMENT_NO_TIME_GAP", "false").lower() == "true"
+# Ceiling on tests created per client per day. SmartDelivery bills a flat
+# 1 sequence-credit per manual test regardless of seeds, providers or senders
+# (support, 2026-09-15), and exposes no balance endpoint — so counting our own
+# creations is the only spend control there is.
 PLACEMENT_DAILY_TEST_CAP: int = int(os.getenv("PLACEMENT_DAILY_TEST_CAP", "25"))
 # Share of the dispatched seed panel that must be classified before a verdict
 # is written. Below it a report is "not measured yet", never a failure.

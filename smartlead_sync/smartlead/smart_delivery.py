@@ -69,6 +69,17 @@ class SmartDeliveryClient:
             raise SmartDeliveryError(f"no test id in response: {data}")
         return int(tid)
 
+    async def stop_test(self, test_id: int) -> bool:
+        """Cancel a running test. PUT — not POST or DELETE, which both 404
+        (Smartlead support, 2026-09-15). Returns False rather than raising:
+        stopping is a best-effort courtesy, never a reason to fail a run."""
+        resp = await self._client.put(self._url(f"/spam-test/{test_id}/stop"))
+        if resp.status_code >= 400:
+            print(f"  [SmartDelivery] stop {test_id} failed "
+                  f"{resp.status_code}: {resp.text[:120]}")
+            return False
+        return True
+
     async def poll_test(self, test_id: int) -> dict:
         resp = await self._client.get(self._url(f"/spam-test/{test_id}"))
         if resp.status_code >= 400:

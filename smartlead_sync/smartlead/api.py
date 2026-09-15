@@ -255,27 +255,45 @@ class SmartleadClient:
         return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences", body)
 
     async def save_campaign_sequence_variants(self, campaign_id: str, step_id: int,
-                                              variants: list[dict],
-                                              seq_number: int = 1) -> dict:
-        """Replace one step's variants in place (POST /campaigns/{id}/sequences).
+                                              variants: list[dict]) -> dict:
+        """Replace one step's variants, preserving every other step.
 
-        Each variant carries subject / email_body / variant_label. The write key
-        is `seq_variants`; the read endpoint returns the same data as
-        `sequence_variants`, and posting under that name is a 400 (verified
-        2026-09-14). Passing the step's `id` updates it rather than appending a
-        second step.
+        POST /campaigns/{id}/sequences REPLACES the whole sequence array — any
+        step omitted from the payload is deleted (confirmed by Smartlead
+        support, 2026-09-15). So the current sequence is read first and posted
+        back in full with only the target step's variants swapped; each step's
+        own `id`, `seq_number` and delay are carried through untouched.
+
+        The write key is `seq_variants` while the read endpoint returns
+        `sequence_variants` — a known naming inconsistency on their side, so
+        both are read defensively.
         """
-        body = {"sequences": [{
-            "id": int(step_id),
-            "seq_number": int(seq_number),
-            "seq_delay_details": {"delay_in_days": 0},
-            "seq_variants": [{
-                "subject": v["subject"],
-                "email_body": v["email_body"],
-                "variant_label": v.get("variant_label", "A"),
-            } for v in variants],
-        }]}
-        return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences", body)
+        current = await self._get(f"/campaigns/{campaign_id}/sequences")
+        steps = current if isinstance(current, list) else current.get("sequences", [])
+        if not any(int(s.get("id", 0)) == int(step_id) for s in steps):
+            raise ValueError(f"step {step_id} not in campaign {campaign_id} — refusing "
+                             "to write, it would drop the campaign's real steps")
+
+        payload = []
+        for s in steps:
+            existing = s.get("seq_variants") or s.get("sequence_variants") or []
+            if int(s.get("id", 0)) == int(step_id):
+                new_variants = [{"subject": v["subject"], "email_body": v["email_body"],
+                                 "variant_label": v.get("variant_label", "A")}
+                                for v in variants]
+            else:
+                new_variants = [{"subject": v.get("subject", ""),
+                                 "email_body": v.get("email_body", ""),
+                                 "variant_label": v.get("variant_label", "A")}
+                                for v in existing]
+            payload.append({
+                "id": int(s["id"]),
+                "seq_number": s.get("seq_number", 1),
+                "seq_delay_details": s.get("seq_delay_details") or {"delay_in_days": 0},
+                "seq_variants": new_variants,
+            })
+        return await self._request_json("POST", f"/campaigns/{campaign_id}/sequences",
+                                        {"sequences": payload})
 
     async def add_campaign_leads(self, campaign_id: str, emails: list[str],
                                  linkedin_urls: dict[str, str] | None = None) -> dict:

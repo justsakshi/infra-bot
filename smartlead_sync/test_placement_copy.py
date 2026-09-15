@@ -4,7 +4,7 @@ copy, and the resulting spam verdict being written against a healthy domain.
 """
 from smartlead.placement_copy import (
     resolve_merge_fields, pick_source_campaign, build_variants, copy_hash,
-    sample_custom_fields, first_signature,
+    sample_custom_fields, first_signature, step_variants,
 )
 
 def ok(c, m): print(f"  {'PASS' if c else 'FAIL'}: {m}"); assert c, m
@@ -73,5 +73,18 @@ ok(sample_custom_fields(leads) == {"providers_line": "X sits behind one login."}
 ok(sample_custom_fields([]) == {}, "no leads -> empty sample")
 ok(first_signature([{"signature": ""}, {"signature": "  <b>S</b> "}]) == "<b>S</b>",
    "first non-empty signature, trimmed")
+
+# --- both variant keys (Smartlead returns one, expects the other on write) ---
+ok(step_variants({"sequence_variants": [{"variant_label": "A"}]})[0]["variant_label"] == "A",
+   "reads sequence_variants (what GET returns)")
+ok(step_variants({"seq_variants": [{"variant_label": "B"}]})[0]["variant_label"] == "B",
+   "reads seq_variants (what POST expects) too")
+ok(step_variants({}) == [], "a step with neither key yields no variants")
+
+variants, problems = build_variants(
+    {"seq_variants": [{"variant_label": "A", "subject": "s",
+                       "email_body": "{{providers_line}}"}]}, FIELDS, SIG)
+ok(len(variants) == 1 and problems == [],
+   f"build_variants works off seq_variants as well, got {variants} {problems}")
 
 print("\nALL PASSED")

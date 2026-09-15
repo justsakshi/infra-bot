@@ -62,12 +62,20 @@ def pick_source_campaign(campaigns: list[dict]) -> dict | None:
     return active[0]
 
 
+def step_variants(step: dict) -> list[dict]:
+    """A step's variants under either key. The read endpoint returns
+    `sequence_variants` and the write payload uses `seq_variants` — Smartlead
+    support called this a known inconsistency (2026-09-15) and advised handling
+    both, since either could appear depending on the path the data came from."""
+    return step.get("sequence_variants") or step.get("seq_variants") or []
+
+
 def build_variants(step: dict, sample_fields: dict,
                    signature: str) -> tuple[list[dict], list[str]]:
     """Resolved variants for one step, plus every reason not to write them."""
     variants: list[dict] = []
     problems: list[str] = []
-    for v in step.get("sequence_variants", []):
+    for v in step_variants(step):
         label = v.get("variant_label", "A")
         subject, u1 = resolve_merge_fields(v.get("subject", ""), sample_fields, signature)
         body, u2 = resolve_merge_fields(v.get("email_body", ""), sample_fields, signature)
