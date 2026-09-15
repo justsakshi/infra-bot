@@ -111,19 +111,45 @@ triggered for this one?
    refusing to record anything below a coverage threshold.
 3. **Sender credits.** You mentioned `sender_credits` caps senders per test.
    Where can we see that number for an account, and what is it for BETTRDATA?
-4. **Per-sender reporting** — noted you're checking with the product team. For
-   planning: if it doesn't exist, we'll stay on one-test-per-domain, which
-   costs us one credit per domain per week rather than one per batch. Any
-   sense of whether that's on the roadmap would help us decide whether to
-   design around it permanently.
-5. **Credit balance endpoint.** Also noted as dashboard-only. We'd like to
+4. **Per-sender reporting — found it, disregard the original question.** After
+   sending the first list we found the full API reference at `api.smartlead.ai`
+   (the helpcenter's "Full API Documentation" page doesn't mention
+   SmartDelivery at all, which is why we'd been guessing endpoint names).
+   `GET /spam-test/report/{id}/sender-account-wise` is exactly what we needed
+   and we've moved to it. Two follow-ups on it, though:
+
+   a. Is `rdns_result` the *sending* relay rather than the receiving MX? On
+      test 532019 all 14 seeds report a `1e100.net` rdns, while
+      `/providerwise` attributes 6 of them to Office365. We've assumed the
+      rdns describes your sending infrastructure and that `/providerwise` is
+      the only authority on the provider split — please confirm, since getting
+      this backwards would mis-score every Microsoft seed as Google.
+
+   b. Is there a way to get the provider split *per sender*? Combining the two
+      endpoints gives us per-sender placement OR a test-wide provider split,
+      but not both. Our fleet's real failure mode is a domain that reaches
+      Google but not Microsoft, so per-sender-per-provider is what we'd
+      ideally judge on.
+
+5. **`POST /spam-test/schedule`.** The reference documents this endpoint but
+   shows an empty `{}` request body, so we can't tell what it accepts. Could
+   you share the request schema — specifically whether `sender_accounts` takes
+   an array, and what `every_days` / `scheduler_cron_value` accept? We've
+   built our own weekly scheduler on top of `/spam-test/manual`, and if your
+   native scheduler does the same job we'd rather use it than maintain ours.
+6. **Credit balance endpoint.** Also noted as dashboard-only. We'd like to
    register this as a feature request: we run these tests unattended on a
    schedule, and without a balance check the only way we learn we're out of
    credits is a failed test creation mid-run. Even a read-only balance field
    would let us stop cleanly instead.
-6. **Smart Agent insights** — yes please, log that as a feature request. Being
+7. **Smart Agent insights** — yes please, log that as a feature request. Being
    able to pull Campaign/Domain/Mailbox Health programmatically would replace
    a meaningful amount of what we've built ourselves.
+8. **Documentation discoverability.** The helpcenter article titled "Full API
+   Documentation" doesn't mention SmartDelivery, and doesn't link onward to
+   `api.smartlead.ai` prominently. We spent roughly 25 credits rediscovering
+   endpoints that were already documented. A pointer from that page to the
+   SmartDelivery section would have saved all of it.
 
 ## 6. One thing we found that may be worth flagging internally
 
