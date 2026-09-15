@@ -151,6 +151,52 @@ triggered for this one?
    endpoints that were already documented. A pointer from that page to the
    SmartDelivery section would have saved all of it.
 
+## 7. Auto-Replace
+
+We saw the Auto-Replace announcement (Email Accounts → Auto-Replace) and want
+to evaluate it, but the four things that decide whether we can use it on a
+client account aren't documented anywhere we can find:
+
+1. **What counts as "burning out"?** Specifically: is detection per-provider or
+   on a blended figure? This decides it for us. Our fleet's real failure mode
+   is a domain that reaches one provider and not the other — we had a domain
+   read Inbox at Google and spam at Outlook for four consecutive weeks, which a
+   blended average scores as healthy. If Auto-Replace blends, it will miss
+   exactly the domains we most need replaced. Does it use placement test data,
+   warmup reputation, bounce rate, or a composite?
+2. **Replacement domain naming and registrar.** What scheme generates the new
+   domain name, and which registrar/provider does it order from? We have a
+   standing rule against brand-permutation domains (a placement study of ours
+   flagged them as trivially identifiable as a bulk fleet), so a replacement
+   named like `<brand>-7.com` would be worse than the mailbox it replaces.
+3. **Warmup duration before it starts sending.** Our rule is 30 days of domain
+   age before a first cold send, or 14 days for a new inbox on an aged domain.
+   What does Auto-Replace wait?
+4. **Is there an API?** Either to configure the criteria, or at minimum to read
+   what it did — which mailboxes it retired and what replaced them. We keep our
+   own fleet register and a per-domain deliverability sheet; if Auto-Replace
+   retires domains without an API to observe it, those records silently drift
+   out of sync with reality.
+
+Also: is Auto-Replace included, or does it bill separately from the mailbox
+provisioning cost?
+
+## 8. Native scheduled placement tests
+
+We found `POST /spam-test/schedule` in the reference and confirmed the schema
+by probing required fields: `test_name`, `spam_filters`, `link_checker`,
+`campaign_id`, `sequence_mapping_id`, `provider_ids`, `sender_accounts`,
+`every_days`, `schedule_start_time`, `test_end_date`.
+
+We had already built our own weekly scheduler on `/spam-test/manual` before
+finding it, and would rather use yours. One question decides it: **does a
+scheduled test hit the same limit that stalled our 15 concurrent manual
+tests?** If a scheduled test with 19 senders in `sender_accounts` would run
+into the manual-test limit from section 1, we need to know before switching.
+
+Related: does `every_days` support a specific weekday, or only an interval
+counted from `schedule_start_time`? We test on Thursdays.
+
 ## 6. One thing we found that may be worth flagging internally
 
 Because a test can report `COMPLETED` with an empty or partial `result` array,
