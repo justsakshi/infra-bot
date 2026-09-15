@@ -40,19 +40,26 @@ COLUMNS = [
     # reconciles against total, and a campaign that has done most of its work
     # reads as barely started.
     "leads_completed",
+    # Leads that answered at least once, machine-classified replies removed.
+    "leads_replied",
     "connections_sent",
     "connections_sent_yesterday", "connections_accepted", "msg_sent",
     "msg_sent_yesterday", "positive_responses_yesterday",
-    "total_responses_month", "positive_neutral_month",
+    "total_responses_month",
+    # Out Of Office and Sender Originated Bounce among categorised leads, so
+    # the machine share of total_responses_month is visible rather than hidden.
+    "auto_responses",
+    "positive_neutral_month",
 ]
 
 # numeric columns summed in the Total row
 _NUMERIC = [
     "total_leads", "leads_added_month", "leads_added_yesterday", "leads_in_progress", "leads_not_started",
-    "leads_completed",
+    "leads_completed", "leads_replied",
     "connections_sent", "connections_sent_yesterday", "connections_accepted", "msg_sent",
     "msg_sent_yesterday",
-    "positive_responses_yesterday", "total_responses_month", "positive_neutral_month",
+    "positive_responses_yesterday", "total_responses_month", "auto_responses",
+    "positive_neutral_month",
 ]
 # launch_date is deliberately absent from _NUMERIC — summing dates is meaningless.
 
@@ -227,17 +234,39 @@ def should_include_smartlead_campaign(summary: dict, week_sent: int, month_sent:
     The zero-lead check is what the activity filter was really reaching for:
     it drops abandoned shells (0 leads, 0 sends) without hiding real backlog.
 
-    `week_sent`/`month_sent` are no longer used for the decision. They are kept
-    in the signature because callers compute them anyway for `msg_sent`, and
-    dropping them would churn every call site for no gain.
+    A PAUSED or COMPLETED campaign is kept only while it sent something in the
+    last week. Without that rule the tab accumulates history: on 2026-09-15
+    BettrData's tab carried 32 paused and 3 completed campaigns against 7
+    active ones, so the work actually running was buried and the Total row
+    summed months of finished sends. HeyReach already applied this rule;
+    Smartlead did not.
+
+    The window is the week rather than the month deliberately: a campaign that
+    finished a week ago is still worth seeing, one that finished in early
+    September is not, and a month window keeps the latter until October.
+
+    Active work is never dropped on activity grounds — an ACTIVE campaign that
+    has not sent yet was probably created today, and hiding it would be worse
+    than an empty row.
     """
     status = str(summary.get("status", "")).upper()
     if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
         return False
+
+    finished = (status in _STALE_STATUSES
+                or any(status.startswith(s) for s in _STALE_STATUSES))
+    if finished:
+        # The week is the whole rule. `month_sent` is deliberately ignored: a
+        # campaign that sent on 2 September and nothing since is exactly what
+        # this filter exists to remove, and honouring the month figure would
+        # keep it on the tab until October.
+        return week_sent > 0
+
     # Only reachable once totals are known; callers that pass a bare campaign
-    # dict (no lead stats) fall through to True, preserving prior behaviour.
+    # dict (no lead stats) fall through, preserving prior behaviour.
     if "total_leads" in summary and _int(summary.get("total_leads", 0)) == 0:
-        return (week_sent > 0) or (month_sent > 0)
+        # An empty ACTIVE campaign is newly created, not abandoned.
+        return True
     return True
 
 
@@ -260,7 +289,9 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                          month_sent: int = 0, start_dt: datetime | None = None,
                          end_dt: datetime | None = None,
                          yest_sent: int = 0, launch_date: str = "") -> dict:
+    from smartlead.config import SMARTLEAD_AUTO_REPLY_CATEGORY_IDS
     added_month = added_yest = pos_neutral = 0
+    replied = auto_replied = 0
     if start_dt is None or end_dt is None:
         start_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end_dt = today
@@ -271,8 +302,15 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
             added_month += 1
         if _is_yesterday(d, today):
             added_yest += 1
-        if lead.get("lead_category_id") in positive_ids:
+        cat = lead.get("lead_category_id")
+        if cat in positive_ids:
             pos_neutral += 1
+        # A category is only assigned once a lead replies, so any categorised
+        # lead answered at least once.
+        if cat is not None:
+            replied += 1
+            if cat in SMARTLEAD_AUTO_REPLY_CATEGORY_IDS:
+                auto_replied += 1
     return {
         "client": client,
         "campaign": summary.get("name", ""),
@@ -314,9 +352,24 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         # guess presented as a number, so it stays blank until we can source it
         # properly. HeyReach does report this, so its rows carry a real value.
         "positive_responses_yesterday": "-",
+        # Leads that answered at least once, machine replies removed. Counts
+        # leads rather than messages, so a lead who replied three times counts
+        # once — which is what "how many people answered" means.
+        "leads_replied": max(0, replied - auto_replied),
         # Raw reply count for the month — includes auto-replies, out-of-office
         # and bounces, so it reads higher than a human counting real responses.
         "total_responses_month": _int(month_replies),
+        # Auto-replies among the categorised leads: Out Of Office and Sender
+        # Originated Bounce. On campaign 3934047 this was 14 of 21 categorised
+        # leads, so the raw reply count read about three times the number of
+        # people who actually answered.
+        #
+        # Deliberately a lead count, not a month figure. Smartlead reports the
+        # month's replies as a bare total with no categories attached, and the
+        # per-lead records carry no reply timestamp — so a monthly human figure
+        # could only be estimated by scaling, which would put a guess in a
+        # column people read as measured. `leads_replied` is exact; use it.
+        "auto_responses": auto_replied,
         # Smartlead's own auto-categorisation (Interested / Meeting Request /
         # Information Request). Machine-tagged, not human-verified.
         "positive_neutral_month": pos_neutral,
@@ -380,6 +433,11 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         # than 0 so an absent figure is not read as "none finished".
         "leads_completed": (_int(ps.get("totalUsersFinished"))
                             if ps.get("totalUsersFinished") is not None else "-"),
+        # HeyReach reports replies per campaign directly.
+        "leads_replied": (_int(ps.get("totalUsersRepliedTo"))
+                          if ps.get("totalUsersRepliedTo") is not None else "-"),
+        # LinkedIn has no out-of-office concept, so there is nothing to strip.
+        "auto_responses": "-",
         # Month-to-date, matching the Smartlead column. These read from `om`
         # (the month window) not `oa` (all-time): a Total row that adds
         # all-time LinkedIn activity to month-to-date email activity is a
@@ -521,6 +579,10 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         # Expandi reports `finished` per campaign.
         "leads_completed": (_int(stats.get("finished"))
                             if stats.get("finished") is not None else "-"),
+        # Expandi counts replies across both message types.
+        "leads_replied": replied_total,
+        # LinkedIn has no out-of-office concept, so there is nothing to strip.
+        "auto_responses": "-",
         # From per-lead invited_at/connected_at where the lead cache has swept
         # this campaign; snapshot differencing otherwise.
         "connections_sent": conn_sent_month,

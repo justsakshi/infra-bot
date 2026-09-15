@@ -59,16 +59,27 @@ _mtd = smartlead_metric_row(summary, leads, month_replies=0, yest_replies=0,
                             today=TODAY, positive_ids={1, 2, 5}, month_sent=7)
 ok(_mtd["msg_sent"] == 7, f"msg_sent is month-to-date, not all-time (got {_mtd['msg_sent']})")
 
-# A paused campaign that sent nothing this month still holds real leads, so it
-# must appear. Only drafts and empty shells are dropped.
+# Superseded 2026-09-15. This used to assert that a PAUSED campaign holding
+# leads always appears, because dropping those once hid 15,476 leads. The tab
+# then accumulated history instead: 32 paused and 3 completed campaigns against
+# 7 active ones, burying the work actually running. The rule is now "active
+# this month or not shown", chosen deliberately with the tradeoff understood -
+# a paused campaign sitting on un-contacted leads does leave the tab.
+ok(not should_include_smartlead_campaign(
+    {"status": "PAUSED", "total_leads": 6905}, 0, 0),
+   "paused campaign with no sends this month is dropped, even holding leads")
 ok(should_include_smartlead_campaign(
-    {"status": "PAUSED", "total_leads": 6905}, 0, 0), "paused campaign with leads is included")
+    {"status": "PAUSED", "total_leads": 6905}, 40, month_sent=40),
+   "the same campaign reappears as soon as it sends again")
 ok(not should_include_smartlead_campaign(
     {"status": "PAUSED", "total_leads": 0}, 0, 0), "paused empty shell is dropped")
 ok(not should_include_smartlead_campaign(
     {"status": "DRAFTED", "total_leads": 500}, 0, 0), "draft is dropped even with leads")
-ok(should_include_smartlead_campaign(
-    {"status": "COMPLETED", "total_leads": 119}, 0, 0), "completed campaign with leads is included")
+# Superseded by the same 2026-09-15 decision as the PAUSED case above: a
+# campaign that finished and has sent nothing this month is history.
+ok(not should_include_smartlead_campaign(
+    {"status": "COMPLETED", "total_leads": 119}, 0, 0),
+   "completed campaign with no sends this month is dropped")
 
 # Name exclusions. Smartlead campaign names carry stray double spaces, so both
 # the name and the pattern are whitespace-collapsed before matching — without

@@ -147,6 +147,11 @@ CAMPAIGN_METRICS_CLIENTS: set[str] = {
 # 1=Interested, 2=Meeting Request, 5=Information Request. Excluded: 3=Not Interested,
 # 4=Do Not Contact, 6=Out Of Office (auto), 7=Wrong Person, 9=Sender Originated Bounce.
 SMARTLEAD_POSITIVE_CATEGORY_IDS: set[int] = {1, 2, 5}
+# Machine-generated replies. A raw reply count includes these, so it reads well
+# above the number of people who actually answered — the reason the response
+# columns never matched what the team counted by hand.
+# 6=Out Of Office, 9=Sender Originated Bounce.
+SMARTLEAD_AUTO_REPLY_CATEGORY_IDS: set[int] = {6, 9}
 
 # ── Inbox Health workbook ────────────────────────────────────────────────────
 INBOX_HEALTH_TAB_NAME: str = os.getenv("INBOX_HEALTH_TAB_NAME", "Inbox Health")
