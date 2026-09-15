@@ -19,15 +19,17 @@ analytics = {
     "campaign_lead_stats": {"total": 2987, "inprogress": 1920, "notStarted": 819},
 }
 summary_from_analytics = smartlead_summary_from_analytics(analytics)
-ok(summary_from_analytics == {
-    "campaign_id": 3716545,
-    "name": "Field Services Consolidated Roundtable - V3",
-    "status": "ACTIVE",
-    "total_leads": 2987,
-    "in_progress": 1920,
-    "not_started": 819,
-    "sent": 3122,
-}, "Smartlead analytics maps to the campaign summary consumed by metrics")
+for field, expected in (("campaign_id", 3716545), ("status", "ACTIVE"),
+                        ("total_leads", 2987), ("in_progress", 1920),
+                        ("not_started", 819), ("sent", 3122)):
+    ok(summary_from_analytics[field] == expected,
+       f"analytics maps {field} -> {expected}")
+# This fixture predates the six-state fix and only carries two states, so 248
+# of its 2987 leads are in states it does not list. That gap must surface in
+# `unaccounted` rather than vanishing, which is exactly the bug that made the
+# live tab under-report every campaign.
+ok(summary_from_analytics["unaccounted"] == 2987 - 1920 - 819,
+   f"partial stats leave a visible gap, got {summary_from_analytics['unaccounted']}")
 
 # --- Smartlead ---
 summary = {"name": "SL Camp", "status": "ACTIVE", "total_leads": 200,

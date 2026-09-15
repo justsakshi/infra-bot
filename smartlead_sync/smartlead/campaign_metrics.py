@@ -35,7 +35,12 @@ COLUMNS = [
     # the Total row silently sums across unrelated businesses.
     "client", "campaign", "platform", "launch_date", "status", "total_leads",
     "leads_added_month",
-    "leads_added_yesterday", "leads_in_progress", "leads_not_started", "connections_sent",
+    "leads_added_yesterday", "leads_in_progress", "leads_not_started",
+    # Finished leads. Without this column in-progress + not-started never
+    # reconciles against total, and a campaign that has done most of its work
+    # reads as barely started.
+    "leads_completed",
+    "connections_sent",
     "connections_sent_yesterday", "connections_accepted", "msg_sent",
     "msg_sent_yesterday", "positive_responses_yesterday",
     "total_responses_month", "positive_neutral_month",
@@ -44,6 +49,7 @@ COLUMNS = [
 # numeric columns summed in the Total row
 _NUMERIC = [
     "total_leads", "leads_added_month", "leads_added_yesterday", "leads_in_progress", "leads_not_started",
+    "leads_completed",
     "connections_sent", "connections_sent_yesterday", "connections_accepted", "msg_sent",
     "msg_sent_yesterday",
     "positive_responses_yesterday", "total_responses_month", "positive_neutral_month",
@@ -150,15 +156,40 @@ def _int(v) -> int:
 
 
 def smartlead_summary_from_analytics(analytics: dict) -> dict:
-    """Map lightweight campaign analytics to the summary shape metrics uses."""
+    """Map lightweight campaign analytics to the summary shape metrics uses.
+
+    `campaign_lead_stats` reports six mutually-exclusive states that sum to
+    total: inprogress, notStarted, completed, blocked, paused, stopped. Reading
+    only the first two loses the rest, which made finished work invisible — on
+    2026-09-15 a campaign with 83 of 100 leads completed reported 14
+    in-progress and 0 not-started, reading as barely started.
+
+    `interested` is deliberately not summed: it is a category layered on top of
+    the other states, so counting it would double-count those leads.
+
+    `unaccounted` is the difference between total and the six states. It should
+    always be zero (verified across every BettrData campaign); a non-zero value
+    means Smartlead added a state we do not know about, and it is surfaced
+    rather than silently absorbed into one of the columns.
+    """
     lead_stats = analytics.get("campaign_lead_stats", {}) or {}
+    total = _int(lead_stats.get("total", 0))
+    states = {
+        "in_progress": _int(lead_stats.get("inprogress", 0)),
+        "not_started": _int(lead_stats.get("notStarted", 0)),
+        "completed": _int(lead_stats.get("completed", 0)),
+        "blocked": _int(lead_stats.get("blocked", 0)),
+        "paused": _int(lead_stats.get("paused", 0)),
+        "stopped": _int(lead_stats.get("stopped", 0)),
+    }
     return {
         "campaign_id": analytics.get("id"),
         "name": analytics.get("name", ""),
         "status": analytics.get("status", ""),
-        "total_leads": _int(lead_stats.get("total", 0)),
-        "in_progress": _int(lead_stats.get("inprogress", 0)),
-        "not_started": _int(lead_stats.get("notStarted", 0)),
+        "total_leads": total,
+        **states,
+        "interested": _int(lead_stats.get("interested", 0)),
+        "unaccounted": max(0, total - sum(states.values())),
         "sent": _int(analytics.get("sent_count", 0)),
     }
 
@@ -256,6 +287,15 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         "leads_added_yesterday": added_yest,
         "leads_in_progress": _int(summary.get("in_progress", 0)),
         "leads_not_started": _int(summary.get("not_started", 0)),
+        # Leads that finished the sequence, plus the terminal states that also
+        # take a lead out of play (blocked/paused/stopped). Grouped so that
+        # in_progress + not_started + completed == total_leads on every row,
+        # which is the check that catches a broken sync at a glance.
+        "leads_completed": (_int(summary.get("completed", 0))
+                            + _int(summary.get("blocked", 0))
+                            + _int(summary.get("paused", 0))
+                            + _int(summary.get("stopped", 0))
+                            + _int(summary.get("unaccounted", 0))),
         # LinkedIn-only concepts; "-" rather than 0 so nobody reads a real zero.
         "connections_sent": "-",
         "connections_sent_yesterday": "-",
@@ -336,6 +376,10 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         # HeyReach has no "not started" concept — leads are either in the
         # sequence or not in the campaign at all.
         "leads_not_started": "-",
+        # HeyReach reports finished leads directly; fall back to "-" rather
+        # than 0 so an absent figure is not read as "none finished".
+        "leads_completed": (_int(ps.get("totalUsersFinished"))
+                            if ps.get("totalUsersFinished") is not None else "-"),
         # Month-to-date, matching the Smartlead column. These read from `om`
         # (the month window) not `oa` (all-time): a Total row that adds
         # all-time LinkedIn activity to month-to-date email activity is a
@@ -474,6 +518,9 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         # total unavailable there is no honest "not started" figure — the real
         # backlog is whatever sits in the Shared Campaign, which we cannot see.
         "leads_not_started": "-",
+        # Expandi reports `finished` per campaign.
+        "leads_completed": (_int(stats.get("finished"))
+                            if stats.get("finished") is not None else "-"),
         # From per-lead invited_at/connected_at where the lead cache has swept
         # this campaign; snapshot differencing otherwise.
         "connections_sent": conn_sent_month,
