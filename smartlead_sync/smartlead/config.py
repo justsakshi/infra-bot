@@ -239,6 +239,16 @@ PLACEMENT_RESULTS_COLLECTION: str = os.getenv("PLACEMENT_RESULTS_COLLECTION", "p
 # until they trace our run. A run only fires when the client has fewer than
 # this many tests still open, so waves self-throttle.
 PLACEMENT_WAVE_SIZE: int = int(os.getenv("PLACEMENT_WAVE_SIZE", "5"))
+# Senders carried by a single test. The per-sender report
+# (/spam-test/report/{id}/sender-account-wise) breaks one test down per sender
+# mailbox, so a test can cover many domains and still be scored per domain —
+# and billing is a flat 1 credit per test regardless of sender count. That
+# turns a 19-domain sweep into ~2 tests instead of 19, and sidesteps the
+# concurrency limit that the one-test-per-domain approach kept hitting.
+# Each sender still gets its own full 15-seed panel (verified on test 531861),
+# so a bigger batch means proportionally more seed mail from the one campaign —
+# hence a ceiling rather than "all of them".
+PLACEMENT_SENDERS_PER_TEST: int = int(os.getenv("PLACEMENT_SENDERS_PER_TEST", "10"))
 # A test completes once every seed SEND has been triggered — not when the
 # classifications come back, and not on a timer (Smartlead support,
 # 2026-09-15). The ~72 minutes we measured was just 15 seeds x the 5-minute

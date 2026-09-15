@@ -69,6 +69,23 @@ class SmartDeliveryClient:
             raise SmartDeliveryError(f"no test id in response: {data}")
         return int(tid)
 
+    async def get_sender_report(self, test_id: int) -> dict[str, dict]:
+        """Per-sender placement: {sender email: summary}.
+
+        `/providerwise` blends every sender in a test into one pair of provider
+        totals, which is why we ran one test per domain. This endpoint breaks
+        the same test down per sender mailbox, per seed, with the folder each
+        landed in — so a single test can carry many domains.
+        """
+        from smartlead.sender_report import summarize_senders
+
+        resp = await self._client.get(
+            self._url(f"/spam-test/report/{test_id}/sender-account-wise"))
+        if resp.status_code >= 400:
+            raise SmartDeliveryError(
+                f"sender report failed {resp.status_code}: {resp.text[:150]}")
+        return summarize_senders(resp.json())
+
     async def stop_test(self, test_id: int) -> bool:
         """Cancel a running test. PUT — not POST or DELETE, which both 404
         (Smartlead support, 2026-09-15). Returns False rather than raising:

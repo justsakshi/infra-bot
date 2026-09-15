@@ -37,7 +37,7 @@ from smartlead.config import (
     ACCOUNT_DELIVERABILITY_TABS, TEST_TAB_NAME, TEST_SHEET_ID,
     RETEST_INBOX_THRESHOLD, RETEST_TEST_CAMPAIGN_KEYWORD,
     PLACEMENT_WAVE_SIZE, PLACEMENT_NO_TIME_GAP, PLACEMENT_DAILY_TEST_CAP,
-    PLACEMENT_MIN_COVERAGE, PLACEMENT_COPY_REFRESH,
+    PLACEMENT_MIN_COVERAGE, PLACEMENT_COPY_REFRESH, PLACEMENT_SENDERS_PER_TEST,
 )
 from smartlead.placement_copy import refresh_test_campaign
 from smartlead.placement_grid import write_result
@@ -153,24 +153,58 @@ async def collect_results(acc, store: PlacementStore, schedule: PlacementSchedul
                   "leaving open")
             continue
 
-        judged = report.get("worst_provider_inbox_pct", report["inbox_pct"])
-        status = "inbox" if judged >= RETEST_INBOX_THRESHOLD else "fail"
-        for email in t.get("emails", []):
+        emails = t.get("emails", [])
+        # Per-sender placement, so one test can carry several domains and each
+        # still gets its own verdict. providerwise blends every sender in a
+        # test together; applying that blend to each domain in turn would
+        # report one domain's spam problem against all of them.
+        per_sender: dict[str, dict] = {}
+        if len(emails) > 1:
+            async with SmartDeliveryClient(acc.api_key) as sd:
+                try:
+                    per_sender = await sd.get_sender_report(t["test_id"])
+                except SmartDeliveryError as exc:
+                    print(f"  [Placement] sender report {t['test_id']} failed: {exc} "
+                          "- leaving open rather than scoring a blended verdict")
+                    continue
+            missing = [e for e in emails if not per_sender.get(e, {}).get("has_data")]
+            if missing:
+                print(f"  [Placement] test {t['test_id']}: no per-sender data yet for "
+                      f"{len(missing)} sender(s) - leaving open")
+                continue
+
+        wrote_any = False
+        for email in emails:
             domain = _domain_of(email)
-            detail = " ".join(f"{p}={v['inbox']}/{v['total']}"
-                              for p, v in sorted(report.get("by_provider", {}).items()))
-            print(f"  [Placement] {domain} -> {status} (worst {judged:.0f}%) {detail}")
+            if per_sender:
+                s = per_sender[email]
+                # The provider split lives only on providerwise, which is
+                # test-wide — so a multi-sender test is judged on its own
+                # panel percentage rather than a worst-provider figure.
+                judged = s["inbox_pct"]
+                detail = (f"{s['inbox']}+{s['tab']} inbox / {s['spam']} spam "
+                          f"of {s['classified']}")
+                providers = {}
+            else:
+                judged = report.get("worst_provider_inbox_pct", report["inbox_pct"])
+                providers = report.get("by_provider", {})
+                detail = " ".join(f"{p}={v['inbox']}/{v['total']}"
+                                  for p, v in sorted(providers.items()))
+            status = "inbox" if judged >= RETEST_INBOX_THRESHOLD else "fail"
+            print(f"  [Placement] {domain} -> {status} ({judged:.0f}%) {detail}")
             if dry_run:
                 continue
             store.save_result(email, domain, status, date.today().isoformat(), "api")
-            schedule.record_result(acc.name, domain, email, status,
-                                   report.get("by_provider", {}))
-            plan = write_result(tab, domain, report.get("by_provider", {}),
-                                threshold=RETEST_INBOX_THRESHOLD)
-            if plan.skipped_reason:
-                print(f"  [Placement] grid: {domain} not written ({plan.skipped_reason})")
-        if not dry_run:
-            store.mark_done(t["test_id"], report["inbox_pct"], status)
+            schedule.record_result(acc.name, domain, email, status, providers)
+            if providers:
+                plan = write_result(tab, domain, providers,
+                                    threshold=RETEST_INBOX_THRESHOLD)
+                if plan.skipped_reason:
+                    print(f"  [Placement] grid: {domain} not written "
+                          f"({plan.skipped_reason})")
+            wrote_any = True
+        if not dry_run and (wrote_any or not emails):
+            store.mark_done(t["test_id"], report["inbox_pct"], "inbox")
         done += 1
 
     # Only after every collectable test has been read: anything still open
@@ -213,26 +247,30 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
         print(f"  [Placement] nothing due for {acc.name}")
         return 0
 
-    # Wave throttle: only fire when the previous wave has mostly cleared. This
-    # is what turns "fire all 19" into a sequence of small batches across the
-    # day without a long-running process.
-    open_now = sum(1 for t in store.pending_tests()
-                   if t.get("client") == acc.name and t.get("source") != "emailguard")
-    room = max(0, PLACEMENT_WAVE_SIZE - open_now)
+    # Wave throttle, counted in SENDERS rather than tests: what starved the
+    # 2026-09-11 batch was 225 seed emails in flight at once, and each sender
+    # draws its own 15-seed panel whether it shares a test or not. Counting
+    # tests would let one 10-sender test smuggle 150 seeds past a limit of 5.
+    open_senders = sum(len(t.get("emails", []) or []) for t in store.pending_tests()
+                       if t.get("client") == acc.name and t.get("source") != "emailguard")
+    room = max(0, PLACEMENT_WAVE_SIZE - open_senders)
     if room == 0:
-        print(f"  [Placement] {open_now} test(s) still open for {acc.name} "
+        print(f"  [Placement] {open_senders} sender(s) still in flight for {acc.name} "
               f"(wave size {PLACEMENT_WAVE_SIZE}) - waiting for them to clear")
         return 0
-    # Daily spend ceiling. There is no balance endpoint; this is the brake.
+    # Daily spend ceiling, in tests — billing is a flat credit per test
+    # regardless of how many senders it carries. There is no balance endpoint;
+    # this is the brake.
     spent = store.created_since(acc.name, date.today().isoformat())
-    room = min(room, max(0, PLACEMENT_DAILY_TEST_CAP - spent))
-    if room == 0:
+    tests_left = max(0, PLACEMENT_DAILY_TEST_CAP - spent)
+    if tests_left == 0:
         print(f"  [Placement] daily cap reached for {acc.name} "
               f"({spent}/{PLACEMENT_DAILY_TEST_CAP} created today)")
         return 0
+    room = min(room, tests_left * PLACEMENT_SENDERS_PER_TEST)
     if len(batch) > room:
         print(f"  [Placement] {len(batch)} due, firing {room} this wave "
-              f"({open_now} open, {spent}/{PLACEMENT_DAILY_TEST_CAP} today)")
+              f"({open_senders} in flight, {spent}/{PLACEMENT_DAILY_TEST_CAP} tests today)")
         batch = batch[:room]
 
     print(f"  [Placement] {len(batch)} domain(s) due for {acc.name}"
@@ -267,29 +305,41 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
             await c.add_campaign_email_accounts(str(campaign_id), missing)
             print(f"  [Placement] attached {len(missing)} sender(s) to the test campaign")
 
-    async def fire(item: dict):
+    # One test carries several senders; the per-sender report splits it back
+    # out per domain. Billing is flat per test, so this is the difference
+    # between ~2 credits and ~19 for a full sweep.
+    groups = [batch[i:i + PLACEMENT_SENDERS_PER_TEST]
+              for i in range(0, len(batch), PLACEMENT_SENDERS_PER_TEST)]
+
+    async def fire(group: list[dict]):
+        emails = [g["email"] for g in group]
+        label = (group[0]["domain"] if len(group) == 1
+                 else f"{len(group)}-domains")
         async with SmartDeliveryClient(acc.api_key) as sd:
             try:
                 tid = await sd.create_test(
-                    campaign_id, sequence_id, [item["email"]],
-                    f"auto-{acc.name}-{item['domain']}-{date.today().isoformat()}",
+                    campaign_id, sequence_id, emails,
+                    f"auto-{acc.name}-{label}-{date.today().isoformat()}",
                     is_warmup=True, no_time_gap=PLACEMENT_NO_TIME_GAP)
-                return item, tid, None
+                return group, tid, None
             except CreditError as exc:
-                return item, None, f"credits: {exc}"
+                return group, None, f"credits: {exc}"
             except SmartDeliveryError as exc:
-                return item, None, str(exc)
+                return group, None, str(exc)
 
     created = 0
-    for item, tid, err in await asyncio.gather(*[fire(b) for b in batch]):
+    for group, tid, err in await asyncio.gather(*[fire(g) for g in groups]):
+        domains = ", ".join(g["domain"] for g in group)
         if tid:
-            store.record_created(tid, acc.name, campaign_id, [item["email"]],
+            store.record_created(tid, acc.name, campaign_id,
+                                 [g["email"] for g in group],
                                  extra={"copy_hash": copy["hash"],
                                         "copy_source": copy["source"]})
             created += 1
-            print(f"  [Placement] test {tid} created for {item['domain']}")
+            print(f"  [Placement] test {tid} created for {len(group)} domain(s): "
+                  f"{domains}")
         else:
-            print(f"  [Placement] {item['domain']} not tested: {err}")
+            print(f"  [Placement] not tested ({domains}): {err}")
             if err and err.startswith("credits"):
                 # Out of credits: the rest of this client's batch would fail the
                 # same way, and each attempt is a wasted API call.
