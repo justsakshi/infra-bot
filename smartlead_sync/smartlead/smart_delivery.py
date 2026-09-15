@@ -101,6 +101,13 @@ class SmartDeliveryClient:
                 "dkim_pass_pct": _num("dkim_pass"), "spf_pass_pct": _num("spf_pass"),
                 "tests": int(row.get("placement_count", 0) or 0),
                 "total": int(row.get("adjusted_total_count", 0) or 0),
+                # Raw counts as well as percentages. A ratio makes the weight
+                # of evidence visible — 47% off 46 seeds is a finding, 47% off
+                # 2 seeds is noise, and the percentage alone cannot tell them
+                # apart.
+                "inbox": int(row.get("inbox_count", 0) or 0),
+                "spam": int(row.get("spam_count", 0) or 0),
+                "tab": int(row.get("tab_count", 0) or 0),
             })
         return out
 

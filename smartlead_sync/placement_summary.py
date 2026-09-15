@@ -85,9 +85,13 @@ async def run(client: str | None, threshold: float) -> int:
             # is a different fix from a content problem — worth calling out.
             if r["dkim_pass_pct"] < 100 or r["spf_pass_pct"] < 100:
                 auth = f"  [dkim {r['dkim_pass_pct']:.0f}% spf {r['spf_pass_pct']:.0f}%]"
+            # Counts, not just percentages: "22 of 46 seeds in spam" is a
+            # concrete thing to act on, where "52.2%" hides how much evidence
+            # is behind it. These totals span every test the mailbox has been
+            # in, so they are not out of one 15-seed panel.
             print(f"  {mark} {r['email']:38} {r['esp']:8} "
-                  f"inbox {r['inbox_pct']:5.1f}%  spam {r['spam_pct']:5.1f}%  "
-                  f"({r['tests']} test(s), {r['total']} seeds){auth}")
+                  f"{r['inbox']:>3}/{r['total']:<3} inbox  {r['spam']:>3} spam  "
+                  f"({r['inbox_pct']:5.1f}%, {r['tests']} test(s)){auth}")
 
         for esp, group in sorted(esp_split(rows).items()):
             bad = [r for r in group if r["inbox_pct"] < threshold]
