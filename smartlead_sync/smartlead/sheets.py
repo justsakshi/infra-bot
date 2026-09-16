@@ -6,10 +6,42 @@ import os
 from datetime import datetime
 from typing import Any
 
+import time
+
 import gspread
 import polars as pl
 from google.oauth2.service_account import Credentials
+from gspread.exceptions import APIError
 from gspread.utils import rowcol_to_a1
+
+# Google's Sheets write quota is per minute. The daily sync writes ~15 tabs in
+# a burst, three API calls each, so the last writers in the burst are the ones
+# that get a 429 - and on 2026-09-16 that was the per-client Campaign Metrics
+# tab, left holding the previous day's numbers while the shared tab written
+# seconds earlier was current. The schedule below deliberately sums past 60s:
+# a shorter one just lands back inside the same closed window.
+_RETRY_SCHEDULE = (15, 30, 60, 90)
+_RETRYABLE_CODES = {429, 503}
+_sleep = time.sleep  # module-level so tests can replace it
+
+
+def _retry_write(fn, *args, **kwargs):
+    """Call a Sheets write, retrying quota/unavailable errors with backoff.
+
+    Anything other than a 429/503 is re-raised at once: repeating a 404 or a
+    permission error would only delay the real failure. After the schedule is
+    exhausted the last error propagates, so a genuinely dead quota is still
+    visible in the log rather than swallowed.
+    """
+    for i, wait in enumerate((*_RETRY_SCHEDULE, None)):
+        try:
+            return fn(*args, **kwargs)
+        except APIError as exc:
+            if exc.code not in _RETRYABLE_CODES or wait is None:
+                raise
+            print(f"  [Sheets] write hit {exc.code} (attempt {i + 1}/"
+                  f"{len(_RETRY_SCHEDULE) + 1}) - retrying in {wait}s")
+            _sleep(wait)
 
 from smartlead.config import (
     DELIVERABILITY_QUEUE_TAB_NAME,
@@ -800,7 +832,10 @@ class SheetsWriter:
 
     def _write_tab(self, tab_key: str, data: list[dict], custom_headers: dict[str, str] | None = None) -> None:
         ws = self._get_or_create_tab(tab_key)
-        ws.clear()
+        # clear() runs before the write, so a quota error between the two would
+        # leave the tab EMPTY - which reads as "this client had no campaigns",
+        # a worse lie than stale data. Both calls retry for that reason.
+        _retry_write(ws.clear)
         if not data:
             return
 
@@ -819,7 +854,7 @@ class SheetsWriter:
             labels.update(custom_headers)
         header = [labels.get(c, c.replace("_", " ").title()) for c in columns]
         body = [[_serialize(v) for v in row.values()] for row in data]
-        ws.update(values=[header] + body, range_name="A1")
+        _retry_write(ws.update, values=[header] + body, range_name="A1")
 
         # ── Batch format requests ────────────────────────────────────────
         sheet_id = ws.id
@@ -858,7 +893,7 @@ class SheetsWriter:
         requests.append(_outer_border(sheet_id, 0, num_rows, 0, num_cols))
 
         # Execute all formatting in one batch
-        self._sh.batch_update({"requests": requests})
+        _retry_write(self._sh.batch_update, {"requests": requests})
 
     def _write_glossary_tab(self) -> None:
         """Write a 'Column Glossary' tab explaining every column across all tabs."""
@@ -982,7 +1017,7 @@ class SheetsWriter:
             if row[0]:
                 requests.append(_format_range(sheet_id, r, r + 1, 0, 1, bold=True))
 
-        self._sh.batch_update({"requests": requests})
+        _retry_write(self._sh.batch_update, {"requests": requests})
 
     def _write_sync_timestamp(self, sync_ts: str) -> None:
         """Write a 'Last Sync' tab with the sync timestamp."""
@@ -998,7 +1033,7 @@ class SheetsWriter:
             _col_width(sheet_id, 0, 120),
             _col_width(sheet_id, 1, 200),
         ]
-        self._sh.batch_update({"requests": requests})
+        _retry_write(self._sh.batch_update, {"requests": requests})
 
     def _status_colors(
         self, sheet_id: int, tab_key: str, columns: list[str], data: list[dict],
