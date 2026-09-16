@@ -138,9 +138,15 @@ CAMPAIGN_METRICS_CLIENT_SHEETS: dict[str, str] = _parse_client_sheets(
 #
 # BETTRDATA pulls in both its Expandi (LinkedIn) and Smartlead (email)
 # campaigns, since the name matches on both platforms.
+#
+# MELIOR is not a Smartlead account: it is a client inside PRECISE_LEADS,
+# identified by campaign client_id 12256. Naming it here admits its rows; the
+# PRECISE_LEADS account itself is not listed, so the agency's own campaigns
+# stay out of the tab.
 CAMPAIGN_METRICS_CLIENTS: set[str] = {
     c.strip().upper()
-    for c in os.getenv("CAMPAIGN_METRICS_CLIENTS", "DARLEAN,BETTRDATA").split(",")
+    for c in os.getenv("CAMPAIGN_METRICS_CLIENTS",
+                       "BELARDI WONG,MELIOR,BETTRDATA").split(",")
     if c.strip()
 }
 # Smartlead lead-category ids treated as positive/neutral (from /leads/fetch-categories):

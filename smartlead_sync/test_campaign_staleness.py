@@ -50,6 +50,16 @@ ok(not should_include_smartlead_campaign(s("STOPPED"), week_sent=0, month_sent=0
 ok(not should_include_smartlead_campaign(s("PAUSED"), week_sent=0, month_sent=40),
    "month_sent alone does not rescue a campaign that was silent this week")
 
+# ARCHIVED is a finished state like COMPLETED/STOPPED. It was missing from the
+# list, so on 2026-09-16 six archived Melior campaigns with 0 leads and 0 sends
+# landed on the client's tab.
+ok(not should_include_smartlead_campaign(s("ARCHIVED", total=0), week_sent=0, month_sent=0),
+   "ARCHIVED with nothing sent is dropped")
+ok(not should_include_smartlead_campaign(s("ARCHIVED", total=500), week_sent=0, month_sent=0),
+   "ARCHIVED holding leads but silent this week is still history")
+ok(should_include_smartlead_campaign(s("ARCHIVED"), week_sent=30, month_sent=30),
+   "ARCHIVED that somehow sent this week is kept, like any finished campaign")
+
 # --- empty shells ---
 ok(not should_include_smartlead_campaign(s("PAUSED", total=0), 0, 0),
    "a paused campaign holding no leads is an abandoned shell")

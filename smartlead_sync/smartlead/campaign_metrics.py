@@ -145,6 +145,62 @@ def get_reporting_range(month_arg: str | None, today: datetime) -> tuple[datetim
         return start_dt, end_dt, month_name
 
 
+def _norm_client(name: str) -> str:
+    return str(name or "").strip().upper().replace("_", " ")
+
+
+def account_in_scope(account_name: str, wanted: set[str]) -> bool:
+    """Whether a metrics run needs to open this Smartlead account.
+
+    An account qualifies on its own name, or because it HOLDS a wanted client:
+    Melior is not an account, it is client_id 12256 inside PRECISE_LEADS, so
+    asking for Melior has to open PRECISE_LEADS. Filtering only on account
+    names would open nothing and report an empty tab, which reads exactly like
+    "that client has no campaigns".
+    """
+    if not wanted:
+        return True
+    from smartlead.manager_map import SUB_CLIENT_BY_ID
+    norm = {_norm_client(w) for w in wanted}
+    if _norm_client(account_name) in norm:
+        return True
+    if _norm_client(account_name) == "PRECISE LEADS":
+        return any(_norm_client(sub) in norm for sub in SUB_CLIENT_BY_ID.values())
+    return False
+
+
+def row_client_wanted(client: str, wanted: set[str]) -> bool:
+    """Whether a built row belongs to a client the run was asked for.
+
+    Applied after `metrics_client_for` has resolved the real client, so the
+    agency's own campaigns are dropped while its sub-clients' are kept.
+    """
+    if not wanted:
+        return True
+    return _norm_client(client) in {_norm_client(w) for w in wanted}
+
+
+def metrics_client_for(account_name: str, client_id=None) -> str:
+    """Which client a campaign's metrics row belongs to.
+
+    PRECISE_LEADS is an agency account holding Melior, Bettrdata and OSC,
+    separated only by each campaign's Smartlead `client_id`. Every other
+    account IS its client, so its rows keep the account name whatever
+    `client_id` says.
+
+    Campaign name is deliberately not consulted. On the live account
+    (2026-09-16) 169 non-draft campaigns carried Melior's client_id while only
+    100 had "melior" in the name; the 70 without are auto-created
+    reply-category campaigns named "Interested" and "Information Request".
+    Name-matching would have dropped them.
+    """
+    from smartlead.manager_map import resolve_sub_client
+    resolved = resolve_sub_client(account_name, client_id)
+    # resolve_sub_client returns the account name unchanged for direct
+    # accounts, and the sub-client label (or "Precise Leads") for the agency.
+    return resolved
+
+
 def week_start_str(today: datetime) -> str:
     """First day of the trailing 7-day window, as YYYY-MM-DD.
 
@@ -218,7 +274,7 @@ def smartlead_summary_from_analytics(analytics: dict) -> dict:
 
 
 _INACTIVE_STATUSES = {"DRAFTED", "DRAFT"}
-_STALE_STATUSES = {"PAUSED", "COMPLETED", "COMPLETE", "STOPPED", "STOP"}
+_STALE_STATUSES = {"PAUSED", "COMPLETED", "COMPLETE", "STOPPED", "STOP", "ARCHIVED"}
 _STALE_DAYS = 7
 
 

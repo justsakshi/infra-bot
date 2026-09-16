@@ -153,8 +153,11 @@ async def main() -> None:
     # "DARLEAN" locally but "Darlean" on Render. A case-sensitive comparison
     # therefore passed every local test and silently dropped Darlean from the
     # metrics tab in production — HeyReach rows appeared, Smartlead rows did not.
+    # Two-stage: open an account if it holds a wanted client (PRECISE_LEADS
+    # holds Melior), then drop rows whose resolved client was not asked for.
     smartlead_accounts_for_metrics = [
-        acc for acc in accounts if acc.name.upper() in CAMPAIGN_METRICS_CLIENTS
+        acc for acc in accounts
+        if cm.account_in_scope(acc.name, CAMPAIGN_METRICS_CLIENTS)
     ]
 
     # Process each account sequentially with its own deliverability data
@@ -317,9 +320,12 @@ async def main() -> None:
                     summary = cm.smartlead_summary_from_analytics(analytics)
                     if not cm.should_include_smartlead_campaign(summary, week_sent, month_sent):
                         continue
+                    row_client = cm.metrics_client_for(acc.name, camp.get("client_id"))
+                    if not cm.row_client_wanted(row_client, CAMPAIGN_METRICS_CLIENTS):
+                        continue
                     metric_rows.append(cm.smartlead_metric_row(
                         summary, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
-                        client=acc.name,
+                        client=row_client,
                         month_sent=month_sent, start_dt=reporting_start, end_dt=reporting_end,
                         yest_sent=yest_sent,
                         launch_date=str(camp.get("created_at", ""))[:10]))

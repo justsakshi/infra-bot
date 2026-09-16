@@ -57,7 +57,7 @@ async def main() -> None:
     # the same SMARTLEAD_API_KEY_Darlean yields "DARLEAN" locally and "Darlean"
     # on Render. See the note in run.py.
     accounts = [a for a in discover_accounts()
-                if a.name.upper() in CAMPAIGN_METRICS_CLIENTS]
+                if cm.account_in_scope(a.name, CAMPAIGN_METRICS_CLIENTS)]
     if not accounts:
         print("[Metrics] no matching accounts — check CAMPAIGN_METRICS_CLIENTS")
 
@@ -99,9 +99,13 @@ async def main() -> None:
                 summary = cm.smartlead_summary_from_analytics(analytics)
                 if not cm.should_include_smartlead_campaign(summary, week_sent, month_sent):
                     continue
+                row_client = cm.metrics_client_for(acc.name, camp.get("client_id"))
+                if not cm.row_client_wanted(row_client, CAMPAIGN_METRICS_CLIENTS):
+                    continue
                 rows.append(cm.smartlead_metric_row(
                     summary, leads, month_replies, 0,
-                    today, SMARTLEAD_POSITIVE_CATEGORY_IDS, client=acc.name,
+                    today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
+                    client=row_client,
                     month_sent=month_sent, start_dt=start_dt, end_dt=end_dt,
                     yest_sent=yest_sent,
                     launch_date=str(camp.get("created_at", ""))[:10]))

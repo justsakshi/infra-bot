@@ -360,16 +360,18 @@ async def fetch_account_data(
         inbox_count = len(inboxes_in_campaign)
         indiv_leads = round(leads_rem / inbox_count, 1) if inbox_count else 0
         
-        # Aravind's Rule: True Load based on Daily Limit distribution
-        # If no leads remain, load is 0. Otherwise, it's (limit / inboxes).
-        c_daily_limit = int(campaign.get("max_leads_per_day", 0))
-        true_load = round(c_daily_limit / inbox_count, 1) if (inbox_count and leads_rem > 0) else 0
+        # Per-inbox share of this campaign's daily limit (Aravind's rule),
+        # and whether it counts: only campaigns that are actually sending do.
+        c_daily_limit = int(campaign.get("max_leads_per_day", 0) or 0)
+        true_load, counts_as_load = campaign_share(
+            c_status, c_daily_limit, inbox_count, leads_rem)
 
         campaign_load_stats[c_id] = {
             "leads_remaining": leads_rem,
             "inbox_count": inbox_count,
             "individual_load": indiv_leads,
             "true_load": true_load,
+            "counts_as_load": counts_as_load,
         }
 
         # Inbox rows for this campaign (accounts pre-fetched into campaign_accounts_map)
@@ -379,8 +381,11 @@ async def fetch_account_data(
             email = full.get("from_email", "")
             stats = campaign_load_stats.get(c_id, {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0})
 
-            # Aggregate true load per unique mailbox across all campaigns
-            inbox_aggregate_load[email] = inbox_aggregate_load.get(email, 0.0) + stats["true_load"]
+            # Aggregate demand per mailbox across the campaigns that are
+            # actually sending. A paused campaign's share is still shown on
+            # its own row, but it is not a claim on the mailbox today.
+            if stats.get("counts_as_load"):
+                inbox_aggregate_load[email] = inbox_aggregate_load.get(email, 0.0) + stats["true_load"]
 
             row = _build_inbox_row(
                 full, email, c_name, c_status, stats, deliverability_map,
@@ -467,7 +472,10 @@ def process_inbox_availability(
         #               once the inbox is on a campaign: e.g. limit 10 -> 10,
         #               limit 30 -> 25, limit 45 -> 25)
         #   off/blocked -> limit - load (no warmup running; blocked is BUSY anyway)
-        total_true_load = round(inbox_aggregate_load.get(email, 0.0), 1)
+        # Demand = sum of ACTIVE campaigns' shares. It may exceed the limit;
+        # that is oversubscription, reported separately, not load.
+        demand = round(inbox_aggregate_load.get(email, 0.0), 1)
+        total_true_load = demand
         inbox_limit = item.get("message_per_day", 0) or MAX_INBOX_LIMIT  # fallback to 35 if not set
         state = item.get("warmup_state", "off")
         if state == "warming":
@@ -487,9 +495,17 @@ def process_inbox_availability(
         from smartlead.config import CAMPAIGN_CAP_OUTLOOK, CAMPAIGN_CAP_GMAIL, CAMPAIGN_CAP_DEFAULT
         provider_cap = {"Outlook": CAMPAIGN_CAP_OUTLOOK,
                         "Gmail": CAMPAIGN_CAP_GMAIL}.get(item.get("provider"), CAMPAIGN_CAP_DEFAULT)
-        capacity = min(capacity, float(provider_cap))
+        # The mailbox's real ceiling is the smaller of its own limit and the
+        # provider cap. Load is bounded by that ceiling - campaigns compete for
+        # the sends, they do not stack - so capacity can never be driven to
+        # zero fleet-wide by a large demand figure the way it was before.
+        ceiling = min(float(inbox_limit), float(provider_cap))
+        load = resolve_inbox_load(demand=demand, inbox_limit=ceiling)
+        capacity = 0.0 if state == "warming" else load["capacity"]
 
-        item["true_load"] = total_true_load
+        item["true_load"] = load["true_load"]
+        item["demand"] = load["demand"]
+        item["oversubscribed"] = load["oversubscribed"]
         item["available_capacity"] = capacity
 
         try:
@@ -508,6 +524,12 @@ def process_inbox_availability(
             reasons.append("warmup_blocked")
         if capacity <= 0:
             reasons.append("no_capacity")
+        # Team rule: bounce above 3% pauses. An inbox already over it must not
+        # be handed new volume, whatever its capacity says.
+        from smartlead.config import BOUNCE_PROTECT_THRESHOLD
+        bounce = item.get("bounce_rate")
+        if bounce is not None and float(bounce) > float(BOUNCE_PROTECT_THRESHOLD):
+            reasons.append("high_bounce")
         if rep_val < MIN_WARMUP_REP_PCT:
             reasons.append("low_rep")
         if test == "stale":
@@ -526,6 +548,61 @@ def process_inbox_availability(
 
 
 # ── Private helpers ──────────────────────────────────────────────────────────
+
+_SENDING_STATUSES = {"ACTIVE", "IN_PROGRESS"}
+
+
+def campaign_share(status: str, max_leads_per_day: int, inbox_count: int,
+                   leads_remaining: int) -> tuple[float, bool]:
+    """A campaign's per-inbox daily share, and whether it counts as load.
+
+    Returns (share, counts). `share` is max_leads_per_day spread evenly over
+    the campaign's inboxes, which is how Smartlead distributes a campaign.
+    `counts` is False for anything not sending: a PAUSED, COMPLETED or
+    ARCHIVED campaign, or one with no leads left, places no demand on its
+    inboxes today.
+
+    This was the dominant error in the old figure. Every campaign an inbox
+    had ever been attached to was summed regardless of status, so a mailbox
+    in six campaigns - two active, four paused - carried the paused four as
+    load. Measured 2026-09-16: 210.8/day counting all statuses, 31.7 counting
+    only the two that send.
+    """
+    if not inbox_count or leads_remaining <= 0:
+        return 0.0, False
+    share = round(float(max_leads_per_day or 0) / inbox_count, 1)
+    return share, str(status or "").upper() in _SENDING_STATUSES
+
+
+def resolve_inbox_load(demand: float, inbox_limit: float) -> dict:
+    """Split an inbox's campaign demand into load, capacity, and oversubscription.
+
+    `demand` is the sum of every campaign's per-inbox share
+    (max_leads_per_day / inbox_count). It can exceed the mailbox's own daily
+    limit because campaigns COMPETE for those sends rather than stacking - an
+    inbox in six campaigns still sends at most `message_per_day` a day.
+
+    Until 2026-09-16 demand was reported directly as `true_load`, so every one
+    of BettrData's 57 inboxes read above its limit (one at 210.8 against 15),
+    capacity was max(0, limit - load) = 0 fleet-wide, and every inbox was
+    marked BUSY/no_capacity - leaving precise-automator with nothing to assign.
+
+    A zero/unknown limit yields no capacity: claiming some would invite a tool
+    to schedule sends against a mailbox whose ceiling we do not know.
+    """
+    limit = max(0.0, float(inbox_limit or 0))
+    demand = max(0.0, float(demand or 0))
+    if not limit:
+        return {"true_load": 0.0, "demand": round(demand, 1),
+                "capacity": 0.0, "oversubscribed": False}
+    load = min(demand, limit)
+    return {
+        "true_load": round(load, 1),
+        "demand": round(demand, 1),
+        "capacity": max(0.0, round(limit - load, 1)),
+        "oversubscribed": demand > limit,
+    }
+
 
 def _apply_staleness(status: str, date_str: str) -> str:
     """Return 'stale' if a passing test is older than TEST_STALE_DAYS, else status."""
@@ -605,6 +682,8 @@ def _build_inbox_row(
         "individual_load": load_info["individual_load"],
         "true_load": 0.0,            # filled in process_inbox_availability
         "available_capacity": 0.0,   # filled in process_inbox_availability
+        "demand": 0.0,               # active campaigns' claim, may exceed limit
+        "oversubscribed": False,
         "warmup_rep_pct": "TBD",
         "test_sheet_status": test_status,
         "test_date": test_date,
