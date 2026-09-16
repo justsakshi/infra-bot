@@ -47,7 +47,7 @@ async def main() -> None:
     today = datetime.now(timezone.utc)
     start_dt, end_dt, month_name = cm.get_reporting_range(args.month, today)
     ms_str, end_str = start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
-    week_start = (today.replace(day=max(1, today.day - 7))).strftime("%Y-%m-%d")
+    week_start = cm.week_start_str(today)
     yest_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
     print(f"[Metrics] range {ms_str} -> {end_str} ({month_name})")
     print(f"[Metrics] clients: {', '.join(sorted(CAMPAIGN_METRICS_CLIENTS))}")

@@ -27,7 +27,7 @@ differ from an IST reading day near midnight.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 COLUMNS = [
     # `client` was added once the tab covered more than one account — without it
@@ -143,6 +143,22 @@ def get_reporting_range(month_arg: str | None, today: datetime) -> tuple[datetim
             
         month_name = start_dt.strftime("%B")
         return start_dt, end_dt, month_name
+
+
+def week_start_str(today: datetime) -> str:
+    """First day of the trailing 7-day window, as YYYY-MM-DD.
+
+    Both entrypoints previously computed this as
+    `today.replace(day=max(1, today.day - 7))`, which cannot cross a month
+    boundary: on the 3rd it clamps to the 1st (a 2-day window) and on the 1st
+    it returns the 1st (no window at all).
+
+    That was tolerable while `week_sent` only fed a display column. It is not
+    now that PAUSED/COMPLETED campaigns are dropped when they sent nothing in
+    the last week — during the first week of any month the window would
+    collapse and silently drop campaigns that were still sending.
+    """
+    return (today - timedelta(days=7)).strftime("%Y-%m-%d")
 
 
 def _in_month(dt: datetime | None, start_dt: datetime, end_dt: datetime) -> bool:

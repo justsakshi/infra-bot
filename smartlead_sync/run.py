@@ -268,7 +268,7 @@ async def main() -> None:
         metric_rows: list[dict] = []
 
         # Smartlead rows (DARLEAN account(s))
-        week_start_str = (today.replace(day=max(1, today.day - 7))).strftime("%Y-%m-%d")
+        week_start_str = cm.week_start_str(today)
         yest_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         for acc in smartlead_accounts_for_metrics:
           # Each account is isolated like the HeyReach loop below: one
