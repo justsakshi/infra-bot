@@ -43,6 +43,34 @@ def _retry_write(fn, *args, **kwargs):
                   f"{len(_RETRY_SCHEDULE) + 1}) - retrying in {wait}s")
             _sleep(wait)
 
+
+# Per-tab record of what this run wrote, surfaced on the Last Sync tab.
+#
+# A single "Last Synced" timestamp used to be written at the end of every run
+# whether or not the tabs before it had succeeded. It read as healthy while
+# "BETTRDATA - Campaign Summary" went weeks without a successful write - the
+# failure was caught, printed to a log nobody reads, and the timestamp still
+# advanced. Now every tab reports for itself, and a failed write names its
+# error where the team will see it.
+_SYNC_LEDGER: list[dict] = []
+
+
+def _record_write(tab: str, rows: int | None = None,
+                  error: BaseException | None = None) -> None:
+    _SYNC_LEDGER.append({
+        "tab": tab,
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "rows": "" if rows is None else rows,
+        "status": "FAILED" if error else "ok",
+        "error": f"{type(error).__name__}: {error}"[:300] if error else "",
+    })
+
+
+def sync_ledger_rows() -> list[list[str]]:
+    """The ledger as sheet rows: tab, written at, rows, status, error."""
+    return [[e["tab"], e["at"], str(e["rows"]), e["status"], e["error"]]
+            for e in _SYNC_LEDGER]
+
 from smartlead.config import (
     DELIVERABILITY_QUEUE_TAB_NAME,
     MASTER_TAB_NAME,
@@ -304,6 +332,7 @@ _HEADER_LABELS = {
         "paused": "Paused",
         "completed": "Completed",
         "stopped": "Stopped",
+        "blocked": "Blocked",
     },
     "Inboxes": {
         "email": "Email",
@@ -805,13 +834,18 @@ class SheetsWriter:
         if not rows:
             print("  [Sheets] No capacity rows - skipping.")
             return
-        ws = self._get_or_create_shared_tab(CAPACITY_TAB_NAME, rows=100, cols=len(self.CAPACITY_COLUMNS) + 2)
-        ws.clear()
-        header = [c.replace("_", " ").title() for c in self.CAPACITY_COLUMNS]
-        values = [header] + [
-            [str(r.get(c, "")) for c in self.CAPACITY_COLUMNS] for r in rows
-        ]
-        ws.update(values=values, range_name="A1")
+        try:
+            ws = self._get_or_create_shared_tab(CAPACITY_TAB_NAME, rows=100, cols=len(self.CAPACITY_COLUMNS) + 2)
+            _retry_write(ws.clear)
+            header = [c.replace("_", " ").title() for c in self.CAPACITY_COLUMNS]
+            values = [header] + [
+                [str(r.get(c, "")) for c in self.CAPACITY_COLUMNS] for r in rows
+            ]
+            _retry_write(ws.update, values=values, range_name="A1")
+        except Exception as exc:
+            _record_write(CAPACITY_TAB_NAME, error=exc)
+            raise
+        _record_write(CAPACITY_TAB_NAME, rows=len(rows))
         print(f"  [Sheets] Capacity tab written: {len(rows)} client row(s)")
 
     # ── internals ────────────────────────────────────────────────────────
@@ -831,6 +865,22 @@ class SheetsWriter:
             return self._sh.add_worksheet(title=title, rows=str(rows), cols=str(cols))
 
     def _write_tab(self, tab_key: str, data: list[dict], custom_headers: dict[str, str] | None = None) -> None:
+        """Write a tab and record the outcome in the sync ledger.
+
+        The error is recorded and then re-raised, so every caller's existing
+        catch-and-print still runs; the ledger just makes sure the failure is
+        also visible on the sheet itself.
+        """
+        tab = f"{self.prefix}{tab_key}"
+        try:
+            self._write_tab_unguarded(tab_key, data, custom_headers)
+        except Exception as exc:
+            _record_write(tab, error=exc)
+            raise
+        _record_write(tab, rows=len(data))
+
+    def _write_tab_unguarded(self, tab_key: str, data: list[dict],
+                             custom_headers: dict[str, str] | None = None) -> None:
         ws = self._get_or_create_tab(tab_key)
         # clear() runs before the write, so a quota error between the two would
         # leave the tab EMPTY - which reads as "this client had no campaigns",
@@ -1020,18 +1070,36 @@ class SheetsWriter:
         _retry_write(self._sh.batch_update, {"requests": requests})
 
     def _write_sync_timestamp(self, sync_ts: str) -> None:
-        """Write a 'Last Sync' tab with the sync timestamp."""
-        ws = self._get_or_create_shared_tab("Last Sync", rows=5, cols=2)
-        ws.clear()
-        ws.update(values=[
+        """Write the 'Last Sync' tab: the run timestamp, then one row per tab
+        this run wrote, with its status and any error.
+
+        A1/B1 keep the original "Last Synced" layout so anything already
+        reading that cell is unaffected; the per-tab table starts at row 3.
+        """
+        ledger = sync_ledger_rows()
+        needed_rows = len(ledger) + 4
+        ws = self._get_or_create_shared_tab("Last Sync", rows=max(5, needed_rows), cols=5)
+        if ws.row_count < needed_rows or ws.col_count < 5:
+            _retry_write(ws.resize, rows=max(ws.row_count, needed_rows),
+                         cols=max(ws.col_count, 5))
+        _retry_write(ws.clear)
+        values = [
             ["Last Synced", sync_ts],
-        ], range_name="A1")
+            [""],
+            ["Tab", "Last Written", "Rows", "Status", "Error"],
+            *ledger,
+        ]
+        _retry_write(ws.update, values=values, range_name="A1")
 
         sheet_id = ws.id
         requests = [
             _format_range(sheet_id, 0, 1, 0, 1, bold=True, h_align="LEFT"),
-            _col_width(sheet_id, 0, 120),
-            _col_width(sheet_id, 1, 200),
+            _format_range(sheet_id, 2, 3, 0, 5, bold=True, h_align="LEFT"),
+            _col_width(sheet_id, 0, 280),
+            _col_width(sheet_id, 1, 160),
+            _col_width(sheet_id, 2, 60),
+            _col_width(sheet_id, 3, 80),
+            _col_width(sheet_id, 4, 420),
         ]
         _retry_write(self._sh.batch_update, {"requests": requests})
 

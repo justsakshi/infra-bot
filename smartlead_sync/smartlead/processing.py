@@ -61,6 +61,40 @@ def _basic_campaign_row(campaign: dict) -> dict:
         "paused": "-",
         "completed": "-",
         "stopped": "-",
+        "blocked": "-",
+    }
+
+
+def _summary_row(c_id: str, c_name: str, c_status: str, analytics: dict) -> dict:
+    """One Campaign Summary row from a campaign's analytics payload.
+
+    `campaign_lead_stats` carries six mutually-exclusive states that sum to
+    total: notStarted, inprogress, paused, completed, stopped, blocked. The
+    row used to omit blocked, so the state columns never quite added up to
+    Total Leads - off by exactly the blocked count on every campaign that had
+    any, which is most of them.
+    """
+    lead_stats = analytics.get("campaign_lead_stats", {}) or {}
+    total_leads = lead_stats.get("total", 0)
+    unique_sent = int(analytics.get("unique_sent_count", 0) or 0)
+    return {
+        "campaign_id": c_id,
+        "name": c_name,
+        "status": c_status,
+        "total_leads": total_leads,
+        "unique_sent": unique_sent,
+        "reach_pct": f"{round(unique_sent / total_leads * 100, 1)}%" if total_leads else "0%",
+        "sent": int(analytics.get("sent_count", 0) or 0),
+        "opened": (int(analytics.get("open_count", 0) or 0)
+                   or int(analytics.get("unique_open_count", 0) or 0)),
+        "replied": int(analytics.get("reply_count", 0) or 0),
+        "bounced": int(analytics.get("bounce_count", 0) or 0),
+        "not_started": lead_stats.get("notStarted", 0),
+        "in_progress": lead_stats.get("inprogress", 0),
+        "paused": lead_stats.get("paused", 0),
+        "completed": lead_stats.get("completed", 0),
+        "stopped": lead_stats.get("stopped", 0),
+        "blocked": lead_stats.get("blocked", 0),
     }
 
 
@@ -314,32 +348,11 @@ async def fetch_account_data(
         # Analytics (pre-fetched concurrently above)
         analytics = analytics_map.get(c_id, {})
 
-        sent = int(analytics.get("sent_count", 0))
-        opened = int(analytics.get("open_count", 0)) or int(analytics.get("unique_open_count", 0))
         lead_stats = analytics.get("campaign_lead_stats", {})
-        total_leads = lead_stats.get("total", 0)
         not_started = lead_stats.get("notStarted", 0)
         in_progress = lead_stats.get("inprogress", 0)
-        unique_sent = int(analytics.get("unique_sent_count", 0))
-        reach_pct = f"{round(unique_sent / total_leads * 100, 1)}%" if total_leads else "0%"
 
-        campaign_summary.append({
-            "campaign_id": c_id,
-            "name": c_name,
-            "status": c_status,
-            "total_leads": total_leads,
-            "unique_sent": unique_sent,
-            "reach_pct": reach_pct,
-            "sent": sent,
-            "opened": opened,
-            "replied": int(analytics.get("reply_count", 0)),
-            "bounced": int(analytics.get("bounce_count", 0)),
-            "not_started": not_started,
-            "in_progress": in_progress,
-            "paused": lead_stats.get("paused", 0),
-            "completed": lead_stats.get("completed", 0),
-            "stopped": lead_stats.get("stopped", 0),
-        })
+        campaign_summary.append(_summary_row(c_id, c_name, c_status, analytics))
 
         # Load stats
         leads_rem = not_started + in_progress
