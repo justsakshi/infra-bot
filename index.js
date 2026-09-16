@@ -1629,7 +1629,14 @@ async function start() {
       });
       proc.stdout.on('data', d => process.stdout.write(`[smartlead] ${d}`));
       proc.stderr.on('data', d => process.stderr.write(`[smartlead] ${d}`));
-      proc.on('close', code => console.log(`[smartlead] sync finished with code ${code}`));
+      proc.on('close', code => {
+        // run.py exits 2 when any sheet tab was not written; the Last Sync tab
+        // lists which and why. Anything else non-zero is a crash before the
+        // verdict, so the ledger may be incomplete - treat as failure too.
+        if (code === 0) console.log('[smartlead] ✅ sync finished: all tabs written');
+        else if (code === 2) console.error('[smartlead] ⚠ SYNC INCOMPLETE: one or more tabs NOT written - see the Last Sync tab');
+        else console.error(`[smartlead] ❌ sync crashed with code ${code} - tabs may be stale`);
+      });
     }, {
       timezone: 'Asia/Kolkata'
     });

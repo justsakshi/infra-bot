@@ -185,15 +185,18 @@ async def main() -> None:
         except Exception as exc:
             print(f"[!] Account {acc.name} failed: {exc}")
             failed_accounts.append(acc)
+            # A failure before any tab write (API down, bad key) never reaches
+            # the tab writer, so record it here or the ledger would show the
+            # account as simply absent rather than failed.
+            from smartlead.sheets import _record_write
+            _record_write(f"{acc.name} - (account sync)", error=exc)
 
-    # Write shared tabs once (glossary + last sync)
-    end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Glossary is static; Last Sync is written at the very END of the run (see
+    # the sync verdict below) so its ledger covers every tab this run touches.
     try:
-        shared_writer = SheetsWriter(accounts[0].sheet_id)
-        shared_writer.write_glossary()
-        shared_writer.write_sync_timestamp(end_time)
+        SheetsWriter(accounts[0].sheet_id).write_glossary()
     except Exception as exc:
-        print(f"[!] Shared tabs failed: {exc}")
+        print(f"[!] Glossary tab failed: {exc}")
 
     # One 'All Inboxes' master tab per distinct sheet (per workspace).
     # A failed account must NOT silently vanish from the master tab — downstream
@@ -373,7 +376,35 @@ async def main() -> None:
     except Exception as exc:
         print(f"[!] Campaign Metrics dashboard failed: {exc}")
 
+    # ── Sync verdict ─────────────────────────────────────────────────────────
+    # Written last, so the Last Sync ledger covers every tab above. Until
+    # 2026-09-16 the timestamp was written mid-run and unconditionally: it
+    # advanced every morning while account tabs failed silently for weeks.
+    # A failed tab now (1) shows on the Last Sync tab with its error, (2) is
+    # printed here with a [SYNC] marker, (3) posts to Slack, and (4) makes the
+    # process exit 2 so index.js logs it as a failure rather than "finished".
+    from smartlead.sheets import sync_ledger_summary
+    end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        SheetsWriter(accounts[0].sheet_id).write_sync_timestamp(end_time)
+    except Exception as exc:
+        print(f"[!] Last Sync tab failed: {exc}")
+    ok_tabs, failed_tabs = sync_ledger_summary()
     print(f"\n[*] All accounts processed. Finished at {end_time}")
+    if failed_tabs:
+        total = len(ok_tabs) + len(failed_tabs)
+        print(f"[SYNC] FAILED: {len(failed_tabs)} of {total} tab(s) NOT written:")
+        for e in failed_tabs:
+            print(f"[SYNC]   {e['tab']}: {e['error']}")
+        lines = [f"*Sheet sync: {len(failed_tabs)} of {total} tab(s) NOT written* ({end_time})"]
+        lines += [f"• `{e['tab']}` — {e['error'][:160]}" for e in failed_tabs]
+        lines.append("Details on the Last Sync tab.")
+        try:
+            _notify.post_digest("\n".join(lines))
+        except Exception as exc:
+            print(f"[!] Sync-failure Slack alert failed: {exc}")
+        sys.exit(2)
+    print(f"[SYNC] OK: all {len(ok_tabs)} tab(s) written")
 
 
 if __name__ == "__main__":

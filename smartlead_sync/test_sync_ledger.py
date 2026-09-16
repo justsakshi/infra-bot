@@ -74,5 +74,43 @@ w._write_tab("Campaign Metrics", [])
 ok(sheets._SYNC_LEDGER[0]["tab"] == "Campaign Metrics", "no prefix -> plain tab name")
 ok(sheets._SYNC_LEDGER[0]["rows"] == 0, "an empty-but-successful write records 0 rows")
 
+# --- the run verdict splits the ledger into written and failed ---
+sheets._SYNC_LEDGER.clear()
+sheets._record_write("A - Campaign Summary", rows=10)
+sheets._record_write("A - Inboxes", error=RuntimeError("429"))
+sheets._record_write("Campaign Metrics", rows=31)
+sheets._record_write("B - (account sync)", error=RuntimeError("401 bad key"))
+ok_tabs, failed = sheets.sync_ledger_summary()
+ok([e["tab"] for e in ok_tabs] == ["A - Campaign Summary", "Campaign Metrics"],
+   f"ok list, got {[e['tab'] for e in ok_tabs]}")
+ok([e["tab"] for e in failed] == ["A - Inboxes", "B - (account sync)"],
+   f"failed list keeps order, got {[e['tab'] for e in failed]}")
+sheets._SYNC_LEDGER.clear()
+ok(sheets.sync_ledger_summary() == ([], []), "empty ledger -> nothing ok, nothing failed")
+
+# --- write_all attempts every tab even after one fails, then re-raises ---
+sheets._SYNC_LEDGER.clear()
+w = writer("A - ")
+attempted = []
+def _tab(key):
+    def _f(data, headers=None):
+        attempted.append(key)
+        if key == "Campaign Summary":
+            raise RuntimeError("429 on the first tab")
+    return _f
+w._write_tab_unguarded = lambda key, data, headers=None: _tab(key)(data, headers)
+raised = False
+try:
+    w.write_all([{"x": 1}], [{"x": 1}], [{"x": 1}])
+except RuntimeError:
+    raised = True
+ok(raised, "write_all still raises after attempting everything")
+ok(attempted == ["Campaign Summary", "Inboxes", "Warmup Reputation"],
+   f"all three tabs attempted despite the first failing, got {attempted}")
+statuses = {e["tab"]: e["status"] for e in sheets._SYNC_LEDGER}
+ok(statuses == {"A - Campaign Summary": "FAILED", "A - Inboxes": "ok",
+                "A - Warmup Reputation": "ok"},
+   f"ledger records the one failure and the two successes, got {statuses}")
+
 sheets._SYNC_LEDGER.clear()
 print("\nALL PASSED")

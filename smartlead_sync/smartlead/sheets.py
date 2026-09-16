@@ -71,6 +71,13 @@ def sync_ledger_rows() -> list[list[str]]:
     return [[e["tab"], e["at"], str(e["rows"]), e["status"], e["error"]]
             for e in _SYNC_LEDGER]
 
+
+def sync_ledger_summary() -> tuple[list[dict], list[dict]]:
+    """(written ok, failed) - the run's verdict, for the log and the exit code."""
+    ok = [e for e in _SYNC_LEDGER if e["status"] == "ok"]
+    failed = [e for e in _SYNC_LEDGER if e["status"] != "ok"]
+    return ok, failed
+
 from smartlead.config import (
     DELIVERABILITY_QUEUE_TAB_NAME,
     MASTER_TAB_NAME,
@@ -643,9 +650,20 @@ class SheetsWriter:
     ) -> None:
         url = f"https://docs.google.com/spreadsheets/d/{self.sheet_id}"
         print(f"  [Sheets] Syncing to {url} ...")
-        self.write_campaign_summary(campaign_summary)
-        self.write_inboxes(inbox_data)
-        self.write_warmup(warmup_data)
+        # Attempt every tab even if an earlier one fails. Stopping at the first
+        # failure left the later tabs unattempted and absent from the ledger,
+        # so a single 429 on Campaign Summary silently cost Inboxes and Warmup
+        # their update too - and the sheet had no record that it had.
+        first_error: Exception | None = None
+        for step in (lambda: self.write_campaign_summary(campaign_summary),
+                     lambda: self.write_inboxes(inbox_data),
+                     lambda: self.write_warmup(warmup_data)):
+            try:
+                step()
+            except Exception as exc:  # noqa: BLE001 - recorded by _write_tab
+                first_error = first_error or exc
+        if first_error:
+            raise first_error
         print(f"  [Sheets] Done - summary={len(campaign_summary)}, inboxes={len(inbox_data)}, warmup={len(warmup_data)}")
 
     MASTER_COLUMNS = [
