@@ -630,7 +630,17 @@ def _build_inbox_row(
 ) -> dict:
     email_key = email.strip().lower()
     domain = get_domain_from_email(email)
-    entry = deliverability_map.get(domain) or deliverability_map.get(email_key) or {}
+    # Per-mailbox result wins over the domain's. Placement is a property of the
+    # MAILBOX, not the domain: on 2026-09-17 test 535093 scored
+    # laurie.d@thebettrdatas.com at 92% while laurie@ and laurie.donnelly@ on
+    # that same domain scored 0/13 and 0/15. Reading the domain first handed
+    # both dead mailboxes their healthy sibling's "inbox" status, and they
+    # graded A/96 on the Inboxes tab while delivering nothing. Thirteen of the
+    # seventeen dead mailboxes were graded A or B this way.
+    #
+    # The domain entry is still the fallback for a mailbox we have never tested
+    # individually — it is weak evidence, but it is the only evidence there is.
+    entry = deliverability_map.get(email_key) or deliverability_map.get(domain) or {}
     if not isinstance(entry, dict):
         entry = {}
     raw_status = entry.get("status", "Unknown") or "Unknown"

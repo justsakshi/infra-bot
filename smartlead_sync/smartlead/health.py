@@ -137,6 +137,17 @@ def compute_health_score(snapshot: dict, today: date) -> dict:
     bounce = snapshot.get("bounce_rate")
     if bounce not in (None, "") and _num(bounce) >= HEALTH_BOUNCE_P0_PCT:
         score = min(score, 45)
+    # A mailbox that FAILED its placement test delivers nothing, and that is the
+    # whole job. Zeroing the placement component was not enough: warmup, bounce
+    # and connection credit still summed to 55 (grade C) for a mailbox landing
+    # 0/15 in spam. Measured 2026-09-17 against test 535093 — all seventeen dead
+    # mailboxes had clean auth, ACTIVE warmup and no bounce history, so they
+    # kept every non-placement point they could.
+    #
+    # Deliberately harsher than the bounce floor: a bounce problem is a warning,
+    # a failed placement test is a measured, reproduced delivery failure.
+    if str(snapshot.get("test_sheet_status", "")).strip().lower() in _FAIL:
+        score = min(score, 25)
     return {"score": score, "grade": _grade(score), "drivers": drivers}
 
 

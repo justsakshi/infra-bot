@@ -14,32 +14,38 @@ def snap(**kw):
     base.update(kw); return base
 
 # --- scoring ---
-s = compute_health_score(snap(), TODAY)
+# A genuinely all-healthy snapshot needs a PROVEN-clean bounce rate. The bare
+# snap() has no bounce history, which scores neutral (12/25) rather than full:
+# "never sent" is not the same as "sends cleanly".
+s = compute_health_score(snap(bounce_rate=0.2), TODAY)
 ok(s["score"] == 100, f"all-healthy == 100 (got {s['score']})")
 ok(s["grade"] == "A", "grade A")
-ok(s["drivers"]["placement"] == 40, "full placement credit")
+ok(s["drivers"]["placement"] == 45, "full placement credit")
 
 f = compute_health_score(snap(test_sheet_status="fail", busy_reason="failed_test"), TODAY)
 ok(f["drivers"]["placement"] == 0, "failed test -> 0 placement")
-ok(f["score"] == 60, f"fail test drops 40 -> 60 (got {f['score']})")
+# A failed placement test is now capped at 25 outright: the other components
+# summed to 55 (grade C) for a mailbox measured landing 0/15 in spam.
+ok(f["score"] == 25, f"failed test caps score at 25 (got {f['score']})")
+ok(f["grade"] == "D", f"failed test grades D (got {f['grade']})")
 
 w = compute_health_score(snap(warmup_rep_pct="90%"), TODAY)
 ok(w["drivers"]["warmup"] == 0, "rep 90% -> 0 warmup credit")
 
 wm = compute_health_score(snap(warmup_rep_pct="99%"), TODAY)
-ok(wm["drivers"]["warmup"] == 25, "rep 99% -> full warmup credit")
+ok(wm["drivers"]["warmup"] == 10, "rep 99% -> full warmup credit")
 
 d = compute_health_score(snap(connection_ok=False, busy_reason="disconnected"), TODAY)
 ok(d["drivers"]["connection"] == 0, "disconnected -> 0 connection")
 
 # stale test decays, dead test -> neutral half
 st = compute_health_score(snap(test_sheet_status="inbox", test_date="2026-06-10"), TODAY)  # 22d old
-ok(0 < st["drivers"]["placement"] < 40, f"stale test decays placement (got {st['drivers']['placement']})")
+ok(0 < st["drivers"]["placement"] < 45, f"stale test decays placement (got {st['drivers']['placement']})")
 dead = compute_health_score(snap(test_sheet_status="", test_date=""), TODAY)
-ok(dead["drivers"]["placement"] == 20, f"untested -> neutral 20/40 (got {dead['drivers']['placement']})")
+ok(dead["drivers"]["placement"] == 22, f"untested -> neutral 22/45 (got {dead['drivers']['placement']})")
 
 # no bounce data -> full (don't penalize; bounce is campaign-level)
-ok(compute_health_score(snap(), TODAY)["drivers"]["bounce"] == 20, "no bounce data -> full 20 (not penalized)")
+ok(compute_health_score(snap(), TODAY)["drivers"]["bounce"] == 12, "no bounce data -> neutral 12/25 (unproven is not clean)")
 
 # --- action resolution ---
 a = resolve_action(snap(test_sheet_status="fail", busy_reason="failed_test"), 60)
@@ -91,18 +97,19 @@ ok(recs[0]["date"] == "2026-07-02" and "score" in recs[0], "history record shape
 
 # --- DNS authentication checks ---
 # 1. Scoring penalties
-s_dns_spf = compute_health_score(snap(dns_spf_ok=False), TODAY)
-ok(s_dns_spf["drivers"]["connection"] == 10, f"failed SPF drops connection points from 15 to 10 (got {s_dns_spf['drivers']['connection']})")
-ok(s_dns_spf["score"] == 95, "failed SPF drops overall score to 95")
+# connection is 20 points; penalties are SPF 8, DKIM 8, DMARC 5.
+s_dns_spf = compute_health_score(snap(dns_spf_ok=False, bounce_rate=0.2), TODAY)
+ok(s_dns_spf["drivers"]["connection"] == 12, f"failed SPF drops connection 20 -> 12 (got {s_dns_spf['drivers']['connection']})")
+ok(s_dns_spf["score"] == 92, f"failed SPF drops overall score to 92 (got {s_dns_spf['score']})")
 
 s_dns_dkim = compute_health_score(snap(dns_dkim_ok=False), TODAY)
-ok(s_dns_dkim["drivers"]["connection"] == 10, "failed DKIM drops connection points to 10")
+ok(s_dns_dkim["drivers"]["connection"] == 12, "failed DKIM drops connection to 12")
 
 s_dns_dmarc = compute_health_score(snap(dns_dmarc_ok=False), TODAY)
-ok(s_dns_dmarc["drivers"]["connection"] == 12, f"failed DMARC drops connection points to 12 (got {s_dns_dmarc['drivers']['connection']})")
+ok(s_dns_dmarc["drivers"]["connection"] == 15, f"failed DMARC drops connection to 15 (got {s_dns_dmarc['drivers']['connection']})")
 
 s_all_dns_fail = compute_health_score(snap(dns_spf_ok=False, dns_dkim_ok=False, dns_dmarc_ok=False), TODAY)
-ok(s_all_dns_fail["drivers"]["connection"] == 2, f"all DNS failures drop connection points to 2 (15 - 5 - 5 - 3 = 2) (got {s_all_dns_fail['drivers']['connection']})")
+ok(s_all_dns_fail["drivers"]["connection"] == 0, f"all DNS failures drop connection to 0 (20 - 8 - 8 - 5 < 0) (got {s_all_dns_fail['drivers']['connection']})")
 
 # 2. Action resolution priorities
 a_spf = resolve_action(snap(dns_spf_ok=False, dns_spf_msg="Unsafe SPF"), 95)

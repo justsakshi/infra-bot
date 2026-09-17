@@ -108,7 +108,7 @@ async def main():
             "test_date": merged[TEST_DOMAIN]["date"], "busy_reason": "", "max_per_day": 20}
     hs = compute_health_score(snap, date.today())
     act = resolve_action(snap, hs["score"])
-    ok(hs["drivers"]["placement"] == 40, f"placement 40/40 after result (got {hs['drivers']['placement']})")
+    ok(hs["drivers"]["placement"] == 45, f"placement 45/45 after result (got {hs['drivers']['placement']})")
     ok(act["status"] == "healthy", f"action resolves healthy (got {act['status']})")
 
     cleanup(store)
