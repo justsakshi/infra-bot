@@ -237,3 +237,54 @@ completes as a unit, or a partial-panel state? We ask because if the 7s
 represent "the first 7 seeds resolved and the rest never did", then 535281 is
 not measuring what we think it is, and question 3's denominator issue would
 explain both the cluster and the apparent recovery.
+
+---
+
+## Support reply (2026-09-18) — verdict and what it changes
+
+**Verdict: trust 535093, discard 535281.** Our Q3 mechanism was correct.
+
+Findings from support:
+
+- Both tests used the same 15-seed panel (8 Office365, 7 Google). Panel is not
+  the variable.
+- 535093 ran 183 min; 535281 was closed at **71 min**. Normal window is
+  140–160 min. **Tests created through the API close on a shorter timer than
+  the in-app flow.** Support says this is their bug and they are looking at it.
+- Google seeds report slower than Office365. At 71 min only 46/266 Google
+  seeds (17%) had returned in 535281, vs 286/308 (93%) in 535093.
+- Unclassified seeds are excluded from the denominator. 535281's 88% is a
+  population that was ~80% Office365 (which places at 100%). Nothing about the
+  senders changed.
+- Unclassified seeds were still in flight, not rejected or blackholed.
+- The 0-inbox results in 535093 are real placement. 224 vs 142 classified for
+  the same 17 senders explains the apparent "recovery"; the 13-senders-on-
+  exactly-7 cluster is the partial panel resolving before close.
+- Dotted-vs-bare local-part pattern does not hold (three dotted addresses also
+  scored 0; each domain has three mailboxes and exactly one passed).
+- No configuration difference across mailboxes. What lines up is the sending
+  host: **13 of 15 zero-inbox senders are Google-hosted mailboxes.**
+
+Not answered: Q6 (SURBL), Q7 (per-sender-per-provider, sender_credits).
+
+### What this means for us
+
+1. **Every placement test we have created via the API since 2026-07 has run
+   on a ~71-minute window** and systematically under-sampled Google. The
+   2026-09-11 batch that all closed at the identical millisecond, the
+   Google-only / Office365-only panels on 09-14, the "72-minute close" we
+   recorded as an API behaviour — all the same bug on their side. Our 60%
+   coverage gate was the right defence and stays.
+2. The 17 detached mailboxes are confirmed failing. Removals stand.
+3. The health-history backfill from 535093 was correct.
+4. The failure is concentrated in Google-hosted **sending** mailboxes (15 of 30
+   fail, vs 2 of 27 Outlook-hosted). Support's phrase "Gmail placement problem"
+   should be read as sending-host, not receiving provider — 535093 showed both
+   receivers at ~51%, consistent with 15/44 senders dead at both.
+5. Until their API timer is fixed, a test that must be trusted has to be
+   created from the SmartDelivery UI. Automated weekly testing via
+   `/spam-test/manual` cannot be relied on for Google verdicts.
+
+### Follow-up sent
+
+See next section.
