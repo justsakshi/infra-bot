@@ -57,7 +57,7 @@ def _collection():
         return None
 
 
-def summarise(test_id: int, report: dict, senders: dict) -> dict:
+def summarise(test_id: int, report: dict, senders: dict, done: bool = False) -> dict:
     """Shape one test into a stored row. Pure - no I/O, no clock beyond synced_at."""
     per_sender, per_domain = {}, defaultdict(lambda: {"inbox": 0, "classified": 0})
     for email, d in (senders or {}).items():
@@ -84,8 +84,13 @@ def summarise(test_id: int, report: dict, senders: dict) -> dict:
         "synced_at": _now(),
         "status": report.get("status", ""),
         "coverage": round(coverage, 3),
-        # Below the gate the percentages are a biased sample, not a verdict.
-        "scored": coverage >= PLACEMENT_MIN_COVERAGE,
+        # A verdict needs BOTH: the test finished, and enough of its panel
+        # reported. An ACTIVE test keeps classifying - 535799 read 47% coverage
+        # and 97.3% inbox mid-flight, then settled at 90% coverage and 98.6%.
+        # Writing the mid-flight number would have put a stale verdict in the
+        # permanent record, which is the one thing this store must not do.
+        "done": bool(done),
+        "scored": bool(done) and coverage >= PLACEMENT_MIN_COVERAGE,
         "classified": report.get("classified", 0),
         "dispatched": report.get("dispatched", 0),
         "inbox_pct": round(float(report.get("inbox_pct") or 0.0), 1),
@@ -98,8 +103,15 @@ def summarise(test_id: int, report: dict, senders: dict) -> dict:
     }
 
 
-async def sync_test(client, test_id: int) -> dict | None:
-    """Fetch one test. Returns None when the id is not ours or has no data."""
+async def sync_test(client, test_id: int, account: str = "") -> dict | None:
+    """Fetch one test. Returns None when the id is not ours or has no data.
+
+    `account` tags the row. Test ids are global across Smartlead accounts, and
+    each account holds different clients - BettrData's own domains live on the
+    BETTRDATA key, while Belardi Wong and Melior inboxes sit under PRECISE_LEADS.
+    Without the tag a PRECISE_LEADS test would silently overwrite BettrData
+    verdicts for a domain name that appears in both.
+    """
     try:
         report = await client.get_report(test_id)
     except Exception:
@@ -114,12 +126,17 @@ async def sync_test(client, test_id: int) -> dict | None:
     # returns no per-sender rows; that is how we tell ours apart from theirs.
     if not senders:
         return None
+    done = False
     try:
         poll = await client.poll_test(test_id)
         report = {**report, "status": poll.get("status", "")}
+        done = bool(poll.get("done"))
     except Exception:
         pass
-    return summarise(test_id, report, senders)
+    row = summarise(test_id, report, senders, done=done)
+    if account:
+        row["account"] = account
+    return row
 
 
 async def sync_range(client, start_id: int, end_id: int, store: bool = True) -> list[dict]:
@@ -208,55 +225,87 @@ def _verdict_collection():
         client = MongoClient(uri, serverSelectionTimeoutMS=5000)
         client.admin.command("ping")
         col = client[HEALTH_HISTORY_DB][VERDICT_COLLECTION]
-        col.create_index("domain", unique=True)
+        col.create_index([("domain", 1), ("account", 1)], unique=True)
         return col
     except Exception as exc:  # noqa: BLE001
         print(f"  [PlacementSync] verdict store unavailable ({exc})")
         return None
 
 
-def refresh_verdicts() -> list[dict]:
-    """Rebuild per-domain verdicts from the newest SCORED test.
+def refresh_verdicts(account: str = "") -> list[dict]:
+    """Rebuild per-domain verdicts from the NEWEST SCORED reading per domain.
 
-    Only scored tests count. A 25%-coverage test put every weak domain at 100%
-    inbox on 2026-09-18; writing that as a verdict would have told the team a
-    28% domain was clean.
+    Not "the newest test" - the newest reading for each domain. A test covers
+    whichever mailboxes it was pointed at, so taking one test wholesale leaves
+    every other domain frozen at whatever an older test said. Test 535799 on
+    2026-09-18 carried 10 of 19 domains; sourcing verdicts from it alone would
+    have left the other 9 stale with no indication they were not re-measured.
+
+    Only scored tests count. A 47%-coverage read of that same test put every
+    weak domain at 100%; writing it would have told the team a 28% domain was
+    clean.
+
+    A placement test measures whether the domain and its mailboxes can deliver.
+    Copy is a separate variable that changes campaign to campaign; the stored
+    verdict is the infrastructure reading, and `source_test` records which run
+    produced it so any result can be traced back.
     """
-    latest = latest_scored_test()
     col = _verdict_collection()
-    if not latest or col is None:
+    tests_col = _collection()
+    if col is None or tests_col is None:
         return []
+    try:
+        q = {"scored": True}
+        if account:
+            q["account"] = account
+        tests = list(tests_col.find(q).sort("test_id", 1))
+    except PyMongoError:
+        return []
+
+    newest: dict[str, dict] = {}
+    for t in tests:                      # ascending, so later tests win
+        for domain, d in (t.get("domains") or {}).items():
+            newest[domain] = {"reading": d, "test": t}
+
     rows = []
-    for domain, d in (latest.get("domains") or {}).items():
+    for domain, hit in newest.items():
+        d, t = hit["reading"], hit["test"]
         row = {
             "domain": domain,
             "verdict": verdict_for(d["inbox_pct"]),
             "inbox_pct": d["inbox_pct"],
             "seeds": d["classified"],
-            "source_test": latest["test_id"],
-            "coverage": latest.get("coverage"),
+            "source_test": t["test_id"],
+            "source_copy": t.get("copy_label", ""),
+            "coverage": t.get("coverage"),
             "updated_at": _now(),
         }
+        if t.get("account"):
+            row["account"] = t["account"]
         rows.append(row)
         try:
-            col.update_one({"domain": domain}, {"$set": row}, upsert=True)
+            key = {"domain": domain}
+            if t.get("account"):
+                key["account"] = t["account"]
+            col.update_one(key, {"$set": row}, upsert=True)
         except PyMongoError as exc:
             print(f"  [PlacementSync] verdict write failed for {domain}: {exc}")
     return rows
 
 
-def domain_verdicts() -> dict[str, dict]:
-    """Every stored verdict, keyed by domain."""
+def domain_verdicts(account: str = "") -> dict[str, dict]:
+    """Every stored verdict, keyed by domain. Scope by account when given."""
     col = _verdict_collection()
     if col is None:
         return {}
     try:
-        return {r["domain"]: r for r in col.find({}, {"_id": 0})}
+        q = {"account": account} if account else {}
+        return {r["domain"]: r for r in col.find(q, {"_id": 0})}
     except PyMongoError:
         return {}
 
 
-def attachable_domains(min_verdict: str = "OK") -> list[str]:
+def attachable_domains(min_verdict: str = "OK", account: str = "") -> list[str]:
     """Domains safe to attach inboxes from, best first.
 
     `min_verdict` is the floor: "GOOD" for clean-only, "OK" to include the
@@ -266,7 +315,129 @@ def attachable_domains(min_verdict: str = "OK") -> list[str]:
     """
     order = {"GOOD": 3, "OK": 2, "WEAK": 1, "BAD": 0}
     floor = order.get(min_verdict.upper(), 2)
-    rows = [r for r in domain_verdicts().values()
+    rows = [r for r in domain_verdicts(account).values()
             if order.get(r.get("verdict"), 0) >= floor]
     rows.sort(key=lambda r: -r.get("inbox_pct", 0))
     return [r["domain"] for r in rows]
+
+
+# ── per-inbox memory: which specific mailboxes are safe to hand a teammate ──
+
+INBOX_COLLECTION = os.getenv("INBOX_VERDICTS_COLLECTION", "inbox_verdicts")
+
+
+def _inbox_collection():
+    uri = os.getenv("MONGO_URI", "")
+    if not uri or MongoClient is None:
+        return None
+    try:
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        client.admin.command("ping")
+        col = client[HEALTH_HISTORY_DB][INBOX_COLLECTION]
+        col.create_index([("email", 1), ("account", 1)], unique=True)
+        return col
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [PlacementSync] inbox store unavailable ({exc})")
+        return None
+
+
+def refresh_inbox_verdicts(account: str = "") -> list[dict]:
+    """Newest SCORED reading per mailbox.
+
+    Domain verdicts answer "is this domain usable"; this answers "is THIS
+    mailbox usable", which is the question when handing someone a sender list.
+    They can disagree: in test 535537 laurie.d@thebettrdatas.com scored 50%
+    while laurie@ on the same domain scored 45% - close, but a domain average
+    hides which specific inbox is carrying the domain.
+
+    Only finished, well-covered tests count (see `scored`).
+    """
+    col = _inbox_collection()
+    tests_col = _collection()
+    if col is None or tests_col is None:
+        return []
+    try:
+        q = {"scored": True}
+        if account:
+            q["account"] = account
+        tests = list(tests_col.find(q).sort("test_id", 1))
+    except PyMongoError:
+        return []
+
+    newest: dict[str, dict] = {}
+    for t in tests:                      # ascending, newest wins
+        for email, d in (t.get("senders") or {}).items():
+            newest[email] = {"reading": d, "test": t}
+
+    rows = []
+    for email, hit in newest.items():
+        d, t = hit["reading"], hit["test"]
+        row = {
+            "email": email,
+            "domain": email.split("@")[-1],
+            "verdict": verdict_for(d["inbox_pct"]),
+            "inbox_pct": d["inbox_pct"],
+            "seeds": d["classified"],
+            "source_test": t["test_id"],
+            "tested_at": t.get("synced_at"),
+            "updated_at": _now(),
+        }
+        if t.get("account"):
+            row["account"] = t["account"]
+        rows.append(row)
+        try:
+            key = {"email": email}
+            if t.get("account"):
+                key["account"] = t["account"]
+            col.update_one(key, {"$set": row}, upsert=True)
+        except PyMongoError as exc:
+            print(f"  [PlacementSync] inbox verdict write failed for {email}: {exc}")
+    return rows
+
+
+def inbox_verdicts(account: str = "") -> dict[str, dict]:
+    col = _inbox_collection()
+    if col is None:
+        return {}
+    try:
+        q = {"account": account} if account else {}
+        return {r["email"]: r for r in col.find(q, {"_id": 0})}
+    except PyMongoError:
+        return {}
+
+
+def usable_inboxes(min_verdict: str = "OK", account: str = "") -> list[dict]:
+    """The sender list to hand a teammate: best-placing mailboxes first.
+
+    Never invents a verdict. A mailbox with no scored reading is absent rather
+    than assumed good - treating untested as healthy is what let dead mailboxes
+    grade A on the Inboxes tab for a week in September 2026.
+    """
+    order = {"GOOD": 3, "OK": 2, "WEAK": 1, "BAD": 0}
+    floor = order.get(min_verdict.upper(), 2)
+    rows = [r for r in inbox_verdicts(account).values()
+            if order.get(r.get("verdict"), 0) >= floor]
+    rows.sort(key=lambda r: (-r.get("inbox_pct", 0), r.get("email", "")))
+    return rows
+
+
+def fleet_report(account: str = "") -> dict:
+    """One-glance answer to 'what have we got, and what can we safely use?'"""
+    inboxes = inbox_verdicts(account)
+    domains = domain_verdicts(account)
+    by_verdict: dict[str, int] = defaultdict(int)
+    for r in inboxes.values():
+        by_verdict[r.get("verdict", "UNKNOWN")] += 1
+    usable = usable_inboxes("OK", account)
+    return {
+        "account": account or "all",
+        "inboxes_tested": len(inboxes),
+        "domains_tested": len(domains),
+        "by_verdict": dict(by_verdict),
+        "usable_inboxes": len(usable),
+        # Smartlead caps each mailbox at message_per_day; 15 is the fleet value.
+        "usable_daily_capacity": len(usable) * 15,
+        "good_domains": [d for d, r in sorted(domains.items(),
+                                              key=lambda kv: -kv[1].get("inbox_pct", 0))
+                         if r.get("verdict") == "GOOD"],
+    }
