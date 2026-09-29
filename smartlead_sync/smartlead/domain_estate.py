@@ -274,6 +274,20 @@ async def owned_domain_list(
         counts["smartlead"] = 0
         complete = False
 
+    # Every domain on every Zapmail account, both providers — 167 of them were
+    # not in the tracker on 2026-09-28, so the tracker alone under-protects.
+    try:
+        from smartlead.zapmail_fleet import all_domains
+        zap_errors: list[str] = []
+        zap = [r["domain"] for r in await all_domains(zap_errors) if r.get("domain")]
+        merged.update(zap)
+        counts["zapmail"] = len(zap)
+        if zap_errors:
+            complete = False
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Estate] ⚠ Zapmail unreachable ({exc})", file=sys.stderr)
+        counts["zapmail"] = 0
+
     seed = read_seed_file()
     merged.update(seed)
     counts["seed_file"] = len(seed)

@@ -18,8 +18,13 @@
 const path = require('path');
 const { spawn } = require('child_process');
 const { App } = require('@slack/bolt');
+const { registerZapmailCommand } = require('./zapmail_command');
+const suggestFlow = require('./domain_suggest_command');
 
 const DOMAIN_HELP = [
+  '*Quickest:* `/domains` — pick a client, tick the names you like, stage the purchase.',
+  '`/domains suggest bettrdata` — same, straight to one client.',
+  '',
   '*Usage:* `/domains <client-main-domain> <words> [need=N]`',
   '',
   '*Example:* `/domains bettrdata.io data,ingest,lineage,dedupe,accuracy need=6`',
@@ -27,6 +32,13 @@ const DOMAIN_HELP = [
   '`<client-main-domain>` — their REAL domain. Only used to reject lookalikes; we never send from it.',
   '`<words>` — 5-6 words describing what they sell or the problem they fix.',
   '`need=N` — how many you want (default 8, max 15).',
+  '',
+  '*AI + auto-vocab:*',
+  '`/domains ai bettrdata.io` — scrape their site for words, then run Zapmail’s AI Domain Finder.',
+  '`/domains ai bettrdata.io data,ingest,lineage` — seed the AI finder with your own words.',
+  '',
+  '*Stage a purchase (never buys):*',
+  '`/domains buy dataingest.com,coveragepipeline.com client=Bettrdata` — checks availability + price, then records a staggered plan with batch ids. Buying is CLI-only.',
   '',
   '*Word choice decides everything:*',
   '• *Outcome words* beat activity words — `placed`, `booked`, `dedupe`, not `search`, `data`',
@@ -46,16 +58,27 @@ const DOMAIN_HELP = [
 // just yields unchecked names, so cap the request rather than pretend.
 const MAX_NEED = 15;
 
+// Slack text becomes CLI arguments for the Python side. These whitelists make
+// sure no user-supplied value can start with `-` and be read as a flag.
+const SAFE_CLIENT_RE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
+const SAFE_DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
 // Slack renders a literal newline inside these strings.
 const NL = String.fromCharCode(10);
 
 function parseDomainsArgs(text) {
   const tokens = (text || '').trim().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return { error: 'help' };
+  // No arguments: the one-click client picker (Zapmail AI + our generator).
+  if (!tokens.length) return { mode: 'picker' };
 
   // Estate bookkeeping: `own <domains>` records domains we already have so
   // they are never suggested again; `owned` lists what is recorded.
   const verb = tokens[0].toLowerCase();
+  if (verb === 'help') return { error: 'help' };
+  if (verb === 'suggest') {
+    const client = tokens.slice(1).join(' ');
+    return client ? { mode: 'suggest', client } : { mode: 'picker' };
+  }
   if (verb === 'own' || verb === 'add') {
     const domains = tokens.slice(1).join(',');
     if (!domains) {
@@ -66,8 +89,40 @@ function parseDomainsArgs(text) {
   if (verb === 'owned' || verb === 'list') {
     return { mode: 'list' };
   }
+  // Purchase staging — always stages a plan; never buys from Slack. The
+  // execute path needs the CLI plus the ZAPMAIL_ALLOW_SPEND kill-switch.
+  // `client=X` (first token after the domains, or via client=) scopes the
+  // stage to that client's Zapmail account.
+  if (verb === 'buy') {
+    let client = '';
+    const rest = tokens.slice(1).filter(t => {
+      const m = t.match(/^client=(.*)$/i);
+      if (m) { client = m[1]; return false; }
+      return true;
+    });
+    // Everything here becomes a CLI argument. Whitelist the shapes so no
+    // token can ever be read as a flag (e.g. `client=--approve`).
+    if (client && !SAFE_CLIENT_RE.test(client)) {
+      return { error: '`client=' + client + '` is not a valid client name (letters, digits, spaces, `.`, `_`, `-`; must start with a letter or digit).' };
+    }
+    const domainList = rest.join(',').split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
+    const bad = domainList.filter(d => !SAFE_DOMAIN_RE.test(d));
+    if (bad.length) {
+      return { error: 'Not valid domain names: ' + bad.map(d => '`' + d + '`').join(', ') };
+    }
+    const domains = domainList.join(',');
+    if (!domains) {
+      return { error: 'Give the domains to stage a purchase for, e.g. `/domains buy dataingest.com,coveragepipeline.com client=Bettrdata`' };
+    }
+    return { mode: 'buy', domains, client };
+  }
 
-  const opts = { need: 8, exclude: '', words: '', mainDomain: '', client: '' };
+  const opts = { need: 8, exclude: '', words: '', mainDomain: '', client: '', ai: false, autoVocab: false };
+  if (verb === 'ai') {
+    opts.ai = true;
+    tokens.shift();
+    if (!tokens.length) return { error: 'help' };
+  }
   const positional = [];
 
   for (const tok of tokens) {
@@ -84,7 +139,17 @@ function parseDomainsArgs(text) {
     }
   }
 
-  if (positional.length < 2) return { error: 'help' };
+  if (opts.client && !SAFE_CLIENT_RE.test(opts.client)) {
+    return { error: '`client=' + opts.client + '` is not a valid client name.' };
+  }
+  if (opts.exclude && opts.exclude.split(',').some(d => d.trim().startsWith('-'))) {
+    return { error: '`exclude=` takes domain names only.' };
+  }
+  if (positional.some(t => t.startsWith('-'))) {
+    return { error: 'Arguments cannot start with `-`.' };
+  }
+
+  if (positional.length < 1) return { error: 'help' };
 
   opts.mainDomain = positional[0]
     .toLowerCase()
@@ -100,7 +165,10 @@ function parseDomainsArgs(text) {
 
   opts.words = positional.slice(1).join(',');
   const wordCount = opts.words.split(',').map(w => w.trim()).filter(Boolean).length;
-  if (wordCount < 3) {
+  if (wordCount === 0 && opts.ai) {
+    // AI mode with no words: scrape the client's site for vocabulary.
+    opts.autoVocab = true;
+  } else if (wordCount < 3) {
     return {
       error: 'Give 5-6 words describing what the client sells or the problem '
            + 'they fix. Example: '
@@ -121,14 +189,21 @@ function buildGeneratorArgs(opts, user) {
   if (opts.mode === 'list') {
     return ['domain_generator.py', '--list-owned', '--json'];
   }
+  if (opts.mode === 'buy') {
+    const args = ['domain_generator.py', '--buy', opts.domains, '--json'];
+    if (opts.client) args.push('--client', opts.client);
+    return args;
+  }
   const args = [
     'domain_generator.py',
     '--client', opts.client,
     '--main-domain', opts.mainDomain,
-    '--value', opts.words,
     '--need', String(opts.need),
     '--json'
   ];
+  if (opts.words) args.push('--value', opts.words);
+  if (opts.ai) args.push('--ai');
+  if (opts.autoVocab) args.push('--auto-vocab');
   if (opts.exclude) args.push('--exclude', opts.exclude);
   return args;
 }
@@ -275,6 +350,19 @@ function formatDomainResult(r) {
     });
   }
 
+  const aiSug = r.ai_suggestions || [];
+  if (aiSug.length) {
+    const lines = aiSug.map((d, i) => {
+      const price = (d.price !== null && d.price !== undefined) ? '$' + d.price.toFixed(2) : '—';
+      const avail = d.available === true ? '' : d.available === false ? ' (taken)' : ' (unverified)';
+      return '`' + (i + 1) + '.` `' + d.domain + '`  ' + price + avail;
+    });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*AI suggestions* (Zapmail AI Domain Finder):\n' + lines.join('\n') }
+    });
+  }
+
   // Surface only the rejection the requester could not have predicted: name
   // quality is self-evident, but "we already own this" is real information.
   const owned = (r.rejected || []).filter(x => (x.reasons || []).some(s => s.includes('owned')));
@@ -341,10 +429,44 @@ function formatDomainResult(r) {
   return blocks;
 }
 
-/** Register the /domains command on an existing Bolt app. */
+/** Render a STAGED batch plan (from domain_batch.stage_batches). Never renders a buy. */
+function formatBuyResult(r) {
+  if (r.error) return ':x: ' + r.error;
+  const batches = r.batches || [];
+  const list = (xs) => xs.map(d => '`' + d + '`').join(', ');
+  let msg = '*Staged purchase plan* (nothing bought)';
+  msg += NL + 'Client: ' + (r.client || '_primary_') + ' · bills: '
+    + (r.spend_account ? '*' + r.spend_account + '*' : ':warning: _no Zapmail account configured — buying will be refused_');
+  if (batches.length) {
+    msg += NL;
+    batches.forEach((b) => {
+      msg += NL + '• *' + b.earliest_date + '* — ' + list(b.domains)
+        + ' · est. $' + Number(b.estimated_usd).toFixed(2) + ' · batch `' + b.batch_id + '`';
+    });
+    msg += NL + NL + 'Total est. $' + Number(r.total_usd).toFixed(2) + '/yr';
+  } else {
+    msg += NL + NL + 'Nothing buyable.';
+  }
+  if ((r.unavailable || []).length) msg += NL + '_Taken: ' + r.unavailable.join(', ') + '_';
+  if ((r.unknown || []).length) msg += NL + '_Unverified (re-run later): ' + r.unknown.join(', ') + '_';
+  if ((r.over_ceiling || []).length) msg += NL + '_Over the $' + r.price_ceiling + ' price ceiling: ' + r.over_ceiling.join(', ') + '_';
+  if ((r.already_planned || []).length) msg += NL + '_Already in the purchase ledger: ' + r.already_planned.join(', ') + '_';
+  if (batches.length && !r.ledger_ok) msg += NL + ':warning: _Ledger unavailable — this plan was NOT recorded and cannot be executed._';
+  msg += NL + '_Each batch is bought on or after its date — by an approved buyer’s *Buy now* button, or `zapmail_buy.py --execute <batch_id> --approve`. Either way the server must allow spending, and availability + price are re-checked live first._';
+  return msg;
+}
+
+/**
+ * Register the /domains command on an existing Bolt app.
+ * DOMAINS_SLASH_COMMAND renames it (e.g. `/domains-dev` on a local test app).
+ */
 function registerDomainsCommand(app, baseDir) {
-  app.command('/domains', async ({ ack, command, respond }) => {
+  app.command(process.env.DOMAINS_SLASH_COMMAND || '/domains', async ({ ack, command, respond }) => {
     await ack();
+    // `/domains zapmail …` = `/zapmail …`, for workspaces where nobody can
+    // register a second slash command on this app.
+    const zm = /^\s*(zapmail|zm)\b(.*)$/i.exec(command.text || '');
+    if (zm) return require('./zapmail_command').handleZapmailText(zm[2], baseDir, respond);
     const opts = parseDomainsArgs(command.text);
 
     if (opts.error === 'help') {
@@ -355,6 +477,19 @@ function registerDomainsCommand(app, baseDir) {
     }
 
     const user = (command.user_name || command.user_id || '').toString();
+
+    // One-click suggestions: client picker, or straight to one client.
+    if (opts.mode === 'picker' || opts.mode === 'suggest') {
+      const profiles = suggestFlow.loadProfiles(baseDir);
+      const key = opts.mode === 'suggest' ? suggestFlow.resolveClientKey(profiles, opts.client) : null;
+      if (key) return suggestFlow.runSuggest(key, respond, baseDir);
+      const blocks = suggestFlow.clientPickerBlocks(profiles);
+      if (opts.mode === 'suggest') {
+        blocks.unshift({ type: 'section', text: { type: 'mrkdwn',
+          text: ':x: No domain profile called `' + opts.client + '`. Pick one:' } });
+      }
+      return respond({ response_type: 'ephemeral', text: 'Suggest sending domains', blocks });
+    }
 
     // Bookkeeping verbs answer immediately and stay ephemeral — they are
     // admin, not a result the channel needs.
@@ -401,8 +536,23 @@ function registerDomainsCommand(app, baseDir) {
       }
     }
 
+    // Purchase staging: read-only, always. The generator stages a plan; it
+    // never executes a buy from here — that path needs the CLI + the spend
+    // kill-switch, so a Slack slip can't turn into a wallet charge.
+    if (opts.mode === 'buy') {
+      await respond({ response_type: 'ephemeral', text: 'Staging purchase (read-only)…' });
+      try {
+        const result = await runDomainGenerator(opts, baseDir, user);
+        await respond({ response_type: 'ephemeral', text: formatBuyResult(result) });
+      } catch (err) {
+        console.error('[domains] buy stage failed:', err);
+        await respond({ response_type: 'ephemeral', text: ':x: ' + err.message });
+      }
+      return;
+    }
+
     await respond({
-      response_type: 'in_channel',
+      response_type: 'ephemeral',
       text: 'Generating domains for *' + opts.client + '* — excluding '
           + opts.mainDomain + ' lookalikes and everything we already own. Takes a minute.'
     });
@@ -410,7 +560,7 @@ function registerDomainsCommand(app, baseDir) {
     try {
       const result = await runDomainGenerator(opts, baseDir, user);
       await respond({
-        response_type: 'in_channel',
+        response_type: 'ephemeral',
         blocks: formatDomainResult(result),
         text: 'Domain suggestions for ' + result.client
       });
@@ -436,7 +586,7 @@ function registerDomainsCommand(app, baseDir) {
  * No-ops when the tokens are absent, so a deploy without them is not a crash.
  * Returns the started App, or null when it did not start.
  */
-async function startDomainsApp(baseDir) {
+async function startDomainsApp(baseDir, opts = {}) {
   const token = process.env.DOMAINS_SLACK_BOT_TOKEN;
   const appToken = process.env.DOMAINS_SLACK_APP_TOKEN;
 
@@ -447,7 +597,11 @@ async function startDomainsApp(baseDir) {
   }
 
   const domainsApp = new App({ token, appToken, socketMode: true });
+  // Before any handler: only DOMAINS_ALLOWED_USERS + ZAPMAIL_APPROVERS get in.
+  domainsApp.use(require('./domains_access').accessMiddleware);
   registerDomainsCommand(domainsApp, baseDir);
+  registerZapmailCommand(domainsApp, baseDir, opts);
+  suggestFlow.registerDomainSuggestFlow(domainsApp, baseDir);
 
   // Same socket-mode race the main app guards against: a forced disconnect
   // during a deploy overlap must be logged, not thrown as an unhandled
@@ -475,5 +629,6 @@ module.exports = {
   startDomainsApp,
   parseDomainsArgs,
   formatDomainResult,
+  formatBuyResult,
   DOMAIN_HELP
 };

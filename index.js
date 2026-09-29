@@ -7,6 +7,7 @@ const mongoose = require('mongoose');
 const { App } = require('@slack/bolt');
 const cron = require('node-cron');
 const dayjs = require('dayjs');
+const renewalLabels = require('./renewal_labels');
 const { spawn } = require('child_process');
 const customParseFormat = require('dayjs/plugin/customParseFormat');
 const express = require('express');
@@ -16,6 +17,7 @@ const { Readable } = require('stream');
 const axios = require('axios');
 const { syncAllAssetsToSheet } = require('./sheets');
 const { startDomainsApp } = require('./domains_command');
+const { registerZapmailWebhook } = require('./zapmail_webhooks');
 
 dayjs.extend(customParseFormat);
 
@@ -225,6 +227,13 @@ function prepareAssetsForSheet(assets) {
   });
 }
 
+/** Re-read every asset and rewrite the tracker sheet (after a Zapmail sync). */
+async function resyncAssetSheet() {
+  const allAssets = await Asset.find();
+  await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
+  console.log('[zapmail-sync] asset sheet re-synced');
+}
+
 /* -------------------- CSV Parsing -------------------- */
 
 function parseCSVBuffer(buffer, type) {
@@ -301,6 +310,13 @@ function parseCSVBuffer(buffer, type) {
 const expressApp = express();
 const upload = multer({ storage: multer.memoryStorage() });
 const path = require('path');
+
+// Zapmail webhooks need the raw body for signature checks, so they mount
+// BEFORE the JSON parser. Tracker changes re-sync the asset sheet.
+registerZapmailWebhook(expressApp, express, {
+  baseDir: __dirname,
+  onTrackerChanged: resyncAssetSheet
+});
 
 expressApp.use(express.json());
 expressApp.use(express.static(path.join(__dirname, 'public')));
@@ -1041,11 +1057,7 @@ app.action(/^view_details_/, async ({ ack, body, client }) => {
       detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
       for (const [c, items] of Object.entries(byClient)) {
         detail += `*${c}*\n`;
-        for (const a of items) {
-          const providerPart = a.provider ? ` · ${a.provider}` : '';
-          const typeIcon = a.type === 'DOMAIN' ? '🌐' : '📧';
-          detail += `  ${typeIcon} ${a.name}${providerPart}\n`;
-        }
+        for (const a of items) detail += renewalLabels.assetLine(a) + '\n';
       }
       detailText = detail.trim();
     } else {
@@ -1481,7 +1493,8 @@ async function runNoonSummary() {
         const parts = [];
         if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
         if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
-        const summaryText = `${icon}  ${parts.join(' and ')} expire${gAssets.length === 1 ? 's' : ''} *${label}*`;
+        const summaryText = `${icon}  ${parts.join(' and ')} expire${gAssets.length === 1 ? 's' : ''} *${label}*`
+          + renewalLabels.estimatedNote(gAssets);
 
         const byClient = {};
         for (const a of gAssets) {
@@ -1493,11 +1506,7 @@ async function runNoonSummary() {
         detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
         for (const [client, items] of Object.entries(byClient)) {
           detail += `*${client}*\n`;
-          for (const a of items) {
-            const providerPart = a.provider ? ` · ${a.provider}` : '';
-            const typeIcon = a.type === 'DOMAIN' ? '🌐' : '📧';
-            detail += `  ${typeIcon} ${a.name}${providerPart}\n`;
-          }
+          for (const a of items) detail += renewalLabels.assetLine(a) + '\n';
         }
 
         blocks.push({
@@ -1591,7 +1600,7 @@ async function start() {
     // Bot app is owned by a deactivated user and its commands cannot be
     // edited. Failure here must not stop the main bot from serving.
     try {
-      domainsApp = await startDomainsApp(__dirname);
+      domainsApp = await startDomainsApp(__dirname, { onTrackerChanged: resyncAssetSheet });
     } catch (domErr) {
       console.warn('⚠️  /domains app failed to start:', domErr?.message || domErr);
     }
@@ -1862,6 +1871,47 @@ async function start() {
       proc.stdout.on('data', d => process.stdout.write(`[capacity] ${d}`));
       proc.stderr.on('data', d => process.stderr.write(`[capacity] ${d}`));
       proc.on('close', code => console.log(`[capacity] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // Zapmail → /infra tracker sync at 9:30 AM IST: expiry dates, lapsed
+    // domains, new current-client domains/inboxes. Writes only when
+    // ZAPMAIL_ASSET_SYNC_ENABLED=true (otherwise logs a preview), then
+    // re-syncs the tracker sheet. ScaledMail stays manual.
+    cron.schedule('30 9 * * *', () => {
+      const apply = process.env.ZAPMAIL_ASSET_SYNC_ENABLED === 'true';
+      console.log(`[CRON] Zapmail tracker sync (${apply ? 'apply' : 'preview'}) firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['zapmail_asset_sync.py', ...(apply ? ['--apply'] : [])], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[zapmail-sync] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[zapmail-sync] ${d}`));
+      proc.on('close', code => {
+        console.log(`[zapmail-sync] finished with code ${code}`);
+        if (apply && code === 0) {
+          resyncAssetSheet().catch(err => console.warn('[zapmail-sync] sheet refresh failed:', err.message));
+        }
+      });
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // Zapmail daily digest at 9:40 AM IST (read-only): wallets, domains
+    // expiring soon, purchase batches due or needing reconcile. Posts only when
+    // ZAPMAIL_NOTIFY_CHANNEL is set; otherwise it just logs.
+    cron.schedule('40 9 * * *', () => {
+      console.log(`[CRON] Zapmail digest firing at ${new Date().toISOString()}`);
+      const syncDir = path.join(__dirname, 'smartlead_sync');
+      const proc = spawn('python', ['zapmail_digest.py'], {
+        cwd: syncDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[zapmail-digest] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[zapmail-digest] ${d}`));
+      proc.on('close', code => console.log(`[zapmail-digest] finished with code ${code}`));
     }, {
       timezone: 'Asia/Kolkata'
     });

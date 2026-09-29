@@ -1,0 +1,46 @@
+# Local test copy of the /domains + /zapmail Slack app.
+#
+# Lets you test the new Zapmail features from your laptop while Render keeps
+# running /domains and /zapmail for the team, untouched. Different app =
+# different tokens, so Slack never splits events between the two.
+#
+# 1. https://api.slack.com/apps → Create New App → From a manifest → pick the
+#    workspace → paste this file.
+# 2. Install to Workspace → copy the Bot User OAuth Token (xoxb-…).
+# 3. Basic Information → App-Level Tokens → Generate, scope connections:write
+#    → copy the token (xapp-…).
+# 4. infra-bot/.env:
+#      DEV_DOMAINS_SLACK_BOT_TOKEN=xoxb-…
+#      DEV_DOMAINS_SLACK_APP_TOKEN=xapp-…
+# 5. node dev/zapmail_local.js  → use /domains-dev and /zapmail-dev in Slack.
+#
+# Delete the app when testing is done.
+display_information:
+  name: Domains (dev)
+  description: Local test copy of /domains + /zapmail. Not the team's bot.
+features:
+  bot_user:
+    display_name: domains-dev
+    always_online: false
+  slash_commands:
+    - command: /domains-dev
+      description: TEST — domain suggestions + purchase plans
+      usage_hint: "[suggest <client> | help]"
+      should_escape: false
+    - command: /zapmail-dev
+      description: TEST — Zapmail fleet view and actions
+      usage_hint: "[status | renewals | batches | domain x.com | prewarmed | sync]"
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - commands
+      - chat:write
+      - chat:write.public
+      - im:write
+settings:
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

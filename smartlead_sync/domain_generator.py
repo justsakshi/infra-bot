@@ -38,14 +38,15 @@ if sys.platform == "win32":
         pass
 
 from smartlead.domain_availability import (
-    DEFAULT_PRICE_CEILING_USD, RATE_LIMIT_CALLS, RATE_LIMIT_WINDOW_S,
-    cache_status, enrich, zapmail_key, zones_checked,
+    DEFAULT_PRICE_CEILING_USD, DEFAULT_RUN_CALLS, RATE_LIMIT_CALLS,
+    RATE_LIMIT_WINDOW_S, cache_status, enrich, zapmail_key, zones_checked,
 )
 from smartlead.domain_estate import owned_domain_list
 from smartlead.domain_naming import (
     Candidate, ClientVocabulary, diversify, generate_with_rejects,
     owned_stems_from, purchase_schedule,
 )
+from smartlead.zapmail_accounts import api_key_for_client, account_name_for_client
 
 # Spread purchases across accounts you actually hold. Registrar diversity is
 # half the point; the other half is the day gap in purchase_schedule().
@@ -60,6 +61,49 @@ DEFAULT_REGISTRARS = ("Zapmail",)
 
 def _split(raw: str | None) -> list[str]:
     return [t.strip() for t in (raw or "").split(",") if t.strip()]
+
+
+async def _ai_suggestions(vocab, owned_stems, client=None) -> list[dict]:
+    """AI Domain Finder results, screened + availability-checked. Read-only.
+
+    Late-imported so the generator's normal path stays cheap, and kept separate
+    from the token-compound list: a model-sourced name obeys the same naming
+    rules (no brand permutation, no phishing shape), but reports a distinct
+    ``ai_suggestions`` block rather than being mixed into the shortlist.
+    """
+    from smartlead.domain_ai import ai_suggest
+    from smartlead.domain_availability import check_availability_bulk
+    from smartlead.domain_naming import screen
+    from smartlead.zapmail_accounts import api_key_for_client
+
+    # The AI finder works best on a few specific words; the whole token bank
+    # (often 20+ scraped words) dilutes it.
+    rows = await ai_suggest(vocab.token_bank()[:6], client=client)
+    if not rows:
+        return []
+
+    passing: list[dict] = []
+    for r in rows:
+        sld, _, tld = r["domain"].partition(".")
+        if not sld or not tld:
+            continue
+        c = screen(sld, f".{tld}", vocab, source_tokens=("ai",),
+                   owned_stems=owned_stems)
+        if c.ok:
+            passing.append(r)
+    if not passing:
+        return []
+
+    # The finder already answers availability + price; only re-check rows it
+    # left unknown, so the 10-search budget isn't spent twice.
+    unknown = [r["domain"] for r in passing if r["available"] is None]
+    if unknown:
+        avail = await check_availability_bulk(unknown, api_key=api_key_for_client(client))
+        for r in passing:
+            if r["domain"] in avail:
+                r["available"], r["price"] = avail[r["domain"]]
+    return [{"domain": r["domain"], "available": r["available"], "price": r["price"]}
+            for r in passing]
 
 
 def _print_candidates(cands: list[Candidate], show_rejects: bool) -> None:
@@ -122,7 +166,8 @@ def _emit_json(cands: list[Candidate], purchasable: list[Candidate],
                vocab: ClientVocabulary, registrars: list[str],
                per_batch: int, day_gap: int, checked: bool,
                estate_counts: dict[str, int] | None = None,
-               estate_ok: bool = True) -> None:
+               estate_ok: bool = True,
+               ai_suggestions: list[dict] | None = None) -> None:
     """Machine-readable result for the Slack bot.
 
     Printed to stdout as a single line so the Node side can parse the last
@@ -165,6 +210,7 @@ def _emit_json(cands: list[Candidate], purchasable: list[Candidate],
              "domains": list(b.domains)}
             for b in batches
         ],
+        "ai_suggestions": ai_suggestions or [],
         "estimated_annual_usd": round(
             sum(c.price_usd or 0.0 for c in purchasable), 2),
     }
@@ -235,10 +281,74 @@ def _run_estate_subcommand(argv: list[str]) -> int:
 
 
 
+async def _run_buy_subcommand(argv: list[str]) -> int:
+    """`--buy a.com,b.com [--client X] [--json]` — STAGE ONLY, never buys.
+
+    This is the entry point the Slack `/domains buy` command spawns, so it has
+    no execute path at all: it stages a staggered, ledgered plan (availability
+    + price + batch ids) via :func:`domain_batch.stage_batches`. Buying happens
+    only through ``zapmail_buy.py --execute <batch_id> --approve`` with the
+    ``ZAPMAIL_ALLOW_SPEND`` kill-switch on. ``--approve`` here is refused
+    rather than ignored, so nobody mistakes a stage for a buy.
+    """
+    from smartlead.domain_batch import stage_batches
+
+    as_json = "--json" in argv
+
+    def _fail(msg: str, code: int = 2) -> int:
+        # stderr always (the Slack side surfaces its tail on a non-zero exit);
+        # JSON on stdout too for machine callers.
+        print(f"ERROR: {msg}", file=sys.stderr)
+        if as_json:
+            print(json.dumps({"error": msg}))
+        return code
+
+    if "--approve" in argv:
+        return _fail("--buy only stages. To buy, use: zapmail_buy.py --execute "
+                     "<batch_id> --approve (with ZAPMAIL_ALLOW_SPEND=true).")
+
+    i = argv.index("--buy")
+    if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+        return _fail("--buy needs a comma-separated domain list")
+    domains = [d.strip().lower() for d in argv[i + 1].split(",") if d.strip()]
+    if not domains:
+        return _fail("--buy needs at least one domain")
+
+    client = ""
+    if "--client" in argv:
+        j = argv.index("--client")
+        if j + 1 >= len(argv) or argv[j + 1].startswith("-"):
+            return _fail("--client needs a client name")
+        client = argv[j + 1]
+
+    plan = await stage_batches(domains, client=client)
+    if as_json:
+        print(json.dumps(plan, default=str))
+        return 0
+    print("\n  Purchase plan (stage only — nothing bought):")
+    for b in plan["batches"]:
+        print(f"    {b['earliest_date']:12} ${b['estimated_usd']:>7.2f}  "
+              f"{', '.join(b['domains'])}   [{b['batch_id']}]")
+    for label, key in (("taken", "unavailable"), ("unverified", "unknown"),
+                       ("over price ceiling", "over_ceiling"),
+                       ("already in ledger", "already_planned")):
+        if plan[key]:
+            print(f"  ⚠ {label}: {', '.join(plan[key])}")
+    print(f"\n  est ${plan['total_usd']}/yr · bills: "
+          f"{plan['spend_account'] or 'NO ACCOUNT (buying refused)'}")
+    print("  To buy: zapmail_buy.py --execute <batch_id> --approve "
+          "(ZAPMAIL_ALLOW_SPEND=true)")
+    return 0
+
+
 async def main() -> int:
     # Estate bookkeeping short-circuits the generator's own argument contract.
     if "--register" in sys.argv or "--list-owned" in sys.argv:
         return _run_estate_subcommand(sys.argv[1:])
+    # Purchase is a separate concern from generation. --buy only STAGES a
+    # ledgered plan; buying lives in zapmail_buy.py --execute.
+    if "--buy" in sys.argv:
+        return await _run_buy_subcommand(sys.argv[1:])
 
     ap = argparse.ArgumentParser(description="Generate + screen cold email domains")
     ap.add_argument("--client", required=True, help="Client name (labels only)")
@@ -255,10 +365,14 @@ async def main() -> int:
     ap.add_argument("--day-gap", type=int, default=2, help="Days between batches")
     ap.add_argument("--no-network", action="store_true",
                     help="Naming rules only — no Zapmail, no DNSBL lookups")
-    ap.add_argument("--max-calls", type=int, default=RATE_LIMIT_CALLS,
+    ap.add_argument("--max-calls", type=int, default=DEFAULT_RUN_CALLS,
                     help=f"Zapmail searches to spend this run (limit: "
                          f"{RATE_LIMIT_CALLS} per {RATE_LIMIT_WINDOW_S // 60} min)")
     ap.add_argument("--skip-blacklist", action="store_true")
+    ap.add_argument("--auto-vocab", action="store_true",
+                    help="Scrape the main domain's site to seed the vocabulary")
+    ap.add_argument("--ai", action="store_true",
+                    help="Also pull Zapmail AI Domain Finder suggestions")
     ap.add_argument("--show-rejects", action="store_true")
     ap.add_argument("--exclude", default="",
                     help="Comma-separated domains we already own that are not "
@@ -281,8 +395,21 @@ async def main() -> int:
         problem_nouns=_split(args.problem),
         industry_nouns=_split(args.industry),
     )
+
+    if args.auto_vocab:
+        from smartlead.domain_ai import source_vocabulary
+        scraped = await source_vocabulary(args.main_domain)
+        if scraped:
+            vocab.value_nouns.extend(scraped)
+            log(f"[Domains] auto-vocab from {args.main_domain}: "
+                f"{', '.join(scraped[:12])}"
+                + ("…" if len(scraped) > 12 else ""))
+        else:
+            log(f"[Domains] auto-vocab: could not read {args.main_domain}")
+
     if len(vocab.token_bank()) < 3:
-        print("ERROR: supply at least 3 tokens across --value/--problem/--industry.",
+        print("ERROR: supply at least 3 tokens across --value/--problem/--industry "
+              "(or --auto-vocab to scrape them from the site).",
               file=sys.stderr)
         return 2
 
@@ -324,9 +451,13 @@ async def main() -> int:
         log(f"[Domains] {len(cached)} cached, {len(fresh)} need a Zapmail search "
             f"(budget {args.max_calls} per {RATE_LIMIT_WINDOW_S // 60} min)")
         log(f"[Domains] blacklist history via {zones_checked()} (free, DNS only)")
+        zkey = api_key_for_client(args.client)
+        zname = account_name_for_client(args.client) or "default"
+        log(f"[Domains] Zapmail account for {args.client}: {zname}")
         cands = await enrich(cands, price_ceiling=args.price_ceiling,
                              skip_blacklist=args.skip_blacklist,
-                             max_calls=args.max_calls)
+                             max_calls=args.max_calls,
+                             api_key=zkey)
 
     # Diversify AFTER availability: most generated names are taken, so a
     # shortlist chosen before the availability check gets re-expanded into
@@ -337,15 +468,30 @@ async def main() -> int:
                              [c for c in cands if c.purchasable], args.need)
                          if c.purchasable][:args.need])
 
+    ai_suggestions: list[dict] = []
+    if args.ai and not args.no_network:
+        try:
+            ai_suggestions = await _ai_suggestions(vocab, owned_stems, client=args.client)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[Domains] AI finder failed: {exc}")
+
     # JSON mode short-circuits every human-facing print: stdout must carry the
     # payload and nothing else.
     if args.json:
         _emit_json(cands, purchasable, vocab, _split(args.registrars),
                    args.per_batch, args.day_gap, checked=not args.no_network,
-                   estate_counts=estate_counts, estate_ok=estate_ok)
+                   estate_counts=estate_counts, estate_ok=estate_ok,
+                   ai_suggestions=ai_suggestions)
         return 0
 
     _print_candidates(cands, args.show_rejects)
+
+    if ai_suggestions:
+        print(f"\n  AI suggestions (Zapmail AI Domain Finder, {len(ai_suggestions)}):")
+        for s in ai_suggestions:
+            avail = {True: "yes", False: "TAKEN", None: "?"}[s["available"]]
+            price = f"${s['price']:.2f}" if s["price"] else "-"
+            print(f"    {s['domain']:30} {avail:7} {price:>9}")
 
     if args.no_network:
         print("\n  --no-network: availability unchecked, no purchase plan produced.")

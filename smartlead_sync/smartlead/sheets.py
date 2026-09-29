@@ -157,7 +157,16 @@ def _campaign_row_rank(r: dict) -> int:
 
 def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
     """Return one row per (client, email), keeping the most-live campaign's row
-    (ACTIVE beats paused/completed beats orphan), with active campaign count."""
+    (ACTIVE beats paused/completed beats orphan), with active campaign count.
+
+    ``campaigns`` counts only live campaigns — ACTIVE or PAUSED, the same
+    definition as ``processing._is_active_status`` (a paused campaign resumes
+    onto the same inbox, so it still claims a share). It used to count every
+    campaign the inbox had ever been attached to, completed and drafted too,
+    so an inbox reused across ten finished campaigns read as "in 10", and
+    Campaign Desk's shared-inbox split (capacity / # Campaigns) would give it a
+    tenth of its real capacity."""
+    from smartlead.processing import _is_active_status
     groups: dict[tuple, dict] = {}
     for r in rows:
         key = (r.get("client", ""), str(r.get("email", "")).strip().lower())
@@ -169,8 +178,7 @@ def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
             rank = _campaign_row_rank(r)
             if rank > g["rank"]:
                 g["row"], g["rank"] = r, rank
-        campaign = str(r.get("campaign_name", ""))
-        if campaign and not campaign.startswith("N/A"):
+        if _campaign_row_rank(r) > 0 and _is_active_status(r.get("campaign_status", "")):
             g["campaigns"] += 1
 
     deduped: list[dict] = []

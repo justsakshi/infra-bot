@@ -52,6 +52,8 @@ BANNED_SUBSTRINGS: frozenset[str] = frozenset({
     "spam", "bulk", "blast", "mailer", "mailing", "newsletter", "promo",
     "offer", "deal", "discount", "free", "cheap", "mega", "ultra", "grp",
     "click", "cash", "winner", "guaranteed",
+    # UK English for a bulk mail-out; Zapmail's AI offered mailshotco.com.
+    "mailshot",
 })
 
 # Unintended words formed when two clean tokens are joined. Not exhaustive by

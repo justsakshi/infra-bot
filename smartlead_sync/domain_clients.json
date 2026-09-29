@@ -1,0 +1,46 @@
+{
+  "_about": "Profiles for Slack's 'Suggest domains' buttons. main_domain is the client's REAL site (used only to reject lookalike names - the client's brand never appears in a sending domain). Names are built from the business, by role: lead_words go first (describe: postal, clean, outbound), head_nouns go last (things: records, catalog, meetings), related are on-topic words that may sit anywhere. Every suggestion must contain at least one of these words and read as '<word> + <noun>'. ai_seeds are the 3-word prompts sent to Zapmail's AI Domain Finder - plain words about what the client does, not jargon. keywords is the short summary shown in Slack. Edit freely; no code change needed.",
+  "clients": {
+    "Bettrdata": {
+      "label": "BettrData",
+      "main_domain": "bettrdata.io",
+      "description": "Data operations platform: onboards, cleans and matches external data files and feeds (Ingest), audience data selection (Select), data marketplace.",
+      "keywords": ["data", "ingest", "pipeline", "records", "lineage", "dedupe", "accuracy"],
+      "lead_words": ["data", "clean", "audience", "unified", "verified"],
+      "head_nouns": ["records", "feeds", "intake", "ingest", "datasets", "sources", "lineage", "pipeline", "files", "audiences", "match"],
+      "related": ["stream", "schema", "segment", "onboard", "batch", "loader", "sync", "merge", "parse", "queue"],
+      "ai_seeds": [["data", "ingestion", "pipeline"], ["clean", "data", "feeds"], ["audience", "data", "marketplace"]]
+    },
+    "Belardi Wong": {
+      "label": "Belardi Wong",
+      "main_domain": "belardiwong.com",
+      "description": "Catalog and direct-mail marketing agency for retail and DTC brands: postal prospecting, circulation strategy, catalog creative.",
+      "keywords": ["catalog", "mailing", "postal", "retail", "prospecting", "response"],
+      "lead_words": ["postal", "catalog", "direct", "mail", "print", "retail", "brand"],
+      "head_nouns": ["catalog", "catalogs", "mail", "mailbox", "post", "circulation", "response", "prospects", "pages", "print", "letters", "shoppers", "doorstep", "brands"],
+      "related": ["envelope", "stamp", "brochure", "postcard", "mailroom", "audience", "leaflet", "lookbook", "showroom", "flyer"],
+      "ai_seeds": [["catalog", "marketing", "retail"], ["direct", "mail", "prospecting"], ["postal", "response", "brands"]]
+    },
+    "Precise Leads": {
+      "label": "Precise Leads",
+      "main_domain": "preciseleads.in",
+      "description": "B2B outbound lead-generation agency: finds prospects and books qualified sales meetings.",
+      "keywords": ["leads", "outbound", "pipeline", "prospect", "meetings", "booked"],
+      "lead_words": ["outbound", "pipeline", "booked", "qualified", "warm", "prospect", "sales"],
+      "head_nouns": ["leads", "meetings", "pipeline", "prospects", "calendar", "accounts", "deals", "revenue", "demand", "growth"],
+      "related": ["outreach", "booking", "meeting"],
+      "ai_seeds": [["outbound", "sales", "meetings"], ["qualified", "leads", "pipeline"], ["booked", "meetings", "growth"]]
+    },
+    "Melior": {
+      "label": "Melior",
+      "main_domain": "getmelior.com",
+      "brand_stem": "melior",
+      "description": "Helps mid-size marketing agencies (and professional-services firms) adopt or build the AI capabilities the largest agencies already have; runs AI roundtables for agency and firm leaders.",
+      "keywords": ["agency", "ai", "roundtable", "growth", "automation", "playbook"],
+      "lead_words": ["agency", "applied", "practical", "growth", "peer", "ai"],
+      "head_nouns": ["agency", "agencies", "roundtable", "forum", "playbook", "council", "advisors", "insights", "strategy", "automation", "leaders"],
+      "related": ["workflow", "operators", "benchmark", "roundtables"],
+      "ai_seeds": [["ai", "agency", "growth"], ["agency", "ai", "playbook"], ["ai", "roundtable", "leaders"]]
+    }
+  }
+}

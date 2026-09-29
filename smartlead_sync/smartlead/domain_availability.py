@@ -11,11 +11,14 @@ Three independent checks, each of which can veto a purchase:
   * **Price ceiling** — real-word .com names are frequently premium. A domain
     worth $2,000 is not worth it for a sending domain retired in 18 months.
 
-**Rate limit is the binding constraint.** Zapmail allows 10 domain-search
-requests per 30 minutes, and each request checks ONE name across its TLDs.
-That is 10 candidate names per half hour. Everything here is built around
-spending those 10 calls well: results are cached on disk between runs, and the
-caller is told exactly how many calls a check will cost before it spends them.
+**Rate limit is the binding constraint.** Zapmail (support, 2026-09-29):
+``/available`` and ``/available-bulk`` share ONE bucket of 100 requests per
+30 minutes per API key (shared across workspaces and IPs), plus a general
+200/min and 5/s. The bulk endpoint covers up to 20 names per request (~2,000
+names per half hour); the legacy single-name endpoint covers one.
+Everything here is built around spending those 10 calls well: results are
+cached on disk between runs, and the caller is told exactly how many calls a
+check will cost before it spends them.
 
 Every backend degrades to ``None`` (unknown) rather than raising when its key
 is absent, so the generator stays usable without credentials.
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -36,15 +40,23 @@ from smartlead.config import BLACKLIST_ZONES
 from smartlead.domain_naming import Candidate
 
 ZAPMAIL_AVAILABLE_URL = "https://api.zapmail.ai/api/v2/domains/available"
+# Bulk availability answers for up to 20 names in ONE request, with one clean
+# row per name (status, isPremiumDomain, domainPrice, renewPrice). Unlike the
+# single-name endpoint it never forces us to infer availability from a
+# suggestion count, so this is the authoritative path.
+ZAPMAIL_AVAILABLE_BULK_URL = "https://api.zapmail.ai/api/v2/domains/available-bulk"
+BULK_MAX_NAMES: int = 20
 
 # Above this, a .com is a premium/aftermarket listing. Sending domains are
 # consumables — retired every 12-18 months — so premium pricing never pays back.
 DEFAULT_PRICE_CEILING_USD: float = 25.0
 
-# Zapmail: 10 Domain Search requests per 30 minutes. One request = one name.
-# This is the hard ceiling on how fast the tool can work; respect it rather
-# than discovering it as a 429 mid-run.
-RATE_LIMIT_CALLS: int = 10
+# Zapmail: 100 availability REQUESTS per 30 minutes per API key (confirmed by
+# support 2026-09-29; we had assumed 10). Count requests, not names — one bulk
+# request covers up to 20 names. One run spends at most DEFAULT_RUN_CALLS so a
+# single Slack click can never burn the whole half-hour bucket.
+RATE_LIMIT_CALLS: int = 100
+DEFAULT_RUN_CALLS: int = 25
 RATE_LIMIT_WINDOW_S: int = 30 * 60
 _PACING_S: float = 2.0  # gap between calls inside one burst
 
@@ -78,9 +90,19 @@ def _save_cache(cache: dict[str, dict]) -> None:
         print(f"  [Domains] cache write failed: {exc}", file=sys.stderr)
 
 
-def _cached(cache: dict[str, dict], domain: str) -> tuple[bool | None, float | None] | None:
+# Cache rows written by the authoritative bulk endpoint carry this source tag.
+# Rows from the legacy single-name path (which INFERS availability from a
+# suggestion list) have no tag and are never served as bulk answers.
+_BULK_SRC = "bulk"
+
+
+def _cached(
+    cache: dict[str, dict], domain: str, *, bulk_only: bool = False,
+) -> tuple[bool | None, float | None] | None:
     row = cache.get(domain)
     if not row:
+        return None
+    if bulk_only and row.get("src") != _BULK_SRC:
         return None
     if time.time() - row.get("ts", 0) > CACHE_TTL_S:
         return None
@@ -88,10 +110,13 @@ def _cached(cache: dict[str, dict], domain: str) -> tuple[bool | None, float | N
 
 
 def cache_status(domains: list[str]) -> tuple[list[str], list[str]]:
-    """``(cached, needs_lookup)`` — lets the caller see the call cost upfront."""
+    """``(cached, needs_lookup)`` — lets the caller see the call cost upfront.
+
+    Counts only bulk-sourced rows, since that is the path ``enrich`` uses.
+    """
     cache = _load_cache()
-    cached = [d for d in domains if _cached(cache, d) is not None]
-    fresh = [d for d in domains if _cached(cache, d) is None]
+    cached = [d for d in domains if _cached(cache, d, bulk_only=True) is not None]
+    fresh = [d for d in domains if _cached(cache, d, bulk_only=True) is None]
     return cached, fresh
 
 
@@ -102,6 +127,25 @@ def _sld_and_tld(domain: str) -> tuple[str, str]:
     return label, tld or "com"
 
 
+def parse_price(raw) -> float | None:
+    """Zapmail price string → USD, or None when it is not a real price.
+
+    Zapmail (support, 2026-09-29): prices are numeric strings with no symbol
+    ("12.99"), and unsupported TLDs can return "NaN". ``float("NaN")`` does
+    NOT raise — and NaN compares False against every ceiling — so an unguarded
+    parse would let an unpriced name through every price check. Anything that
+    is not a finite, non-negative number is None (unknown), never a price.
+    """
+    s = str(raw if raw is not None else "").strip().replace("$", "").replace(",", "")
+    if not s:
+        return None
+    try:
+        value = float(s)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
 def _parse_row(row: dict) -> tuple[str, bool, float | None] | None:
     """``(domain, available, price)`` from one Zapmail result row."""
     name = str(row.get("domainName", "")).strip().lower()
@@ -110,12 +154,7 @@ def _parse_row(row: dict) -> tuple[str, bool, float | None] | None:
     status = str(row.get("status", "")).strip().upper()
     available = status == "AVAILABLE"
     price: float | None = None
-    raw = str(row.get("domainPrice", "")).strip().replace("$", "").replace(",", "")
-    if raw:
-        try:
-            price = float(raw)
-        except ValueError:
-            price = None
+    price = parse_price(row.get("domainPrice"))
     return name, available, price
 
 
@@ -256,13 +295,17 @@ async def filter_registered(
 async def check_availability(
     domains: list[str],
     *,
-    max_calls: int = RATE_LIMIT_CALLS,
+    max_calls: int = DEFAULT_RUN_CALLS,
+    api_key: str | None = None,
 ) -> dict[str, tuple[bool | None, float | None]]:
     """``{domain: (available, price_usd)}``.
 
     ``(None, None)`` for any domain we could not resolve — no key, rate-limit
     exhaustion, or an API error. Unknown is never silently coerced to
     available. Cached results cost no calls.
+
+    ``api_key`` scopes the check to a specific client's Zapmail account; the
+    primary account is used when omitted.
     """
     out: dict[str, tuple[bool | None, float | None]] = {d: (None, None) for d in domains}
     cache = _load_cache()
@@ -279,7 +322,7 @@ async def check_availability(
         print(f"  [Domains] all {len(domains)} names served from cache (0 API calls).")
         return out
 
-    key = zapmail_key()
+    key = api_key or zapmail_key()
     if not key:
         print("  [Domains] ZAPMAIL_API_KEY not set - availability unknown.",
               file=sys.stderr)
@@ -302,6 +345,122 @@ async def check_availability(
                 if name in out or name == domain:
                     out[name] = val
                 cache[name] = {"available": val[0], "price": val[1], "ts": time.time()}
+            if i + 1 < budget:
+                await asyncio.sleep(_PACING_S)
+
+    _save_cache(cache)
+    return out
+
+
+# ── bulk availability (authoritative, one request per 20 names) ──────────────
+
+def _parse_bulk_rows(data: dict) -> dict[str, tuple[bool | None, float | None]]:
+    """``{domain: (available, price)}`` from a /available-bulk ``data`` blob.
+
+    Each row is a clean answer for the name we asked about — ``status`` plus
+    ``isPremiumDomain``/``domainPrice``/``renewPrice`` — so there is no need to
+    infer anything from a suggestion list. A name present in the response with
+    an empty status is treated as unknown (None), never coerced to available.
+    """
+    out: dict[str, tuple[bool | None, float | None]] = {}
+    for row in data.get("domains") or []:
+        name = str(row.get("domainName", "")).strip().lower()
+        if not name:
+            continue
+        status = str(row.get("status", "")).strip().upper()
+        available = (status == "AVAILABLE") if status else None
+        out[name] = (available, parse_price(row.get("domainPrice")))
+    return out
+
+
+async def _check_bulk(
+    client: httpx.AsyncClient, key: str, domains: list[str],
+) -> dict[str, tuple[bool | None, float | None]]:
+    """One /available-bulk call covering up to :data:`BULK_MAX_NAMES` names."""
+    try:
+        resp = await client.post(
+            ZAPMAIL_AVAILABLE_BULK_URL,
+            headers={"x-auth-zapmail": key, "Content-Type": "application/json"},
+            json={"domainNames": list(domains)},
+        )
+        if resp.status_code == 429:
+            print(f"  [Domains] rate limited by Zapmail (bulk) — "
+                  f"budget is {RATE_LIMIT_CALLS} searches / "
+                  f"{RATE_LIMIT_WINDOW_S // 60} min. Stopping.", file=sys.stderr)
+            raise _RateLimited
+        resp.raise_for_status()
+        data = resp.json().get("data", {}) or {}
+    except _RateLimited:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Domains] Zapmail bulk search failed: {exc}", file=sys.stderr)
+        return {}
+    return _parse_bulk_rows(data)
+
+
+async def check_availability_bulk(
+    domains: list[str],
+    *,
+    max_calls: int = DEFAULT_RUN_CALLS,
+    api_key: str | None = None,
+    use_cache: bool = True,
+) -> dict[str, tuple[bool | None, float | None]]:
+    """``{domain: (available, price_usd)}`` using the bulk endpoint.
+
+    Preferred over :func:`check_availability`: it answers for the exact names
+    asked (no suggestion-list inference) and spends one request per 20 names
+    instead of one per name. Cached results cost no requests.
+
+    ``api_key`` scopes the check to a specific client's Zapmail account.
+    ``use_cache=False`` forces a live answer — the pre-purchase re-check uses
+    it so a buy never relies on a days-old price. Fresh answers are still
+    written back to the cache.
+    """
+    domains = [d.strip().lower() for d in domains if d and d.strip()]
+    out: dict[str, tuple[bool | None, float | None]] = {d: (None, None) for d in domains}
+    cache = _load_cache()
+
+    pending: list[str] = []
+    for d in domains:
+        hit = _cached(cache, d, bulk_only=True) if use_cache else None
+        if hit is not None:
+            out[d] = hit
+        else:
+            pending.append(d)
+
+    if not pending:
+        print(f"  [Domains] all {len(domains)} names served from cache (0 API calls).")
+        return out
+
+    key = api_key or zapmail_key()
+    if not key:
+        print("  [Domains] ZAPMAIL_API_KEY not set - availability unknown.",
+              file=sys.stderr)
+        return out
+
+    batches = [pending[i:i + BULK_MAX_NAMES]
+               for i in range(0, len(pending), BULK_MAX_NAMES)]
+    budget = min(max_calls, len(batches))
+    if len(batches) > budget:
+        print(f"  [Domains] {len(pending)} names need lookup (±{len(batches)} bulk "
+              f"requests) but the rate limit allows {budget} this run — checking "
+              f"the first {budget * BULK_MAX_NAMES}. Re-run in "
+              f"{RATE_LIMIT_WINDOW_S // 60} min for the rest (cached results carry over).")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for i, batch in enumerate(batches[:budget]):
+            try:
+                found = await _check_bulk(client, key, batch)
+            except _RateLimited:
+                break
+            for name, val in found.items():
+                if name in out:
+                    out[name] = val
+                # Unknown answers are not cached: they would block a real
+                # lookup for a week while telling us nothing.
+                if val[0] is not None:
+                    cache[name] = {"available": val[0], "price": val[1],
+                                   "ts": time.time(), "src": _BULK_SRC}
             if i + 1 < budget:
                 await asyncio.sleep(_PACING_S)
 
@@ -353,7 +512,8 @@ async def enrich(
     *,
     price_ceiling: float = DEFAULT_PRICE_CEILING_USD,
     skip_blacklist: bool = False,
-    max_calls: int = RATE_LIMIT_CALLS,
+    max_calls: int = DEFAULT_RUN_CALLS,
+    api_key: str | None = None,
 ) -> list[Candidate]:
     """Attach availability, price, and blacklist status to each candidate.
 
@@ -382,7 +542,8 @@ async def enrich(
         print(f"  [Domains] {len(unknown_reg)} name(s) could not be checked in DNS; "
               "treating as unverified rather than available", file=sys.stderr)
 
-    avail = await check_availability(maybe_free, max_calls=max_calls)
+    avail = await check_availability_bulk(maybe_free, max_calls=max_calls,
+                                          api_key=api_key)
     # Domains DNS proved registered are unavailable regardless of Zapmail.
     for d in domains:
         if registered.get(d) is True:

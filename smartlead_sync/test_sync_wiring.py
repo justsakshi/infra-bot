@@ -181,6 +181,7 @@ async def main() -> None:
         {
             "client": "TEST", "email": "healthy@dom.com", "provider": "Gmail", "account_id": "3",
             "availability": "FREE", "busy_reason": "", "campaign_name": "Camp",
+            "campaign_status": "ACTIVE",  # real rows always carry it (_build_inbox_row)
             "campaigns": 1, "max_per_day": 35, "sent_today": 28, "true_load": 28,
             "available_capacity": 7, "warmup_state": "ramped", "warmup_rep_pct": "95%",
             "test_sheet_status": "inbox", "test_date": old,
