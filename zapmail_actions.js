@@ -15,6 +15,7 @@
 
 const NL = String.fromCharCode(10);
 const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const EMAIL_RE = /^[a-z0-9](?:[a-z0-9._-]{0,63})@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAMES_RE = /^[A-Za-z][A-Za-z .'-]{0,40}(,\s*[A-Za-z][A-Za-z .'-]{0,40}){0,4}$/;
 const CURRENT_CLIENTS = ['Bettrdata', 'Belardi Wong', 'Melior', 'Precise Leads'];
@@ -132,9 +133,58 @@ function domainBlocks(r) {
         confirm: { type: 'plain_text', text: 'Yes' }, deny: { type: 'plain_text', text: 'Cancel' } }
     });
     elements.push({ type: 'button', action_id: 'zm_sync_domain', text: { type: 'plain_text', text: 'Update tracker' }, value: packValue({ domain: h.domain }) });
+    if (boxes.length) {
+      elements.push({ type: 'button', action_id: 'zm_inbox_open', text: { type: 'plain_text', text: 'Name & signature' },
+        value: packValue({ domain: h.domain, client: h.client, inboxes: boxes.map(b => b.email).slice(0, 5) }) });
+    }
     blocks.push({ type: 'actions', elements });
   }
   return blocks.slice(0, 48);
+}
+
+const PERSON_NAME_RE = /^[A-Za-z][A-Za-z' .-]{0,39}$/;
+
+/** Rename one inbox (same address) and/or apply the client's signature. */
+function inboxModal(p, channelId) {
+  const inboxes = (p.inboxes || []).filter(e => EMAIL_RE.test(e));
+  return {
+    type: 'modal', callback_id: 'zm_inbox_submit',
+    private_metadata: packValue({ domain: p.domain, client: p.client, channel: channelId }),
+    title: { type: 'plain_text', text: 'Name & signature' },
+    submit: { type: 'plain_text', text: 'Apply' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      { type: 'input', block_id: 'inbox', label: { type: 'plain_text', text: 'Inbox' },
+        element: { type: 'static_select', action_id: 'value',
+          initial_option: inboxes.length ? { text: { type: 'plain_text', text: inboxes[0] }, value: inboxes[0] } : undefined,
+          options: inboxes.map(e => ({ text: { type: 'plain_text', text: e }, value: e })) } },
+      { type: 'input', block_id: 'first', optional: true, label: { type: 'plain_text', text: 'New first name (leave empty to keep)' },
+        element: { type: 'plain_text_input', action_id: 'value', max_length: 40 } },
+      { type: 'input', block_id: 'last', optional: true, label: { type: 'plain_text', text: 'New last name (leave empty to keep)' },
+        element: { type: 'plain_text_input', action_id: 'value', max_length: 40 } },
+      { type: 'input', block_id: 'sig', optional: true, label: { type: 'plain_text', text: 'Signature' },
+        element: { type: 'checkboxes', action_id: 'value', options: [
+          { text: { type: 'plain_text', text: 'Apply ' + p.client + '’s signature template' }, value: 'yes' }] } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text:
+        'The email address never changes — only the name people see, in Smartlead and Zapmail. A new address would lose the inbox’s warmup.' }] }
+    ]
+  };
+}
+
+function inboxResultText(r, domain) {
+  if (!r || r.error) return ':x: ' + require('./slack_text').plainError((r && r.error) || 'no result');
+  const c = (r.changes || [])[0] || {};
+  const res = (r.results || [])[0] || {};
+  if (c.error) return ':x: `' + c.email + '`: ' + require('./slack_text').plainError(c.error);
+  const parts = [];
+  if (c.fields && c.fields.from_name) parts.push('name *' + (c.before.from_name || '—') + '* → *' + c.fields.from_name + '*');
+  if (c.fields && c.fields.signature) parts.push('signature updated');
+  if (c.fields && c.fields.client_id) parts.push('filed under the ' + r.client + ' client in Smartlead');
+  if (!parts.length) return ':white_check_mark: `' + c.email + '` already had that — nothing to change.';
+  let t = (res.ok ? ':white_check_mark: `' : ':x: `') + c.email + '`: ' + parts.join(' · ');
+  if (res.error) t += NL + ':warning: ' + require('./slack_text').plainError(res.error);
+  if (res.zapmail_error) t += NL + ':warning: Smartlead updated, but Zapmail’s name did not change: ' + res.zapmail_error;
+  return t;
 }
 
 function mailboxModal(p, channelId) {
@@ -341,6 +391,44 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     }
   });
 
+  // Name & signature: form → rename (same address) and/or signature (WRITE; approvers).
+  app.action('zm_inbox_open', async ({ ack, body, action, client, respond }) => {
+    await ack();
+    if (!(await guard(body, respond))) return;
+    const p = unpackValue(action.value);
+    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    await client.views.open({ trigger_id: body.trigger_id, view: inboxModal(p, body.channel && body.channel.id) });
+  });
+
+  app.view('zm_inbox_submit', async ({ ack, body, view, client }) => {
+    const meta = unpackValue(view.private_metadata);
+    const v = view.state.values;
+    const inbox = String(((v.inbox.value.selected_option) || {}).value || '').toLowerCase();
+    const first = String(v.first.value.value || '').trim();
+    const last = String(v.last.value.value || '').trim();
+    const sig = ((v.sig.value.selected_options) || []).length > 0;
+    const errors = {};
+    if (first && !PERSON_NAME_RE.test(first)) errors.first = 'Letters only (and \' . -), up to 40';
+    if (last && !PERSON_NAME_RE.test(last)) errors.last = 'Letters only (and \' . -), up to 40';
+    if (Boolean(first) !== Boolean(last)) errors[first ? 'last' : 'first'] = 'Give both names to rename';
+    if (!first && !last && !sig) errors.first = 'Enter a new name, or tick the signature box';
+    if (Object.keys(errors).length) return ack({ response_action: 'errors', errors });
+    await ack();
+    const user = body.user.id;
+    if (!isApprover(user) || checkPayload(meta, ['domain', 'client']) || !EMAIL_RE.test(inbox)
+        || inbox.split('@')[1] !== meta.domain) return;
+    const args = ['inbox_setup.py', '--client', meta.client, '--inbox', inbox, '--approve', '--json'];
+    if (first) args.push('--first', first, '--last', last);
+    if (sig) args.push('--signature');
+    await say(client, meta.channel, user, { text: ':hourglass: Updating `' + inbox + '`…' });
+    try {
+      const r = await runPy(args, baseDir, 2 * 60 * 1000);
+      await say(client, meta.channel, user, { text: inboxResultText(r, meta.domain) });
+    } catch (err) {
+      await say(client, meta.channel, user, { text: ':x: `' + inbox + '` — not done. ' + require('./slack_text').plainError(err.message) });
+    }
+  });
+
   // Export (WRITE; approvers).
   app.action('zm_export', async ({ ack, body, action, respond }) => {
     await ack();
@@ -417,5 +505,5 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
 
 module.exports = {
   registerZapmailActions, homeBlocks, domainBlocks, renewalBlocks, prewarmedText,
-  syncBlocks, lookupModal, mailboxModal, approvers, isApprover, checkPayload
+  syncBlocks, lookupModal, mailboxModal, inboxModal, inboxResultText, approvers, isApprover, checkPayload
 };

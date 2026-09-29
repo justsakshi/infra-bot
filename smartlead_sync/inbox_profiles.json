@@ -1,0 +1,37 @@
+{
+  "_about": "How each client's inboxes are set up in Smartlead. smartlead_account = which SMARTLEAD_API_KEY_* holds them (Precise Leads and Melior share one). smartlead_client_id files the inbox under a Smartlead client (Melior = 12256 inside the Precise Leads account; null = none). signature = HTML with {first_name} {last_name} {full_name} {title} {company} {website} {email}; empty = signatures are not touched until the team supplies one. title/company/website fill those placeholders. Edit freely; no code change needed.",
+  "clients": {
+    "Bettrdata": {
+      "smartlead_account": "BettrData",
+      "smartlead_client_id": null,
+      "company": "BettrData",
+      "website": "bettrdata.io",
+      "title": "",
+      "signature": ""
+    },
+    "Belardi Wong": {
+      "smartlead_account": "Belardi Wong",
+      "smartlead_client_id": null,
+      "company": "Belardi Wong",
+      "website": "belardiwong.com",
+      "title": "",
+      "signature": ""
+    },
+    "Precise Leads": {
+      "smartlead_account": "PRECISE_LEADS",
+      "smartlead_client_id": null,
+      "company": "Precise Leads",
+      "website": "preciseleads.in",
+      "title": "",
+      "signature": ""
+    },
+    "Melior": {
+      "smartlead_account": "PRECISE_LEADS",
+      "smartlead_client_id": 12256,
+      "company": "Melior",
+      "website": "getmelior.com",
+      "title": "",
+      "signature": ""
+    }
+  }
+}

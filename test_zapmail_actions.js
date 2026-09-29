@@ -99,7 +99,7 @@ const HIT = { domain: 'askbettrdata.com', hits: [{ account: 'PRECISE_LEADS', pro
 test('domain view: current client gets actions, past client gets none', () => {
   const blocks = actions.domainBlocks(HIT);
   const ids = blocks.find(b => b.type === 'actions').elements.map(e => e.action_id);
-  assert.deepStrictEqual(ids, ['zm_mbx_open', 'zm_export', 'zm_autorenew', 'zm_sync_domain']);
+  assert.deepStrictEqual(ids, ['zm_mbx_open', 'zm_export', 'zm_autorenew', 'zm_sync_domain', 'zm_inbox_open']);
   assert.match(blocks[0].text.text, /Outlook.*health 90/);
   const past = actions.domainBlocks({ domain: 'k.com', hits: [{ ...HIT.hits[0], domain: 'k.com', client: null }] });
   assert.ok(!past.some(b => b.type === 'actions'));

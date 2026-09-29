@@ -56,9 +56,9 @@ $env:STAGGER_SCHEDULER = 'off'; $env:STAGGER_RELEASE_ENABLED = 'false'
 
 ## 1. Automated tests (5 min)
 
-- [ ] Infrabot Python — `& $py -m pytest test_domain_quality.py test_renewals_client_filter.py test_zapmail_asset_sync.py test_inbox_campaign_count.py test_domain_suggest.py test_zapmail_infrabot.py test_zapmail_spend_guards.py test_zapmail_integration.py test_domain_naming.py -q` → **231 passed**
+- [ ] Infrabot Python — `& $py -m pytest test_inbox_setup.py test_domain_quality.py test_renewals_client_filter.py test_zapmail_asset_sync.py test_inbox_campaign_count.py test_domain_suggest.py test_zapmail_infrabot.py test_zapmail_spend_guards.py test_zapmail_integration.py test_domain_naming.py -q` → **250 passed**
 - [ ] Infrabot sync wiring — `& $py test_sync_wiring.py` → **ALL PASSED**
-- [ ] Infrabot JS — `cd ..; node test_zapmail_actions.js; node test_domain_suggest_command.js; node test_domains_zapmail_route.js; node test_domains_access.js; node test_renewal_labels.js; node test_slack_text.js; cd smartlead_sync` → **13, 10, 7, 9, 8, 9 passed**
+- [ ] Infrabot JS — `cd ..; node test_zapmail_actions.js; node test_domain_suggest_command.js; node test_domains_zapmail_route.js; node test_domains_access.js; node test_renewal_labels.js; node test_slack_text.js; node test_inbox_slack.js; cd smartlead_sync` → **13, 10, 7, 9, 8, 9, 9 passed**
 - [ ] Campaign Desk — `.venv\Scripts\python.exe -m pytest -q` → **1148 passed**
 
 ---

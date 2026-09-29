@@ -541,6 +541,24 @@ class ZapmailClient:
                           "contains": contains, "status": status,
                           "tagIds": tag_ids}))
 
+    async def update_mailbox_names(
+        self, changes: list[dict], *, approve: bool = False,
+    ) -> dict:
+        """Change mailboxes' first/last name. WRITE (free), processed async.
+
+        ``changes``: ``[{mailboxId, firstName, lastName, username}]``. The
+        endpoint (``PUT /v2/mailboxes``) also accepts a new username, which
+        changes the ADDRESS - a warmed inbox would restart its reputation
+        from zero - so callers pass the CURRENT username back unchanged.
+        """
+        self._require(approve, "update_mailbox_names", "WRITE")
+        for c in changes:
+            if not c.get("mailboxId") or not c.get("username"):
+                raise ValueError("each change needs mailboxId and the current username")
+        return await self._request("PUT", "/v2/mailboxes", json={"mailboxData": [
+            {"mailboxId": c["mailboxId"], "firstName": c["firstName"],
+             "lastName": c["lastName"], "username": c["username"]} for c in changes]})
+
     async def update_auto_renew(
         self, domain_ids: list[str], auto_renew: bool, *, approve: bool = False,
     ) -> dict:
