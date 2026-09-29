@@ -23,7 +23,7 @@ function sign(body, secret, t) {
 }
 
 test('valid signature passes; tampered, stale, or wrong secret fail', () => {
-  const body = JSON.stringify({ id: 'evt_1', type: 'mailbox.status_changed' });
+  const body = JSON.stringify({ id: 'evt_1', type: 'mailbox.updated' });
   const now = 1790600000;
   const h = sign(body, 's3cret', now);
   assert.strictEqual(hooks.verifySignature(Buffer.from(body), h, 's3cret', now), true);
@@ -44,16 +44,27 @@ test('secretFor maps account names to env and rejects junk', () => {
 });
 
 test('event summaries alert on the things that need people', () => {
-  const failed = hooks.summarizeEvent({ type: 'mailbox.status_changed', data: {
+  const failed = hooks.summarizeEvent({ type: 'mailbox.updated', data: {
     mailboxDetails: { username: 'ann', domain: 'x.com', status: 'FAILED' }, previousState: { status: 'IN_PROGRESS' } } });
   assert.ok(failed.alert && failed.domain === 'x.com' && /ann@x\.com/.test(failed.text));
-  const active = hooks.summarizeEvent({ type: 'mailbox.status_changed', data: {
+  const active = hooks.summarizeEvent({ type: 'mailbox.updated', data: {
     mailboxDetails: { username: 'ann', domain: 'x.com', status: 'ACTIVE' } } });
   assert.ok(!active.alert && active.domain === 'x.com');       // quiet, but refreshes tracker
-  const crit = hooks.summarizeEvent({ type: 'domain.status_changed', data: {
-    domainDetails: { domain: 'x.com', status: 'ACTIVE', healthScore: 12 } } });
+  const crit = hooks.summarizeEvent({ type: 'domain.updated', data: {
+    domainDetails: { domain: 'x.com', status: 'ACTIVE', healthScore: 12, assignedMailboxesCount: 3 } } });
   assert.ok(crit.alert && /CRITICAL/.test(crit.text));
+  // Zapmail scores a domain with no mailboxes 0: not a crisis, no alert.
+  const empty = hooks.summarizeEvent({ type: 'domain.updated', data: {
+    domainDetails: { domain: 'y.com', status: 'ACTIVE', healthScore: 0, assignedMailboxesCount: 0 } } });
+  assert.ok(!empty.alert && !/CRITICAL/.test(empty.text), empty.text);
   assert.ok(hooks.summarizeEvent({ type: 'export.failed', data: { app_name: 'SMARTLEAD', error: 'expired' } }).alert);
+  // Real Zapmail names; flat payloads must not print 'undefined'.
+  const flat = hooks.summarizeEvent({ type: 'domain.connection_status_changed', data: { domainName: 'x.com', status: 'SUCCESS', previous_status: 'PENDING' } });
+  assert.ok(flat.alert && flat.domain === 'x.com' && !/undefined/.test(flat.text), flat.text);
+  const mb = hooks.summarizeEvent({ type: 'mailbox.updated', data: { email: 'a@y.com', status: 'FAILED' } });
+  assert.ok(mb.alert && mb.domain === 'y.com' && !/undefined/.test(mb.text), mb.text);
+  assert.ok(!hooks.summarizeEvent({ type: 'export.completed', data: { app_name: 'SMARTLEAD', export_id: 1 } }).alert);
+  assert.ok(hooks.summarizeEvent({ type: 'subscription.status_changed', data: { id: 's', status: 'PAST_DUE' } }).alert);
   assert.ok(hooks.summarizeEvent({ type: 'placement_test.status_changed', data: { id: 'p', status: 'COMPLETED' } }).alert);
   assert.ok(!hooks.summarizeEvent({ type: 'placement_test.status_changed', data: { id: 'p', status: 'RUNNING' } }).alert);
 });

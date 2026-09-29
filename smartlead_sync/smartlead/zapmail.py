@@ -689,9 +689,16 @@ class ZapmailClient:
     # v1 = HMAC-SHA256(secret, f"{t}.{raw_body}"). Retries 1m→24h (8 tries);
     # 20 straight failures disable the endpoint. Verified in zapmail_webhooks.js.
 
+    # Zapmail's own names (its 422 on 2026-09-29 listed the allowed set:
+    # domain.updated, domain.connection_status_changed, mailbox.updated,
+    # subscription.status_changed, subscription.billing_changed,
+    # export.started/completed/failed/reconnected,
+    # placement_test.status_changed, workspace.*). The first guess
+    # ("domain.status_changed", "mailbox.status_changed") was rejected.
     WEBHOOK_EVENTS: tuple[str, ...] = (
-        "domain.status_changed", "mailbox.status_changed", "export.failed",
-        "placement_test.status_changed", "subscription.billing_changed",
+        "domain.updated", "domain.connection_status_changed", "mailbox.updated",
+        "export.completed", "export.failed", "placement_test.status_changed",
+        "subscription.status_changed", "subscription.billing_changed",
     )
 
     async def list_webhook_endpoints(self) -> dict:

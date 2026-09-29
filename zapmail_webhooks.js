@@ -54,25 +54,49 @@ function verifySignature(rawBody, header, secret, nowS = Math.floor(Date.now() /
 function summarizeEvent(evt) {
   const type = String((evt && evt.type) || '');
   const d = (evt && evt.data) || {};
+  // Zapmail's event names are domain.updated / domain.connection_status_changed
+  // / mailbox.updated (a first guess of *.status_changed was rejected at
+  // registration). The payload shape is read defensively: details object if
+  // present, else top-level fields.
+  const prevOf = () => (d.previousState || {}).status || d.previous_status || d.previousStatus;
   if (type.startsWith('domain.')) {
-    const x = d.domainDetails || {};
-    const prev = (d.previousState || {}).status;
+    const x = d.domainDetails || d.domain || d;
+    const name = x.domain || x.domainName || d.domainName;
+    const status = x.status || x.connectionStatus || d.status || d.connection_status;
+    const prev = prevOf();
     const score = x.healthScore;
-    const critical = typeof score === 'number' && score <= 30;
+    const critical = typeof score === 'number' && score <= 30 && (x.assignedMailboxesCount || 0) > 0;
     return {
-      domain: x.domain, alert: Boolean(prev && prev !== x.status) || critical,
-      text: (critical ? ':rotating_light: ' : ':globe_with_meridians: ') + '`' + x.domain + '` is now *'
-        + x.status + '*' + (prev ? ' (was ' + prev + ')' : '')
-        + (score !== undefined ? ' · health ' + score + (critical ? ' — CRITICAL' : '') : '')
+      domain: name, alert: Boolean(prev && status && prev !== status) || critical,
+      text: (critical ? ':rotating_light: ' : ':globe_with_meridians: ') + '`' + (name || '?') + '`'
+        + (status ? ' is now *' + status + '*' : ' was updated') + (prev ? ' (was ' + prev + ')' : '')
+        + (typeof score === 'number' ? ' · health ' + score + (critical ? ' — CRITICAL' : '') : '')
     };
   }
   if (type.startsWith('mailbox.')) {
-    const x = d.mailboxDetails || {};
-    const failed = String(x.status || '').toUpperCase() === 'FAILED';
+    const x = d.mailboxDetails || d.mailbox || d;
+    const email = x.email || (x.username && x.domain ? x.username + '@' + x.domain : '?');
+    const status = x.status || d.status;
+    const failed = String(status || '').toUpperCase() === 'FAILED';
+    const prev = prevOf();
     return {
-      domain: x.domain, alert: failed,
-      text: (failed ? ':x: ' : ':envelope: ') + 'Mailbox `' + x.username + '@' + x.domain + '` is *'
-        + x.status + '*' + ((d.previousState || {}).status ? ' (was ' + d.previousState.status + ')' : '')
+      domain: x.domain || String(email).split('@')[1], alert: failed,
+      text: (failed ? ':x: ' : ':envelope: ') + 'Mailbox `' + email + '`'
+        + (status ? ' is *' + status + '*' : ' was updated') + (prev ? ' (was ' + prev + ')' : '')
+    };
+  }
+  if (type === 'export.completed') {
+    return {
+      domain: null, alert: false,
+      text: ':white_check_mark: Zapmail export to *' + (d.app_name || '?') + '* completed (export ' + d.export_id + ')'
+        + ((d.mailboxes || []).length ? ' · ' + d.mailboxes.length + ' mailbox(es)' : '')
+    };
+  }
+  if (type === 'subscription.status_changed') {
+    return {
+      domain: null, alert: true,
+      text: ':credit_card: Zapmail subscription ' + (d.subscription_id || d.id || '?') + ' is now *'
+        + (d.status || '?') + '*' + (prevOf() ? ' (was ' + prevOf() + ')' : '')
     };
   }
   if (type === 'export.failed') {

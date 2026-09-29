@@ -20,8 +20,8 @@ const url = process.env.WEBHOOK_URL || 'http://localhost:10099/webhooks/zapmail/
 const secret = process.env.WEBHOOK_SECRET || 'local-test-secret';
 
 const events = {
-  'mailbox-failed': { type: 'mailbox.status_changed', data: { mailboxDetails: { username: 'test', domain, status: 'FAILED' }, previousState: { status: 'IN_PROGRESS' } } },
-  'domain-critical': { type: 'domain.status_changed', data: { domainDetails: { domain, status: 'ACTIVE', healthScore: 12, assignedMailboxesCount: 3 }, previousState: { status: 'PENDING' } } },
+  'mailbox-failed': { type: 'mailbox.updated', data: { mailboxDetails: { username: 'test', domain, status: 'FAILED' }, previousState: { status: 'IN_PROGRESS' } } },
+  'domain-critical': { type: 'domain.updated', data: { domainDetails: { domain, status: 'ACTIVE', healthScore: 12, assignedMailboxesCount: 3 }, previousState: { status: 'PENDING' } } },
   'export-failed': { type: 'export.failed', data: { export_id: '12345', app_name: 'SMARTLEAD', export_status: 'FAILED', mailboxes: [], error: 'Mailbox is expired (test)' } },
   'placement-done': { type: 'placement_test.status_changed', data: { id: 'test-order', previous_status: 'SCHEDULED', status: 'COMPLETED' } }
 };
