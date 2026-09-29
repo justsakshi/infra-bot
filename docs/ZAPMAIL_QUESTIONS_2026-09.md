@@ -149,3 +149,9 @@ Still open: where the export id comes from, the re-export cap number, pre-warmed
 20. **Pre-warmed Microsoft 365 mailboxes.** Available counts, price per
     mailbox, and whether they can be exported to Smartlead like regular
     mailboxes. (We need more Outlook senders.)
+
+## Added 2026-09-29 (inbox pipeline)
+
+- **Buying a domain straight into Outlook:** `POST /v2/domains/buy` takes no provider. Does it honour `x-service-provider: MICROSOFT` so the domain lands in the Microsoft workspace? Until answered, the bot only buys new domains for Google.
+- **Add-on inbox slots (`/wallet/buy-addon-mailboxes`):** is it paid from the wallet (like domains with useWallet) or always by card through the returned invoice link? Is the quantity per provider?
+- **Pre-warmed assign:** does an assigned pre-warmed domain keep its inboxes' warmup history and existing first/last names? Can those names be changed (PUT /mailboxes) without hurting the warmup?

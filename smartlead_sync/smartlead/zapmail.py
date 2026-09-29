@@ -894,6 +894,21 @@ class ZapmailClient:
             "POST", "/v2/prewarmed-domains/purchase",
             params={"planType": plan_type}, service_provider=True, retry=False)
 
+    async def buy_addon_mailboxes(self, quantity: int, *, approve: bool = False) -> dict:
+        """Buy extra mailbox slots. SPEND, never retried.
+
+        ``POST /v2/wallet/buy-addon-mailboxes?quantity=N`` ($3.00-3.50 per
+        mailbox per month by plan). Zapmail answers with an invoice /
+        ``paymentLink``; callers confirm the slots actually appeared
+        (``list_mailboxes`` quota) instead of trusting the response.
+        """
+        self._require(approve, "buy_addon_mailboxes", "SPEND")
+        if not isinstance(quantity, int) or not 1 <= quantity <= 50:
+            raise ValueError("quantity must be 1-50")
+        return await self._request(
+            "POST", "/v2/wallet/buy-addon-mailboxes",
+            params={"quantity": str(quantity)}, retry=False)
+
     async def assign_prewarmed(self, domain_ids: list[str], *,
                                approve: bool = False) -> dict:
         """Assign pre-warmed domains to fill slots. WRITE."""

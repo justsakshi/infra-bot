@@ -57,9 +57,14 @@ The job can run **now** or be **scheduled** for a date.
 
 1. ✅ **Smartlead setup step** (name, signature, warmup, client) — `inbox_setup.py` + Slack
    "Name & signature" button on a domain look-up. Works on existing inboxes. No money.
-2. **Option 2** — add Precise Leads / Melior inboxes to Smartlead directly. Tested on one inbox.
-3. **Buying** — domain + inbox slots + create, one approval per job, now or scheduled.
-4. **Pre-warmed** — buy plan / assign a chosen domain, then steps 1-2.
+2. ✅ (engine, fakes) **Option 2** — Precise Leads / Melior inboxes added to Smartlead directly
+   (Google: app password). Needs its first live run on a real new inbox.
+3. ✅ (engine, fakes) **Buying** — `inbox_jobs.py` jobs: new domain / owned domain, slots,
+   create, Smartlead, setup, tracker; one approval per job; now or `--run-on`; ticked every
+   10 min by Infra Bot, creator DM'd on each change. New domains are Google-only until Zapmail
+   answers the Outlook-buy question.
+4. ✅ (engine, fakes) **Pre-warmed** — slot / plan once, assign the chosen domain, then 2-3.
+   First real run of 2-4: ONE cheap job with you watching.
 5. **Website** — login first, then Renewals / New domains / Set up inboxes / Health pages on
    the same engine.
 

@@ -184,6 +184,20 @@ class SmartleadClient:
         resp.raise_for_status()
 
     # ── inbox rotation (add/remove senders on a campaign, lead reassignment) ──
+    async def save_email_account(self, fields: dict) -> dict:
+        """Add an SMTP/IMAP inbox (POST /email-accounts/save). WRITE.
+
+        Used to put Zapmail inboxes into a Smartlead account Zapmail cannot
+        export to (one Smartlead connection per Zapmail workspace). Callers
+        check the inbox is not already there first.
+        """
+        need = {"from_name", "from_email", "user_name", "password",
+                "smtp_host", "smtp_port", "imap_host", "imap_port"}
+        missing = sorted(k for k in need if not fields.get(k))
+        if missing:
+            raise ValueError(f"save_email_account missing {missing}")
+        return await self._request_json("POST", "/email-accounts/save", fields)
+
     async def _request_json(self, method: str, endpoint: str, body: dict) -> Any:
         """POST/DELETE with json body + api_key param; single retry pass on 429/5xx."""
         assert self._client, "Use `async with SmartleadClient(...)` as a context manager."

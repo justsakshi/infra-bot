@@ -1704,6 +1704,16 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Inbox setup jobs: every 10 minutes move approved jobs forward and DM each
+    // job's creator when it changes. Only approved jobs run; paid steps also
+    // need ZAPMAIL_ALLOW_SPEND=true. Quiet when there is nothing to do.
+    cron.schedule('*/10 * * * *', () => {
+      require('./inbox_jobs_notify').tickAndNotify(__dirname)
+        .catch(err => console.warn('[inbox-jobs] tick error:', err.message));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Fleet placement summary at 09:50 IST daily. Read-only and credit-free —
     // it reads placement already rolled up across past tests, so drift shows
     // up the next morning instead of waiting for the weekly test. Exit 2 means
