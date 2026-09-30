@@ -259,7 +259,70 @@ function prewarmedText(res) {
     t += NL + NL + '_For sale now (' + (prov === 'MICROSOFT' ? 'Outlook' : 'Google') + ')_: '
       + list.map(d => '`' + d.domain + '`' + (d.mailboxes.length ? ' (' + d.mailboxes.join(', ') + ')' : '')).join(', ');
   }
-  return t + NL + '_About $7 per pre-warmed mailbox per month on our current plans. Buying more stays in the Zapmail app._';
+  return t + NL + '_About $7 per pre-warmed mailbox per month on our current plans. Pick a domain below to set it up for a client._';
+}
+
+const PW_ID_RE = /^[A-Za-z0-9-]{6,64}$/;
+const JOB_ID_RE = /^[0-9a-f]{10}$/;
+const JOB_CLIENTS = ['Bettrdata', 'Belardi Wong', 'Precise Leads', 'Melior'];
+
+/** Pre-warmed view with a "Set up for a client" button per for-sale domain. */
+function prewarmedBlocks(res) {
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: prewarmedText({ ...res,
+    prewarmed: { ...((res && res.prewarmed) || {}), for_sale: {} } }).slice(0, 2900) } }];
+  for (const [prov, list] of Object.entries(((res && res.prewarmed) || {}).for_sale || {})) {
+    for (const d of (list || []).slice(0, 10)) {
+      if (!DOMAIN_RE.test(String(d.domain || '')) || !PW_ID_RE.test(String(d.id || ''))) continue;
+      blocks.push({ type: 'section',
+        text: { type: 'mrkdwn', text: '`' + d.domain + '` · ' + (prov === 'MICROSOFT' ? 'Outlook' : 'Google')
+          + ' · ' + ((d.mailboxes || []).length ? d.mailboxes.join(', ') : 'inboxes included') },
+        accessory: { type: 'button', action_id: 'zm_pw_open', text: { type: 'plain_text', text: 'Set up for a client' },
+          value: packValue({ domain: d.domain, id: d.id, provider: prov }) } });
+    }
+  }
+  return blocks.slice(0, 48);
+}
+
+function prewarmedModal(p, channelId) {
+  return {
+    type: 'modal', callback_id: 'zm_pw_submit',
+    private_metadata: packValue({ domain: p.domain, id: p.id, provider: p.provider, channel: channelId }),
+    title: { type: 'plain_text', text: 'Pre-warmed domain' },
+    submit: { type: 'plain_text', text: 'Show the cost' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: '*' + p.domain + '* (' + (p.provider === 'MICROSOFT' ? 'Outlook' : 'Google')
+        + ') — its inboxes are already warmed up. Next you see the cost; nothing is bought until someone approves.' } },
+      { type: 'input', block_id: 'client', label: { type: 'plain_text', text: 'For which client?' },
+        element: { type: 'static_select', action_id: 'value',
+          options: JOB_CLIENTS.map(c => ({ text: { type: 'plain_text', text: c }, value: c })) } },
+      { type: 'input', block_id: 'sig', optional: true, label: { type: 'plain_text', text: 'Signature' },
+        element: { type: 'checkboxes', action_id: 'value', options: [
+          { text: { type: 'plain_text', text: 'Apply the client’s signature template' }, value: 'yes' }] } }
+    ]
+  };
+}
+
+/** A job summary with Approve / Cancel buttons (approvers act). */
+function jobBlocks(s) {
+  if (!s || s.error) return [{ type: 'section', text: { type: 'mrkdwn', text: ':x: ' + require('./slack_text').plainError((s && s.error) || 'no result') } }];
+  const cost = s.cost || { lines: [], total_now_usd: 0 };
+  let t = '*Inbox setup for ' + s.client + '* — ' + s.domains.join(', ') + ' (' + (s.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ')' + NL;
+  t += cost.lines.length ? cost.lines.map(l => '• $' + Number(l.usd).toFixed(2) + ' — ' + l.what + ' (' + l.when + ')').join(NL)
+    : '• Nothing to buy — free slots cover it';
+  t += NL + '*Total charged when it runs: $' + Number(cost.total_now_usd || 0).toFixed(2) + '*'
+    + NL + 'Steps: ' + (s.progress || '') + NL + 'Status: *' + s.status + '*' + (s.detail ? ' — ' + s.detail : '');
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: t.slice(0, 2900) } }];
+  if (s.status === 'awaiting_approval' && JOB_ID_RE.test(s.job_id)) {
+    blocks.push({ type: 'actions', elements: [
+      { type: 'button', action_id: 'zm_job_approve', style: 'primary', text: { type: 'plain_text', text: 'Approve & start' }, value: s.job_id,
+        confirm: { title: { type: 'plain_text', text: 'Start this job?' },
+          text: { type: 'plain_text', text: 'It can charge up to $' + Number(cost.total_now_usd || 0).toFixed(2) + ' now (see the list). Paid steps also need spending switched on for the server.' },
+          confirm: { type: 'plain_text', text: 'Approve' }, deny: { type: 'plain_text', text: 'Not yet' } } },
+      { type: 'button', action_id: 'zm_job_cancel', text: { type: 'plain_text', text: 'Cancel' }, value: s.job_id }] });
+  }
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Job `' + s.job_id + '` · you get a private message each time it moves.' }] });
+  return blocks;
 }
 
 function syncBlocks(res) {
@@ -429,6 +492,60 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     }
   });
 
+  // Pre-warmed: pick a for-sale domain → client → cost → approve (job engine).
+  app.action('zm_pw_open', async ({ ack, body, action, client, respond }) => {
+    await ack();
+    const p = unpackValue(action.value);
+    if (!DOMAIN_RE.test(String(p.domain || '')) || !PW_ID_RE.test(String(p.id || ''))
+        || !['GOOGLE', 'MICROSOFT'].includes(p.provider)) {
+      return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    }
+    await client.views.open({ trigger_id: body.trigger_id, view: prewarmedModal(p, body.channel && body.channel.id) });
+  });
+
+  app.view('zm_pw_submit', async ({ ack, body, view, client }) => {
+    await ack();
+    const meta = unpackValue(view.private_metadata);
+    const chosen = String(((view.state.values.client.value.selected_option) || {}).value || '');
+    const sig = ((view.state.values.sig.value.selected_options) || []).length > 0;
+    const user = body.user.id;
+    if (!JOB_CLIENTS.includes(chosen) || !DOMAIN_RE.test(String(meta.domain || ''))
+        || !PW_ID_RE.test(String(meta.id || '')) || !['GOOGLE', 'MICROSOFT'].includes(meta.provider)) return;
+    const args = ['inbox_jobs.py', '--create', '--client', chosen, '--kind', 'prewarmed', '--provider', meta.provider,
+      '--domain', meta.domain, '--prewarmed-id', meta.id, '--by', user, '--json'];
+    if (sig) args.push('--signature');
+    await say(client, meta.channel, user, { text: ':hourglass: Working out the cost for `' + meta.domain + '`…' });
+    try {
+      const r = await runPy(args, baseDir, 2 * 60 * 1000);
+      await say(client, meta.channel, user, { text: 'Inbox setup job', blocks: jobBlocks(r) });
+    } catch (err) {
+      await say(client, meta.channel, user, { text: ':x: Could not prepare the job. ' + require('./slack_text').plainError(err.message) });
+    }
+  });
+
+  app.action('zm_job_approve', async ({ ack, body, action, respond }) => {
+    await ack();
+    if (!(await guard(body, respond))) return;
+    if (!JOB_ID_RE.test(String(action.value || ''))) return;
+    await respond({ response_type: 'ephemeral', replace_original: false, text: ':hourglass: Starting job `' + action.value + '`…' });
+    try {
+      const r = await runPy(['inbox_jobs.py', '--approve', action.value, '--by', body.user.id, '--json'], baseDir, 8 * 60 * 1000);
+      await respond({ response_type: 'ephemeral', replace_original: false, text: 'Inbox setup job', blocks: jobBlocks(r) });
+    } catch (err) {
+      await respond({ response_type: 'ephemeral', replace_original: false, text: ':x: Job not started. ' + require('./slack_text').plainError(err.message) });
+    }
+  });
+
+  app.action('zm_job_cancel', async ({ ack, body, action, respond }) => {
+    await ack();
+    if (!(await guard(body, respond))) return;
+    if (!JOB_ID_RE.test(String(action.value || ''))) return;
+    const r = await runPy(['inbox_jobs.py', '--cancel', action.value, '--by', body.user.id, '--json'], baseDir)
+      .catch(err => ({ error: err.message }));
+    await respond({ response_type: 'ephemeral', replace_original: false,
+      text: r && r.error ? ':x: ' + require('./slack_text').plainError(r.error) : ':no_entry_sign: Job `' + action.value + '` cancelled. Nothing more will run.' });
+  });
+
   // Export (WRITE; approvers).
   app.action('zm_export', async ({ ack, body, action, respond }) => {
     await ack();
@@ -505,5 +622,6 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
 
 module.exports = {
   registerZapmailActions, homeBlocks, domainBlocks, renewalBlocks, prewarmedText,
-  syncBlocks, lookupModal, mailboxModal, inboxModal, inboxResultText, approvers, isApprover, checkPayload
+  syncBlocks, lookupModal, mailboxModal, inboxModal, inboxResultText, prewarmedBlocks, prewarmedModal, jobBlocks,
+  approvers, isApprover, checkPayload
 };

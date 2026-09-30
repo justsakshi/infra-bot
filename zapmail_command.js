@@ -218,7 +218,7 @@ function render(sub, result) {
   if (sub === 'renewals') return { text: 'Zapmail renewals', blocks: actions.renewalBlocks(result) };
   if (sub === 'cross-check') return { text: formatCrossCheck(result.cross_check || {}) };
   if (sub === 'domain') return { text: 'Zapmail: ' + (result.domain || ''), blocks: actions.domainBlocks(result) };
-  if (sub === 'prewarmed') return { text: actions.prewarmedText(result) };
+  if (sub === 'prewarmed') return { text: actions.prewarmedText(result), blocks: actions.prewarmedBlocks(result) };
   if (sub === 'sync') return { text: 'Tracker sync preview', blocks: actions.syncBlocks(result) };
   if (sub === 'batches') {
     // Due batches get a "Buy now" button — only when approvers exist;

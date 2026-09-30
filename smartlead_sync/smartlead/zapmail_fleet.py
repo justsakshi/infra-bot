@@ -243,6 +243,8 @@ async def prewarmed_overview(sample: int = 5) -> dict:
                                 or {}).get("data") or {}
                         out["for_sale"][provider] = [
                             {"domain": d.get("domain"),
+                             # id: what an inbox job needs to assign exactly this domain
+                             "id": d.get("id"), "price": d.get("price"),
                              "mailboxes": [f"{(m.get('mailbox') or {}).get('firstName', '')} "
                                            f"{(m.get('mailbox') or {}).get('lastName', '')}".strip()
                                            for m in d.get("preWarmedUpMailboxes") or []]}
