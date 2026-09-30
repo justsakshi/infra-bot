@@ -187,8 +187,12 @@ async def execute_purchase(
     client: str | None = None,
     price_ceiling: float = DEFAULT_PRICE_CEILING_USD,
     expected_prices: dict[str, float | None] | None = None,
+    provider: str = "GOOGLE",
 ) -> dict:
     """Buy domains. Refuses unless every gate in the module docstring passes.
+
+    ``provider`` is sent as x-service-provider: Zapmail files the domain under
+    that provider (support, 2026-09-30), so Outlook inboxes can be made on it.
 
     Prefer :func:`domain_batch.execute_one` — it is the ledgered path. Returns
     ``{account, domains, verified_prices, response}`` where ``response`` is the
@@ -212,8 +216,11 @@ async def execute_purchase(
         domains, api_key=account.api_key, price_ceiling=price_ceiling,
         expected_prices=expected_prices)
     total = round(sum(prices.values()) * max(1, years), 2)
+    if str(provider).upper() not in ("GOOGLE", "MICROSOFT"):
+        raise ZapmailSpendBlocked(f"refusing to spend: unknown provider {provider!r}")
     async with ZapmailClient(
         api_key=account.api_key, workspace_key=account.workspace_key,
+        service_provider=str(provider).upper(),
     ) as z:
         if use_wallet:
             await require_wallet_covers(z, total, account.name)

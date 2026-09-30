@@ -61,9 +61,10 @@ The job can run **now** or be **scheduled** for a date.
    (Google: app password). Needs its first live run on a real new inbox.
 3. ✅ (engine, fakes) **Buying** — `inbox_jobs.py` jobs: new domain / owned domain, slots,
    create, Smartlead, setup, tracker; one approval per job; now or `--run-on`; ticked every
-   10 min by Infra Bot, creator DM'd on each change. New domains are Google-only until Zapmail
-   answers the Outlook-buy question.
-4. ✅ (engine, fakes) **Pre-warmed** — slot / plan once, assign the chosen domain, then 2-3.
+   10 min by Infra Bot, creator DM'd on each change. New domains can be Google or Outlook (Zapmail
+   confirmed the provider header on purchases).
+4. ✅ (engine, fakes) **Pre-warmed** — pick from the inventory and assign (no plan, ~$14.99
+   from the wallet, 1 year, cannot be renewed), then 2-3. Slack button live.
    First real run of 2-4: ONE cheap job with you watching.
 5. **Website** — login first, then Renewals / New domains / Set up inboxes / Health pages on
    the same engine.

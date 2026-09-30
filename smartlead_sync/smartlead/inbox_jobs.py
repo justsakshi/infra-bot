@@ -12,7 +12,7 @@ Three kinds of job:
   new        buy domains -> domains active -> inbox slots -> create inboxes ->
              inboxes active -> into Smartlead -> Smartlead setup -> tracker
   owned      (domain we already have) inbox slots -> create inboxes -> ...
-  prewarmed  pre-warmed slot -> assign the chosen domain -> inboxes active -> ...
+  prewarmed  assign the chosen pre-warmed domain (paid) -> inboxes active -> ...
 
 Money rules (same as domain buying):
   * a job does nothing until a person approves it, after seeing its cost;
@@ -21,9 +21,10 @@ Money rules (same as domain buying):
     dies mid-call the next run does not pay again: it stops as ``needs_check``
     for a person to confirm (domain buys use the purchase ledger, which already
     works this way);
-  * inbox slots and pre-warmed plans are bought at most once per job; if the
-    slots have not appeared yet (Zapmail may want the invoice paid) the job
-    waits and says so, it never buys again.
+  * inbox slots are bought at most once per job, from the wallet only (Zapmail
+    never charges a card for slots): the wallet is checked first; a pre-warmed
+    domain is assigned at most once and only when the wallet covers it (Zapmail
+    would otherwise charge the card on file).
 
 Where inboxes go in Smartlead:
   * a client with a Zapmail export target (BettrData, Belardi Wong): Zapmail export;
@@ -48,23 +49,23 @@ STEPS: dict[str, list[str]] = {
             "inboxes_active", "into_smartlead", "smartlead_setup", "tracker"],
     "owned": ["inbox_slots", "create_inboxes", "inboxes_active", "into_smartlead",
               "smartlead_setup", "tracker"],
-    "prewarmed": ["prewarmed_slot", "assign_prewarmed", "inboxes_active",
+    # Zapmail (2026-09-30): pick from the inventory and assign - no plan to buy.
+    # Assigning charges the wallet (card on file if short), so it is the paid step.
+    "prewarmed": ["assign_prewarmed", "inboxes_active",
                   "into_smartlead", "smartlead_setup", "tracker"],
 }
-PAID_STEPS = frozenset({"buy_domains", "inbox_slots", "prewarmed_slot"})
+PAID_STEPS = frozenset({"buy_domains", "inbox_slots", "assign_prewarmed"})
 STEP_LABELS = {
     "buy_domains": "Buy domains", "domains_active": "Domains ready",
     "inbox_slots": "Inbox slots", "create_inboxes": "Create inboxes",
     "inboxes_active": "Inboxes ready", "into_smartlead": "Into Smartlead",
     "smartlead_setup": "Name, signature, warmup", "tracker": "Tracker",
-    "prewarmed_slot": "Pre-warmed slot", "assign_prewarmed": "Assign pre-warmed domain",
+    "assign_prewarmed": "Get pre-warmed domain",
 }
 MAX_INBOXES_PER_DOMAIN = 5
 
 # Monthly price of one extra inbox slot by Zapmail plan (docs, 2026-09-29).
 ADDON_PRICE = {"starter": 3.50, "growth": 3.25, "pro": 3.00}
-# Pre-warmed plans: first month / renewal / inboxes included (docs, 2026-09-29).
-PREWARMED_PLANS = {"starter": (39.0, 24.0, 3), "growth": (149.0, 84.0, 12), "pro": (339.0, 180.0, 30)}
 
 _DOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z]{2,})+$")
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z' .-]{0,39}$")
@@ -110,12 +111,6 @@ def new_job(
     bad = [d for d in doms if not _DOMAIN_RE.match(d)]
     if bad:
         raise ValueError(f"not a domain: {', '.join(bad)}")
-    if kind == "new" and provider == "MICROSOFT":
-        # Domain buys send no provider, so Zapmail files them under Google; an
-        # Outlook job would only find out after paying. Refuse until Zapmail
-        # confirms how to buy straight into Outlook (ZAPMAIL_QUESTIONS_2026-09.md).
-        raise ValueError("buying a NEW domain for Outlook isn't supported yet - "
-                         "choose Google, or use a domain we already have on Outlook")
     if kind == "prewarmed":
         if len(doms) != 1 or not prewarmed_domain_id:
             raise ValueError("a pre-warmed job is one chosen domain (with its Zapmail id)")
@@ -160,8 +155,7 @@ def progress_line(job: dict) -> str:
 # ── cost ────────────────────────────────────────────────────────────────────
 
 def estimate(job: dict, *, domain_prices: dict[str, float], free_slots: int,
-             plan: str, free_prewarmed: int = 0, prewarmed_plan: str = "starter",
-             needed: int | None = None) -> dict:
+             plan: str, needed: int | None = None) -> dict:
     """What approving this job will cost. Pure. ``needed`` overrides the inbox
     count when some already exist (a domain we own is topped up, not refilled)."""
     lines: list[dict] = []
@@ -177,10 +171,11 @@ def estimate(job: dict, *, domain_prices: dict[str, float], free_slots: int,
             each = ADDON_PRICE.get((plan or "growth").lower(), ADDON_PRICE["growth"])
             lines.append({"what": f"{extra} extra inbox slot(s) ({free_slots} free, {needed} needed)",
                           "usd": round(extra * each, 2), "when": "per month"})
-    if job["kind"] == "prewarmed" and free_prewarmed < 1:
-        first, renew, boxes = PREWARMED_PLANS[prewarmed_plan]
-        lines.append({"what": f"pre-warmed {prewarmed_plan} plan ({boxes} inboxes)", "usd": first,
-                      "when": f"first month, then ${renew:.0f}/month"})
+    if job["kind"] == "prewarmed":
+        price = float(job.get("prewarmed_price") or 0)
+        lines.append({"what": f"pre-warmed {job['domains'][0]} with its warmed inboxes "
+                              "(1 year - pre-warmed domains cannot be renewed)",
+                      "usd": round(price, 2), "when": "once"})
     once = round(sum(x["usd"] for x in lines if x["when"] == "once"), 2)
     monthly = round(sum(x["usd"] for x in lines if x["when"] == "per month"), 2)
     first_month = round(sum(x["usd"] for x in lines if x["when"].startswith("first month")), 2)

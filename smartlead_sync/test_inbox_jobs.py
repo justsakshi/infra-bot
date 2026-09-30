@@ -107,10 +107,10 @@ def test_bad_requests_are_refused(bad, msg):
                              domains=["gomelior.com"]), **bad})
 
 
-def test_new_outlook_domains_are_refused_before_any_money():
-    with pytest.raises(ValueError, match="NEW domain for Outlook"):
-        ij.new_job(client="Melior", kind="new", provider="MICROSOFT", domains=["a.com"])
-    ij.new_job(client="Melior", kind="owned", provider="MICROSOFT", domains=["a.com"])   # fine
+def test_new_outlook_domains_are_allowed():
+    """Zapmail 2026-09-30: x-service-provider on /buy files the domain under Outlook."""
+    j = ij.new_job(client="Melior", kind="new", provider="MICROSOFT", domains=["a.com"])
+    assert j["provider"] == "MICROSOFT" and j["steps"][0]["name"] == "buy_domains"
 
 
 def test_topping_up_an_owned_domain_counts_only_the_missing_inboxes():
@@ -126,7 +126,7 @@ def test_prewarmed_needs_exactly_one_chosen_domain():
 def test_steps_per_kind():
     assert [s["name"] for s in job("new")["steps"]][:3] == ["buy_domains", "domains_active", "inbox_slots"]
     assert job("owned")["steps"][0]["name"] == "inbox_slots"
-    assert job("prewarmed")["steps"][0]["name"] == "prewarmed_slot"
+    assert job("prewarmed")["steps"][0]["name"] == "assign_prewarmed"   # no plan to buy
 
 
 # ── cost ────────────────────────────────────────────────────────────────────
@@ -145,11 +145,12 @@ def test_no_slot_cost_when_enough_are_free():
     assert c["lines"] == [] and c["total_now_usd"] == 0
 
 
-def test_prewarmed_plan_only_when_no_free_slot():
-    j = job("prewarmed")
-    assert ij.estimate(j, domain_prices={}, free_slots=0, plan="growth", free_prewarmed=1)["lines"] == []
-    c = ij.estimate(j, domain_prices={}, free_slots=0, plan="growth", free_prewarmed=0)
-    assert c["first_month_usd"] == 39.0 and "then $24/month" in c["lines"][0]["when"]
+def test_prewarmed_costs_the_domain_price_once_and_says_it_cannot_be_renewed():
+    j = job("prewarmed"); j["prewarmed_price"] = 14.99
+    c = ij.estimate(j, domain_prices={}, free_slots=0, plan="growth")
+    assert c["once_usd"] == 14.99 and c["total_now_usd"] == 14.99
+    assert "cannot be renewed" in c["lines"][0]["what"]
+    assert "assign_prewarmed" in ij.PAID_STEPS
 
 
 # ── approval gates ──────────────────────────────────────────────────────────

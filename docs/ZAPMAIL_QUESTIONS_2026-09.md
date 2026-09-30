@@ -155,3 +155,31 @@ Still open: where the export id comes from, the re-export cap number, pre-warmed
 - **Buying a domain straight into Outlook:** `POST /v2/domains/buy` takes no provider. Does it honour `x-service-provider: MICROSOFT` so the domain lands in the Microsoft workspace? Until answered, the bot only buys new domains for Google.
 - **Add-on inbox slots (`/wallet/buy-addon-mailboxes`):** is it paid from the wallet (like domains with useWallet) or always by card through the returned invoice link? Is the quantity per provider?
 - **Pre-warmed assign:** does an assigned pre-warmed domain keep its inboxes' warmup history and existing first/last names? Can those names be changed (PUT /mailboxes) without hurting the warmup?
+
+
+## Batch 3 — sent 2026-09-30 (inbox pipeline, before the first live run)
+
+Supersedes the "Added 2026-09-29" bullets above. See the chat message of 30 Sep for the send-ready wording.
+
+Blocking: B1 Outlook domain buy provider header · B2 add-on slots (wallet vs card, per provider, when they appear) · B3 /mailboxes with no free slot (refuse vs charge) · B4 pre-warmed plan purchase funding + adding single slots · B5 pre-warmed assign (warmup kept, names, renewal) · B6 Microsoft SMTP AUTH / app passwords for direct Smartlead add.
+Sharpening: S1 rename via PUT /mailboxes · S2 retry-failed + remove-on-renewal · S3 one Smartlead per workspace / move domains across workspaces · S4 export id + re-export cap · S5 webhook payload samples + registration-complete event · S6 planEndsOn in the past.
+
+
+## ANSWERED — Zapmail support, 2026-09-30 (batch 3) and what changed
+
+| Topic | Answer | Code change |
+|---|---|---|
+| Outlook domain buy | `x-service-provider` on `/domains/buy` files the domain under that provider | Batches carry `provider`; purchases send it; new-domain Outlook jobs allowed |
+| Add-on slots | Wallet ONLY; slots are locked to the provider they were bought for | Wallet checked before buying slots (refuse with the amount); message no longer mentions an invoice |
+| No free slot | `/mailboxes` refuses; buy slots first | as assumed |
+| Pre-warmed | Pick from `get-prewarmed-domains`, then `assign` — **no plan needed**; charges wallet, else the card on file | Plan purchase removed; `assign_prewarmed` is the paid step, wallet must cover the price first, ordered at most once |
+| Pre-warmed life | Domains last **one year and then expire** (cannot be renewed) | Cost line says so |
+| Pre-warmed names | First/last can be reset; changing the username loses warmup history | We never change usernames |
+| Rename sync | Zapmail pushes the new sender name to the sending platform; a username change needs a re-export | nothing (we keep usernames) |
+| Smartlead | Direct integration uses OAuth; **several Smartlead accounts can be connected** (with correct credentials); domains cannot move workspaces via API | Recommend connecting the Precise Leads Smartlead too → Zapmail export (OAuth, works for Outlook); direct add stays the fallback |
+| Export id | In the export request's response | as built |
+| Domain connection status | No API; UI only | we keep polling the domain list for ACTIVE |
+| Webhooks | No sample payloads | alert text reads either shape |
+| planEndsOn | They asked which endpoint: `GET /v2/users` | reply sent back |
+
+Follow-ups: (a) is $14.99 the whole pre-warmed charge, or are its inboxes also billed monthly? (b) `planEndsOn` on `GET /v2/users`.

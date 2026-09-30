@@ -80,6 +80,9 @@ class Batch:
     status: str = "planned"
     client: str = ""
     earliest_date: str = ""
+    # GOOGLE or MICROSOFT: Zapmail files a bought domain under the provider
+    # sent in x-service-provider (support, 2026-09-30); default Google.
+    provider: str = "GOOGLE"
     prices: dict[str, float | None] = field(default_factory=dict)
     purchased_at: str = ""
     result: dict | None = None
@@ -97,6 +100,7 @@ class Batch:
             "status": self.status,
             "client": self.client,
             "earliest_date": self.earliest_date,
+            "provider": self.provider,
             "prices": self.prices,
             "estimated_usd": self.estimated_usd,
             "purchased_at": self.purchased_at,
@@ -116,6 +120,7 @@ def plan_batches(
     day_gap: int = DEFAULT_DAY_GAP,
     client: str = "",
     today: date | None = None,
+    provider: str = "GOOGLE",
 ) -> list[Batch]:
     """Pure stagger plan. No network, no spend."""
     schedule = purchase_schedule(list(domains), list(registrars),
@@ -130,6 +135,7 @@ def plan_batches(
             domains=list(s.domains),
             client=client,
             earliest_date=(today + timedelta(days=s.day_offset)).isoformat(),
+            provider=provider,
         ))
     return out
 
@@ -257,6 +263,7 @@ async def stage_batches(
     day_gap: int = DEFAULT_DAY_GAP,
     price_ceiling: float = DEFAULT_PRICE_CEILING_USD,
     store: BatchStore | None = None,
+    provider: str = "GOOGLE",
 ) -> dict:
     """Read-only on Zapmail: availability + price, plan buyable names, record.
 
@@ -276,7 +283,7 @@ async def stage_batches(
     prices = {i.domain: i.price_usd for i in plan.ready}
 
     batches = plan_batches(buyable, registrars=registrars, per_batch=per_batch,
-                           day_gap=day_gap, client=client)
+                           day_gap=day_gap, client=client, provider=provider)
     for b in batches:
         b.prices = {d: prices.get(d) for d in b.domains}
 
@@ -366,6 +373,7 @@ async def execute_one(
     try:
         result = await execute_purchase(
             domains, approve=True, client=ledger_client or None,
+            provider=batch.get("provider") or "GOOGLE",
             price_ceiling=price_ceiling,
             expected_prices=batch.get("prices") or None)
     except ZapmailSpendBlocked as exc:

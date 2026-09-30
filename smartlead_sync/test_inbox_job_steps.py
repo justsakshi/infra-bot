@@ -52,10 +52,11 @@ def ledger(monkeypatch):
     import smartlead.domain_batch as db
     state = {"ledger": FakeLedger([]), "executed": [], "staged": 0}
 
-    async def fake_stage(domains, client="", store=None):
+    async def fake_stage(domains, client="", store=None, provider="GOOGLE"):
         state["staged"] += 1
+        state["provider"] = provider
         b = {"batch_id": "b1", "domains": domains, "status": "planned", "client": client,
-             "earliest_date": date.today().isoformat()}
+             "earliest_date": date.today().isoformat(), "provider": provider}
         state["ledger"].b["b1"] = b
         return {"batches": [b], "unavailable": [], "unknown": [], "over_ceiling": [],
                 "already_planned": [], "price_ceiling": 25}
@@ -70,6 +71,12 @@ def ledger(monkeypatch):
     monkeypatch.setattr(db, "stage_batches", fake_stage)
     monkeypatch.setattr(db, "execute_one", fake_execute)
     return state
+
+
+def test_an_outlook_job_plans_its_purchase_for_outlook(ledger):
+    j = mk("new", provider="MICROSOFT")
+    run(RealSteps(Saves()).buy_domains(j, step_of(j, "buy_domains")))
+    assert ledger["provider"] == "MICROSOFT"
 
 
 def test_buy_plans_then_buys_once(ledger):
@@ -112,8 +119,21 @@ def test_a_later_batch_waits_for_its_date(ledger):
 # ── inbox slots ─────────────────────────────────────────────────────────────
 
 class FakeZ:
-    def __init__(self, free, boxes=None, refuse=False):
+    def __init__(self, free, boxes=None, refuse=False, wallet=100.0, sale=None):
         self.free, self.boxes, self.bought, self.refuse = free, boxes or {}, [], refuse
+        self.wallet, self.sale, self.assigned = wallet, sale or [], []
+
+    async def get_user(self):
+        return {"data": {"activePlan": "Growth"}}
+
+    async def get_wallet_balance(self):
+        return {"walletBalance": self.wallet}
+
+    async def assign_prewarmed(self, ids, approve=False):
+        assert approve
+        self.assigned.append(ids)
+        return {"data": [{"username": "christy", "domain": "apexdemandcraft.co",
+                          "firstName": "Christy", "lastName": "Hughes"}]}
 
     async def list_mailboxes(self, page=1, limit=1, contains=None):
         if contains:
@@ -159,10 +179,19 @@ def test_missing_slots_are_bought_once_then_waited_for(zap):
     j = mk(); st = step_of(j, "inbox_slots"); saves = Saves(); s = RealSteps(saves)
     out = run(s.inbox_slots(j, st))
     st["data"].update(out.data)
-    assert zap["z"].bought == [2] and out.state == "waiting" and "invoice.example" in out.detail
+    assert zap["z"].bought == [2] and out.state == "waiting" and "from the wallet" in out.detail
     assert saves.n >= 1                                  # 'attempted' saved BEFORE the call
     out = run(s.inbox_slots(j, st))
     assert zap["z"].bought == [2] and out.state == "waiting"   # never bought twice
+
+
+def test_slots_are_refused_when_the_wallet_is_short(zap):
+    from smartlead.zapmail import ZapmailSpendBlocked
+    zap["z"] = FakeZ(free=0, wallet=5.0)                  # 2 slots x $3.25 = $6.50
+    j = mk(); st = step_of(j, "inbox_slots")
+    with pytest.raises(ZapmailSpendBlocked, match="wallet has \\$5.00"):
+        run(RealSteps(Saves()).inbox_slots(j, st))
+    assert zap["z"].bought == [] and not st["data"].get("attempted")
 
 
 def test_attempted_without_a_result_needs_a_person(zap):
@@ -268,3 +297,60 @@ def test_setup_waits_until_smartlead_shows_the_inboxes(monkeypatch):
     j = mk(); j["inboxes"] = [{"email": "ann@gomelior.com"}]
     out = run(RealSteps(Saves()).smartlead_setup(j, step_of(j, "smartlead_setup")))
     assert out.state == "waiting"
+
+
+# ── pre-warmed: pick and assign, no plan (Zapmail 2026-09-30) ───────────────
+
+def pw_job(price=14.99):
+    j = ij.new_job(client="Melior", kind="prewarmed", provider="GOOGLE",
+                   domains=["apexdemandcraft.co"], prewarmed_domain_id="5daaf256")
+    j["prewarmed_price"] = price
+    return j
+
+
+@pytest.fixture
+def pw(monkeypatch, zap):
+    import smartlead.zapmail_accounts as za
+    import smartlead.zapmail_fleet as zf
+    holder = {"mine": []}
+
+    async def locate(domain):
+        return holder["mine"]
+    monkeypatch.setattr(zf, "locate_domain", locate)
+    monkeypatch.setattr(za, "require_account", lambda c: type("A", (), {"name": "PRECISE_LEADS"})())
+    zap["loc"] = holder
+    return zap
+
+
+def test_prewarmed_is_ordered_once_from_the_wallet(pw):
+    pw["z"] = FakeZ(free=0, wallet=50)
+    j = pw_job(); st = step_of(j, "assign_prewarmed"); saves = Saves()
+    out = run(RealSteps(saves).assign_prewarmed(j, st))
+    assert out.state == "done" and pw["z"].assigned == [["5daaf256"]]
+    assert j["inboxes"] == [{"email": "christy@apexdemandcraft.co", "first": "Christy", "last": "Hughes"}]
+    assert st["data"]["attempted"] and saves.n >= 1
+
+
+def test_prewarmed_is_refused_when_the_wallet_is_short(pw):
+    """Zapmail would charge the card on file instead - no card surprises."""
+    from smartlead.zapmail import ZapmailSpendBlocked
+    pw["z"] = FakeZ(free=0, wallet=10)
+    j = pw_job(); st = step_of(j, "assign_prewarmed")
+    with pytest.raises(ZapmailSpendBlocked):
+        run(RealSteps(Saves()).assign_prewarmed(j, st))
+    assert pw["z"].assigned == [] and not st["data"].get("attempted")
+
+
+def test_prewarmed_is_never_ordered_twice(pw):
+    pw["z"] = FakeZ(free=0, wallet=50)
+    j = pw_job(); st = step_of(j, "assign_prewarmed"); st["data"]["attempted"] = True
+    out = run(RealSteps(Saves()).assign_prewarmed(j, st))
+    assert out.state == "waiting" and pw["z"].assigned == []
+
+
+def test_prewarmed_already_ours_is_done_without_ordering(pw):
+    pw["z"] = FakeZ(free=0, wallet=0)
+    pw["loc"]["mine"] = [{"account": "PRECISE_LEADS", "mailboxes": [{"email": "christy@apexdemandcraft.co"}]}]
+    j = pw_job(); st = step_of(j, "assign_prewarmed")
+    out = run(RealSteps(Saves()).assign_prewarmed(j, st))
+    assert out.state == "done" and pw["z"].assigned == []
