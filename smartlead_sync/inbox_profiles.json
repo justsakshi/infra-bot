@@ -1,5 +1,5 @@
 {
-  "_about": "How each client's inboxes are set up in Smartlead. smartlead_account = which SMARTLEAD_API_KEY_* holds them (Precise Leads and Melior share one). smartlead_client_id files the inbox under a Smartlead client (Melior = 12256 inside the Precise Leads account; null = none). signature = HTML with {first_name} {last_name} {full_name} {title} {company} {website} {email}; empty = signatures are not touched until the team supplies one. title/company/website fill those placeholders. Edit freely; no code change needed.",
+  "_about": "How each client's inboxes are set up in Smartlead. smartlead_account = which SMARTLEAD_API_KEY_* holds them (Precise Leads and Melior share one). smartlead_client_id files the inbox under a Smartlead client (Melior = 12256 inside the Precise Leads account; null = none). signature_lines = the signature, one line each ({first_name} {last_name} {full_name} {title} {phone} {company} {website} {email}); a line whose placeholders are all empty is left out. senders = each person's own title/phone, taken from their current Smartlead signature (29-30 Sep 2026). Edit freely; no code change needed. default_senders = who new inboxes are made for when a job names nobody (confirmed by the team 30 Sep 2026: Belardi Wong = Sam, Melior = Ryan, Precise Leads = Aravind + Avinash).",
   "clients": {
     "Bettrdata": {
       "smartlead_account": "BettrData",
@@ -7,7 +7,51 @@
       "company": "BettrData",
       "website": "bettrdata.io",
       "title": "",
-      "signature": ""
+      "signature": "",
+      "signature_lines": [
+        "{full_name}",
+        "{title}",
+        "{company}"
+      ],
+      "senders": {
+        "Aaron Dix": {
+          "title": "Founder & CEO"
+        },
+        "Benjamin Ramsey": {},
+        "Cameron Ramsey": {},
+        "Celeste Maxwell": {},
+        "Cole Collins": {},
+        "Dillon Everett": {},
+        "Drew Owens": {},
+        "Emilia Phillips": {},
+        "Gavin Newman": {},
+        "Glen Morgan": {},
+        "Gordon Murray": {},
+        "Harry Quinn": {},
+        "Helena Cooper": {},
+        "Jennifer Kramer": {
+          "title": "Senior Vice President of Sales"
+        },
+        "Jesse Tucker": {},
+        "Laurie Donnelly": {
+          "title": "Senior Vice President of Enterprise Sales"
+        },
+        "Lincoln Adams": {},
+        "Lisa Lewis": {},
+        "Lisa Martinez": {},
+        "Miles Price": {},
+        "Nadine Oakley": {},
+        "Neil Patterson": {},
+        "Penny Stone": {},
+        "Raymond Blake": {},
+        "Ricky Bowen": {},
+        "Ruth Scott": {},
+        "Sean Leonard": {},
+        "Sidney Blake": {},
+        "Sloane Walker": {},
+        "Virginia Nash": {}
+      },
+      "default_senders": []
     },
     "Belardi Wong": {
       "smartlead_account": "Belardi Wong",
@@ -15,7 +59,22 @@
       "company": "Belardi Wong",
       "website": "belardiwong.com",
       "title": "",
-      "signature": ""
+      "signature": "",
+      "signature_lines": [
+        "{full_name}",
+        "{title}",
+        "{company}",
+        "T {phone}"
+      ],
+      "senders": {
+        "Sam Lonsdale": {
+          "title": "Vice President, Business Development",
+          "phone": "212-381-1709"
+        }
+      },
+      "default_senders": [
+        "Sam Lonsdale"
+      ]
     },
     "Precise Leads": {
       "smartlead_account": "PRECISE_LEADS",
@@ -23,7 +82,24 @@
       "company": "Precise Leads",
       "website": "preciseleads.in",
       "title": "",
-      "signature": ""
+      "signature": "",
+      "signature_lines": [
+        "{full_name}",
+        "{title}",
+        "{company}"
+      ],
+      "senders": {
+        "Aravind Haridas": {
+          "title": "Co-Founder"
+        },
+        "Avinash Haridas": {
+          "title": "Founder"
+        }
+      },
+      "default_senders": [
+        "Aravind Haridas",
+        "Avinash Haridas"
+      ]
     },
     "Melior": {
       "smartlead_account": "PRECISE_LEADS",
@@ -31,7 +107,17 @@
       "company": "Melior",
       "website": "getmelior.com",
       "title": "",
-      "signature": ""
+      "signature": "",
+      "signature_lines": [
+        "Best,",
+        "{first_name}"
+      ],
+      "senders": {
+        "Ryan Markman": {}
+      },
+      "default_senders": [
+        "Ryan Markman"
+      ]
     }
   }
 }

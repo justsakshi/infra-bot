@@ -46,7 +46,7 @@ def test_no_template_is_a_clear_error_not_a_blank_signature():
 
 def test_unknown_placeholder_is_refused():
     with pytest.raises(ValueError, match="unknown placeholder"):
-        ix.render_signature("{full_name} {phone}", {"full_name": "A"})
+        ix.render_signature("{full_name} {fax}", {"full_name": "A"})
 
 
 def test_melior_inboxes_are_filed_under_the_melior_client():

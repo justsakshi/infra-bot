@@ -35,7 +35,7 @@ def _summary(job: dict) -> dict:
     from smartlead.inbox_jobs import current_step, progress_line
     step = current_step(job) or {}
     return {"job_id": job["job_id"], "client": job["client"], "kind": job["kind"],
-            "provider": job["provider"], "domains": job["domains"],
+            "provider": job["provider"], "domains": job["domains"], "names": job.get("names") or [],
             "inboxes_per_domain": job["inboxes_per_domain"], "status": job["status"],
             "step": step.get("name"), "detail": step.get("detail", ""),
             "progress": progress_line(job), "cost": job.get("cost"),
@@ -47,6 +47,8 @@ def _print_job(s: dict) -> None:
     print(f"\n  Job {s['job_id']} — {s['client']} · {s['kind']} · "
           f"{'Google' if s['provider'] == 'GOOGLE' else 'Outlook'} · {', '.join(s['domains'])}")
     print(f"  Status: {s['status']}" + (f" (scheduled {s['run_on']})" if s.get("run_on") else ""))
+    if s.get("names"):
+        print(f"  Senders: {', '.join(s['names'])}")
     if s.get("cost"):
         for line in s["cost"]["lines"]:
             print(f"    ${line['usd']:>7.2f}  {line['what']}  ({line['when']})")

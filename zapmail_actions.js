@@ -310,6 +310,7 @@ function jobBlocks(s) {
   let t = '*Inbox setup for ' + s.client + '* — ' + s.domains.join(', ') + ' (' + (s.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ')' + NL;
   t += cost.lines.length ? cost.lines.map(l => '• $' + Number(l.usd).toFixed(2) + ' — ' + l.what + ' (' + l.when + ')').join(NL)
     : '• Nothing to buy — free slots cover it';
+  if ((s.names || []).length) t += NL + 'Senders: ' + s.names.join(', ');
   t += NL + '*Total charged when it runs: $' + Number(cost.total_now_usd || 0).toFixed(2) + '*'
     + NL + 'Steps: ' + (s.progress || '') + NL + 'Status: *' + s.status + '*' + (s.detail ? ' — ' + s.detail : '');
   const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: t.slice(0, 2900) } }];

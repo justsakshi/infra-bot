@@ -254,6 +254,49 @@ def identities_from_names(domain: str, names: list[str]) -> list[dict]:
     return out
 
 
+def _username_variants(first: str, last: str) -> list[str]:
+    """Address shapes for one person, in the order our fleet already uses them
+    (aaron@, aaron.dix@, aarond@ ...). Letters and single dots only, never at
+    either end - Zapmail's username rule."""
+    f = "".join(ch for ch in first.lower() if ch.isalpha())
+    l = "".join(ch for ch in last.lower() if ch.isalpha())
+    if not f:
+        return []
+    shapes = [f]
+    if l:
+        shapes += [f"{f}.{l}", f"{f}{l[0]}", f"{f}{l}", f"{f[0]}{l}", f"{f[0]}.{l}", f"{l}.{f}"]
+    return list(dict.fromkeys(shapes))
+
+
+def identities_for_senders(
+    domain: str, names: list[str], count: int, *, exclude: set[str] | frozenset[str] = frozenset(),
+) -> list[dict]:
+    """``count`` identities for real senders, spread across them in turn.
+
+    One person can hold several inboxes on a domain (Ryan on three), each with
+    its own address; usernames already on the domain are skipped. Returns
+    fewer than ``count`` only when every variant is taken.
+    """
+    people = []
+    for full in names:
+        parts = [p for p in str(full).strip().split() if p]
+        if parts:
+            people.append((parts[0], " ".join(parts[1:]), _username_variants(parts[0], " ".join(parts[1:]))))
+    taken = {u.lower() for u in exclude}
+    out: list[dict] = []
+    depth = 0
+    while len(out) < count and people and depth < 7:
+        for first, last, variants in people:
+            if len(out) >= count:
+                break
+            if depth < len(variants) and variants[depth] not in taken:
+                taken.add(variants[depth])
+                out.append({"firstName": first, "lastName": last,
+                            "mailboxUsername": variants[depth], "domainName": domain})
+        depth += 1
+    return out
+
+
 async def _existing_usernames(z: ZapmailClient, domain: str) -> set[str]:
     """Local parts of mailboxes already on ``domain`` (exact domain match)."""
     resp = await z.list_mailboxes(contains=domain, page=1, limit=50)
@@ -314,8 +357,7 @@ async def assign_mailboxes_and_wait(
 
         existing_users = await _existing_usernames(z, domain)
         if sender_names:
-            identities = [i for i in identities_from_names(domain, sender_names)
-                          if i["mailboxUsername"] not in existing_users][:want]
+            identities = identities_for_senders(domain, sender_names, want, exclude=existing_users)
             if not identities:
                 return {"domain": domain, "ok": False,
                         "error": "every given sender name already exists on this domain"}

@@ -29,6 +29,12 @@ class RealSteps:
         from smartlead.inbox_jobs import estimate
         from smartlead.zapmail_accounts import api_key_for_client, open_client, require_account
 
+        # Nobody named: the client's default senders (inbox_profiles.json), so
+        # the person approving sees whose inboxes these will be.
+        if not job.get("names") and job["kind"] != "prewarmed":
+            from smartlead.inbox_setup import profile_for
+            job["names"] = list(profile_for(job["client"])[1].get("default_senders") or [])
+
         prices: dict[str, float] = {}
         if job["kind"] == "new":
             fresh = await check_availability_bulk(

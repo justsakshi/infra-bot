@@ -37,7 +37,7 @@ PROFILES_PATH = Path(os.getenv(
     Path(__file__).resolve().parent.parent / "inbox_profiles.json"))
 
 PLACEHOLDERS = frozenset({"first_name", "last_name", "full_name", "title",
-                          "company", "website", "email"})
+                          "company", "website", "email", "phone"})
 
 # The team standard for a brand-new inbox (STANDARD_SETUP_TABLE.md, state NEW).
 NEW_INBOX_WARMUP = {
@@ -100,6 +100,36 @@ def render_signature(template: str, ctx: dict) -> str:
     return template.format(**safe)
 
 
+def render_lines(lines: list[str], ctx: dict) -> str:
+    """Line-based signature: one ``<div>`` per line, the format every client
+    uses in Smartlead today. A line whose placeholders are all empty is left
+    out, so "{title}" disappears for a sender without a title and "T {phone}"
+    for one without a phone - one template fits every sender."""
+    out = []
+    for line in lines:
+        names = {f for _, f, _, _ in string.Formatter().parse(line) if f}
+        if names and not any(str(ctx.get(n) or "").strip() for n in names):
+            continue
+        out.append(f"<div>{render_signature(line, ctx)}</div>")
+    return "".join(out)
+
+
+def sender_details(prof: dict, full_name: str) -> dict:
+    """``{title, phone}`` for this sender from the profile's ``senders``."""
+    for name, d in (prof.get("senders") or {}).items():
+        if name.strip().lower() == (full_name or "").strip().lower():
+            return d or {}
+    return {}
+
+
+def signature_text(sig: str) -> str:
+    """What a reader sees: tags dropped, entities decoded, spacing squashed.
+    Used to leave a signature alone when only its HTML layout differs."""
+    t = re.sub(r"<br\b[^>]*>|</div>|</p>", "\n", sig or "", flags=re.I)
+    t = html.unescape(re.sub(r"<[^>]+>", "", t))
+    return "\n".join(x.strip() for x in t.splitlines() if x.strip())
+
+
 @dataclass
 class InboxChange:
     email: str
@@ -147,15 +177,20 @@ def plan_changes(
     if renaming and full and full != (account.get("from_name") or ""):
         want["from_name"] = full
     if set_signature:
+        lines = prof.get("signature_lines") or []
         tmpl = prof.get("signature") or ""
-        if not tmpl:
+        if not lines and not tmpl:
             ch.error = "no signature template for this client yet (inbox_profiles.json)"
             return ch
-        sig = render_signature(tmpl, {
-            "first_name": first, "last_name": last, "full_name": full,
-            "title": prof.get("title"), "company": prof.get("company"),
-            "website": prof.get("website"), "email": email.lower()})
-        if sig != (account.get("signature") or ""):
+        person = sender_details(prof, full)
+        ctx = {"first_name": first, "last_name": last, "full_name": full,
+               "title": person.get("title", prof.get("title")),
+               "phone": person.get("phone", prof.get("phone")),
+               "company": prof.get("company"), "website": prof.get("website"),
+               "email": email.lower()}
+        sig = render_lines(lines, ctx) if lines else render_signature(tmpl, ctx)
+        # Same words, different HTML (e.g. <br> vs <div>) is not a change.
+        if signature_text(sig) != signature_text(account.get("signature") or ""):
             want["signature"] = sig
     cid = prof.get("smartlead_client_id")
     if cid is not None and account.get("client_id") != cid:
