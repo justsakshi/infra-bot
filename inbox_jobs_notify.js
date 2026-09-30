@@ -62,4 +62,31 @@ async function tickAndNotify(baseDir) {
   return results;
 }
 
-module.exports = { tickAndNotify, jobUpdateText, runTick };
+/**
+ * Move jobs right after Zapmail reports a change (a mailbox became ACTIVE or
+ * FAILED, a domain registered, an export finished) instead of waiting for the
+ * 10-minute clock. Events arrive in bursts, so they are grouped: one run
+ * DELAY after the last event, never two at once; an event during a run
+ * queues exactly one more.
+ */
+const nudgeState = { timer: null, running: false, again: false };
+const NUDGE_DELAY_MS = 20 * 1000;
+
+function nudge(baseDir, delayMs = NUDGE_DELAY_MS, run = tickAndNotify) {
+  if (nudgeState.running) { nudgeState.again = true; return; }
+  if (nudgeState.timer) clearTimeout(nudgeState.timer);
+  nudgeState.timer = setTimeout(async () => {
+    nudgeState.timer = null;
+    nudgeState.running = true;
+    try { await run(baseDir); } catch (err) { console.warn('[inbox-jobs] nudge failed:', err.message); }
+    nudgeState.running = false;
+    if (nudgeState.again) { nudgeState.again = false; nudge(baseDir, delayMs, run); }
+  }, delayMs);
+}
+
+/** Which Zapmail events can move a job forward. */
+function eventMovesJobs(type) {
+  return /^(mailbox\.|domain\.|export\.(completed|failed))/.test(String(type || ''));
+}
+
+module.exports = { tickAndNotify, jobUpdateText, runTick, nudge, eventMovesJobs, _nudgeState: nudgeState };

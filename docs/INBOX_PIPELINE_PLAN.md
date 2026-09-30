@@ -63,8 +63,11 @@ The job can run **now** or be **scheduled** for a date.
    create, Smartlead, setup, tracker; one approval per job; now or `--run-on`; ticked every
    10 min by Infra Bot, creator DM'd on each change. New domains can be Google or Outlook (Zapmail
    confirmed the provider header on purchases).
-4. ✅ (engine, fakes) **Pre-warmed** — pick from the inventory and assign (no plan, ~$14.99
-   from the wallet, 1 year, cannot be renewed), then 2-3. Slack button live.
+4. ✅ (engine, fakes) **Pre-warmed** — a free pre-warmed slot (buys a starter plan, $39 then
+   $24/month, only when none is free), then a free assign of the chosen domain, then 2-3.
+   Slack button live.
+   Also: failed inboxes are retried once automatically; inboxes can be retired at renewal
+   (Slack + `zapmail_inboxes.py`); jobs move as soon as Zapmail reports a change (webhooks).
    First real run of 2-4: ONE cheap job with you watching.
 5. **Website** — login first, then Renewals / New domains / Set up inboxes / Health pages on
    the same engine.

@@ -183,3 +183,13 @@ Sharpening: S1 rename via PUT /mailboxes · S2 retry-failed + remove-on-renewal 
 | planEndsOn | They asked which endpoint: `GET /v2/users` | reply sent back |
 
 Follow-ups: (a) is $14.99 the whole pre-warmed charge, or are its inboxes also billed monthly? (b) `planEndsOn` on `GET /v2/users`.
+
+
+## ANSWERED — Zapmail support, 2026-09-30 (follow-ups) — CORRECTS the pre-warmed answer above
+
+| Topic | Answer | Code change |
+|---|---|---|
+| `planEndsOn` | End of the account's BASE plan; only updated when a base-plan invoice is paid. Our base plans were cancelled Jan 2026 - all active services are add-on subscriptions. Use `GET /v2/users/subscriptions` (`periodStart`/`periodEnd`) for real renewal dates. | informational only - we don't act on it |
+| Pre-warmed $14.99 | NOT a charge - it's the listed domain price. `assign` is free but needs a FREE SLOT on a pre-warmed subscription; the subscription is billed monthly and the inboxes stay only while it renews. | Pre-warmed jobs: "Pre-warmed slot" (buys a starter plan, $39 then $24/mo, only when no slot is free; wallet checked) then a free "Assign". Estimate shows $0 when a slot is free. |
+| Retry failed | `PUT /v2/mailboxes/retry-failed {domainIds}` (provider header) | Jobs retry failed inboxes once automatically; Slack "Retry N failed" on a look-up; `zapmail_inboxes.py --retry-failed` |
+| Retire | `PUT /v2/mailboxes/scheduled-removal {remove, mailboxIds}` - removed at next renewal, reversible, domain kept | Slack "Retire inboxes" (pick inboxes; retire or undo); `zapmail_inboxes.py --retire [--undo]` |

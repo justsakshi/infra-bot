@@ -541,6 +541,32 @@ class ZapmailClient:
                           "contains": contains, "status": status,
                           "tagIds": tag_ids}))
 
+    async def retry_failed_mailboxes(self, domain_ids: list[str], *, approve: bool = False) -> dict:
+        """Retry creating the FAILED mailboxes on these domains. WRITE (free).
+
+        ``PUT /v2/mailboxes/retry-failed`` needs the provider header, so call
+        it on a client built with the domain's provider.
+        """
+        self._require(approve, "retry_failed_mailboxes", "WRITE")
+        ids = [str(d) for d in domain_ids or [] if str(d).strip()]
+        if not ids:
+            raise ValueError("retry_failed_mailboxes needs domain ids")
+        return await self._request("PUT", "/v2/mailboxes/retry-failed",
+                                   json={"domainIds": ids}, service_provider=True)
+
+    async def schedule_mailbox_removal(
+        self, mailbox_ids: list[str], *, remove: bool = True, approve: bool = False,
+    ) -> dict:
+        """Remove mailboxes at their next renewal (frees the slot then), or
+        cancel that with ``remove=False``. WRITE; nothing is deleted today and
+        the domain is kept (``PUT /v2/mailboxes/scheduled-removal``)."""
+        self._require(approve, "schedule_mailbox_removal", "WRITE")
+        ids = [str(m) for m in mailbox_ids or [] if str(m).strip()]
+        if not ids:
+            raise ValueError("schedule_mailbox_removal needs mailbox ids")
+        return await self._request("PUT", "/v2/mailboxes/scheduled-removal",
+                                   json={"remove": bool(remove), "mailboxIds": ids})
+
     async def update_mailbox_names(
         self, changes: list[dict], *, approve: bool = False,
     ) -> dict:

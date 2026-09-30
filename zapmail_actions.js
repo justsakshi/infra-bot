@@ -136,6 +136,16 @@ function domainBlocks(r) {
     if (boxes.length) {
       elements.push({ type: 'button', action_id: 'zm_inbox_open', text: { type: 'plain_text', text: 'Name & signature' },
         value: packValue({ domain: h.domain, client: h.client, inboxes: boxes.map(b => b.email).slice(0, 5) }) });
+      elements.push({ type: 'button', action_id: 'zm_retire_open', text: { type: 'plain_text', text: 'Retire inboxes' },
+        value: packValue({ domain: h.domain, client: h.client, inboxes: boxes.map(b => b.email).slice(0, 5) }) });
+    }
+    const failedBoxes = boxes.filter(b => String(b.status).toUpperCase() === 'FAILED').length;
+    if (failedBoxes) {
+      elements.push({ type: 'button', action_id: 'zm_retry_failed', style: 'danger',
+        text: { type: 'plain_text', text: 'Retry ' + failedBoxes + ' failed' }, value: packValue({ domain: h.domain, client: h.client }),
+        confirm: { title: { type: 'plain_text', text: 'Retry failed inboxes?' },
+          text: { type: 'plain_text', text: 'Ask Zapmail to create the ' + failedBoxes + ' failed inbox(es) on ' + h.domain + ' again. Free.' },
+          confirm: { type: 'plain_text', text: 'Retry' }, deny: { type: 'plain_text', text: 'Cancel' } } });
     }
     blocks.push({ type: 'actions', elements });
   }
@@ -167,6 +177,29 @@ function inboxModal(p, channelId) {
           { text: { type: 'plain_text', text: 'Apply ' + p.client + '’s signature template' }, value: 'yes' }] } },
       { type: 'context', elements: [{ type: 'mrkdwn', text:
         'The email address never changes — only the name people see, in Smartlead and Zapmail. A new address would lose the inbox’s warmup.' }] }
+    ]
+  };
+}
+
+/** Retire (remove at next renewal) or un-retire chosen inboxes. */
+function retireModal(p, channelId) {
+  const inboxes = (p.inboxes || []).filter(e => EMAIL_RE.test(e));
+  return {
+    type: 'modal', callback_id: 'zm_retire_submit',
+    private_metadata: packValue({ domain: p.domain, client: p.client, channel: channelId }),
+    title: { type: 'plain_text', text: 'Retire inboxes' },
+    submit: { type: 'plain_text', text: 'Apply' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: 'Retired inboxes keep working until their *next renewal*, then Zapmail removes them and stops billing their slot. The domain stays. You can undo it before the renewal.' } },
+      { type: 'input', block_id: 'boxes', label: { type: 'plain_text', text: 'Which inboxes?' },
+        element: { type: 'checkboxes', action_id: 'value',
+          options: inboxes.map(e => ({ text: { type: 'plain_text', text: e }, value: e })) } },
+      { type: 'input', block_id: 'mode', label: { type: 'plain_text', text: 'What to do' },
+        element: { type: 'radio_buttons', action_id: 'value',
+          initial_option: { text: { type: 'plain_text', text: 'Retire at next renewal' }, value: 'retire' },
+          options: [{ text: { type: 'plain_text', text: 'Retire at next renewal' }, value: 'retire' },
+            { text: { type: 'plain_text', text: 'Undo a retirement (keep renewing)' }, value: 'undo' }] } }
     ]
   };
 }
@@ -493,6 +526,48 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     }
   });
 
+  // Retry failed inboxes on a domain (WRITE, free; approvers).
+  app.action('zm_retry_failed', async ({ ack, body, action, respond }) => {
+    await ack();
+    if (!(await guard(body, respond))) return;
+    const p = unpackValue(action.value);
+    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    await runAndReport(respond, ['zapmail_inboxes.py', '--retry-failed', p.domain, '--client', p.client, '--approve', '--json'],
+      'Retrying failed inboxes on `' + p.domain + '`',
+      r => r.ok ? ':white_check_mark: `' + p.domain + '`: ' + ((r.retried || []).length ? 'retrying ' + r.retried.join(', ') + ' — ' + (r.detail || '') : (r.detail || 'nothing to retry'))
+        : ':x: ' + require('./slack_text').plainError(r.error));
+  });
+
+  // Retire inboxes at next renewal / undo (WRITE, free; approvers).
+  app.action('zm_retire_open', async ({ ack, body, action, client, respond }) => {
+    await ack();
+    if (!(await guard(body, respond))) return;
+    const p = unpackValue(action.value);
+    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    await client.views.open({ trigger_id: body.trigger_id, view: retireModal(p, body.channel && body.channel.id) });
+  });
+
+  app.view('zm_retire_submit', async ({ ack, body, view, client }) => {
+    const meta = unpackValue(view.private_metadata);
+    const picked = ((view.state.values.boxes.value.selected_options) || []).map(o => String(o.value).toLowerCase())
+      .filter(e => EMAIL_RE.test(e) && e.split('@')[1] === meta.domain);
+    if (!picked.length) return ack({ response_action: 'errors', errors: { boxes: 'Tick at least one inbox' } });
+    await ack();
+    const user = body.user.id;
+    if (!isApprover(user) || checkPayload(meta, ['domain', 'client'])) return;
+    const undo = ((view.state.values.mode.value.selected_option) || {}).value === 'undo';
+    const args = ['zapmail_inboxes.py', '--retire', picked.join(','), '--client', meta.client, '--approve', '--json'];
+    if (undo) args.push('--undo');
+    try {
+      const r = await runPy(args, baseDir, 2 * 60 * 1000);
+      await say(client, meta.channel, user, { text: r.ok
+        ? ':white_check_mark: ' + (undo ? 'No longer retiring ' : 'Retiring at next renewal: ') + (r.inboxes || []).join(', ') + ' — ' + (r.detail || '')
+        : ':x: ' + require('./slack_text').plainError(r.error) });
+    } catch (err) {
+      await say(client, meta.channel, user, { text: ':x: Not done. ' + require('./slack_text').plainError(err.message) });
+    }
+  });
+
   // Pre-warmed: pick a for-sale domain → client → cost → approve (job engine).
   app.action('zm_pw_open', async ({ ack, body, action, client, respond }) => {
     await ack();
@@ -623,6 +698,6 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
 
 module.exports = {
   registerZapmailActions, homeBlocks, domainBlocks, renewalBlocks, prewarmedText,
-  syncBlocks, lookupModal, mailboxModal, inboxModal, inboxResultText, prewarmedBlocks, prewarmedModal, jobBlocks,
+  syncBlocks, lookupModal, mailboxModal, inboxModal, inboxResultText, prewarmedBlocks, prewarmedModal, jobBlocks, retireModal,
   approvers, isApprover, checkPayload
 };

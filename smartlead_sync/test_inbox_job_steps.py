@@ -299,58 +299,81 @@ def test_setup_waits_until_smartlead_shows_the_inboxes(monkeypatch):
     assert out.state == "waiting"
 
 
-# ── pre-warmed: pick and assign, no plan (Zapmail 2026-09-30) ───────────────
+# ── pre-warmed: a free slot (plan only if none), then a free assign ─────────
 
-def pw_job(price=14.99):
-    j = ij.new_job(client="Melior", kind="prewarmed", provider="GOOGLE",
-                   domains=["apexdemandcraft.co"], prewarmed_domain_id="5daaf256")
-    j["prewarmed_price"] = price
-    return j
+def pw_job():
+    return ij.new_job(client="Melior", kind="prewarmed", provider="GOOGLE",
+                      domains=["apexdemandcraft.co"], prewarmed_domain_id="5daaf256")
+
+
+class FakeZP(FakeZ):
+    def __init__(self, wallet=100.0):
+        super().__init__(free=0, wallet=wallet)
+        self.plans = []
+
+    async def purchase_prewarmed(self, plan, approve=False):
+        assert approve
+        self.plans.append(plan)
+        return {"paymentLink": None, "useWallet": True}
 
 
 @pytest.fixture
 def pw(monkeypatch, zap):
     import smartlead.zapmail_accounts as za
     import smartlead.zapmail_fleet as zf
-    holder = {"mine": []}
+    holder = {"mine": [], "free": 0}
 
     async def locate(domain):
         return holder["mine"]
+
+    async def overview(sample=1):
+        return {"accounts": {"PRECISE_LEADS": {"GOOGLE": {"free": holder["free"]}}}}
     monkeypatch.setattr(zf, "locate_domain", locate)
+    monkeypatch.setattr(zf, "prewarmed_overview", overview)
     monkeypatch.setattr(za, "require_account", lambda c: type("A", (), {"name": "PRECISE_LEADS"})())
-    zap["loc"] = holder
+    zap["pw"] = holder
     return zap
 
 
-def test_prewarmed_is_ordered_once_from_the_wallet(pw):
-    pw["z"] = FakeZ(free=0, wallet=50)
-    j = pw_job(); st = step_of(j, "assign_prewarmed"); saves = Saves()
-    out = run(RealSteps(saves).assign_prewarmed(j, st))
-    assert out.state == "done" and pw["z"].assigned == [["5daaf256"]]
-    assert j["inboxes"] == [{"email": "christy@apexdemandcraft.co", "first": "Christy", "last": "Hughes"}]
-    assert st["data"]["attempted"] and saves.n >= 1
+def test_a_free_prewarmed_slot_buys_nothing(pw):
+    pw["z"] = FakeZP(); pw["pw"]["free"] = 2
+    j = pw_job()
+    out = run(RealSteps(Saves()).prewarmed_slot(j, step_of(j, "prewarmed_slot")))
+    assert out.state == "done" and pw["z"].plans == []
 
 
-def test_prewarmed_is_refused_when_the_wallet_is_short(pw):
-    """Zapmail would charge the card on file instead - no card surprises."""
+def test_no_free_slot_buys_one_plan_from_the_wallet_once(pw):
+    pw["z"] = FakeZP(wallet=100)
+    j = pw_job(); st = step_of(j, "prewarmed_slot"); s = RealSteps(Saves())
+    out = run(s.prewarmed_slot(j, st)); st["data"].update(out.data)
+    assert out.state == "waiting" and pw["z"].plans == ["starter"]
+    out = run(s.prewarmed_slot(j, st))
+    assert out.state == "waiting" and pw["z"].plans == ["starter"]       # never twice
+
+
+def test_no_plan_when_the_wallet_cannot_cover_the_first_month(pw):
     from smartlead.zapmail import ZapmailSpendBlocked
-    pw["z"] = FakeZ(free=0, wallet=10)
-    j = pw_job(); st = step_of(j, "assign_prewarmed")
+    pw["z"] = FakeZP(wallet=20)                                         # starter is $39
+    j = pw_job(); st = step_of(j, "prewarmed_slot")
     with pytest.raises(ZapmailSpendBlocked):
-        run(RealSteps(Saves()).assign_prewarmed(j, st))
-    assert pw["z"].assigned == [] and not st["data"].get("attempted")
+        run(RealSteps(Saves()).prewarmed_slot(j, st))
+    assert pw["z"].plans == [] and not st["data"].get("attempted")
 
 
-def test_prewarmed_is_never_ordered_twice(pw):
-    pw["z"] = FakeZ(free=0, wallet=50)
-    j = pw_job(); st = step_of(j, "assign_prewarmed"); st["data"]["attempted"] = True
+def test_assigning_is_free_and_happens_once(pw):
+    pw["z"] = FakeZP(wallet=0)                                          # no money needed
+    j = pw_job(); st = step_of(j, "assign_prewarmed")
+    out = run(RealSteps(Saves()).assign_prewarmed(j, st))
+    assert out.state == "done" and pw["z"].assigned == [["5daaf256"]]
+    assert j["inboxes"][0]["email"] == "christy@apexdemandcraft.co"
+    st["data"]["attempted"] = True; pw["z"].assigned.clear(); j["inboxes"] = []
     out = run(RealSteps(Saves()).assign_prewarmed(j, st))
     assert out.state == "waiting" and pw["z"].assigned == []
 
 
-def test_prewarmed_already_ours_is_done_without_ordering(pw):
-    pw["z"] = FakeZ(free=0, wallet=0)
-    pw["loc"]["mine"] = [{"account": "PRECISE_LEADS", "mailboxes": [{"email": "christy@apexdemandcraft.co"}]}]
-    j = pw_job(); st = step_of(j, "assign_prewarmed")
-    out = run(RealSteps(Saves()).assign_prewarmed(j, st))
+def test_prewarmed_already_ours_is_done_without_assigning(pw):
+    pw["z"] = FakeZP()
+    pw["pw"]["mine"] = [{"account": "PRECISE_LEADS", "mailboxes": [{"email": "christy@apexdemandcraft.co"}]}]
+    j = pw_job()
+    out = run(RealSteps(Saves()).assign_prewarmed(j, step_of(j, "assign_prewarmed")))
     assert out.state == "done" and pw["z"].assigned == []

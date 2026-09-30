@@ -189,6 +189,10 @@ function registerZapmailWebhook(expressApp, express, { baseDir, onTrackerChanged
       console.log('[zapmail-webhook] ' + account + ' ' + evt.type + ': ' + s.text);
       if (s.alert) await postSlack(s.text);
       if (s.domain) refreshTracker(String(s.domain).toLowerCase(), baseDir, onTrackerChanged);
+      // A change Zapmail reports can unblock an inbox setup job: move jobs now
+      // rather than at the next 10-minute tick (grouped, one run at a time).
+      const jobs = require('./inbox_jobs_notify');
+      if (jobs.eventMovesJobs(evt.type)) jobs.nudge(baseDir);
     });
   });
 }

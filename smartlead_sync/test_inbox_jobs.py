@@ -126,7 +126,7 @@ def test_prewarmed_needs_exactly_one_chosen_domain():
 def test_steps_per_kind():
     assert [s["name"] for s in job("new")["steps"]][:3] == ["buy_domains", "domains_active", "inbox_slots"]
     assert job("owned")["steps"][0]["name"] == "inbox_slots"
-    assert job("prewarmed")["steps"][0]["name"] == "assign_prewarmed"   # no plan to buy
+    assert [s["name"] for s in job("prewarmed")["steps"]][:2] == ["prewarmed_slot", "assign_prewarmed"]
 
 
 # ── cost ────────────────────────────────────────────────────────────────────
@@ -145,12 +145,17 @@ def test_no_slot_cost_when_enough_are_free():
     assert c["lines"] == [] and c["total_now_usd"] == 0
 
 
-def test_prewarmed_costs_the_domain_price_once_and_says_it_cannot_be_renewed():
-    j = job("prewarmed"); j["prewarmed_price"] = 14.99
-    c = ij.estimate(j, domain_prices={}, free_slots=0, plan="growth")
-    assert c["once_usd"] == 14.99 and c["total_now_usd"] == 14.99
-    assert "cannot be renewed" in c["lines"][0]["what"]
-    assert "assign_prewarmed" in ij.PAID_STEPS
+def test_prewarmed_with_a_free_slot_costs_nothing_new():
+    """Zapmail 2026-09-30: assigning is free; the listed domain price is not charged."""
+    c = ij.estimate(job("prewarmed"), domain_prices={}, free_slots=0, plan="growth", free_prewarmed=2)
+    assert c["total_now_usd"] == 0 and "no new charge" in c["lines"][0]["what"]
+
+
+def test_prewarmed_without_a_free_slot_costs_a_monthly_plan():
+    c = ij.estimate(job("prewarmed"), domain_prices={}, free_slots=0, plan="growth", free_prewarmed=0)
+    assert c["first_month_usd"] == 39.0 and "then $24/month" in c["lines"][0]["when"]
+    assert "only while it renews" in c["lines"][0]["what"]
+    assert "prewarmed_slot" in ij.PAID_STEPS and "assign_prewarmed" not in ij.PAID_STEPS
 
 
 # ── approval gates ──────────────────────────────────────────────────────────

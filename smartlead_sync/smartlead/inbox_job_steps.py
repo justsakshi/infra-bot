@@ -74,21 +74,18 @@ class RealSteps:
             quota = ((await z.list_mailboxes(page=1, limit=1)) or {}).get("data") or {}
             user = ((await z.get_user()) or {}).get("data") or {}
             if job["kind"] == "prewarmed":
-                # The inventory price of exactly this domain (still unsold?).
+                # The chosen domain must still be for sale (its listed price is not charged).
                 sale = ((await z.prewarmed_domains(page=1, limit=50, contains=job["domains"][0]))
                         or {}).get("data") or {}
                 row = next((x for x in sale.get("domains") or []
                             if str(x.get("id")) == str(job["prewarmed_domain_id"])), None)
                 if not row or row.get("isSold"):
                     raise ValueError(f"{job['domains'][0]} is no longer for sale")
-                from smartlead.domain_availability import parse_price
-                price = parse_price(row.get("price"))
-                if price is None:
-                    raise ValueError(f"{job['domains'][0]}: Zapmail gave no price")
-                job["prewarmed_price"] = price
+        free_pw = await self._free_prewarmed(job) if job["kind"] == "prewarmed" else 0
         return estimate(job, domain_prices=prices,
                         free_slots=int(quota.get("availableMailboxes") or 0),
-                        plan=str(user.get("activePlan") or "growth"), needed=needed)
+                        plan=str(user.get("activePlan") or "growth"), needed=needed,
+                        free_prewarmed=free_pw)
 
     # ── domains ─────────────────────────────────────────────────────────
 
@@ -261,15 +258,31 @@ class RealSteps:
         if not wanted:
             return StepOutcome("failed", "the job has no inboxes to wait for")
         status: dict[str, str] = {}
+        domain_ids: dict[str, str] = {}
         for d in job["domains"]:
             for h in await locate_domain(d):
                 for m in h.get("mailboxes") or []:
                     if m["email"] in wanted:
                         status[m["email"]] = str(m.get("status") or "").upper()
+                        if h.get("domain_id"):
+                            domain_ids[d] = str(h["domain_id"])
         failed = sorted(e for e, s in status.items() if s == "FAILED")
         if failed:
-            return StepOutcome("failed", "Zapmail could not create: " + ", ".join(failed)
-                               + " - retry them in Zapmail, then resume the job")
+            # Retry each failed domain ONCE through Zapmail's own retry (free);
+            # a second failure needs a person.
+            retried = step["data"].setdefault("retried_domains", [])
+            todo = sorted({e.split("@")[1] for e in failed} - set(retried))
+            if not todo:
+                return StepOutcome("failed", "Zapmail could not create: " + ", ".join(failed)
+                                   + " (already retried once) - check the domain in the Zapmail app")
+            from smartlead.zapmail_accounts import open_client
+            async with open_client(job["client"], provider=job["provider"]) as z:
+                await z.retry_failed_mailboxes([domain_ids[d] for d in todo if d in domain_ids],
+                                               approve=True)
+            retried.extend(todo)
+            self.save(job)
+            return StepOutcome("waiting", f"retrying {len(failed)} failed inbox(es) on "
+                               f"{', '.join(todo)} (Zapmail's retry)")
         waiting = sorted(e for e in wanted if status.get(e) != "ACTIVE")
         if waiting:
             return StepOutcome("waiting", f"{len(wanted) - len(waiting)}/{len(wanted)} ready "
@@ -278,14 +291,49 @@ class RealSteps:
 
     # ── pre-warmed ──────────────────────────────────────────────────────
 
-    async def assign_prewarmed(self, job: dict, step: dict) -> StepOutcome:
-        """Order the chosen pre-warmed domain (Zapmail, 2026-09-30: no plan needed).
+    async def _free_prewarmed(self, job: dict) -> int:
+        from smartlead.zapmail_accounts import require_account
+        from smartlead.zapmail_fleet import prewarmed_overview
+        acc = require_account(job["client"]).name
+        return int((((await prewarmed_overview(sample=1)).get("accounts") or {}).get(acc) or {})
+                   .get(job["provider"], {}).get("free") or 0)
 
-        PAID: Zapmail charges the wallet, or the card on file when the wallet is
-        short - so the wallet must cover the price first (no card surprises).
-        Called at most once: afterwards we only look for the domain.
+    async def prewarmed_slot(self, job: dict, step: dict) -> StepOutcome:
+        """A free pre-warmed slot for this provider, buying a plan only if none.
+
+        PAID, monthly (Zapmail 2026-09-30): the subscription is the cost; the
+        wallet is used, else the card on file, so the wallet must cover the
+        first month before anything is bought. Bought at most once per job.
         """
         from smartlead.domain_purchase import require_wallet_covers
+        from smartlead.inbox_jobs import PREWARMED_PLAN, PREWARMED_PLANS
+        from smartlead.zapmail_accounts import open_client, require_account
+
+        free = await self._free_prewarmed(job)
+        if free >= 1:
+            return StepOutcome("done", f"{free} free pre-warmed slot(s)")
+        if step["data"].get("bought"):
+            return StepOutcome("waiting", "pre-warmed plan bought; waiting for its slots to appear")
+        if step["data"].get("attempted"):
+            return StepOutcome("needs_check", "a pre-warmed plan purchase was started but its "
+                               "result was not recorded - check Zapmail billing before retrying")
+        acc = require_account(job["client"]).name
+        async with open_client(job["client"], provider=job["provider"]) as z:
+            await require_wallet_covers(z, PREWARMED_PLANS[PREWARMED_PLAN][0], acc)
+            step["data"]["attempted"] = True
+            self.save(job)
+            try:
+                resp = await z.purchase_prewarmed(PREWARMED_PLAN, approve=True)
+            except ZapmailHTTPError:
+                step["data"]["attempted"] = False   # definitive refusal: nothing charged
+                self.save(job)
+                raise
+        return StepOutcome("waiting", f"pre-warmed {PREWARMED_PLAN} plan bought; waiting for its slots",
+                           {"bought": True, "payment_link": (resp or {}).get("paymentLink")})
+
+    async def assign_prewarmed(self, job: dict, step: dict) -> StepOutcome:
+        """Assign the chosen pre-warmed domain to a free slot. FREE (Zapmail
+        2026-09-30); called at most once, afterwards we only look for it."""
         from smartlead.zapmail_accounts import open_client, require_account
         from smartlead.zapmail_fleet import locate_domain
 
@@ -301,13 +349,12 @@ class RealSteps:
             return StepOutcome("waiting", f"ordered {d}; waiting for it to appear on {acc}'s account "
                                "(if this lasts over an hour, check the Zapmail app)")
         async with open_client(job["client"], provider=job["provider"]) as z:
-            await require_wallet_covers(z, float(job.get("prewarmed_price") or 0), acc)
             step["data"]["attempted"] = True
             self.save(job)
             try:
                 resp = await z.assign_prewarmed([job["prewarmed_domain_id"]], approve=True)
             except ZapmailHTTPError:
-                step["data"]["attempted"] = False   # definitive refusal: nothing charged
+                step["data"]["attempted"] = False   # refused: nothing assigned
                 self.save(job)
                 raise
         rows = (resp or {}).get("data") or []
