@@ -8,8 +8,8 @@ MANAGER_MAP: dict[str, dict] = {
     "Mythic":        {"name": "Balasankar", "slack": "U091D7REGGN"},
     "Melior":        {"name": "Anjali",     "slack": "U045NBCSA3F"},
     "Belardi Wong":  {"name": "Anjali",     "slack": "U045NBCSA3F"},
-    "Bettrdata":     {"name": "Varsha",     "slack": "U0767GZUM8S"},  # Better Data
-    "Precise Leads": {"name": "Varsha",     "slack": "U0767GZUM8S"},  # internal
+    "Bettrdata":     {"name": "Manveen",    "slack": "U09TQ9D7YNM"},  # Better Data
+    "Precise Leads": {"name": "Manveen",    "slack": "U09TQ9D7YNM"},  # internal
     "OSC":           {"name": "Balasankar", "slack": "U091D7REGGN"},
     "StaffAI":       {"name": "Balasankar", "slack": "U091D7REGGN"},
     "Avench":        {"name": "Unassigned", "slack": ""},  # old client - ignore

@@ -71,7 +71,7 @@ One row per inbox: Health Score (0–100), Grade (A–D color), Trend (↑↓), 
 2. Filter to **your clients** (Manager column):
    - **Balasankar** — DARLEAN, Mythic *(OSC + StaffAI paused for Q3)*
    - **Anjali** — Melior, Belardi Wong
-   - **Varsha** — Better Data (Bettrdata), Precise Leads
+   - **Manveen** — Better Data (Bettrdata), Precise Leads
 3. Work every **P0 (red)** row that says **👤 You** — the "What To Do" column is your exact instruction. Do these TODAY.
 
 ### Every Monday — 30 minutes
