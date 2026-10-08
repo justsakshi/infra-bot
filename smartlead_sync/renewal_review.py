@@ -35,6 +35,7 @@ import httpx
 from smartlead import renewal_review as rr
 from smartlead.accounts import discover_accounts
 from smartlead.config import SMARTDELIVERY_BASE_URL
+from smartlead.report_sheet import client_label
 
 SL = "https://server.smartlead.ai/api/v1"
 UA = {"User-Agent": "Mozilla/5.0"}
@@ -53,6 +54,23 @@ def _get(url, key, **params):
     return r.json()
 
 
+_SEED_MX: dict[str, str] = {}
+
+
+def seed_provider(domain: str) -> str:
+    """Google / Outlook / other for a seed's domain, from its MX (DoH, cached)."""
+    if domain not in _SEED_MX:
+        try:
+            ans = httpx.get("https://dns.google/resolve", params={"name": domain, "type": "MX"},
+                            timeout=10).json().get("Answer") or []
+            mx = " ".join(a.get("data", "") for a in ans).lower()
+            _SEED_MX[domain] = ("Outlook" if "protection.outlook.com" in mx
+                                else "Google" if ("google" in mx or "googlemail" in mx) else "other")
+        except Exception:  # noqa: BLE001
+            _SEED_MX[domain] = "other"
+    return _SEED_MX[domain]
+
+
 def smartlead_facts(errors: list[str]) -> dict[str, dict]:
     """{email: {in_smartlead, connected, reputation, pct, tested_on, campaigns}}."""
     from placement_report import active_attachments
@@ -69,8 +87,10 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                     w = a.get("warmup_details") or {}
                     facts[a["from_email"].lower()] = {
                         "in_smartlead": True, "account": acc.name,
+                        "client": client_label(acc.name, a.get("client_id")),
                         "connected": bool(a.get("is_smtp_success") and a.get("is_imap_success")),
-                        "reputation": w.get("warmup_reputation"), "pct": None, "tested_on": None, "campaigns": []}
+                        "reputation": w.get("warmup_reputation"), "pct": None, "tested_on": None,
+                        "tests": [], "campaigns": []}
                 if len(page) < 100:
                     break
                 off += 100
@@ -81,21 +101,34 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                            json={"limit": 50}, headers=UA, timeout=60)
             tests = sorted((t for t in r.json() if t.get("status") == "COMPLETED"),
                            key=lambda t: t["created_at"], reverse=True)[:TESTS_PER_ACCOUNT]
-            seen: set[str] = set()
-            for t in tests:      # newest first: the first result per inbox wins
+            # Every test, newest first: the kill rule needs history (two strikes)
+            # and each seed's receiving provider (graded on the worse one).
+            for t in tests:
                 for e in _get(f"{SMARTDELIVERY_BASE_URL}/spam-test/report/{t['spam_test_id']}/sender-account-wise", key):
                     em = e["email"].lower()
-                    if em in seen or em not in facts:
+                    if em not in facts:
                         continue
-                    folders = [str((d.get("reply") or {}).get("mail_folder", "")).strip().lower()
-                               for d in e.get("details") or []]
-                    folders = [f for f in folders if f]
-                    if not folders:
+                    seeds = spam = 0
+                    by: dict[str, list[int]] = {}
+                    for d in e.get("details") or []:
+                        folder = str((d.get("reply") or {}).get("mail_folder", "")).strip().lower()
+                        if not folder:
+                            continue                       # unclassified: not evidence either way
+                        is_spam = folder in ("spam", "junk")
+                        seeds += 1
+                        spam += is_spam
+                        prov = seed_provider(str(d.get("email", "")).split("@")[-1].lower())
+                        slot = by.setdefault(prov, [0, 0])
+                        slot[0] += 1
+                        slot[1] += is_spam
+                    if not seeds:
                         continue
-                    seen.add(em)
-                    spam = sum(f in ("spam", "junk") for f in folders)
-                    facts[em]["pct"] = round(100.0 * (len(folders) - spam) / len(folders), 1)
-                    facts[em]["tested_on"] = t["created_at"][:10]
+                    facts[em].setdefault("tests", []).append(
+                        {"date": t["created_at"][:10], "seeds": seeds, "spam": spam, "by": by,
+                         "test_id": t["spam_test_id"]})
+                    if facts[em].get("tested_on") is None:      # newest first
+                        facts[em]["pct"] = round(100.0 * (seeds - spam) / seeds, 1)
+                        facts[em]["tested_on"] = t["created_at"][:10]
         except Exception as exc:  # noqa: BLE001 - one account must not hide the others
             errors.append(f"Smartlead {acc.name}: {str(exc)[:150]}")
     return facts

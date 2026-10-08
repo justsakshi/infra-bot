@@ -6,11 +6,11 @@ out at billing time that BettrData was paying for inboxes that had sat in
 spam for weeks. This review runs before each bill and says, per inbox,
 KEEP / RETIRE / CHECK, from what we actually know:
 
-  RETIRE  latest placement test under 80% inbox (team rule), or its domain is
-          a "spam" domain (half or more of its tested mailboxes under 80%),
-          or the inbox is not in any Smartlead account (paid for, unused)
-  CHECK   no placement test in the last 21 days, Smartlead connection broken,
-          or warmup reputation under 70%
+  RETIRE  "should kill" by the team's kill rule (smartlead/kill_rule.py: two
+          strikes 7+ days apart, under 50% on 20+ seeds, or a dead domain
+          pooled over 40+ seeds), or not in any Smartlead account
+  CHECK   one strike (retest before paying again), no counting test in 21
+          days, Smartlead connection broken, or warmup reputation under 70%
   KEEP    tested in the inbox recently and healthy
 
 Pure functions (unit-tested); ``renewal_review.py`` collects and posts.
@@ -21,8 +21,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
-GOOD_AT = 80.0          # mailbox inbox % (team rule, 2026-10-06)
-FRESH_DAYS = 21         # a placement result older than this is not evidence
+from smartlead import kill_rule as kr
+
 MIN_REPUTATION = 70.0   # Smartlead warmup reputation
 
 
@@ -33,10 +33,11 @@ def _rep(v) -> float | None:
         return None
 
 
-def judge_inbox(email: str, facts: dict | None, domain_spam: bool, today: date,
+def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
                 complete: bool = True) -> tuple[str, str]:
     """``(verdict, reason)`` for one inbox. ``facts`` from Smartlead +
-    SmartDelivery: {in_smartlead, connected, reputation, pct, tested_on, campaigns}."""
+    SmartDelivery: {in_smartlead, connected, reputation, tests, campaigns};
+    ``kill`` is its kill_rule verdict (the team's two-strike rule)."""
     f = facts or {}
     if not f.get("in_smartlead"):
         # Only proof when every Smartlead account was read: a 429 on 2026-10-08
@@ -44,40 +45,28 @@ def judge_inbox(email: str, facts: dict | None, domain_spam: bool, today: date,
         if not complete:
             return "CHECK", "Smartlead could not be read just now — no verdict"
         return "RETIRE", "not in any Smartlead account (paid for, never used)"
-    pct, tested = f.get("pct"), f.get("tested_on")
-    age = (today - date.fromisoformat(tested)).days if tested else None
-    fresh = age is not None and age <= FRESH_DAYS
-    if fresh and pct is not None and pct < GOOD_AT:
-        return "RETIRE", f"{pct:.0f}% inbox in the {tested} test"
-    if domain_spam:
-        return "RETIRE", "its domain is in spam (half or more of its mailboxes under 80%)"
+    k = kill or {"verdict": kr.NO_DATA, "why": "no placement test"}
+    if k["verdict"] == kr.KILL:
+        return "RETIRE", "should kill — " + k["why"]
     if not f.get("connected", True):
         return "CHECK", "Smartlead connection broken"
     rep = _rep(f.get("reputation"))
     if rep is not None and rep < MIN_REPUTATION:
         return "CHECK", f"warmup reputation {rep:.0f}%"
-    if not fresh:
-        return "CHECK", "no placement test in 21 days" + (f" (last {tested}: {pct:.0f}%)" if tested and pct is not None else "")
-    return "KEEP", f"{pct:.0f}% inbox ({tested})"
-
-
-def spam_domains(facts: dict[str, dict], today: date) -> set[str]:
-    """Domains where half or more of the freshly tested mailboxes are under 80%."""
-    per: dict[str, list[bool]] = defaultdict(list)
-    for email, f in facts.items():
-        t = f.get("tested_on")
-        if f.get("pct") is None or not t or (today - date.fromisoformat(t)).days > FRESH_DAYS:
-            continue
-        per[email.split("@")[1]].append(f["pct"] < GOOD_AT)
-    return {d for d, bad in per.items() if bad and sum(bad) * 2 >= len(bad)}
+    if k["verdict"] == kr.WATCH:
+        return "CHECK", k["why"]
+    if k["verdict"] == kr.NO_DATA:
+        return "CHECK", k["why"]
+    return "KEEP", k["why"]
 
 
 def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool = True) -> dict:
     """``bill`` = {provider, label, bills_on, price, inboxes:[emails], client(s), ...}."""
-    spam = spam_domains(facts, today)
+    # The kill rule pools a domain across ALL its known mailboxes, not just this bill's.
+    kills = kr.judge_all({e: (f or {}).get("tests") or [] for e, f in facts.items()}, today)
     rows = []
     for email in bill.get("inboxes") or []:
-        v, why = judge_inbox(email, facts.get(email), email.split("@")[1] in spam, today, complete)
+        v, why = judge_inbox(email, facts.get(email), kills.get(email), today, complete)
         rows.append({"email": email, "verdict": v, "why": why,
                      "campaigns": (facts.get(email) or {}).get("campaigns") or []})
     n = len(bill.get("inboxes") or []) or int(bill.get("mailboxes") or 0) or 1

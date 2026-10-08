@@ -73,3 +73,12 @@ const u = require('./domains_unified');
   assert.ok(u.routeText('review').sub === 'review' && u.planFor('review')[0].cli.includes('renewal_review.py'), 'typed /domains review');
   console.log('review view: 5 passed');
 })().catch(e => { console.error(e); process.exit(1); });
+
+// Kill warnings view
+{
+  const u2 = require('./domains_unified');
+  assert.ok(u2.routeText('kill').sub === 'kill' && u2.planFor('kill')[0].cli.includes('kill_report.py'), 'typed /domains kill');
+  const ids2 = u2.homeBlocks(__dirname).filter(b => b.type === 'actions').flatMap(b => b.elements.map(e => e.action_id));
+  assert.ok(ids2.includes('u_nav_kill'), 'menu has Kill warnings');
+  console.log('kill view: 2 passed');
+}

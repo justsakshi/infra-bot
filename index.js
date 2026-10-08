@@ -1517,6 +1517,11 @@ async function start() {
     // Renewal Check shows "don't renew" next to them (7 days ahead).
     cron.schedule('50 9 * * *', () => runBilling('renewal-review', ['renewal_review.py', '--days', '7', '--post', '--flag-tracker']), { timezone: 'Asia/Kolkata' });
 
+    // Kill warnings, Tuesday 13:30 IST, after the Mon/Tue placement reports:
+    // which inboxes SHOULD be killed by the team's rule (two strikes, <50% on
+    // 20+ seeds, or a dead domain) and which to watch. Warning only.
+    cron.schedule('30 13 * * 2', () => runBilling('kill-report', ['kill_report.py', '--post']), { timezone: 'Asia/Kolkata' });
+
     // Per-domain reply-rate early warning at 1:00 PM IST daily (read-only).
     cron.schedule('0 13 * * *', () => {
       console.log(`[CRON] Reply monitor firing at ${new Date().toISOString()}`);

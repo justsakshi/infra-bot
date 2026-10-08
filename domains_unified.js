@@ -23,11 +23,11 @@ const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-
 const MAX_BLOCKS = 49;
 
 const SUBS = ['status', 'renewals', 'billing', 'domain', 'lookup', 'purchases', 'prewarmed', 'sync',
-  'digest', 'quote', 'find', 'cross-check', 'audit', 'fleet', 'review'];
+  'digest', 'quote', 'find', 'cross-check', 'audit', 'fleet', 'review', 'kill'];
 
 const HELP = [
   '*`/domains`* — one menu for domains, inboxes and renewals on Zapmail *and* ScaledMail.',
-  '`/domains status` · `renewals` · `review` · `domain x.com` · `purchases` · `prewarmed` · `sync` · `digest` · `audit`',
+  '`/domains status` · `renewals` · `review` · `kill` · `domain x.com` · `purchases` · `prewarmed` · `sync` · `digest` · `audit`',
   '`/domains suggest precise leads` — name ideas with both providers’ prices',
   '`/domains quote 30000 google,outlook 70,30 low` · `/domains find keyword`',
   '`/domains infra add | renew | list | expiring 7` — the asset tracker',
@@ -64,7 +64,8 @@ function homeBlocks(baseDir) {
     btn('Look up a domain', 'u_lookup_open'), btn('Purchases', 'u_nav_purchases'), btn("Today's digest", 'u_nav_digest')] });
   blocks.push({ type: 'actions', block_id: 'u_home_2', elements: [
     btn('Order mailboxes', 'sm_order_open', '{}'), btn('Price a volume', 'sm_quote_open'),
-    btn('Pre-warmed', 'u_nav_prewarmed'), btn('Tracker sync', 'u_nav_sync'), btn('Infra audit', 'dh_audit')] });
+    btn('Pre-warmed', 'u_nav_prewarmed'), btn('Tracker sync', 'u_nav_sync'), btn('Infra audit', 'dh_audit'),
+    btn('Kill warnings', 'u_nav_kill')] });
   blocks.push(section('*Tracker*'));
   blocks.push({ type: 'actions', block_id: 'u_home_3', elements: [
     btn('Expiring today', 'infra_expiring_0'), btn('Next 7 days', 'infra_expiring_7'),
@@ -95,6 +96,8 @@ function planFor(sub, args) {
     case 'cross-check': return [z('cross-check')];
     case 'quote': return [s('quote', a)];
     case 'find': return [s('find', a)];
+    case 'kill': return [{ provider: 'Kill warnings', sub: 'kill', cli: ['kill_report.py', '--json'],
+      render: r => ({ text: 'Kill warnings', blocks: require('./domains_home').auditBlocks(r.text || (':x: ' + (r.error || 'no result'))) }) }];
     case 'review': return [{ provider: 'Renewal review', sub: 'review', cli: ['renewal_review.py', '--days', String(parseInt(a[0], 10) || 14), '--json'],
       render: r => ({ text: 'Renewal review', blocks: reviewBlocks(r) }) }];
     case 'audit': return [{ provider: 'Infra audit', sub: 'audit', cli: ['infra_audit.py', '--json'],
@@ -180,7 +183,7 @@ async function runView(sub, args, baseDir) {
   const title = { status: 'Fleet & cost', fleet: 'Fleet & cost', renewals: 'Renewals & billing', billing: 'Renewals & billing',
     domain: 'Domain ' + (args[0] || ''), lookup: 'Domain ' + (args[0] || ''), purchases: 'Purchases', prewarmed: 'Pre-warmed',
     sync: 'Tracker sync', digest: "Today's digest", 'cross-check': 'Tracker vs Zapmail', quote: 'Quote', find: 'Domain ideas',
-    audit: 'Infra audit', review: 'Renewal review' }[sub] || sub;
+    audit: 'Infra audit', review: 'Renewal review', kill: 'Kill warnings' }[sub] || sub;
   const blocks = [];
   let shown = 0;
   for (const { p, r, err } of results) {
