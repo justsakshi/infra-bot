@@ -54,3 +54,22 @@ const u = require('./domains_unified');
   ok(!ids.includes('dh_zapmail') && !ids.includes('sm_home'), 'no separate Zapmail / ScaledMail menus');
   console.log(n + ' passed');
 })().catch(e => { console.error(e); process.exit(1); });
+
+// ── renewal review view ─────────────────────────────────────────────────
+(async () => {
+  const blocks = u.reviewBlocks({ days: 14, errors: [], reviews: [
+    { provider: 'Zapmail', label: '15 Outlook inboxes', bills_on: '2026-10-10', price: 48.75, counts: { KEEP: 1, RETIRE: 2, CHECK: 0 }, retire_saves_monthly: 6.5,
+      rows: [{ email: 'a@x.com', verdict: 'RETIRE', why: '47%', client: 'Bettrdata', campaigns: ['C'] },
+             { email: 'b@y.com', verdict: 'RETIRE', why: 'spam domain', client: 'Melior', campaigns: [] },
+             { email: 'c@z.com', verdict: 'KEEP', why: '100%', client: 'Bettrdata' }] },
+    { provider: 'ScaledMail', label: '39 × Google', bills_on: '2026-10-08', price: 136.5, counts: { KEEP: 0, RETIRE: 1, CHECK: 0 }, retire_saves_monthly: 3.5,
+      rows: [{ email: 'd@w.com', verdict: 'RETIRE', why: '60%', client: 'Precise Leads' }] }] });
+  const txt = JSON.stringify(blocks);
+  const retire = blocks.filter(b => b.type === 'actions').flatMap(b => b.elements);
+  assert.ok(/\$10\/month/.test(txt), 'total savings');
+  assert.deepStrictEqual(retire.map(e => e.action_id).sort(), ['u_retire_bettrdata', 'u_retire_melior'], 'one retire button per client, Zapmail only');
+  assert.ok(retire.every(e => e.style === 'danger' && e.confirm), 'retire asks first');
+  assert.ok(/Replace domain/.test(txt), 'ScaledMail gets the per-order explanation');
+  assert.ok(u.routeText('review').sub === 'review' && u.planFor('review')[0].cli.includes('renewal_review.py'), 'typed /domains review');
+  console.log('review view: 5 passed');
+})().catch(e => { console.error(e); process.exit(1); });

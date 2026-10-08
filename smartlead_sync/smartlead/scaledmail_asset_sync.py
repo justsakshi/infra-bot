@@ -5,9 +5,8 @@ hand, and the inbox expiry dates had stopped moving (55 Melior inboxes said
 "expires 2026-10-06" while their order kept billing). Rules:
 
 * **Domain expiry** follows ScaledMail's registration ``renewal_at``.
-* **Inbox expiry** is the order's next monthly billing day. It is only
-  written when the tracker has none or the tracker's date has already
-  passed — a date the team set in the future is left alone.
+* **Inbox expiry** is the order's next monthly billing day — always (the
+  order is what bills; a hand-typed date was 2 days late on 2026-10-08).
 * **Status** only downgrades (Active → Inactive when the domain is gone or
   its order is cancelled). Nothing is flipped back to Active.
 * Missing fields are filled; team fields (client, owner, channel, costs,
@@ -22,7 +21,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from smartlead.zapmail_asset_sync import _changes, _day, _dt, apply, read_tracker
+from smartlead.zapmail_asset_sync import _changes, _dt, apply, read_tracker
 from smartlead.zapmail_clients import TRACKER_SPELLING
 from smartlead.scaledmail_fleet import WORKSPACE
 
@@ -81,9 +80,11 @@ def plan_sync(snap: dict, tracker: dict[str, dict]) -> dict:
             existing = tracker.get(email)
             box_live = live and str(m.get("status")) == "Active"
             if existing:
-                cur = _day(existing.get("expiryDate"))
-                roll = d["billing_day"] if (not cur or cur < today) else ""
-                s = _changes(existing, expire_on=roll, zap_status=paid,
+                # The order's bill day IS the inbox's renewal day. 2026-10-08:
+                # Precise Leads' 39 inboxes were typed in as "expire 10 Oct" while
+                # ScaledMail billed them on the 8th, so the reminder was 2 days
+                # late. The order date wins, like Zapmail's dates do.
+                s = _changes(existing, expire_on=d["billing_day"], zap_status=paid,
                              workspace=ws, first_day="", domain=name)
                 if s:
                     ops.append({"action": "update", "type": "INBOX", "name": email, "set": s,

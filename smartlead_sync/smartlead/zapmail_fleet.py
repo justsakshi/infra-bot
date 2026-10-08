@@ -382,6 +382,8 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                                          or {}).get("data") or []
                                 doms = sorted({str(b.get("domain") or "").lower() for b in boxes if b.get("domain")})
                                 row["domains"] = doms
+                                row["inboxes"] = sorted({f"{b.get('username')}@{b.get('domain')}".lower()
+                                                         for b in boxes if b.get("username") and b.get("domain")})
                                 row["clients"] = sorted({infer_client(d, acc.name) or "unassigned" for d in doms})
                             rows.append(row)
             except ZapmailError as exc:

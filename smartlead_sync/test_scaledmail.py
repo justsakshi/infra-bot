@@ -312,7 +312,7 @@ def test_sync_skips_unassigned_and_in_progress():
     assert {s["name"] for s in p["skipped"]} >= {"a.com", "b.com"}
 
 
-def test_inbox_expiry_only_rolls_when_past():
+def test_inbox_expiry_follows_the_order_bill_day():
     tracker = {"a@m.com": {"type": "INBOX", "status": "Active", "workspace": "Google", "domain": "m.com",
                            "expiryDate": datetime(2026, 10, 6)},
                "a@n.com": {"type": "INBOX", "status": "Active", "workspace": "Google", "domain": "n.com",
@@ -322,7 +322,8 @@ def test_inbox_expiry_only_rolls_when_past():
                "n.com": {"type": "DOMAIN", "status": "Active", "workspace": "Google",
                          "expiryDate": datetime(2027, 7, 6), "purchaseDate": datetime(2026, 7, 6)}}
     p = plan_sync(_snap(_dom("m.com"), _dom("n.com")), tracker)
-    assert [(o["name"], o["reason"]) for o in p["ops"]] == [("a@m.com", "expiryDate")]
+    # both move to the order's bill day (2026-11-06): a past date and a wrong future one
+    assert sorted((o["name"], o["reason"]) for o in p["ops"]) == [("a@m.com", "expiryDate"), ("a@n.com", "expiryDate")]
 
 
 def test_unknown_alias_on_tracked_domain_not_added():

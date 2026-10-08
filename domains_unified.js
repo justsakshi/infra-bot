@@ -23,11 +23,11 @@ const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-
 const MAX_BLOCKS = 49;
 
 const SUBS = ['status', 'renewals', 'billing', 'domain', 'lookup', 'purchases', 'prewarmed', 'sync',
-  'digest', 'quote', 'find', 'cross-check', 'audit', 'fleet'];
+  'digest', 'quote', 'find', 'cross-check', 'audit', 'fleet', 'review'];
 
 const HELP = [
   '*`/domains`* — one menu for domains, inboxes and renewals on Zapmail *and* ScaledMail.',
-  '`/domains status` · `renewals` · `domain x.com` · `purchases` · `prewarmed` · `sync` · `digest` · `audit`',
+  '`/domains status` · `renewals` · `review` · `domain x.com` · `purchases` · `prewarmed` · `sync` · `digest` · `audit`',
   '`/domains suggest precise leads` — name ideas with both providers’ prices',
   '`/domains quote 30000 google,outlook 70,30 low` · `/domains find keyword`',
   '`/domains infra add | renew | list | expiring 7` — the asset tracker',
@@ -95,10 +95,48 @@ function planFor(sub, args) {
     case 'cross-check': return [z('cross-check')];
     case 'quote': return [s('quote', a)];
     case 'find': return [s('find', a)];
+    case 'review': return [{ provider: 'Renewal review', sub: 'review', cli: ['renewal_review.py', '--days', String(parseInt(a[0], 10) || 14), '--json'],
+      render: r => ({ text: 'Renewal review', blocks: reviewBlocks(r) }) }];
     case 'audit': return [{ provider: 'Infra audit', sub: 'audit', cli: ['infra_audit.py', '--json'],
       render: r => ({ text: 'Infra audit', blocks: require('./domains_home').auditBlocks(r.text) }) }];
     default: return null;
   }
+}
+
+/** renewal_review.py → per bill KEEP / RETIRE / CHECK, with one-click retire (Zapmail). */
+function reviewBlocks(r) {
+  if (!r || r.error) return [section(':x: ' + ((r && r.error) || 'no result'))];
+  const blocks = [];
+  const reviews = r.reviews || [];
+  const save = reviews.reduce((a, x) => a + (x.retire_saves_monthly || 0), 0);
+  blocks.push(section('*Before the bill: which inboxes to keep* — next ' + (r.days || 14) + ' days · retiring the flagged ones saves *'
+    + money(save) + '/month*' + NL + '_RETIRE = under 80% inbox in its latest test, on a spam domain, or not in Smartlead at all. CHECK = no recent test, broken connection or low warmup reputation._'));
+  for (const rv of reviews.slice(0, 12)) {
+    const c = rv.counts || {};
+    const bad = (rv.rows || []).filter(x => x.verdict === 'RETIRE');
+    const chk = (rv.rows || []).filter(x => x.verdict === 'CHECK');
+    let t = '*' + rv.bills_on + ' · ' + rv.provider + ' · ' + rv.label + '* — ' + money(rv.price) + ' · ' + (c.KEEP || 0) + ' keep · *'
+      + (c.RETIRE || 0) + ' retire* · ' + (c.CHECK || 0) + ' check' + (rv.note ? NL + '_' + rv.note + '_' : '');
+    t += bad.slice(0, 12).map(x => NL + ':x: `' + x.email + '` — ' + x.why + ((x.campaigns || []).length ? ' :warning: in a live campaign' : '')).join('');
+    t += chk.slice(0, 5).map(x => NL + ':grey_question: `' + x.email + '` — ' + x.why).join('');
+    blocks.push(section(t));
+    if (bad.length && rv.provider === 'Zapmail') {
+      const byClient = {};
+      bad.forEach(x => { if (x.client) (byClient[x.client] = byClient[x.client] || []).push(x.email); });
+      const elements = Object.entries(byClient).slice(0, 4).map(([client, emails]) => ({
+        type: 'button', action_id: 'u_retire_' + client.toLowerCase().replace(/[^a-z]/g, ''), style: 'danger',
+        text: { type: 'plain_text', text: ('Retire ' + emails.length + ' (' + client + ')').slice(0, 75) },
+        value: JSON.stringify({ client, emails: emails.slice(0, 40) }).slice(0, 1990),
+        confirm: { title: { type: 'plain_text', text: 'Retire at this bill?' },
+          text: { type: 'plain_text', text: ('Zapmail removes ' + emails.length + ' inbox(es) at their next bill and stops charging for them. The domains stay; undo is possible before the bill. ' + emails.join(', ')).slice(0, 295) },
+          confirm: { type: 'plain_text', text: 'Retire' }, deny: { type: 'plain_text', text: 'Cancel' } } }));
+      if (elements.length) blocks.push({ type: 'actions', elements });
+    } else if (bad.length && rv.provider === 'ScaledMail') {
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'ScaledMail cannot drop single inboxes: per domain use *Look up a domain → Replace domain*, or cancel the whole order.' }] });
+    }
+  }
+  (r.errors || []).forEach(e => blocks.push(section(':warning: ' + e)));
+  return blocks.slice(0, MAX_BLOCKS);
 }
 
 /** Zapmail inbox subscriptions billing soon (zapmail_status.py --billing). */
@@ -106,7 +144,8 @@ function billingBlocks(r) {
   const rows = (r && r.billing) || [];
   const horizon = new Date(Date.now() + (r.days || 14) * 864e5).toISOString().slice(0, 10);
   const soon = rows.filter(x => x.bills_on && x.bills_on <= horizon);
-  const blocks = [section('*Inbox subscriptions billing in the next ' + (r.days || 14) + ' days* — inboxes are seats in these; '
+  const blocks = [{ type: 'actions', elements: [btn('Review inboxes before their bill', 'u_nav_review', null, 'primary')] },
+    section('*Inbox subscriptions billing in the next ' + (r.days || 14) + ' days* — inboxes are seats in these; '
     + 'the card is charged on the date and every inbox in it renews. To stop paying for some inboxes, look up their domain → *Retire inboxes* (removed at the next bill).')];
   (r.billing_errors || []).forEach(e => blocks.push(section(':warning: could not check ' + e)));
   if (!soon.length) blocks.push(section('_nothing billing soon_'));
@@ -136,7 +175,7 @@ async function runView(sub, args, baseDir) {
   const title = { status: 'Fleet & cost', fleet: 'Fleet & cost', renewals: 'Renewals & billing', billing: 'Renewals & billing',
     domain: 'Domain ' + (args[0] || ''), lookup: 'Domain ' + (args[0] || ''), purchases: 'Purchases', prewarmed: 'Pre-warmed',
     sync: 'Tracker sync', digest: "Today's digest", 'cross-check': 'Tracker vs Zapmail', quote: 'Quote', find: 'Domain ideas',
-    audit: 'Infra audit' }[sub] || sub;
+    audit: 'Infra audit', review: 'Renewal review' }[sub] || sub;
   const blocks = [];
   let shown = 0;
   for (const { p, r, err } of results) {
@@ -197,6 +236,26 @@ function registerUnified(app, baseDir) {
     await ack();
     return runUnified(String(action.action_id).replace(/^u_nav_/, ''), [], baseDir, respond);
   });
+  // One-click retire of flagged Zapmail inboxes (approver-only; removed at the next bill).
+  app.action(/^u_retire_[a-z]+$/, async ({ ack, body, action, respond }) => {
+    await ack();
+    const { isApprover } = require('./zapmail_actions');
+    if (!isApprover(body.user && body.user.id)) {
+      return respond({ response_type: 'ephemeral', replace_original: false, text: ':lock: Only Zapmail approvers can retire inboxes (ZAPMAIL_APPROVERS).' });
+    }
+    let p = {};
+    try { p = JSON.parse(action.value); } catch (e) { return; }
+    const EMAIL = /^[a-z0-9][a-z0-9._-]{0,63}@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+    const emails = (p.emails || []).filter(e => EMAIL.test(e));
+    if (!emails.length || !['Bettrdata', 'Melior', 'Precise Leads'].includes(p.client)) return;
+    await respond({ response_type: 'ephemeral', replace_original: false, text: ':hourglass: Retiring ' + emails.length + ' inbox(es) for ' + p.client + '…' });
+    const r = await require('./domain_suggest_command').runPy(['zapmail_inboxes.py', '--retire', emails.join(','), '--client', p.client, '--approve', '--json'], baseDir, 3 * 60 * 1000)
+      .catch(err => ({ error: err.message }));
+    await respond({ response_type: 'ephemeral', replace_original: false, text: r && r.ok
+      ? ':white_check_mark: <@' + body.user.id + '> retired ' + (r.inboxes || emails).length + ' inbox(es) for ' + p.client + ' — removed at their next bill. ' + (r.detail || '')
+      : ':x: Not retired: ' + require('./slack_text').plainError((r && r.error) || 'no result') });
+  });
+
   app.action('u_lookup_open', async ({ ack, body, client }) => {
     await ack();
     await client.views.open({ trigger_id: body.trigger_id, view: lookupModal(body.channel && body.channel.id) });
@@ -216,4 +275,4 @@ function registerUnified(app, baseDir) {
   });
 }
 
-module.exports = { homeBlocks, planFor, runView, runUnified, routeText, registerUnified, billingBlocks, HELP, SUBS };
+module.exports = { homeBlocks, planFor, runView, runUnified, routeText, registerUnified, billingBlocks, reviewBlocks, HELP, SUBS };

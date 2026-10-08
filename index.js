@@ -1494,6 +1494,22 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
+    // Inbox billing: did every Zapmail subscription / ScaledMail order renew?
+    // Every 2 hours 9-21 IST; posts only changes (not renewed, payment failed,
+    // cancelled, bought outside the bot) to RENEWAL_REVIEW_CHANNEL / ZAPMAIL_NOTIFY_CHANNEL.
+    // Renewal review at 9:50 IST: inboxes on bills due in 3 days → keep / retire / check.
+    const runBilling = (tag, args) => {
+      const proc = spawn('python', args, {
+        cwd: path.join(__dirname, 'smartlead_sync'),
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[${tag}] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[${tag}] ${d}`));
+      proc.on('close', code => console.log(`[${tag}] finished with code ${code}`));
+    };
+    cron.schedule('5 9-21/2 * * *', () => runBilling('billing-watch', ['billing_watch.py']), { timezone: 'Asia/Kolkata' });
+    cron.schedule('50 9 * * *', () => runBilling('renewal-review', ['renewal_review.py', '--days', '3', '--post']), { timezone: 'Asia/Kolkata' });
+
     // Per-domain reply-rate early warning at 1:00 PM IST daily (read-only).
     cron.schedule('0 13 * * *', () => {
       console.log(`[CRON] Reply monitor firing at ${new Date().toISOString()}`);
