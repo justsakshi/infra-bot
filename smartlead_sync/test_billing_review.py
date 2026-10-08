@@ -82,3 +82,10 @@ def test_review_bill_counts_and_savings():
     assert r["counts"] == {"KEEP": 1, "RETIRE": 3, "CHECK": 0}      # c@x.com retired with its spam domain
     assert r["retire_saves_monthly"] == 9.75
     assert "saves *$9.75/month*" in rr.format_review([r], 3)
+
+
+def test_failed_payment_carries_the_invoice_link():
+    prev = state(_z("a", "2026-10-08"))
+    now = [dict(_z("a", "2026-10-08", fail="card declined"), invoice_url="https://invoice.stripe.com/i/x")]
+    txt = bw.format_events(bw.compare(prev, now, T))
+    assert "<https://invoice.stripe.com/i/x|Pay / see invoice>" in txt

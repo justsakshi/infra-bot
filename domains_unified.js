@@ -153,6 +153,7 @@ function billingBlocks(r) {
     const s = section('*' + x.bills_on + '* — ' + money(x.price) + ' · ' + (x.mailboxes || '?') + ' ' + (x.provider === 'MICROSOFT' ? 'Outlook' : 'Google')
       + ' ' + x.kind + ' · ' + x.account + (x.clients && x.clients.length ? ' · ' + x.clients.join(', ') : '')
       + (x.payment_failure ? ' · :x: ' + x.payment_failure : '')
+      + (x.invoice_url ? ' · <' + x.invoice_url + '|' + (x.payment_failure ? 'Pay / see invoice' : 'Invoice') + '>' : '')
       + (x.domains && x.domains.length ? NL + x.domains.map(d => '`' + d + '`').join(', ') : ''));
     const doms = (x.domains || []).filter(d => DOMAIN_RE.test(d)).slice(0, 10);
     if (doms.length) {

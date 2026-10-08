@@ -164,6 +164,8 @@ def billing_lines(rows: list[dict], *, today: date, days: int = 3) -> list[str]:
         line = f"• {r.get('bills_on')}: {what} {_money(r.get('price'))} ({who})"
         if r.get("payment_failure"):
             line = ":x: " + line + f" — *payment failed: {r['payment_failure']}* (inboxes may be suspended)"
+            if r.get("invoice_url"):
+                line += f" · <{r['invoice_url']}|Pay / see invoice>"
         out.append(line)
     return out
 

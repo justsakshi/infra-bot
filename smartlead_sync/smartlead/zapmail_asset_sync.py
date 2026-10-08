@@ -252,6 +252,20 @@ async def sync(*, apply_changes: bool = False, domain: str | None = None) -> dic
         domain = domain.strip().lower()
         domains = [d for d in domains if d["domain"] == domain]
     mailboxes = await all_mailboxes(errors, domain=domain)
+    # An inbox renews when its SUBSCRIPTION bills, not on the mailbox's own
+    # expireOn (2026-10-08: 21 BettrData inboxes said 10-09, their subscription
+    # billed 10-08). Use the subscription's bill date wherever Zapmail lists it.
+    try:
+        from smartlead.zapmail_fleet import subscriptions_billing
+        bill_day = {}
+        for s in await subscriptions_billing(days=0, errors=errors, all_inboxes=True):
+            for email in s.get("inboxes") or []:
+                bill_day[email] = s["bills_on"]
+        for m in mailboxes:
+            if m.get("email") in bill_day and bill_day[m["email"]]:
+                m["expire_on"] = bill_day[m["email"]]
+    except Exception as exc:  # noqa: BLE001 - fall back to the mailbox's own date
+        errors.append(f"subscription dates: {str(exc)[:120]}")
     tracker = read_tracker()
     if not tracker:
         errors.append("tracker unreachable (Mongo) — nothing planned")

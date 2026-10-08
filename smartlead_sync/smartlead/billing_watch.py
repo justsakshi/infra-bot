@@ -40,7 +40,7 @@ def compare(prev: dict[str, dict], now: list[dict], today: date) -> list[dict]:
         seen.add(k)
         p = prev.get(k)
         base = {"key": k, "provider": r["provider"], "label": r["label"], "clients": r.get("clients") or [],
-                "bills_on": r.get("bills_on"), "inboxes": r.get("inboxes")}
+                "bills_on": r.get("bills_on"), "inboxes": r.get("inboxes"), "invoice_url": r.get("invoice_url") or ""}
         if p is None:
             if prev:      # first run ever: everything is "new", say nothing
                 events.append({**base, "event": "new", "detail": f"new {r['provider']} subscription / order"})
@@ -85,8 +85,11 @@ def format_events(events: list[dict]) -> str:
     lines = ["*💳 Inbox billing watch*"]
     for e in alerts + ok:
         who = ", ".join(e["clients"]) if e["clients"] else ""
+        pay = ""
+        if e.get("invoice_url") and e["event"] in ("payment", "not_renewed", "status", "bill_day"):
+            pay = f" · <{e['invoice_url']}|{'Pay / see invoice' if e['provider'] == 'Zapmail' else 'Open ScaledMail billing'}>"
         lines.append(f"{ICON[e['event']]} *{e['provider']} · {e['label']}*" + (f" ({who})" if who else "")
-                     + f" — {e['detail']}")
+                     + f" — {e['detail']}{pay}")
     if any(e["event"] in ("not_renewed", "payment", "status") for e in alerts):
         lines.append("_Unpaid inboxes get suspended. Fix the card / wallet in the provider, or let them lapse on purpose._")
     return "\n".join(lines)

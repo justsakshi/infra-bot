@@ -340,7 +340,7 @@ async def _mailboxes_on(z: ZapmailClient, domain: str) -> list[dict]:
 
 
 async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
-                                today: str | None = None) -> list[dict]:
+                                today: str | None = None, all_inboxes: bool = False) -> list[dict]:
     """Every Zapmail subscription (inbox add-ons + pre-warmed), both providers,
     with its next bill date. READ-ONLY.
 
@@ -375,8 +375,10 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                                    "bills_on": _iso_to_date(s.get("periodEnd")), "status": status,
                                    "subscription_id": s.get("subscriptionId"),
                                    "payment_failure": s.get("paymentFailureMessage"),
+                                   # Stripe invoice page: pay / see the latest bill from here.
+                                   "invoice_url": s.get("invoiceDetails") or "",
                                    "domains": [], "clients": []}
-                            if kind == "inboxes" and row["bills_on"] and row["bills_on"] <= horizon:
+                            if kind == "inboxes" and row["bills_on"] and (all_inboxes or row["bills_on"] <= horizon):
                                 boxes = ((await z._request("POST", "/v2/subscriptions/mailboxes",
                                                            json={"subscriptionId": s.get("subscriptionId")}))
                                          or {}).get("data") or []

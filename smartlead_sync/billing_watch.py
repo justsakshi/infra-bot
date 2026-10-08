@@ -45,7 +45,8 @@ def collect(errors: list[str]) -> list[dict]:
                      "label": f"{r['mailboxes'] or '?'} {'Outlook' if r['provider'] == 'MICROSOFT' else 'Google'} "
                               f"{r['kind']} ({r['account']})",
                      "bills_on": r["bills_on"], "status": r["status"], "payment_failure": r.get("payment_failure"),
-                     "inboxes": r["mailboxes"], "clients": r.get("clients") or []})
+                     "inboxes": r["mailboxes"], "clients": r.get("clients") or [],
+                     "invoice_url": r.get("invoice_url") or ""})
     try:
         from smartlead.scaledmail import ScaledMailClient, configured
         if configured():
@@ -57,7 +58,8 @@ def collect(errors: list[str]) -> list[dict]:
                     continue
                 rows.append({"provider": "ScaledMail", "id": o["id"], "label": o["description"].replace("*", "×"),
                              "bills_on": o["billing_day"], "status": o["status"], "payment_failure": None,
-                             "inboxes": o["mailboxes"], "clients": o["clients"]})
+                             "inboxes": o["mailboxes"], "clients": o["clients"],
+                             "invoice_url": "https://app.scaledmail.com"})
     except Exception as exc:  # noqa: BLE001
         errors.append(f"ScaledMail: {str(exc)[:150]}")
     return rows
