@@ -33,11 +33,16 @@ def _rep(v) -> float | None:
         return None
 
 
-def judge_inbox(email: str, facts: dict | None, domain_spam: bool, today: date) -> tuple[str, str]:
+def judge_inbox(email: str, facts: dict | None, domain_spam: bool, today: date,
+                complete: bool = True) -> tuple[str, str]:
     """``(verdict, reason)`` for one inbox. ``facts`` from Smartlead +
     SmartDelivery: {in_smartlead, connected, reputation, pct, tested_on, campaigns}."""
     f = facts or {}
     if not f.get("in_smartlead"):
+        # Only proof when every Smartlead account was read: a 429 on 2026-10-08
+        # made all 39 Precise Leads inboxes look "unused".
+        if not complete:
+            return "CHECK", "Smartlead could not be read just now — no verdict"
         return "RETIRE", "not in any Smartlead account (paid for, never used)"
     pct, tested = f.get("pct"), f.get("tested_on")
     age = (today - date.fromisoformat(tested)).days if tested else None
@@ -67,12 +72,12 @@ def spam_domains(facts: dict[str, dict], today: date) -> set[str]:
     return {d for d, bad in per.items() if bad and sum(bad) * 2 >= len(bad)}
 
 
-def review_bill(bill: dict, facts: dict[str, dict], today: date) -> dict:
+def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool = True) -> dict:
     """``bill`` = {provider, label, bills_on, price, inboxes:[emails], client(s), ...}."""
     spam = spam_domains(facts, today)
     rows = []
     for email in bill.get("inboxes") or []:
-        v, why = judge_inbox(email, facts.get(email), email.split("@")[1] in spam, today)
+        v, why = judge_inbox(email, facts.get(email), email.split("@")[1] in spam, today, complete)
         rows.append({"email": email, "verdict": v, "why": why,
                      "campaigns": (facts.get(email) or {}).get("campaigns") or []})
     n = len(bill.get("inboxes") or []) or int(bill.get("mailboxes") or 0) or 1

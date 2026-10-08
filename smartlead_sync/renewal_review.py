@@ -43,7 +43,12 @@ TESTS_PER_ACCOUNT = 10
 
 
 def _get(url, key, **params):
-    r = httpx.get(url, params={"api_key": key, **params}, headers=UA, timeout=120)
+    import time
+    for attempt in range(5):           # Smartlead rate-limits hard: back off on 429
+        r = httpx.get(url, params={"api_key": key, **params}, headers=UA, timeout=120)
+        if r.status_code != 429:
+            break
+        time.sleep(10 * (attempt + 1))
     r.raise_for_status()
     return r.json()
 
@@ -144,9 +149,11 @@ def scaledmail_bills(days: int, errors: list[str]) -> list[dict]:
 def run(days: int) -> dict:
     errors: list[str] = []
     bills = zapmail_bills(days, errors) + scaledmail_bills(days, errors)
+    n_before = len(errors)
     facts = smartlead_facts(errors) if bills else {}
+    complete = len(errors) == n_before        # every Smartlead account was read
     today = date.today()
-    reviews = sorted((rr.review_bill(b, facts, today) for b in bills), key=lambda r: r["bills_on"])
+    reviews = sorted((rr.review_bill(b, facts, today, complete) for b in bills), key=lambda r: r["bills_on"])
     from smartlead.zapmail_clients import infer_client
     for rv in reviews:          # whose inbox it is: retiring is per client
         for row in rv["rows"]:

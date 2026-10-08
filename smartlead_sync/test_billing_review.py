@@ -89,3 +89,10 @@ def test_failed_payment_carries_the_invoice_link():
     now = [dict(_z("a", "2026-10-08", fail="card declined"), invoice_url="https://invoice.stripe.com/i/x")]
     txt = bw.format_events(bw.compare(prev, now, T))
     assert "<https://invoice.stripe.com/i/x|Pay / see invoice>" in txt
+
+
+def test_unread_smartlead_is_never_a_retire():
+    assert rr.judge_inbox("a@x.com", None, False, T, complete=False)[0] == "CHECK"
+    r = rr.review_bill({"provider": "ScaledMail", "label": "L", "bills_on": "2026-10-08", "price": 7,
+                        "inboxes": ["a@x.com", "b@x.com"]}, {}, T, complete=False)
+    assert r["counts"]["RETIRE"] == 0 and r["retire_saves_monthly"] == 0
