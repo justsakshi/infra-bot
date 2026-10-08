@@ -96,3 +96,21 @@ def test_unread_smartlead_is_never_a_retire():
     r = rr.review_bill({"provider": "ScaledMail", "label": "L", "bills_on": "2026-10-08", "price": 7,
                         "inboxes": ["a@x.com", "b@x.com"]}, {}, T, complete=False)
     assert r["counts"]["RETIRE"] == 0 and r["retire_saves_monthly"] == 0
+
+
+def test_support_message_names_bad_domains_and_keeps_good_ones():
+    facts = {"a@bad.com": _facts(pct=47.0), "b@bad.com": _facts(pct=47.0), "c@good.com": _facts()}
+    r = rr.review_bill({"provider": "ScaledMail", "label": "39 × Google Inboxes", "bills_on": "2026-10-08", "price": 10.5,
+                        "clients": ["Precise Leads"], "order_id": "rec3", "inboxes": list(facts)}, facts, T)
+    m = r["support_message"]
+    assert "bad.com (2 inboxes)" in m and "47% inbox" in m and "not charge us" in m
+    assert "keep the rest" in m and "good.com" in m and "rec3" in m
+    clean = rr.review_bill({"provider": "ScaledMail", "label": "L", "bills_on": "2026-10-08", "price": 3.5,
+                            "inboxes": ["c@good.com"]}, facts, T)
+    assert clean["support_message"] == ""
+
+
+def test_tracker_flags_refuse_a_half_read_review():
+    import renewal_review as cli
+    out = cli.flag_tracker({"errors": ["Smartlead PRECISE_LEADS: 429"], "reviews": []})
+    assert out["written"] == 0 and "not written" in out["skipped"]

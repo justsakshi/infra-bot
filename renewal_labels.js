@@ -22,6 +22,12 @@ function assetLine(asset) {
   const icon = asset.type === 'DOMAIN' ? '🌐' : '📧';
   const provider = asset.provider ? ` · ${asset.provider}` : '';
   let line = `  ${icon} ${asset.name}${provider}`;
+  // From the renewal review (placement tests + Smartlead): don't pay for a dead inbox again.
+  if (asset.renewalFlag === 'DROP') {
+    line += ` — ⛔ *don't renew*: ${asset.renewalFlagReason || 'not delivering'}`;
+  } else if (asset.renewalFlag === 'CHECK') {
+    line += ` — ❔ check before renewing: ${asset.renewalFlagReason || ''}`;
+  }
   if (expirySource(asset) === 'estimated') {
     const bought = dayjs(asset.purchaseDate).format('DD MMM YYYY');
     line += asset.type === 'DOMAIN'

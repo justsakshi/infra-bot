@@ -164,17 +164,50 @@ def run(days: int) -> dict:
     return {"days": days, "reviews": reviews, "errors": errors, "text": text}
 
 
+def flag_tracker(res: dict) -> dict:
+    """Write renewalFlag on tracker inbox rows. Refuses when any source could
+    not be read (a half-read review must never mark good inboxes DROP)."""
+    if res.get("errors"):
+        return {"written": 0, "skipped": "not written: " + "; ".join(res["errors"])[:200]}
+    from datetime import datetime, timezone
+    from smartlead.zapmail_asset_sync import _db
+    db = _db()
+    if db is None:
+        return {"written": 0, "skipped": "Mongo unavailable"}
+    from pymongo import UpdateOne
+    now = datetime.now(timezone.utc)
+    ops = []
+    for rv in res["reviews"]:
+        for row in rv["rows"]:
+            flag = {"RETIRE": "DROP", "CHECK": "CHECK"}.get(row["verdict"])
+            if flag:
+                ops.append(UpdateOne({"name": row["email"]}, {"$set": {
+                    "renewalFlag": flag, "renewalFlagReason": row["why"][:200], "renewalFlagAt": now}}))
+            else:
+                ops.append(UpdateOne({"name": row["email"]}, {"$unset": {
+                    "renewalFlag": "", "renewalFlagReason": "", "renewalFlagAt": ""}}))
+    if not ops:
+        return {"written": 0}
+    r = db["assets"].bulk_write(ops, ordered=False)
+    return {"written": int(r.modified_count)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Review inboxes before their bill (read-only)")
     ap.add_argument("--days", type=int, default=3)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--post", action="store_true")
+    ap.add_argument("--flag-tracker", action="store_true",
+                    help="mark each reviewed inbox in the /infra tracker: DROP / CHECK / (clear) so the "
+                         "Daily Renewal Check shows it")
     args = ap.parse_args()
     try:
         res = run(args.days)
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}) if args.json else f"ERROR: {exc}")
         return 0 if args.json else 1
+    if args.flag_tracker:
+        res["flagged"] = flag_tracker(res)
     if args.post and res["reviews"]:
         from smartlead.notify import _post
         token = os.getenv("SLACK_BOT_TOKEN", "")

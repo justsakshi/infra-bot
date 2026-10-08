@@ -83,9 +83,11 @@ def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool 
     n = len(bill.get("inboxes") or []) or int(bill.get("mailboxes") or 0) or 1
     per_inbox = float(bill.get("price") or 0) / n if bill.get("per_inbox") is None else float(bill["per_inbox"])
     retire = [r for r in rows if r["verdict"] == "RETIRE"]
-    return {**bill, "rows": rows,
+    out = {**bill, "rows": rows,
             "counts": {k: sum(1 for r in rows if r["verdict"] == k) for k in ("KEEP", "RETIRE", "CHECK")},
             "retire_saves_monthly": round(per_inbox * len(retire), 2)}
+    out["support_message"] = support_message(out)
+    return out
 
 
 def format_review(reviews: list[dict], days: int) -> str:
@@ -106,6 +108,37 @@ def format_review(reviews: list[dict], days: int) -> str:
             lines.append(f"   :x: `{row['email']}` — {row['why']}{live}")
         for row in [x for x in r["rows"] if x["verdict"] == "CHECK"][:8]:
             lines.append(f"   :grey_question: `{row['email']}` — {row['why']}")
+        if r.get("support_message"):
+            lines.append(f"   _Message for {r['provider']} support (copy & send):_")
+            lines.append("```" + r["support_message"] + "```")
     lines.append("\n_Zapmail: *Retire* removes the inboxes at this bill (domain kept, can be undone before). "
                  "ScaledMail bills per order: retiring one domain means *Replace domain* or cancelling the order._")
+    return "\n".join(lines)
+
+
+def support_message(review: dict) -> str:
+    """A ready-to-send note to the provider's support for the RETIRE inboxes on
+    this bill: what is not delivering (with the test evidence), what to keep,
+    and the ask - replace them / take them off the order and do not charge for
+    them this cycle. Empty when nothing is flagged."""
+    bad = [r for r in review.get("rows") or [] if r["verdict"] == "RETIRE"]
+    if not bad:
+        return ""
+    by_dom: dict[str, list[dict]] = defaultdict(list)
+    for r in bad:
+        by_dom[r["email"].split("@")[1]].append(r)
+    keep = sorted({r["email"].split("@")[1] for r in review.get("rows") or [] if r["verdict"] == "KEEP"} - set(by_dom))
+    ref = review.get("order_id") or review.get("subscription_id") or ""
+    lines = [f"Hi {review['provider']} team,", "",
+             f"Our {review['label']} ({', '.join(review.get('clients') or []) or 'our account'}"
+             + (f", ref {ref}" if ref else "") + f") renews on {review['bills_on']}.",
+             f"{len(bad)} of its inboxes are not delivering — our inbox-placement tests put them in spam:", ""]
+    for dom in sorted(by_dom):
+        whys = sorted({r["why"] for r in by_dom[dom]})
+        lines.append(f"• {dom} ({len(by_dom[dom])} inboxes) — {'; '.join(whys)}")
+    lines += ["", "Could you please replace these inboxes (fresh domains) or remove them from the order, "
+              "and not charge us for them for this billing cycle?"]
+    if keep:
+        lines.append(f"Please keep the rest as they are ({', '.join(keep)}).")
+    lines += ["", "Thanks!"]
     return "\n".join(lines)

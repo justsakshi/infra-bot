@@ -120,6 +120,10 @@ function reviewBlocks(r) {
     t += bad.slice(0, 12).map(x => NL + ':x: `' + x.email + '` — ' + x.why + ((x.campaigns || []).length ? ' :warning: in a live campaign' : '')).join('');
     t += chk.slice(0, 5).map(x => NL + ':grey_question: `' + x.email + '` — ' + x.why).join('');
     blocks.push(section(t));
+    if (rv.support_message) {
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*Message for ' + rv.provider + ' support* — copy & send:' }] });
+      blocks.push(section('```' + rv.support_message.slice(0, 2800) + '```'));
+    }
     if (bad.length && rv.provider === 'Zapmail') {
       const byClient = {};
       bad.forEach(x => { if (x.client) (byClient[x.client] = byClient[x.client] || []).push(x.email); });

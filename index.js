@@ -103,6 +103,11 @@ const AssetSchema = new mongoose.Schema({
   notes: String,
 
   domain: String,
+  // Set by the renewal review before each bill: DROP (don't pay for it again)
+  // or CHECK, with the reason; cleared when the inbox is fine.
+  renewalFlag: String,
+  renewalFlagReason: String,
+  renewalFlagAt: Date,
 
   remindersSent: [{ daysBefore: Number, sentAt: Date }],
   createdBy: String,
@@ -1508,7 +1513,9 @@ async function start() {
       proc.on('close', code => console.log(`[${tag}] finished with code ${code}`));
     };
     cron.schedule('5 9-21/2 * * *', () => runBilling('billing-watch', ['billing_watch.py']), { timezone: 'Asia/Kolkata' });
-    cron.schedule('50 9 * * *', () => runBilling('renewal-review', ['renewal_review.py', '--days', '3', '--post']), { timezone: 'Asia/Kolkata' });
+    // --flag-tracker marks DROP / CHECK on the tracker rows, so the 10:00 Daily
+    // Renewal Check shows "don't renew" next to them (7 days ahead).
+    cron.schedule('50 9 * * *', () => runBilling('renewal-review', ['renewal_review.py', '--days', '7', '--post', '--flag-tracker']), { timezone: 'Asia/Kolkata' });
 
     // Per-domain reply-rate early warning at 1:00 PM IST daily (read-only).
     cron.schedule('0 13 * * *', () => {
