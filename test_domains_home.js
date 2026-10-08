@@ -63,11 +63,11 @@ const dm = text => handlers.messages[0]({ message: { channel_type: 'im', channel
   // ── DMs / agent tab ────────────────────────────────────────────────────
   posted.length = 0;
   await dm('hi');
-  ok(posted[0] && posted[0].text === 'Domain Suggester' && posted[0].thread_ts === '1.0', '"hi" → home menu, in the agent thread');
+  ok(posted[0] && posted[0].text === 'Domains & inboxes' && posted[0].thread_ts === '1.0', '"hi" → home menu, in the agent thread');
   const ids = posted[0].blocks.filter(b => b.type === 'actions').flatMap(b => b.elements.map(e => e.action_id));
-  ['dh_suggest', 'dh_zapmail', 'sm_home', 'dh_audit', 'infra_expiring_0', 'infra_expiring_7', 'infra_add_open', 'infra_renew_open', 'infra_list']
+  ['u_nav_status', 'u_nav_renewals', 'u_lookup_open', 'u_nav_purchases', 'sm_order_open', 'dh_audit', 'infra_expiring_0', 'infra_expiring_7', 'infra_add_open', 'infra_renew_open', 'infra_list']
     .forEach(id => ok(ids.includes(id), 'home has ' + id));
-  ['dh_suggest', 'dh_zapmail', 'dh_audit', 'infra_add_open', 'infra_renew_open', 'infra_list', 'infra_mark_renewed']
+  ['dh_suggest', 'dh_audit', 'infra_add_open', 'infra_renew_open', 'infra_list', 'infra_mark_renewed']
     .forEach(id => ok(typeof handlers.actions[id] === 'function', 'button handled: ' + id));
   ok(Object.keys(handlers.actions).some(k => k.includes('infra_expiring')), 'expiring buttons handled');
   ok(typeof handlers.events.assistant_thread_started === 'function', 'agent tab greeting handled');

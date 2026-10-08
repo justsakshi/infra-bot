@@ -1,67 +1,52 @@
 # Domains, inboxes and renewals — team guide
 
-One page. What each Slack message means, which one to trust, and what to do.
+One page: where to look, what each Slack message means, and what to do. Zapmail and ScaledMail are handled together; you never need to know which provider a domain is on.
 
-## Where things live
+## One place: `/domains`
 
-| What | Where |
+Type `/domains`, or DM the **Domain Suggester** app "hi". You get one menu:
+
+| Button | Does |
 |---|---|
-| Every domain and inbox we pay for, any provider | **/infra tracker** (dashboard: infra-bot-1.onrender.com) |
-| Zapmail domains, mailboxes, wallets, renewals | **Zapmail** — the bot reads it directly |
-| ScaledMail orders, domains, mailboxes, billing days | **ScaledMail** — the bot reads it directly (`/domains sm`) |
-| Inboxkit | Its own dashboard — the bot cannot read it; the tracker is updated by hand |
+| Suggest for <client> | Available sending-domain names, with Zapmail **and** ScaledMail prices (2-4 min). Tick names → **Buy on Zapmail** or **Buy on ScaledMail (with inboxes)**. |
+| Fleet & cost | Every account and order on both providers: domains, inboxes, monthly cost |
+| Renewals & billing | What bills or renews soon on both providers: inbox subscriptions (with any **payment failed**), orders, domain registrations |
+| Look up a domain | Finds it on whichever provider has it, with that provider's buttons (mailboxes, retire inboxes, rename senders, redirect, export, auto-renew…) |
+| Purchases | Staged and placed buys on both providers |
+| Order mailboxes / Price a volume | Price and stage new inboxes; nothing is charged until an approver confirms |
+| Pre-warmed · Tracker sync · Today's digest | Both providers in one message |
+| Infra audit | Every setup check in one run (~1 min): MX + DMARC policy, many domains on one name-server set, redirects to the client's site, sending from the main domain, >3 mailboxes or >100/day per domain, mailbox caps, inboxes under 21 days in live campaigns, warmup, signatures, sender names, provider mix, ESP matching, SMTP IP blacklists |
+| Tracker: Expiring today / Next 7 days / Add / Renew / List | What Infra Bot's `/infra` does |
 
-Zapmail and ScaledMail are the truth for their own assets. The tracker is the truth for everything else.
+Typed versions: `/domains status` · `renewals` · `domain x.com` · `purchases` · `prewarmed` · `sync` · `digest` · `audit` · `suggest bettrdata` · `quote 30000 google,outlook 70,30 low` · `infra expiring 7`. The same words work in a DM to the app, as do CSV uploads and `renew` / `delete` + one name per line.
+
+## How inboxes are paid for
+
+Inboxes are **never renewed one by one**. They are seats in a monthly subscription (Zapmail) or order (ScaledMail), charged to the card on its bill date; every inbox in it renews. To stop paying for some inboxes:
+- **Zapmail:** look up the domain → **Retire inboxes** (removed at the next bill; the domain stays; can be undone before then).
+- **ScaledMail:** only a whole order can be cancelled (**Cancel its order**), never one domain.
+
+Domains themselves renew yearly; **Renewals & billing** lists both.
 
 ## The daily Slack messages
 
 | Message | Covers | What to do |
 |---|---|---|
-| **⏰ Daily Renewal Check** (10:00) | Everything in the /infra tracker, all providers | Renew or let lapse each item listed. A line marked *estimated* has no expiry date saved — check the provider first, then save the real date on the dashboard. |
-| **📬 Zapmail daily** | Zapmail accounts only | Act on anything under a heading with a count > 0. It will not list Inboxkit / ScaledMail items — that is expected. |
-| **ScaledMail today** (9:45) | ScaledMail only | Orders billing in 3 days, domains renewing in 14 days, domains still being set up, domains with no client. Posts only when `SCALEDMAIL_NOTIFY_CHANNEL` is set. |
-| **🔔 Reminder** (16:00) | Nudge only | Nothing new — finish anything from the morning check. |
+| **📬 Domains & inboxes daily** (9:40) | Zapmail + ScaledMail | Act on anything under a heading with a count > 0 — especially *inbox subscriptions billing in 3 days* and any **payment failed** line (those inboxes can be suspended). |
+| **⏰ Daily Renewal Check** (10:00) | Everything in the /infra tracker, all providers incl. Inboxkit | Renew or let lapse each item. *Estimated* = no expiry saved; check the provider, then save the real date. |
+| **🔎 Infra audit** (10:20 Mon-Fri) | Setup checks | Fix P0 today, P1 this week. |
+| **🔔 Reminder** (16:00) | Nudge only | Finish anything from the morning. |
 
-**If the two disagree** (e.g. "5 expire today" vs "0 expiring"):
-1. Open *Read more* on the Daily Renewal Check. Look at the provider on each line.
-2. Inboxkit → the bot can't see it; the Renewal Check is right. ScaledMail → `/domains sm domain <name>` (the 9:35 sync keeps the tracker in step). If it says *estimated*, confirm the date in that provider.
-3. Zapmail → run `/domains zapmail domain <name>`. Zapmail's date wins; the 9:30 tracker sync corrects the tracker (or press **Update tracker** on the look-up).
+**If they disagree:** run `/domains domain <name>`. Zapmail's or ScaledMail's date wins; the 9:30 / 9:35 syncs correct the tracker. Inboxkit is not readable by the bot — the tracker is right for it.
 
 ## Past clients
 
-Current clients: **Belardi Wong, Precise Leads, BettrData, Melior**. Anything for another client is being left to lapse. Don't renew it. Set it to *Inactive* on the dashboard so it stops appearing.
+Current clients: **Belardi Wong, Precise Leads, BettrData, Melior**. Anything for another client is left to lapse. Don't renew it; set it to *Inactive* on the dashboard.
 
-## Easiest: message the Domain Suggester app
+## Who can do what
 
-Open **Domain Suggester** in Slack (Apps → Domain Suggester → Messages) and type **hi**. You get one menu:
+Views are open to everyone on the allowed list; replies are visible only to you. Buying, renewing, creating or retiring inboxes, exporting, cancelling and tracker writes are **approver-only** buttons and each asks first. Spending also needs the server switch (`ZAPMAIL_ALLOW_SPEND`, `SCALEDMAIL_ALLOW_SPEND`); ScaledMail cancelling needs `SCALEDMAIL_ALLOW_CANCEL`.
 
-| Button | Does |
-|---|---|
-| Suggest domains | Pick a client → available sending-domain names (takes 3-4 min) |
-| Zapmail / ScaledMail | Fleet, renewals, look-ups and their action buttons |
-| Infra audit | Every setup check in one run (~1 min): MX + DMARC policy, many domains on one name-server set (Cloudflare footprint), redirects to the client's site, sending from the main domain, >3 mailboxes or >100/day per domain, mailboxes over their cap, inboxes under 21 days in live campaigns, warmup off / below cold volume, missing signature or sender name, one-provider-only, ESP matching off, SMTP IPs on blacklists. Also posts Mon-Fri 10:20 IST when `INFRA_AUDIT_CHANNEL` is set. |
-| Expiring today / Next 7 days | Tracker rows about to expire, per client, with **Mark renewed** (tracker only) |
-| Add asset / Renew asset / List all | Same as Infra Bot's `/infra add`, `/infra renew`, `/infra list` |
+**Access:** send your Slack member ID (profile → ⋯ → Copy member ID) to an admin, who adds it to `DOMAINS_ALLOWED_USERS`. Approvers: `ZAPMAIL_APPROVERS` / `SCALEDMAIL_APPROVERS`.
 
-You can also just type what you want: `zapmail renewals`, `sm status`, `infra expiring 7`, `suggest bettrdata`, `zapmail domain x.com`. Sending a CSV (`domains.csv`, `renew_inboxes.csv`, `delete_domains.csv`) or a message that starts with `renew` / `delete` followed by one name per line works exactly as it does with Infra Bot.
-
-## Slack commands (only people on the allowed list; replies are visible only to you)
-
-| Type | Does |
-|---|---|
-| `/domains` | Pick a client → get available sending-domain names → tick → **Stage purchase** |
-| `/domains menu` | The one menu above (domains, Zapmail, ScaledMail, tracker) |
-| `/domains infra add · renew · list · expiring 7` | The /infra tracker features |
-| `/domains zapmail` | Zapmail menu: status, renewals, purchase plan, digest, look up a domain, tracker sync |
-| `/domains zapmail domain x.com` | One domain: account, client, health, expiry, mailboxes, action buttons |
-| `/domains sm` | ScaledMail menu: fleet & monthly cost, renewals & billing, orders, look up a domain, price a volume, find domains, order mailboxes, purchase plans, tracker sync |
-| `/domains sm domain x.com` | One ScaledMail domain: client, order, billing day, mailboxes; Set client / Rename senders / Change redirect / Replace domain / Cancel its order |
-| `/domains sm quote 30000 google,outlook 70,30 low` | Domains, mailboxes and monthly price for a volume (nothing is ordered) |
-
-Buying, renewing, creating mailboxes and exporting are buttons for approvers only, and each asks before doing anything.
-
-ScaledMail: anyone on the list can price an order (**Order mailboxes** → staged plan). Only approvers can **Place order** (charges the card; the server must also have `SCALEDMAIL_ALLOW_SPEND=true`) or **Cancel order** (stops every mailbox in that order; needs `SCALEDMAIL_ALLOW_CANCEL=true`). ScaledMail cancels whole orders only, never one domain.
-
-## Asking for access
-
-Send your Slack member ID (profile → ⋯ → Copy member ID) to an admin. They add it to `DOMAINS_ALLOWED_USERS`. Approvers are listed in `ZAPMAIL_APPROVERS` and `SCALEDMAIL_APPROVERS`.
+_Old commands still work: `/domains zapmail …`, `/domains sm …`, `/infra …`._

@@ -337,3 +337,56 @@ async def _mailboxes_on(z: ZapmailClient, domain: str) -> list[dict]:
                 out.append({"email": email, "status": m.get("status"),
                             "warmed_up": m.get("isWarmedUp")})
     return out
+
+
+async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
+                                today: str | None = None) -> list[dict]:
+    """Every Zapmail subscription (inbox add-ons + pre-warmed), both providers,
+    with its next bill date. READ-ONLY.
+
+    Inboxes are seats in these subscriptions, billed to the card on
+    ``periodEnd`` — they are never renewed one by one, which is why a
+    domain-only renewals view missed 36 BettrData inboxes billing on
+    2026-10-08. For subscriptions billing within ``days`` the domains on them
+    are listed (add-ons only: Zapmail lists mailboxes per add-on subscription).
+
+    Returns ``[{account, provider, kind, plan, price, mailboxes, bills_on,
+    status, subscription_id, payment_failure, domains: [..], clients: [..]}]``.
+    """
+    from datetime import date, timedelta
+    from smartlead.zapmail_clients import infer_client
+    today_d = date.fromisoformat(today) if today else date.today()
+    horizon = (today_d + timedelta(days=days)).isoformat()
+    rows: list[dict] = []
+    for acc in discover_zapmail_accounts():
+        for provider in PROVIDERS:
+            try:
+                async with _client(acc, provider) as z:
+                    addons = ((await z._request("GET", "/v2/subscriptions")) or {}).get("data") or []
+                    pre = (((await z.prewarmed_subscriptions()) or {}).get("data") or {}).get("subscriptions") or []
+                    for kind, subs in (("inboxes", addons), ("pre-warmed", pre)):
+                        for s in subs:
+                            status = str(s.get("subscriptionStatus") or "").upper()
+                            if status not in ("ACTIVE", "PAST_DUE", "TRIALING", "UNPAID"):
+                                continue
+                            row = {"account": acc.name, "provider": provider, "kind": kind,
+                                   "plan": s.get("uniquePlanKey") or s.get("plan"),
+                                   "price": s.get("price"), "mailboxes": s.get("totalMailboxQuantity"),
+                                   "bills_on": _iso_to_date(s.get("periodEnd")), "status": status,
+                                   "subscription_id": s.get("subscriptionId"),
+                                   "payment_failure": s.get("paymentFailureMessage"),
+                                   "domains": [], "clients": []}
+                            if kind == "inboxes" and row["bills_on"] and row["bills_on"] <= horizon:
+                                boxes = ((await z._request("POST", "/v2/subscriptions/mailboxes",
+                                                           json={"subscriptionId": s.get("subscriptionId")}))
+                                         or {}).get("data") or []
+                                doms = sorted({str(b.get("domain") or "").lower() for b in boxes if b.get("domain")})
+                                row["domains"] = doms
+                                row["clients"] = sorted({infer_client(d, acc.name) or "unassigned" for d in doms})
+                            rows.append(row)
+            except ZapmailError as exc:
+                msg = f"{acc.name}/{provider}: {str(exc)[:160]}"
+                print(f"  [Zapmail] subscriptions failed — {msg}")
+                if errors is not None:
+                    errors.append(msg)
+    return sorted(rows, key=lambda r: r["bills_on"] or "9999")

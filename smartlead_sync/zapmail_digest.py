@@ -57,8 +57,8 @@ def format_digest(
     # Say what this covers: on 2026-09-29 the team saw "0 expiring" here and
     # "5 expire today" in the Daily Renewal Check - those 5 were on Inboxkit,
     # which Zapmail cannot see.
-    lines = [f"*📬 Zapmail daily — {today.isoformat()}*",
-             "_Zapmail accounts only. Domains on Inboxkit / ScaledMail are in the Daily Renewal Check._",
+    lines = [f"*📬 Domains & inboxes daily — {today.isoformat()}*",
+             "_Zapmail and ScaledMail (sections below). Inboxkit is in the Daily Renewal Check._",
              ""]
 
     lines.append("*Accounts*")
@@ -149,6 +149,52 @@ async def collect(today: date) -> dict:
             "batches": store.load_all(), "ledger_ok": store.available}
 
 
+def billing_lines(rows: list[dict], *, today: date, days: int = 3) -> list[str]:
+    """Zapmail inbox subscriptions billing within ``days`` and any failed
+    payment. Pure. Inboxes renew with their subscription, never one by one."""
+    horizon = (today + timedelta(days=days)).isoformat()
+    out = []
+    for r in rows:
+        due = r.get("bills_on") and r["bills_on"] <= horizon
+        if not (due or r.get("payment_failure")):
+            continue
+        what = (f"{r.get('mailboxes') or '?'} {'Outlook' if r.get('provider') == 'MICROSOFT' else 'Google'} "
+                f"{r.get('kind', 'inboxes')}")
+        who = ", ".join(r.get("clients") or []) or r.get("account", "")
+        line = f"• {r.get('bills_on')}: {what} {_money(r.get('price'))} ({who})"
+        if r.get("payment_failure"):
+            line = ":x: " + line + f" — *payment failed: {r['payment_failure']}* (inboxes may be suspended)"
+        out.append(line)
+    return out
+
+
+async def extra_sections(today: date) -> tuple[str, int]:
+    """Zapmail inbox billing + ScaledMail digest, as one block of text."""
+    parts, n = [], 0
+    try:
+        from smartlead.zapmail_fleet import subscriptions_billing
+        lines = billing_lines(await subscriptions_billing(days=3), today=today)
+        if lines:
+            parts.append("*Inbox subscriptions billing in 3 days (Zapmail)*\n" + "\n".join(lines)
+                         + "\n_To stop paying for some inboxes: `/domains domain <name>` → Retire inboxes._")
+            n += len(lines)
+    except Exception as exc:  # noqa: BLE001 - the domain digest still posts
+        parts.append(f":warning: Zapmail billing could not be read: {str(exc)[:120]}")
+    try:
+        from smartlead.scaledmail import configured
+        if configured():
+            from scaledmail_cli import digest as sm_digest
+            from smartlead.scaledmail import ScaledMailClient
+            with ScaledMailClient() as sm:
+                d = await asyncio.to_thread(sm_digest, sm)
+            if d.get("lines"):
+                parts.append("*ScaledMail*\n" + "\n".join("• " + l for l in d["lines"]))
+                n += len(d["lines"])
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f":warning: ScaledMail could not be read: {str(exc)[:120]}")
+    return "\n\n".join(parts), n
+
+
 def post_to_slack(text: str) -> bool:
     from smartlead.notify import _post
     channel = os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "").strip()
@@ -173,6 +219,12 @@ async def main() -> int:
         ledger_ok=data["ledger_ok"], renewal_errors=data["renewal_errors"],
         wallet_min=float(os.getenv("ZAPMAIL_WALLET_MIN", "30")),
         expiry_days=int(os.getenv("ZAPMAIL_EXPIRY_ALERT_DAYS", "14")))
+    # One daily message for both providers (2026-10-08): inbox subscriptions
+    # billing soon (and failed payments) + ScaledMail's own items.
+    extra, n_extra = await extra_sections(today)
+    if extra:
+        text += "\n\n" + extra
+        actions += n_extra
     if args.json:
         print(json.dumps({"text": text, "actions": actions}, default=str))
     else:

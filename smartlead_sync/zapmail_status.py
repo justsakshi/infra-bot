@@ -34,8 +34,25 @@ async def main() -> int:
     ap.add_argument("--domain", help="Find a domain across every Zapmail account")
     ap.add_argument("--prewarmed", action="store_true",
                     help="Pre-warmed subscriptions, free slots, and Zapmail's stock")
+    ap.add_argument("--billing", action="store_true",
+                    help="Inbox subscriptions and their next bill date (both providers)")
+    ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    if args.billing:
+        from smartlead.zapmail_fleet import subscriptions_billing
+        errors: list[str] = []
+        rows = await subscriptions_billing(args.days, errors)
+        if args.json:
+            print(json.dumps({"billing": rows, "billing_errors": errors, "days": args.days}))
+            return 0
+        for r in rows:
+            print(f"  {r['bills_on']}  {r['account']:14} {r['provider']:9} {r['kind']:10} "
+                  f"{r['mailboxes'] or '?':>3} inboxes  ${r['price']}  {', '.join(r['domains'][:6])}")
+        for e in errors:
+            print(f"  ⚠ could not check {e}")
+        return 0
 
     if args.prewarmed:
         from smartlead.zapmail_fleet import prewarmed_overview

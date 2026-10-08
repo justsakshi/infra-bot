@@ -63,7 +63,6 @@ function homeBlocks() {
       btn('Tracker sync', 'zm_nav_sync', 'sync'),
       btn('Tracker vs Zapmail', 'zm_nav_cross-check', 'cross-check')
     ] },
-    { type: 'actions', block_id: 'zm_home_3', elements: [btn('ScaledMail →', 'sm_home', 'home')] },
     { type: 'context', elements: [{ type: 'mrkdwn', text: 'Typed versions: `/domains zapmail status | renewals | batches | digest | domain x.com | prewarmed | sync | cross-check`.' }] }
   ];
 }

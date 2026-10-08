@@ -78,7 +78,7 @@ function clientPickerBlocks(profiles) {
   const notReady = Object.entries(profiles).filter(([, p]) => !profileReady(p));
   const blocks = [{
     type: 'section',
-    text: { type: 'mrkdwn', text: '*Suggest sending domains* — pick a client. Zapmail’s AI Domain Finder and our generator both run; you get names that are available now, checked against everything we already own and the blacklists. Takes 1-2 minutes.' }
+    text: { type: 'mrkdwn', text: '*Suggest sending domains* — pick a client. Zapmail’s AI finder, ScaledMail’s ideas and our generator all run; you get names available now with both providers’ prices, checked against everything we already own and the blacklists. Takes 2-4 minutes.' }
   }];
   if (ready.length) {
     blocks.push({
@@ -145,10 +145,10 @@ function suggestionBlocks(r) {
   const buttons = [];
   if (rows.length) {
     buttons.push({ type: 'button', action_id: 'domains_stage', style: 'primary',
-      text: { type: 'plain_text', text: 'Stage purchase (Zapmail)' }, value: r.client });
+      text: { type: 'plain_text', text: 'Buy on Zapmail' }, value: r.client });
     if (rows.some(x => x.scaledmail && x.scaledmail.available)) {
       buttons.push({ type: 'button', action_id: 'domains_sm_order',
-        text: { type: 'plain_text', text: 'Order on ScaledMail' }, value: r.client });
+        text: { type: 'plain_text', text: 'Buy on ScaledMail (with inboxes)' }, value: r.client });
     }
   }
   buttons.push({ type: 'button', action_id: 'domains_suggest_again',
@@ -244,7 +244,7 @@ async function runSuggest(clientKey, respond, baseDir) {
       text: ':x: `' + clientKey + '` has no ready domain profile (website + 3 keywords in domain_clients.json).' });
   }
   await respond({ response_type: 'ephemeral', replace_original: false,
-    text: ':mag: Finding domains for *' + (p.label || clientKey) + '* (Zapmail AI + our generator, about 3-4 min — I’ll post here when done)…' });
+    text: ':mag: Finding domains for *' + (p.label || clientKey) + '* (Zapmail + ScaledMail + our generator, about 2-4 min — I’ll post here when done)…' });
   try {
     // Measured 2026-10-08: ~3.5 min for Precise Leads (Zapmail's AI finder +
     // live availability checks). The old 4-minute limit cut it off on Render.

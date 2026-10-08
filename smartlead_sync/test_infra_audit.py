@@ -88,3 +88,14 @@ def test_inbox_job_refuses_main_domain():
     with pytest.raises(ValueError, match="real website"):
         new_job(client="Precise Leads", kind="owned", provider="GOOGLE", domains=["preciseleads.in"])
     assert new_job(client="Precise Leads", kind="owned", provider="GOOGLE", domains=["pipelinecalendar.com"])["domains"]
+
+
+def test_digest_billing_lines_flag_failed_payment():
+    from datetime import date
+    from zapmail_digest import billing_lines
+    rows = [{"bills_on": "2026-10-08", "mailboxes": 15, "provider": "MICROSOFT", "kind": "inboxes", "price": 48.75,
+             "clients": ["Bettrdata"], "payment_failure": "No payment method on file"},
+            {"bills_on": "2026-10-10", "mailboxes": 21, "provider": "GOOGLE", "kind": "inboxes", "price": 68.25, "clients": ["Belardi Wong"]},
+            {"bills_on": "2026-11-08", "mailboxes": 21, "provider": "GOOGLE", "kind": "inboxes", "price": 68.25, "clients": []}]
+    lines = billing_lines(rows, today=date(2026, 10, 8))
+    assert len(lines) == 2 and "payment failed" in lines[0] and "Outlook" in lines[0] and "Google" in lines[1]

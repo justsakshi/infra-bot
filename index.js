@@ -1451,9 +1451,8 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
-    // ScaledMail at 9:35 (tracker sync) and 9:45 IST (digest). The sync
-    // writes only when SCALEDMAIL_ASSET_SYNC_ENABLED=true; the digest posts
-    // only when SCALEDMAIL_NOTIFY_CHANNEL is set. Both skip without a key.
+    // ScaledMail tracker sync at 9:35 IST: writes only when
+    // SCALEDMAIL_ASSET_SYNC_ENABLED=true; skips without a key.
     const runScaledMail = (tag, args, after) => {
       if (!process.env.SCALEDMAIL_API_KEY) return;
       const proc = spawn('python', ['scaledmail_cli.py', ...args], {
@@ -1475,12 +1474,7 @@ async function start() {
     }, {
       timezone: 'Asia/Kolkata'
     });
-    cron.schedule('45 9 * * *', () => {
-      console.log(`[CRON] ScaledMail digest firing at ${new Date().toISOString()}`);
-      runScaledMail('scaledmail-digest', ['digest', '--post']);
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    // (The ScaledMail digest is part of the 9:40 "Domains & inboxes daily".)
 
     // Infra audit at 10:20 AM IST Mon-Fri (read-only): MX / DMARC policy,
     // name-server footprint, redirects, main-domain use, mailbox and domain

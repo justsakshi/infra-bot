@@ -478,8 +478,15 @@ async function handleDomainsText(text, ctx, baseDir) {
   const { respond } = ctx;
   const command = { text: text || '', user_name: ctx.user, user_id: ctx.userId };
   {
-    const home = /^\s*(home|menu|hi|hello|hey|start)\s*$/i.exec(command.text);
-    if (home) return respond({ response_type: 'ephemeral', text: 'Domain Suggester', blocks: require('./domains_home').homeBlocks() });
+    // One menu and one set of views for Zapmail + ScaledMail (domains_unified.js).
+    const unified = require('./domains_unified');
+    const home = /^\s*(home|menu|hi|hello|hey|start)?\s*$/i.exec(command.text);
+    if (home) return respond({ response_type: 'ephemeral', text: 'Domains & inboxes', blocks: unified.homeBlocks(baseDir) });
+    if (/^\s*help\s*$/i.test(command.text)) {
+      return respond({ response_type: 'ephemeral', text: unified.HELP + '\n\n*Advanced — custom name generation*\n' + DOMAIN_HELP });
+    }
+    const view = unified.routeText(command.text);
+    if (view && view.sub) return unified.runUnified(view.sub, view.args, baseDir, respond);
     const inf = /^\s*(infra|tracker)\b(.*)$/i.exec(command.text);
     if (inf) {
       if (!ctx.infra) return respond({ response_type: 'ephemeral', text: ':x: The tracker is not connected on this app.' });
@@ -633,6 +640,7 @@ async function startDomainsApp(baseDir, opts = {}) {
   registerZapmailCommand(domainsApp, baseDir, opts);
   require('./scaledmail_command').registerScaledMailCommand(domainsApp, baseDir, opts);
   suggestFlow.registerDomainSuggestFlow(domainsApp, baseDir);
+  require('./domains_unified').registerUnified(domainsApp, baseDir);
   // DMs and the app's Messages ("agent") tab: talk to it like the slash command.
   require('./domains_home').registerDomainsHome(domainsApp, baseDir, { infra, botToken: token });
 

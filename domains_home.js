@@ -2,8 +2,8 @@
  * The Domain Suggester app as the team's one front door: DM it (or use its
  * Messages / agent tab) and it answers like `/domains`.
  *
- *   "hi" / "menu"            → the home menu (domains, Zapmail, ScaledMail, tracker)
- *   "zapmail renewals", "sm status", "infra expiring 7", "suggest bettrdata", …
+ *   "hi" / "menu"            → the one menu (Zapmail + ScaledMail together, tracker)
+ *   "renewals", "status", "domain x.com", "infra expiring 7", "suggest bettrdata", …
  *                             → same as `/domains <text>`
  *   a CSV, or "renew"/"delete" + one name per line
  *                             → the tracker import / renew / delete (as Infra Bot)
@@ -14,27 +14,10 @@
  * Without `message.im` the app never hears DMs — the reason "hi" got no answer.
  */
 
-const NL = String.fromCharCode(10);
 
-function homeBlocks() {
-  const btn = (text, action_id, style) => {
-    const b = { type: 'button', action_id, text: { type: 'plain_text', text }, value: action_id };
-    if (style) b.style = style;
-    return b;
-  };
-  return [
-    { type: 'section', text: { type: 'mrkdwn', text: '*Domain Suggester* — domains, mailboxes and the asset tracker in one place. Type here like `/domains …`, or press a button.' } },
-    { type: 'actions', block_id: 'dh_1', elements: [
-      btn('Suggest domains', 'dh_suggest', 'primary'), btn('Zapmail', 'dh_zapmail'), btn('ScaledMail', 'sm_home'),
-      btn('Infra audit', 'dh_audit')] },
-    { type: 'section', text: { type: 'mrkdwn', text: '*Tracker* (what Infra Bot `/infra` does)' } },
-    { type: 'actions', block_id: 'dh_2', elements: [
-      btn('Expiring today', 'infra_expiring_0'), btn('Next 7 days', 'infra_expiring_7'),
-      btn('Add asset', 'infra_add_open'), btn('Renew asset', 'infra_renew_open'), btn('List all', 'infra_list')] },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: [
-      'Try: `zapmail renewals` · `sm status` · `infra expiring 7` · `suggest bettrdata` · `zapmail domain x.com`',
-      'Send a CSV (`domains.csv`, `renew_inboxes.csv`, `delete_domains.csv`) or `renew` / `delete` + one name per line.'].join(NL) }] }
-  ];
+/** The one menu (domains_unified.js): suggest per client, both providers, tracker. */
+function homeBlocks(baseDir) {
+  return require('./domains_unified').homeBlocks(baseDir);
 }
 
 /** The audit's Slack text, split into sections (each ≤ 2900 chars, ≤ 45 blocks). */
@@ -100,7 +83,7 @@ function registerDomainsHome(app, baseDir, { infra, botToken } = {}) {
   app.event('assistant_thread_started', async ({ event, client }) => {
     const t = event.assistant_thread || {};
     if (!t.channel_id) return;
-    await client.chat.postMessage({ channel: t.channel_id, thread_ts: t.thread_ts, text: 'Domain Suggester', blocks: homeBlocks() });
+    await client.chat.postMessage({ channel: t.channel_id, thread_ts: t.thread_ts, text: 'Domains & inboxes', blocks: homeBlocks(baseDir) });
   });
 
   app.message(async ({ message, client }) => {
