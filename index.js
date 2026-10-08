@@ -323,6 +323,12 @@ registerZapmailWebhook(expressApp, express, {
   onTrackerChanged: resyncAssetSheet
 });
 
+// Everything below needs the dashboard login (web_auth.js). The Zapmail
+// webhook above keeps its own signature check; /healthz stays open.
+const webAuth = require('./web_auth');
+const triggers = webAuth.singleFlight();
+expressApp.get('/healthz', (req, res) => res.json({ ok: true }));
+expressApp.use(webAuth.requireLogin());
 expressApp.use(express.json());
 expressApp.use(express.static(path.join(__dirname, 'public')));
 
@@ -509,6 +515,11 @@ expressApp.get('/trigger-summary', async (req, res) => {
 
 // Manual trigger for Smartlead sync
 expressApp.get('/trigger-smartlead', (req, res) => {
+  // One sync at a time: repeated calls used to start parallel full syncs and
+  // burn the Smartlead rate limit.
+  if (!triggers.tryStart('smartlead')) {
+    return res.status(409).json({ ok: false, error: 'a Smartlead sync started from here is still running' });
+  }
   try {
     console.log('Manual trigger: Smartlead sync');
     const syncDir = path.join(__dirname, 'smartlead_sync');
@@ -518,9 +529,11 @@ expressApp.get('/trigger-smartlead', (req, res) => {
     });
     proc.stdout.on('data', d => process.stdout.write(`[smartlead] ${d}`));
     proc.stderr.on('data', d => process.stderr.write(`[smartlead] ${d}`));
-    proc.on('close', code => console.log(`[smartlead] manual sync finished with code ${code}`));
+    proc.on('close', code => { triggers.done('smartlead'); console.log(`[smartlead] manual sync finished with code ${code}`); });
+    proc.on('error', () => triggers.done('smartlead'));
     res.json({ ok: true, message: 'Smartlead sync started (check server logs for progress)' });
   } catch (e) {
+    triggers.done('smartlead');
     res.status(500).json({ ok: false, error: e.message });
   }
 });

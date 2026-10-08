@@ -321,18 +321,45 @@ function expiringBlocks(rows, days) {
  *   opts.messages  true = handle CSV / renew / delete messages here
  *                  (Domain Suggester routes DMs itself and calls handleMessage)
  */
+/** Would this message change the tracker (CSV upload, or "renew"/"delete" + names)? */
+function isInfraMessage(message) {
+  if ((message.files || []).some(f => f.mimetype?.includes('csv') || f.name?.endsWith('.csv'))) return true;
+  const lines = String(message.text || '').trim().split(/\r?\n/).filter(l => l.trim());
+  return lines.length >= 2 && ['delete', 'renew'].includes(lines[0].trim().toLowerCase());
+}
+
+const LOCKED = ':lock: Only people on the domains team list can change or read the asset tracker. '
+  + 'Ask an admin to add your Slack member id to DOMAINS_ALLOWED_USERS.';
+
+/**
+ * Register the tracker features on a Bolt app.
+ *   opts.botToken  token for CSV downloads
+ *   opts.command   slash command to answer ('/infra'), or null to skip
+ *   opts.messages  true = handle CSV / renew / delete messages here
+ *                  (Domain Suggester routes DMs itself and calls handleMessage)
+ *   opts.allowed   (userId) => bool. Default: the domains team allow-list
+ *                  (DOMAINS_ALLOWED_USERS + approvers). Until 2026-10-08 anyone
+ *                  in the workspace could delete tracker rows with a message.
+ */
 function registerInfraHandlers(app, deps, opts = {}) {
   const infra = makeInfra(deps);
+  const allowed = opts.allowed || (u => require('./domains_access').isAllowed(u));
+  const deny = (client, user) => client.chat.postMessage({ channel: user, text: LOCKED }).catch(() => {});
   if (opts.command) {
     app.command(opts.command, async ({ ack, body, client, command, respond }) => {
       await ack();
+      if (!allowed(body.user_id)) return respond({ response_type: 'ephemeral', text: LOCKED });
       return runInfraText(command.text, { client, trigger_id: body.trigger_id, user: body.user_id, respond }, infra);
     });
   }
   if (opts.messages) {
     app.message(async ({ message, client }) => {
       try {
-        if (message.subtype) return;
+        if (message.subtype && message.subtype !== 'file_share') return;
+        if (message.bot_id || !isInfraMessage(message)) return;
+        if (!allowed(message.user)) {
+          return client.chat.postMessage({ channel: message.channel, text: LOCKED });
+        }
         await infra.handleMessage(message, text => client.chat.postMessage({ channel: message.channel, text }), opts.botToken);
       } catch (err) {
         console.error('Message handler error:', err);
@@ -340,27 +367,40 @@ function registerInfraHandlers(app, deps, opts = {}) {
       }
     });
   }
-  app.view('ADD_ASSET_MODAL', infra.onAddSubmit);
-  app.view('RENEW_ASSET_MODAL', infra.onRenewSubmit);
-  app.action('infra_add_open', async ({ ack, body, client }) => {
+  const guardView = handler => async args => {
+    const user = args.body && args.body.user && args.body.user.id;
+    if (!allowed(user)) { await args.ack(); return deny(args.client, user); }
+    return handler(args);
+  };
+  const guardAction = handler => async args => {
+    const user = args.body && args.body.user && args.body.user.id;
+    if (!allowed(user)) {
+      await args.ack();
+      return args.respond ? args.respond({ response_type: 'ephemeral', replace_original: false, text: LOCKED }) : deny(args.client, user);
+    }
+    return handler(args);
+  };
+  app.view('ADD_ASSET_MODAL', guardView(infra.onAddSubmit));
+  app.view('RENEW_ASSET_MODAL', guardView(infra.onRenewSubmit));
+  app.action('infra_add_open', guardAction(async ({ ack, body, client }) => {
     await ack();
     await client.views.open({ trigger_id: body.trigger_id, view: addAssetModal() });
-  });
-  app.action('infra_renew_open', async ({ ack, body, client }) => {
+  }));
+  app.action('infra_renew_open', guardAction(async ({ ack, body, client }) => {
     await ack();
     await client.views.open({ trigger_id: body.trigger_id, view: renewAssetModal() });
-  });
-  app.action('infra_list', async ({ ack, body, client }) => {
+  }));
+  app.action('infra_list', guardAction(async ({ ack, body, client }) => {
     await ack();
     await client.chat.postMessage({ channel: body.user.id, text: await infra.listText() });
-  });
-  app.action(/^infra_expiring_\d+$/, async ({ ack, action, respond }) => {
+  }));
+  app.action(/^infra_expiring_\d+$/, guardAction(async ({ ack, action, respond }) => {
     await ack();
     const days = Math.min(60, parseInt(String(action.action_id).split('_').pop(), 10) || 7);
     await respond({ response_type: 'ephemeral', replace_original: false, text: 'Expiring assets',
       blocks: expiringBlocks(await infra.expiring(days), days) });
-  });
-  app.action('infra_mark_renewed', async ({ ack, body, action, respond }) => {
+  }));
+  app.action('infra_mark_renewed', guardAction(async ({ ack, body, action, respond }) => {
     await ack();
     let names = [];
     try { names = (JSON.parse(action.value).names || []).filter(n => typeof n === 'string' && /^[a-z0-9@._+-]{3,120}$/i.test(n)); } catch (e) { names = []; }
@@ -368,7 +408,7 @@ function registerInfraHandlers(app, deps, opts = {}) {
     const { renewed, notFound } = await infra.markRenewed(names);
     await respond({ response_type: 'ephemeral', replace_original: false,
       text: '✅ <@' + body.user.id + '> marked ' + renewed + ' row(s) renewed in the tracker' + (notFound ? ', ' + notFound + ' not found' : '') + '. Google Sheets synced ✓' });
-  });
+  }));
   return infra;
 }
 
@@ -396,4 +436,4 @@ async function runInfraText(text, { client, trigger_id, user, respond }, infra) 
   return null;
 }
 
-module.exports = { registerInfraHandlers, makeInfra, runInfraText, expiringBlocks, addAssetModal, renewAssetModal };
+module.exports = { registerInfraHandlers, makeInfra, runInfraText, expiringBlocks, addAssetModal, renewAssetModal, isInfraMessage, LOCKED };
