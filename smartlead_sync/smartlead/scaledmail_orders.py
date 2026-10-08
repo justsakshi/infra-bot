@@ -186,9 +186,10 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
     plan = store.get(plan_id)
     if not plan:
         raise ScaledMailError(f"no plan {plan_id}")
-    if plan["status"] in ("placed", "in_progress", "unknown"):
+    if plan["status"] in ("placed", "in_progress", "unknown", "dropped"):
         raise ScaledMailBlocked(f"plan {plan_id} is {plan['status']} — "
-                                + ("already ordered" if plan["status"] == "placed" else "reconcile it first"))
+                                + {"placed": "already ordered", "dropped": "it was dropped; stage a new one"}
+                                .get(plan["status"], "reconcile it first"))
     if not store.claim(plan_id, user):
         raise ScaledMailBlocked(f"plan {plan_id} was claimed by someone else just now")
     try:
@@ -230,6 +231,16 @@ def reconcile(sm, plan_id: str, *, store: PlanStore | None = None) -> dict:
     return {"plan_id": plan_id, "status": plan["status"],
             "note": "no order with tag " + plan["tag"] + " yet — check the ScaledMail UI, "
                     "then mark it failed only if it is really not there"}
+
+
+def drop_plan(plan_id: str, *, user: str = "", store: PlanStore | None = None) -> dict:
+    """Drop a staged plan that will not be ordered (only planned / failed)."""
+    store = store or PlanStore()
+    plan = store.get(plan_id)
+    if not plan or plan["status"] not in ("planned", "failed"):
+        raise ScaledMailError(f"plan {plan_id} is not planned/failed - nothing to drop")
+    store.settle(plan_id, "dropped", error=f"dropped by {user or 'operator'}")
+    return {"plan_id": plan_id, "status": "dropped"}
 
 
 def mark_failed(plan_id: str, *, user: str = "", store: PlanStore | None = None) -> dict:

@@ -344,3 +344,14 @@ def test_cancelled_order_downgrades_and_gone_marked_inactive():
     assert sets["m.com"] == {"status": "Inactive"} and sets["old.com"] == {"status": "Inactive"}
     assert "z.com" not in sets
     assert not plan_sync(_snap(), tracker)["ops"]          # empty answer: nothing marked gone
+
+
+def test_dropped_plan_can_never_be_placed(monkeypatch):
+    monkeypatch.setenv("SCALEDMAIL_ALLOW_SPEND", "true")
+    store = so.PlanStore(FakeCol())
+    sm = FakeSM()
+    pid = _stage(sm, store)["plan_id"]
+    assert so.drop_plan(pid, store=store)["status"] == "dropped"
+    with pytest.raises(ScaledMailBlocked, match="dropped"):
+        so.place_order(sm, pid, approve=True, store=store)
+    assert not sm.placed

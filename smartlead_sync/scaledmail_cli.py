@@ -110,6 +110,9 @@ def run(args) -> dict:
     if c == "plans":
         from smartlead.scaledmail_orders import PlanStore
         return {"plans": sorted(PlanStore().all(), key=lambda p: p.get("staged_at", ""), reverse=True)}
+    if c == "drop":
+        from smartlead.scaledmail_orders import drop_plan
+        return drop_plan(args.plan_id, user=os.getenv("USER") or os.getenv("USERNAME") or "cli")
     if c == "mark-failed":
         from smartlead.scaledmail_orders import mark_failed
         return mark_failed(args.plan_id, user=os.getenv("USER") or os.getenv("USERNAME") or "cli")
@@ -252,6 +255,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--user")
     p = sub.add_parser("reconcile"); p.add_argument("plan_id")
     p = sub.add_parser("mark-failed"); p.add_argument("plan_id")
+    p = sub.add_parser("drop"); p.add_argument("plan_id")
     return ap
 
 
