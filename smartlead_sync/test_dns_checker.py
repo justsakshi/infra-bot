@@ -49,12 +49,12 @@ ok_dmarc3, msg_dmarc3 = audit_dmarc([])
 ok(not ok_dmarc3, "missing DMARC fail")
 
 # 4. Test Mock Domain Bypass
-async def test_bypass():
+async def _bypass():   # script-style check; not a pytest async test
     res = await audit_domain_dns("mockdomain.local")
     ok(res["spf_ok"], "mock domain SPF bypass")
     ok(res["dkim_ok"], "mock domain DKIM bypass")
     ok(res["dmarc_ok"], "mock domain DMARC bypass")
 
-asyncio.run(test_bypass())
+asyncio.run(_bypass())
 
 print("\nALL PASSED (test_dns_checker)")

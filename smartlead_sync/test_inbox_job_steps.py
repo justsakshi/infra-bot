@@ -12,6 +12,13 @@ from smartlead import inbox_jobs as ij
 from smartlead.inbox_job_steps import RealSteps
 
 
+@pytest.fixture(autouse=True)
+def _zapmail_key(monkeypatch):
+    """Tests must not depend on the developer's .env (they failed on a clean
+    machine: Melior's Zapmail account resolves through this key)."""
+    monkeypatch.setenv("ZAPMAIL_API_KEY_PRECISE_LEADS", "test-key")
+
+
 class Saves:
     def __init__(self):
         self.n = 0

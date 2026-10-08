@@ -24,4 +24,5 @@ jobs:
       - name: Python tests (no network, no keys)
         working-directory: smartlead_sync
         run: |
-          python -m pytest -q -p no:cacheprovider $(ls test_*.py | grep -v '^test_smart_delivery.py$')
+          # Live scripts that need real keys / Mongo are not unit tests: skipped here.
+          python -m pytest -q -p no:cacheprovider $(ls test_*.py | grep -v -E '^test_(smart_delivery|retest_roundtrip|smartlead_leads)\.py$')
