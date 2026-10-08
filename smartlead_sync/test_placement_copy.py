@@ -101,3 +101,34 @@ ok(pick_source_campaign([mixed[0]], client_id=None) is None, "only Melior active
 ok(pick_source_campaign(mixed)["id"] == 10, "no filter keeps the old behaviour")
 
 print("\nALL PASSED")
+
+
+# --- most active campaign of the week (team rule 2026-10-08) ---
+from smartlead.placement_copy import eligible_sources, choose_most_active
+camps2 = [
+    {"id": 1, "status": "ACTIVE", "name": "Exec search", "created_at": "2026-09-01", "client_id": 12256},
+    {"id": 2, "status": "ACTIVE", "name": "Competitor AI", "created_at": "2026-10-05", "client_id": 12256},
+    {"id": 3, "status": "PAUSED", "name": "Accounting", "created_at": "2026-08-01", "client_id": 12256},
+    {"id": 4, "status": "DRAFTED", "name": "New one", "created_at": "2026-10-07", "client_id": 12256},
+    {"id": 5, "status": "ACTIVE", "name": "DT Melior #1", "created_at": "2026-10-06", "client_id": 12256},
+    {"id": 6, "status": "ACTIVE", "name": "PL own", "created_at": "2026-10-06", "client_id": None},
+]
+el = eligible_sources(camps2, client_id=12256)
+ok([c["id"] for c in el] == [1, 2, 3], "drafts, tests and other clients are never sources")
+best, why = choose_most_active(el, {1: 400, 2: 120})
+ok(best["id"] == 1 and "400 emails" in why, "the campaign that SENT most this week wins, not the newest")
+best, why = choose_most_active(el, {1: 0, 2: 0})
+ok(best["id"] == 2 and "newest active" in why, "nothing sent this week -> newest active")
+best, why = choose_most_active([c for c in el if c["status"] != "ACTIVE"], {3: 50})
+ok(best["id"] == 3 and "last active" in why, "nothing active -> last active paused campaign")
+best, why = choose_most_active([c for c in el if c["status"] != "ACTIVE"], {3: 0})
+ok(best is None, "nothing sent at all -> keep the current copy")
+print("most-active rule: passed")
+
+pl = [{"id": 7, "status": "COMPLETED", "name": "Data Providers | Bettrdata - Contributor Ingestion", "client_id": None},
+      {"id": 8, "status": "PAUSED", "name": "Marketing Agencies | Preciseleads", "client_id": None}]
+ok([c["id"] for c in eligible_sources(pl, client_id=None, skip_words=("bettrdata", "melior"))] == [8],
+   "PL's own test never copies an old BettrData campaign left on PL's account")
+best, why = choose_most_active(pl[1:], {8: 300}, days=30)
+ok(best["id"] == 8 and "30 days" in why, "nothing active -> last active in the wider 30-day window")
+print("client guards: passed")

@@ -3,7 +3,9 @@
 
 The test campaigns carry the scheduled SmartDelivery tests, so the email they
 test must be the email of a campaign that is running this week. This copies
-the newest ACTIVE campaign's first step into each test campaign's first step.
+the client's MOST ACTIVE campaign of the week (most emails sent in the last 7
+days; else the newest active one; else its last active paused/completed one)
+into each test campaign's first step, and posts which email each test got.
 Live campaigns are only read, never written.
 
     python3 copy_sync.py               # dry run: says what it would copy
@@ -45,6 +47,9 @@ TARGETS = {
 }
 # Campaigns named "DT <prefix> #n" take their copy from this client's campaigns.
 DT_SOURCE_CLIENT = {"DT PL": None, "DT Melior": 12256, "DT BettrData": None}
+# PL's account still holds old BettrData / Melior campaigns with no client id:
+# PL's own tests must never copy them.
+SKIP_WORDS = {("PRECISE_LEADS", None): ("bettrdata", "melior")}
 
 
 async def first_step_id(acc, campaign_id: int) -> int | None:
@@ -61,6 +66,7 @@ async def main() -> int:
     ap.add_argument("--only", help="account name, e.g. BETTRDATA")
     args = ap.parse_args()
     store = PlacementStore()
+    report: list[str] = []
     by_name = {a.name.upper(): a for a in discover_accounts()}
     failed = 0
     for name, standing in TARGETS.items():
@@ -74,9 +80,17 @@ async def main() -> int:
             dt_names = [x for x in await c.list_campaigns()
                         if str(x.get("name", "")).startswith("DT ")]
         plan = dict(standing)
+        names = {int(x["id"]): x["name"] for x in dt_names}
         for x in dt_names:
             prefix = next((p for p in DT_SOURCE_CLIENT if x["name"].startswith(p + " #")), None)
-            plan.setdefault(int(x["id"]), DT_SOURCE_CLIENT.get(prefix, standing[0][1]))
+            if prefix is None:
+                # Never guess a client: a wrong guess tests another client's email.
+                msg = f"{name}: test campaign '{x['name']}' has no known client prefix ({', '.join(DT_SOURCE_CLIENT)}) - not refreshed"
+                print(f"[CopySync] {msg}")
+                report.append(":warning: " + msg)
+                failed += 1
+                continue
+            plan.setdefault(int(x["id"]), DT_SOURCE_CLIENT[prefix])
         for test_id, client_id in plan.items():
             step = await first_step_id(acc, test_id)
             if step is None:
@@ -84,11 +98,31 @@ async def main() -> int:
                 failed += 1
                 continue
             r = await refresh_test_campaign(acc, test_id, step, store, dry_run=not args.apply,
-                                            source_client_id=client_id)
+                                            source_client_id=client_id,
+                                            skip_words=SKIP_WORDS.get((name, client_id), ()))
             state = "UPDATED" if r["written"] else "kept"
             print(f"[CopySync] {name} test {test_id}: {state} - source "
                   f"{r['source']} - {r['reason']}")
+            label = names.get(int(test_id), f"test {test_id}")
+            report.append(f"{':white_check_mark:' if r['written'] else ':warning:'} *{label}* — "
+                          + (f"now tests '{r.get('source_name', '')[:60]}'" if r["written"] else "kept its copy")
+                          + f" ({r['reason']})")
+    if args.apply and report:
+        _post_summary(report)
     return 1 if failed else 0
+
+
+def _post_summary(lines: list[str]) -> None:
+    """Tell the team which email each test campaign will test this week."""
+    token = os.getenv("SLACK_BOT_TOKEN", "")
+    channel = os.getenv("PLACEMENT_REPORT_CHANNEL") or "C0AGVSUNEFP"
+    if not token:
+        return
+    try:
+        from smartlead.notify import _post
+        _post(token, channel, "*:envelope: Test copy refreshed for this week's placement tests*\n" + "\n".join(lines))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[CopySync] Slack summary failed: {exc}")
 
 
 if __name__ == "__main__":

@@ -1185,10 +1185,12 @@ async function start() {
     });
 
     // Deliverability-test copy sync: Sunday 18:30 and Monday/Tuesday 05:00 IST, i.e.
-    // before the 06:00 scheduled tests. Copies the newest ACTIVE campaign's first step
-    // into each test campaign (Precise Leads, Melior, BettrData) so the tests send
-    // what is really running. Writes by default; COPY_SYNC_DISABLED=true makes it
-    // a dry run. Never writes to a live campaign.
+    // before the 06:00 scheduled tests. Copies the first step of each client's most
+    // active campaign this week (most emails sent in 7 days; nothing active -> the
+    // last active one in 30 days) into every test campaign, the five "DT ..." ones
+    // included, so the tests send what is really running. Posts a summary to Slack.
+    // Writes by default; COPY_SYNC_DISABLED=true makes it a dry run. Never writes to
+    // a live campaign.
     cron.schedule('30 18 * * 0', () => runCopySync(), { timezone: 'Asia/Kolkata' });
     cron.schedule('0 5 * * 1,2', () => runCopySync(), { timezone: 'Asia/Kolkata' });
     function runCopySync() {
