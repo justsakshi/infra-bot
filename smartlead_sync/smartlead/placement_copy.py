@@ -53,9 +53,31 @@ def resolve_merge_fields(text: str, sample_fields: dict,
     return out, unresolved
 
 
-def pick_source_campaign(campaigns: list[dict]) -> dict | None:
-    """Newest ACTIVE campaign. None when there is nothing to copy from."""
-    active = [c for c in campaigns if str(c.get("status", "")).upper() == "ACTIVE"]
+_ANY = object()
+# A campaign whose name says it is a test is never a source: copying a test
+# campaign into another test campaign tests nothing real.
+_TEST_WORDS = ("test", "deliverab", "placement")
+
+
+def pick_source_campaign(campaigns: list[dict], client_id=_ANY,
+                         exclude_ids: tuple = ()) -> dict | None:
+    """Newest ACTIVE campaign. None when there is nothing to copy from.
+
+    `client_id` narrows the choice to one Smartlead client (None means the
+    account's own, un-clientised campaigns) so a test for one client is never
+    fed another client's copy; omitted, any client qualifies.
+    """
+    active = []
+    for c in campaigns:
+        if str(c.get("status", "")).upper() != "ACTIVE":
+            continue
+        if c.get("id") in exclude_ids:
+            continue
+        if any(w in str(c.get("name", "")).lower() for w in _TEST_WORDS):
+            continue
+        if client_id is not _ANY and c.get("client_id") != client_id:
+            continue
+        active.append(c)
     if not active:
         return None
     active.sort(key=lambda c: str(c.get("created_at", "")), reverse=True)
@@ -113,7 +135,8 @@ def first_signature(accounts: list[dict]) -> str:
 
 
 async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
-                                store, dry_run: bool = False) -> dict:
+                                store, dry_run: bool = False,
+                                source_client_id=_ANY) -> dict:
     """Rewrite the test campaign's step from the newest active campaign.
 
     Returns {"written": bool, "source": campaign id or None, "hash": str,
@@ -123,7 +146,8 @@ async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
     from smartlead.api import SmartleadClient
 
     async with SmartleadClient(acc.api_key, acc.name) as c:
-        source = pick_source_campaign(await c.list_campaigns())
+        source = pick_source_campaign(await c.list_campaigns(), client_id=source_client_id,
+                                      exclude_ids=(int(test_campaign_id),))
         if not source:
             return {"written": False, "source": None, "hash": "", "reason": "no active campaign"}
         sid = source["id"]

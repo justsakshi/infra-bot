@@ -86,4 +86,16 @@ ok(verdict_for(60.0) == "OK", "60% is the OK floor")
 ok(verdict_for(47.0) == "WEAK", "47% -> WEAK")
 ok(verdict_for(28.3) == "BAD", "28% (ingestresolve) -> BAD")
 
+# --- the blend follows the seed mix; the worst provider follows the mailbox ---
+# Across three tests on one fleet the Microsoft seed share was 44%, 68% and 71%.
+# Microsoft passes nearly everything, so a Microsoft-heavy panel lifts the blend
+# while Google - the provider actually filtering us - stays low.
+ok(verdict_for(98.7) == "GOOD", "blended 98.7% alone reads GOOD")
+ok(verdict_for(98.7, worst_provider_pct=34.3) == "BAD",
+   "same blend with Google at 34.3% is BAD - the worst provider decides")
+ok(verdict_for(68.0, worst_provider_pct=95.7) == "OK",
+   "worst provider never flatters: the lower of the two wins")
+ok(verdict_for(100.0, worst_provider_pct=100.0) == "GOOD",
+   "clean on both providers stays GOOD")
+
 print("\nALL PASSED")

@@ -207,7 +207,19 @@ OK_AT = 60.0
 WEAK_AT = 35.0
 
 
-def verdict_for(inbox_pct: float) -> str:
+def verdict_for(inbox_pct: float, worst_provider_pct: float | None = None) -> str:
+    """Tier a placement reading, judged on the WORST provider when known.
+
+    The blended percentage tracks the seed mix, not the mailbox. Across three
+    tests on the same fleet the Microsoft share was 44%, 68% and 71%; Microsoft
+    passes nearly everything, so a Microsoft-heavy panel inflates the blend.
+    Test 535799 read 98.7% blended while Google - the provider that was actually
+    filtering us - sat at 95.7%.
+
+    A domain that reaches one provider and not the other is half-dead, so the
+    worst provider is the verdict when the report gives us one.
+    """
+    inbox_pct = inbox_pct if worst_provider_pct is None else min(inbox_pct, worst_provider_pct)
     if inbox_pct >= GOOD_AT:
         return "GOOD"
     if inbox_pct >= OK_AT:

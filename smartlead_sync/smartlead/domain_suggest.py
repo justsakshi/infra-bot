@@ -143,6 +143,96 @@ def merge(ai: list[dict], gen: list[dict], count: int) -> list[dict]:
     return out
 
 
+def merge_sources(ai: list[dict], gen: list[dict], sm: list[dict], count: int) -> list[dict]:
+    """``merge`` plus ScaledMail's ideas: up to a quarter of the slots for them
+    when they have names; unused slots fall back to the other sources."""
+    sm_slots = min(len(sm), count // 4)
+    out = merge(ai, gen, count - sm_slots)
+    seen = {r["domain"] for r in out}
+    for row in sm:
+        if len(out) >= count:
+            break
+        if row["domain"] not in seen:
+            seen.add(row["domain"])
+            out.append(row)
+    if len(out) < count:   # ScaledMail had fewer: top up from AI / generator
+        for row in merge(ai, gen, count * 2):
+            if len(out) >= count:
+                break
+            if row["domain"] not in seen:
+                seen.add(row["domain"])
+                out.append(row)
+    return out
+
+
+def _scaledmail_on() -> bool:
+    try:
+        from smartlead.scaledmail import configured
+        return configured()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _scaledmail_ideas(keywords: list[str], vocab: ClientVocabulary, words: BusinessWords,
+                      owned: set[str], owned_stems: frozenset[str], price_ceiling: float,
+                      errors: list[str]) -> list[dict]:
+    """ScaledMail's suggest-domains on the business words, through our rules.
+    Its ideas are prefix/suffix variants (meetX, Xhq), so most brand ones fail
+    the safety screen by design; the business-word ones can pass. READ-ONLY."""
+    from smartlead.scaledmail import ScaledMailClient
+    out: list[dict] = []
+    seen: set[str] = set()
+    try:
+        with ScaledMailClient() as sm:
+            # Every keyword: the common ones ("leads", "outbound") come back
+            # 90%+ taken (2026-10-08), the niche ones carry the usable ideas.
+            # 6 calls, under ScaledMail's 15/minute limit.
+            for kw in keywords[:6]:
+                res = sm.suggest_domains(kw, ["com"], limit=50)
+                for r in res.get("domains") or []:
+                    d = str(r.get("domain", "")).lower()
+                    if d in seen or d in owned or r.get("status") != "available" or r.get("blacklisted"):
+                        continue
+                    seen.add(d)
+                    if r.get("price") is None or float(r["price"]) > price_ceiling:
+                        continue
+                    sld, _, tld = d.partition(".")
+                    if not screen(sld, f".{tld}", vocab, source_tokens=("scaledmail",),
+                                  owned_stems=owned_stems).ok:
+                        continue
+                    v = judge(sld, words)
+                    if not v.ok:
+                        continue
+                    out.append({"domain": d, "price": None, "renew_price": None, "source": "scaledmail",
+                                "score": v.score, "words": list(v.words),
+                                "scaledmail": {"available": True, "price": float(r["price"]),
+                                               "renew_price": r.get("renewPrice")}})
+    except Exception as exc:  # noqa: BLE001 - suggestions still work without it
+        errors.append(f"ScaledMail ideas: {str(exc)[:150]}")
+    return sorted(out, key=lambda r: -r["score"])
+
+
+def _scaledmail_prices(rows: list[dict], errors: list[str]) -> None:
+    """Add ScaledMail's availability + price to each suggestion (in place)."""
+    from smartlead.scaledmail import ScaledMailClient
+    need = [r["domain"] for r in rows if "scaledmail" not in r][:90]   # 30 per call, 15 calls/min
+    if not need:
+        return
+    try:
+        found = {}
+        with ScaledMailClient() as sm:
+            for i in range(0, len(need), 30):
+                found.update({str(x.get("domain", "")).lower(): x for x in sm.search_domains(need[i:i + 30]) or []})
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"ScaledMail prices: {str(exc)[:150]}")
+        return
+    for r in rows:
+        x = found.get(r["domain"])
+        if x and "scaledmail" not in r:
+            r["scaledmail"] = {"available": x.get("status") == "available" and not x.get("blacklisted"),
+                               "price": x.get("price"), "renew_price": x.get("renewPrice")}
+
+
 def _held_in_plans(errors: list[str]) -> set[str]:
     """Domains in a planned / in-flight / bought batch of the purchase ledger."""
     try:
@@ -229,12 +319,27 @@ async def suggest(
                for c in best]
         gen.sort(key=lambda r: -r["score"])
 
+    # 3. ScaledMail: its own name ideas from the business words (same rules),
+    #    and its price for every name on the list, so the team can buy where
+    #    it is cheaper or where the mailboxes will live.
+    sm_rows: list[dict] = []
+    if _scaledmail_on():
+        sm_rows = await asyncio.to_thread(_scaledmail_ideas, keywords, vocab, words, owned,
+                                          owned_stems, price_ceiling, errors)
+        if sm_rows:
+            listed = await check_blacklists([r["domain"] for r in sm_rows])
+            sm_rows = [r for r in sm_rows if not listed.get(r["domain"])]
+    picked = merge_sources(ai, gen, sm_rows, count)
+    if _scaledmail_on() and picked:
+        await asyncio.to_thread(_scaledmail_prices, picked, errors)
+
     return {
         "client": key,
         "label": prof.get("label") or key,
         "main_domain": site_of(prof),
         "keywords": keywords,
-        "suggestions": merge(ai, gen, count),
+        "suggestions": picked,
+        "scaledmail_usable": len(sm_rows),
         "ai_found": len(ai_rows),
         "ai_usable": len(ai),
         "ai_dropped": dropped,

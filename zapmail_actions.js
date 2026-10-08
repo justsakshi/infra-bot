@@ -63,6 +63,7 @@ function homeBlocks() {
       btn('Tracker sync', 'zm_nav_sync', 'sync'),
       btn('Tracker vs Zapmail', 'zm_nav_cross-check', 'cross-check')
     ] },
+    { type: 'actions', block_id: 'zm_home_3', elements: [btn('ScaledMail →', 'sm_home', 'home')] },
     { type: 'context', elements: [{ type: 'mrkdwn', text: 'Typed versions: `/domains zapmail status | renewals | batches | digest | domain x.com | prewarmed | sync | cross-check`.' }] }
   ];
 }
@@ -379,7 +380,7 @@ function syncBlocks(res) {
         confirm: { type: 'plain_text', text: 'Apply' }, deny: { type: 'plain_text', text: 'Cancel' } }
     }] });
   }
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Runs daily at 9:30 IST (writes only when ZAPMAIL_ASSET_SYNC_ENABLED=true). ScaledMail stays manual.' }] });
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Runs daily at 9:30 IST (writes only when ZAPMAIL_ASSET_SYNC_ENABLED=true). ScaledMail has its own: `/domains sm sync`.' }] });
   return blocks;
 }
 

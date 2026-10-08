@@ -16,7 +16,8 @@ function _ids(value) {
 
 function allowedUsers() {
   const { approvers } = require('./domain_suggest_command');
-  return new Set([..._ids(process.env.DOMAINS_ALLOWED_USERS), ...approvers()]);
+  return new Set([..._ids(process.env.DOMAINS_ALLOWED_USERS), ...approvers(),
+    ..._ids(process.env.SCALEDMAIL_APPROVERS)]);
 }
 
 function isAllowed(userId) {
@@ -28,7 +29,11 @@ const DENIED = ':lock: This bot is limited to the domains team. Ask an admin to 
 /** Slack user id from a command, action, view or shortcut payload. */
 function userOf(body) {
   if (!body) return null;
-  return body.user_id || (body.user && body.user.id) || null;
+  // Events (DMs, the agent tab) carry the person in body.event — without this
+  // every DM was dropped as "unknown user".
+  const ev = body.event || {};
+  return body.user_id || (body.user && body.user.id) || ev.user
+    || (ev.assistant_thread && ev.assistant_thread.user_id) || null;
 }
 
 /**

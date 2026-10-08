@@ -171,6 +171,16 @@ def _similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+def _similar_at_least(a: str, b: str, threshold: float) -> bool:
+    """Same answer as ``_similarity(a, b) >= threshold``, much faster: the
+    quick ratios are upper bounds, so most pairs are ruled out without the
+    full match. Screening every suggestion against every owned name was
+    ~60 s of a 3.5-minute suggestion run (profiled 2026-10-08)."""
+    sm = difflib.SequenceMatcher(None, a, b)
+    return (sm.real_quick_ratio() >= threshold and sm.quick_ratio() >= threshold
+            and sm.ratio() >= threshold)
+
+
 # Generic English nouns that carry no brand identity even when they appear in
 # a client's own domain. 'bettrdata' contains 'data', but 'data' identifies
 # nobody — thousands of companies use it, so a recipient cannot read it as
@@ -305,7 +315,7 @@ def screen(sld: str, tld: str, vocab: ClientVocabulary,
             # Only compare against names of similar length; a short stem is
             # naturally similar to many longer words without being a sibling.
             if abs(len(sld) - len(owned)) <= 3 and \
-                    _similarity(sld, owned) >= SIBLING_REJECT:
+                    _similar_at_least(sld, owned, SIBLING_REJECT):
                 rejections.append(f"too-close-to-owned:{owned}")
                 break
 

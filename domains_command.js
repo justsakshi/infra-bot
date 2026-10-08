@@ -460,13 +460,38 @@ function formatBuyResult(r) {
  * Register the /domains command on an existing Bolt app.
  * DOMAINS_SLASH_COMMAND renames it (e.g. `/domains-dev` on a local test app).
  */
-function registerDomainsCommand(app, baseDir) {
-  app.command(process.env.DOMAINS_SLASH_COMMAND || '/domains', async ({ ack, command, respond }) => {
+function registerDomainsCommand(app, baseDir, ctx = {}) {
+  app.command(process.env.DOMAINS_SLASH_COMMAND || '/domains', async ({ ack, body, client, command, respond }) => {
     await ack();
+    return handleDomainsText(command.text, {
+      user: command.user_name || command.user_id, userId: command.user_id,
+      client, trigger_id: body && body.trigger_id, respond, infra: ctx.infra
+    }, baseDir);
+  });
+}
+
+/**
+ * Everything `/domains <text>` can do — also reached by DMs to the app
+ * (domains_home.js), where `respond` posts into the conversation.
+ */
+async function handleDomainsText(text, ctx, baseDir) {
+  const { respond } = ctx;
+  const command = { text: text || '', user_name: ctx.user, user_id: ctx.userId };
+  {
+    const home = /^\s*(home|menu|hi|hello|hey|start)\s*$/i.exec(command.text);
+    if (home) return respond({ response_type: 'ephemeral', text: 'Domain Suggester', blocks: require('./domains_home').homeBlocks() });
+    const inf = /^\s*(infra|tracker)\b(.*)$/i.exec(command.text);
+    if (inf) {
+      if (!ctx.infra) return respond({ response_type: 'ephemeral', text: ':x: The tracker is not connected on this app.' });
+      return require('./infra_slack').runInfraText(inf[2], { client: ctx.client, trigger_id: ctx.trigger_id,
+        user: ctx.userId, respond }, ctx.infra);
+    }
     // `/domains zapmail …` = `/zapmail …`, for workspaces where nobody can
     // register a second slash command on this app.
     const zm = /^\s*(zapmail|zm)\b(.*)$/i.exec(command.text || '');
     if (zm) return require('./zapmail_command').handleZapmailText(zm[2], baseDir, respond);
+    const sm = /^\s*(scaledmail|scaled|sm)\b(.*)$/i.exec(command.text || '');
+    if (sm) return require('./scaledmail_command').handleScaledMailText(sm[2], baseDir, respond);
     const opts = parseDomainsArgs(command.text);
 
     if (opts.error === 'help') {
@@ -571,7 +596,7 @@ function registerDomainsCommand(app, baseDir) {
         text: ':x: Domain generation failed: ' + err.message
       });
     }
-  });
+  }
 }
 
 /**
@@ -599,9 +624,17 @@ async function startDomainsApp(baseDir, opts = {}) {
   const domainsApp = new App({ token, appToken, socketMode: true });
   // Before any handler: only DOMAINS_ALLOWED_USERS + ZAPMAIL_APPROVERS get in.
   domainsApp.use(require('./domains_access').accessMiddleware);
-  registerDomainsCommand(domainsApp, baseDir);
+  // The /infra tracker features (add / renew / list / expiring / CSV) on this
+  // app too, so the team can do everything from one bot.
+  const infra = opts.infraDeps
+    ? require('./infra_slack').registerInfraHandlers(domainsApp, opts.infraDeps, { botToken: token })
+    : null;
+  registerDomainsCommand(domainsApp, baseDir, { infra });
   registerZapmailCommand(domainsApp, baseDir, opts);
+  require('./scaledmail_command').registerScaledMailCommand(domainsApp, baseDir, opts);
   suggestFlow.registerDomainSuggestFlow(domainsApp, baseDir);
+  // DMs and the app's Messages ("agent") tab: talk to it like the slash command.
+  require('./domains_home').registerDomainsHome(domainsApp, baseDir, { infra, botToken: token });
 
   // Same socket-mode race the main app guards against: a forced disconnect
   // during a deploy overlap must be logged, not thrown as an unhandled
@@ -626,6 +659,7 @@ async function startDomainsApp(baseDir, opts = {}) {
 
 module.exports = {
   registerDomainsCommand,
+  handleDomainsText,
   startDomainsApp,
   parseDomainsArgs,
   formatDomainResult,

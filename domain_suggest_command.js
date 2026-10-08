@@ -101,6 +101,17 @@ function clientPickerBlocks(profiles) {
   return blocks;
 }
 
+/** One tick-box line: where it can be bought and for how much. */
+function suggestionLine(s) {
+  const money = v => '$' + Number(v).toFixed(2);
+  const src = { ai: 'Zapmail AI', generator: 'our generator', scaledmail: 'ScaledMail idea' }[s.source] || s.source;
+  const zm = s.price !== null && s.price !== undefined
+    ? 'Zapmail ' + money(s.price) + (s.renew_price ? ' (renews ' + money(s.renew_price) + ')' : '') : null;
+  const sm = s.scaledmail && s.scaledmail.available && s.scaledmail.price !== null && s.scaledmail.price !== undefined
+    ? 'ScaledMail ' + money(s.scaledmail.price) + (s.scaledmail.renew_price ? ' (renews ' + money(s.scaledmail.renew_price) + ')' : '') : null;
+  return ('`' + s.domain + '` · ' + [zm, sm].filter(Boolean).join(' · ') + ' · ' + src).slice(0, 150);
+}
+
 /** Result of domain_suggest.py → tick boxes + stage button. */
 function suggestionBlocks(r) {
   if (r.error) return [{ type: 'section', text: { type: 'mrkdwn', text: ':x: ' + r.error } }];
@@ -108,6 +119,7 @@ function suggestionBlocks(r) {
   const head = '*Domain suggestions for ' + r.label + '* (' + r.main_domain + ')'
     + NL + 'Keywords: ' + (r.keywords || []).join(', ')
     + NL + 'Zapmail AI: ' + r.ai_usable + ' usable · our generator: ' + r.generator_usable + ' usable'
+    + (r.scaledmail_usable !== undefined ? ' · ScaledMail: ' + r.scaledmail_usable + ' usable' : '')
     + (rows.length ? NL + 'Tick the ones you want, then *Stage purchase*.' : '');
   const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: head } }];
   if (!rows.length) {
@@ -123,9 +135,7 @@ function suggestionBlocks(r) {
         options: rows.slice(i, i + MAX_PER_GROUP).map(s => ({
           text: {
             type: 'mrkdwn',
-            text: '`' + s.domain + '` · $' + Number(s.price).toFixed(2)
-              + (s.renew_price ? ' (renews $' + Number(s.renew_price).toFixed(2) + ')' : '')
-              + ' · ' + (s.source === 'ai' ? 'Zapmail AI' : 'our generator')
+            text: suggestionLine(s)
           },
           value: s.domain
         }))
@@ -135,7 +145,11 @@ function suggestionBlocks(r) {
   const buttons = [];
   if (rows.length) {
     buttons.push({ type: 'button', action_id: 'domains_stage', style: 'primary',
-      text: { type: 'plain_text', text: 'Stage purchase' }, value: r.client });
+      text: { type: 'plain_text', text: 'Stage purchase (Zapmail)' }, value: r.client });
+    if (rows.some(x => x.scaledmail && x.scaledmail.available)) {
+      buttons.push({ type: 'button', action_id: 'domains_sm_order',
+        text: { type: 'plain_text', text: 'Order on ScaledMail' }, value: r.client });
+    }
   }
   buttons.push({ type: 'button', action_id: 'domains_suggest_again',
     text: { type: 'plain_text', text: 'Suggest again' }, value: r.client });
@@ -230,14 +244,20 @@ async function runSuggest(clientKey, respond, baseDir) {
       text: ':x: `' + clientKey + '` has no ready domain profile (website + 3 keywords in domain_clients.json).' });
   }
   await respond({ response_type: 'ephemeral', replace_original: false,
-    text: ':mag: Finding domains for *' + (p.label || clientKey) + '* (Zapmail AI + our generator, 1-2 min)…' });
+    text: ':mag: Finding domains for *' + (p.label || clientKey) + '* (Zapmail AI + our generator, about 3-4 min — I’ll post here when done)…' });
   try {
-    const r = await runPy(['domain_suggest.py', '--client', clientKey, '--count', '12', '--json'], baseDir);
+    // Measured 2026-10-08: ~3.5 min for Precise Leads (Zapmail's AI finder +
+    // live availability checks). The old 4-minute limit cut it off on Render.
+    const r = await runPy(['domain_suggest.py', '--client', clientKey, '--count', '12', '--json'], baseDir,
+      Number(process.env.DOMAIN_SUGGEST_TIMEOUT_MS) || 10 * 60 * 1000);
     await respond({ response_type: 'ephemeral', replace_original: false,
       text: 'Domain suggestions for ' + (p.label || clientKey), blocks: suggestionBlocks(r) });
   } catch (err) {
     console.error('[domain-suggest] failed:', err);
-    await respond({ response_type: 'ephemeral', replace_original: false, text: ':x: ' + err.message });
+    await respond({ response_type: 'ephemeral', replace_original: false,
+      text: ':x: ' + (err.message === 'timed out'
+        ? 'Suggestions for ' + (p.label || clientKey) + ' took over 10 minutes and were stopped (usually Zapmail’s search limit — 100 searches per 30 min). Try again in 30 minutes.'
+        : err.message) });
   }
 }
 
@@ -314,6 +334,7 @@ module.exports = {
   resolveClientKey,
   clientPickerBlocks,
   suggestionBlocks,
+  suggestionLine,
   selectedDomains,
   stagedBlocks,
   buyButtonBlocks,

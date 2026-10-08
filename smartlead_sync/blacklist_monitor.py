@@ -309,17 +309,22 @@ async def main() -> None:
         # ~99 of our domains, affects URLs inside message bodies rather than
         # sender reputation, and paging anyone about it every week would train
         # the team to ignore this alert entirely.
+        # 2026-10-08: URIBL joins Spamhaus as an alert (both judge the sending
+        # domain). SURBL stays a one-line count, for the reason above.
         serious = [r for r in listed
-                   if any("spamhaus" in s.lower() for s in r["listed_on"])]
+                   if any(k in s.lower() for s in r["listed_on"] for k in ("spamhaus", "uribl"))]
+        surbl_only = [r for r in listed if r not in serious]
         if serious:
             try:
                 from smartlead.notify import post_digest
                 post_digest(
-                    "*🚨 Spamhaus DBL listing — inbox placement at risk*\n"
+                    "*🚨 Domain blacklisted (Spamhaus / URIBL) — inbox placement at risk*\n"
                     + "\n".join(f"   • *{r['domain']}* ({', '.join(r['clients'])}) "
                                 f"— {', '.join(r['listed_on'])}" for r in serious[:20])
                     + "\n\nPause campaigns on these domains and file a delisting "
-                      "request. Domains under 30 days old: replace instead.")
+                      "request. Domains under 30 days old: replace instead."
+                    + (f"\n_Also {len(surbl_only)} domain(s) on SURBL only (link reputation; "
+                       "check the links in the copy)._" if surbl_only else ""))
             except Exception as exc:  # noqa: BLE001
                 print(f"  [Blacklist] Slack alert failed (non-fatal): {exc}")
     else:

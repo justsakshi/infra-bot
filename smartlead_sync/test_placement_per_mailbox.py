@@ -20,8 +20,10 @@ from datetime import date
 from smartlead.processing import _build_inbox_row
 from smartlead.health import compute_health_score
 
-TODAY = date(2026, 9, 17)
-FRESH = "2026-09-17"
+# Relative to today: a fixed date went stale after TEST_STALE_DAYS and the
+# "inbox" fallback read as "stale" (the test broke on 2026-10-08, not the code).
+TODAY = date.today()
+FRESH = TODAY.isoformat()
 
 
 def ok(c, m):

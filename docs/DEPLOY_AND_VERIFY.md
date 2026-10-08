@@ -223,3 +223,24 @@ Read this to them, or forward it as-is.
 - You can verify this yourself anytime with the commands in §3 — no dependency on me.
 - The path from here is: verify §2 → run §3 yourself → follow the enablement order in §4, one step at a time, watching logs between each.
 - Even at the end of §4, this covers warmup + bounce protection + blacklist detection — it does NOT mean every deliverability lever is covered (copy quality, list hygiene, capacity planning are still open — tracked in `SCALE_ROADMAP.md`).
+
+## 2026-10-08 release: ScaledMail, Domain Suggester as front door, infra audit, deliverability loop
+
+**Render env (new):**
+| Var | Set to |
+|---|---|
+| `SCALEDMAIL_API_KEY` | ScaledMail API token (app.scaledmail.com/settings) |
+| `SCALEDMAIL_APPROVERS` | Slack ids allowed to press ScaledMail buttons (else ZAPMAIL_APPROVERS) |
+| `SCALEDMAIL_ASSET_SYNC_ENABLED` | `true` to let the 9:35 sync write the tracker |
+| `SCALEDMAIL_NOTIFY_CHANNEL` | channel for the 9:45 ScaledMail digest |
+| `INFRA_AUDIT_CHANNEL` | channel for the 10:20 Mon-Fri infra audit |
+| `SCALEDMAIL_ALLOW_SPEND` / `SCALEDMAIL_ALLOW_CANCEL` | leave unset until wanted |
+| `DOMAIN_SUGGEST_TIMEOUT_MS` | optional; default 600000 (10 min) |
+
+**Domain Suggester Slack app (api.slack.com → the app):**
+1. Event Subscriptions → bot events `message.im`, `assistant_thread_started`.
+2. OAuth scopes → add `im:history`, `files:read`, `assistant:write`; reinstall.
+3. App Home → Messages tab on + "Allow users to send messages".
+
+**Verify after deploy:** DM the app `hi` → menu; `sm status` → ScaledMail cost; press *Infra audit*;
+*Suggest for Precise Leads* → list in 2-4 min with Zapmail + ScaledMail prices.

@@ -77,6 +77,19 @@ _DOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z]{2,})+$
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z' .-]{0,39}$")
 
 
+def _client_main_domain(client: str) -> str:
+    """The client's real ('sacred') domain from domain_clients.json, or ''."""
+    try:
+        from smartlead.domain_suggest import load_profiles
+        want = str(client or "").strip().lower()
+        for key, prof in load_profiles().items():
+            if key.lower() == want or str(prof.get("label", "")).lower() == want:
+                return str(prof.get("main_domain") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - a missing profile file must not block jobs
+        pass
+    return ""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -117,6 +130,9 @@ def new_job(
     bad = [d for d in doms if not _DOMAIN_RE.match(d)]
     if bad:
         raise ValueError(f"not a domain: {', '.join(bad)}")
+    main = _client_main_domain(client)
+    if main and main in doms:
+        raise ValueError(f"{main} is {client}'s real website — cold inboxes never go on the main domain")
     if kind == "prewarmed":
         if len(doms) != 1 or not prewarmed_domain_id:
             raise ValueError("a pre-warmed job is one chosen domain (with its Zapmail id)")

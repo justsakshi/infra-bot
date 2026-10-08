@@ -93,10 +93,25 @@ function summarizeEvent(evt) {
     };
   }
   if (type === 'subscription.status_changed') {
+    // 2026-10-08 live: our first reading found none of the fields and posted
+    // "subscription ? is now *?*". Read every spelling Zapmail uses elsewhere
+    // (GET /v2/subscriptions: subscriptionId, subscriptionStatus, plan,
+    // totalMailboxQuantity, price, periodEnd) and log the keys when still unknown.
+    const x = d.subscriptionDetails || d.subscription || d;
+    const id = x.subscriptionId || x.subscription_id || x.id || d.subscription_id;
+    const status = String(x.subscriptionStatus || x.status || d.status || '').toUpperCase();
+    const boxes = x.totalMailboxQuantity || x.mailboxQuantity;
+    const what = [x.uniquePlanKey || x.plan, boxes ? boxes + ' mailboxes' : '', x.price ? '$' + x.price + '/mo' : '']
+      .filter(Boolean).join(', ');
+    const renews = String(x.periodEnd || x.period_end || '').slice(0, 10);
+    const failure = x.paymentFailureMessage || d.paymentFailureMessage;
+    if (!status) console.log('[zapmail-webhook] subscription event without a status; keys: ' + Object.keys(x).join(','));
     return {
-      domain: null, alert: true,
-      text: ':credit_card: Zapmail subscription ' + (d.subscription_id || d.id || '?') + ' is now *'
-        + (d.status || '?') + '*' + (prevOf() ? ' (was ' + prevOf() + ')' : '')
+      // Renewing normally (ACTIVE) is not news; a failed payment or a stop is.
+      domain: null, alert: Boolean(failure) || Boolean(status && status !== 'ACTIVE'),
+      text: ':credit_card: Zapmail subscription ' + (what || id || '(no details)')
+        + (status ? ' is now *' + status + '*' : ' changed') + (prevOf() ? ' (was ' + prevOf() + ')' : '')
+        + (renews ? ' · next bill ' + renews : '') + (failure ? ' · :x: payment failed: ' + failure : '')
     };
   }
   if (type === 'export.failed') {

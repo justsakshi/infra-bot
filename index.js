@@ -601,431 +601,15 @@ expressApp.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-/* -------------------- Slash Command -------------------- */
-app.command('/infra', async ({ ack, body, client, command }) => {
-  await ack();
-  const text = command.text.trim();
-
-  if (text === 'add') {
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: {
-        type: 'modal',
-        callback_id: 'ADD_ASSET_MODAL',
-        title: { type: 'plain_text', text: 'Add Asset' },
-        submit: { type: 'plain_text', text: 'Save' },
-        close: { type: 'plain_text', text: 'Cancel' },
-        blocks: [
-          {
-            type: 'input',
-            block_id: 'type',
-            label: { type: 'plain_text', text: 'Asset Type' },
-            element: {
-              type: 'static_select',
-              action_id: 'value',
-              options: [
-                { text: { type: 'plain_text', text: 'Domain' }, value: 'DOMAIN' },
-                { text: { type: 'plain_text', text: 'Inbox' }, value: 'INBOX' }
-              ]
-            }
-          },
-          {
-            type: 'input',
-            block_id: 'name',
-            label: { type: 'plain_text', text: 'Name (Domain / Email)' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'e.g., example.com or user@example.com' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'client',
-            label: { type: 'plain_text', text: 'Client' },
-            element: { type: 'plain_text_input', action_id: 'value' }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'provider',
-            label: { type: 'plain_text', text: 'Provider' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'e.g., Zapmail, GoDaddy' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'workspace',
-            label: { type: 'plain_text', text: 'Workspace' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'e.g., Google, Outlook' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'campaign',
-            label: { type: 'plain_text', text: 'Campaign' },
-            element: { type: 'plain_text_input', action_id: 'value' }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'purchaseDate',
-            label: { type: 'plain_text', text: 'Purchase Date (DD/MM/YYYY)' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'e.g., 04/06/2025' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'expiryDate',
-            label: { type: 'plain_text', text: 'Expiry Date (DD/MM/YYYY)' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'Leave blank for auto-calculation' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'status',
-            label: { type: 'plain_text', text: 'Status' },
-            element: {
-              type: 'static_select',
-              action_id: 'value',
-              options: [
-                { text: { type: 'plain_text', text: 'Active' }, value: 'Active' },
-                { text: { type: 'plain_text', text: 'Inactive' }, value: 'Inactive' },
-                { text: { type: 'plain_text', text: 'Not In Use' }, value: 'Not In Use' }
-              ]
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'brandedPrewarmed',
-            label: { type: 'plain_text', text: 'Branded / Pre-warmed?' },
-            element: {
-              type: 'static_select',
-              action_id: 'value',
-              options: [
-                { text: { type: 'plain_text', text: 'Yes — Branded' }, value: 'Branded' },
-                { text: { type: 'plain_text', text: 'Yes — Pre-warmed' }, value: 'Pre-warmed' },
-                { text: { type: 'plain_text', text: 'No' }, value: 'No' }
-              ]
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'primaryOwner',
-            label: { type: 'plain_text', text: 'Primary Owner' },
-            element: { type: 'users_select', action_id: 'value' }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'visibilityChannel',
-            label: { type: 'plain_text', text: 'Visibility Channel' },
-            element: { type: 'channels_select', action_id: 'value' }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'cost',
-            label: { type: 'plain_text', text: 'Cost (Yearly for Domains, Monthly for Inboxes)' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'e.g., 3.25' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'currency',
-            label: { type: 'plain_text', text: 'Currency' },
-            element: {
-              type: 'static_select',
-              action_id: 'value',
-              initial_option: { text: { type: 'plain_text', text: 'USD' }, value: 'USD' },
-              options: [
-                { text: { type: 'plain_text', text: 'USD' }, value: 'USD' },
-                { text: { type: 'plain_text', text: 'INR' }, value: 'INR' },
-                { text: { type: 'plain_text', text: 'EUR' }, value: 'EUR' },
-                { text: { type: 'plain_text', text: 'GBP' }, value: 'GBP' }
-              ]
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'notes',
-            label: { type: 'plain_text', text: 'Notes' },
-            element: { type: 'plain_text_input', action_id: 'value', multiline: true }
-          }
-        ]
-      }
-    });
-
-  } else if (text === 'renew') {
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: {
-        type: 'modal',
-        callback_id: 'RENEW_ASSET_MODAL',
-        title: { type: 'plain_text', text: 'Renew Asset' },
-        submit: { type: 'plain_text', text: 'Renew' },
-        close: { type: 'plain_text', text: 'Cancel' },
-        blocks: [
-          {
-            type: 'input',
-            block_id: 'name',
-            label: { type: 'plain_text', text: 'Domain or Inbox name' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'e.g., example.com or user@example.com' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'purchaseDate',
-            label: { type: 'plain_text', text: 'New Purchase Date (DD/MM/YYYY)' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'e.g., 24/02/2026' }
-            }
-          },
-          {
-            type: 'input',
-            optional: true,
-            block_id: 'expiryDate',
-            label: { type: 'plain_text', text: 'New Expiry Date (DD/MM/YYYY)' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'value',
-              placeholder: { type: 'plain_text', text: 'Leave blank to auto-calculate from purchase date' }
-            }
-          }
-        ]
-      }
-    });
-
-  } else if (text === 'list') {
-    const assets = await Asset.find().sort({ type: 1, name: 1 });
-    const prepared = prepareAssetsForSheet(assets);
-
-    let message = '📋 *Infrastructure Assets*\n\n';
-    const domains = prepared.filter(a => a.type === 'DOMAIN');
-    const inboxes = prepared.filter(a => a.type === 'INBOX');
-
-    if (domains.length > 0) {
-      message += `*DOMAINS (${domains.length})*\n`;
-      domains.forEach(d => {
-        message += `• ${d.name} — ${d.status || 'N/A'} — ${d.daysLeft !== null ? `${d.daysLeft} days left` : 'No expiry'}\n`;
-      });
-      message += '\n';
-    }
-
-    if (inboxes.length > 0) {
-      message += `*INBOXES (${inboxes.length})*\n`;
-      inboxes.forEach(i => {
-        message += `• ${i.name} — ${i.status || 'N/A'} — ${i.daysLeft !== null ? `${i.daysLeft} days left` : 'No expiry'}\n`;
-      });
-    }
-
-    await client.chat.postMessage({ channel: body.user_id, text: message });
-  }
-});
-
-/* -------------------- Unified Message Handler -------------------- */
-app.message(async ({ message, client }) => {
-  try {
-    if (message.subtype) return;
-
-    if (message.files && message.files.length > 0) {
-      for (const file of message.files) {
-        if (!file.mimetype?.includes('csv') && !file.name?.endsWith('.csv')) continue;
-
-        const fileName = file.name.toLowerCase();
-        const isDelete = fileName.startsWith('delete_');
-        const isRenew = fileName.startsWith('renew_');
-
-        let assetType = null;
-        if (fileName.includes('domain')) assetType = 'DOMAIN';
-        else if (fileName.includes('inbox')) assetType = 'INBOX';
-
-        if (!assetType) {
-          await client.chat.postMessage({
-            channel: message.channel,
-            text: `Couldn't detect asset type from filename *${file.name}*. Please name your file with "domain" or "inbox" in it.`
-          });
-          continue;
-        }
-
-        await client.chat.postMessage({
-          channel: message.channel,
-          text: isDelete
-            ? `Detected *${assetType}* delete CSV — removing listed entries from *${file.name}*...`
-            : isRenew
-            ? `Detected *${assetType}* renewal CSV — updating dates from *${file.name}*...`
-            : `Detected *${assetType}* CSV — importing *${file.name}*...`
-        });
-
-        const downloadUrl = file.url_private_download || file.url_private;
-        const response = await axios.get(downloadUrl, {
-          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-          responseType: 'arraybuffer'
-        });
-
-        const buffer = Buffer.from(response.data);
-        const assets = await parseCSVBuffer(buffer, assetType);
-
-        if (assets.length === 0) {
-          await client.chat.postMessage({
-            channel: message.channel,
-            text: `No valid rows found in *${file.name}*. Check that your column headers match the expected format.`
-          });
-          continue;
-        }
-
-        if (isRenew) {
-          let renewed = 0, notFound = 0;
-          for (const asset of assets) {
-            const existing = await Asset.findOne({ name: asset.name });
-            if (!existing) { notFound++; continue; }
-            const updates = { updatedAt: new Date(), remindersSent: [] };
-            if (asset.purchaseDate) updates.purchaseDate = asset.purchaseDate;
-            if (asset.expiryDate) updates.expiryDate = asset.expiryDate;
-            if (asset.purchaseDate && !asset.expiryDate) updates.expiryDate = null;
-            await Asset.findOneAndUpdate({ name: asset.name }, updates);
-            renewed++;
-          }
-          const allAssets = await Asset.find();
-          await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-          await client.chat.postMessage({
-            channel: message.channel,
-            text: `Renewed ${renewed} asset${renewed !== 1 ? 's' : ''}${notFound > 0 ? `, ${notFound} not found` : ''}. Reminder history cleared. Google Sheets synced ✓`
-          });
-
-        } else if (isDelete) {
-          let deleted = 0, notFound = 0;
-          for (const asset of assets) {
-            const result = await Asset.deleteOne({ name: asset.name });
-            if (result.deletedCount > 0) deleted++;
-            else notFound++;
-          }
-          const allAssets = await Asset.find();
-          await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-          await client.chat.postMessage({
-            channel: message.channel,
-            text: `Deleted ${deleted} asset${deleted !== 1 ? 's' : ''}${notFound > 0 ? `, ${notFound} not found` : ''}. Google Sheets synced ✓`
-          });
-
-        } else {
-          let inserted = 0, updated = 0;
-          for (const asset of assets) {
-            const existing = await Asset.findOne({ name: asset.name });
-            if (existing) {
-              await Asset.findOneAndUpdate({ name: asset.name }, asset, { new: true });
-              updated++;
-            } else {
-              await Asset.create(asset);
-              inserted++;
-            }
-          }
-          const allAssets = await Asset.find();
-          await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-          await client.chat.postMessage({
-            channel: message.channel,
-            text: `*${file.name}* imported successfully!\n• Inserted: ${inserted}\n• Updated: ${updated}\n• Total: ${assets.length}\n• Google Sheets synced ✓`
-          });
-        }
-      }
-      return;
-    }
-
-    if (!message.text) return;
-
-    const lines = message.text.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
-    if (lines.length < 2) return;
-
-    const command = lines[0].toLowerCase();
-    if (command !== 'delete' && command !== 'renew') return;
-
-    const names = lines.slice(1).map(l => {
-      const mailtoMatch = l.match(/<mailto:[^|]+\|([^>]+)>/);
-      if (mailtoMatch) return mailtoMatch[1].trim().toLowerCase();
-      return l.trim().toLowerCase();
-    }).filter(Boolean);
-
-    if (command === 'delete') {
-      let deleted = 0, notFound = 0;
-      for (const name of names) {
-        let result = await Asset.deleteOne({ name });
-        if (result.deletedCount === 0) {
-          result = await Asset.deleteOne(buildNameQuery(name));
-        }
-        if (result.deletedCount > 0) deleted++;
-        else notFound++;
-      }
-      const allAssets = await Asset.find();
-      await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-      await client.chat.postMessage({
-        channel: message.channel,
-        text: `Deleted ${deleted} asset${deleted !== 1 ? 's' : ''}${notFound > 0 ? `, ${notFound} not found` : ''}. Google Sheets synced ✓`
-      });
-
-    } else if (command === 'renew') {
-      let renewed = 0, notFound = 0;
-      const today = dayjs().startOf('day');
-      for (const name of names) {
-        const existing = await Asset.findOne(buildNameQuery(name));
-        if (!existing) { notFound++; continue; }
-
-        let newExpiryDate = null;
-        if (existing.type === 'INBOX') {
-          newExpiryDate = today.add(1, 'month').toDate();
-        }
-
-        await Asset.findOneAndUpdate({ name: existing.name }, {
-          purchaseDate: today.toDate(),
-          expiryDate: newExpiryDate,
-          remindersSent: [],
-          updatedAt: new Date()
-        });
-        renewed++;
-      }
-      const allAssets = await Asset.find();
-      await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-      await client.chat.postMessage({
-        channel: message.channel,
-        text: `Renewed ${renewed} asset${renewed !== 1 ? 's' : ''}${notFound > 0 ? `, ${notFound} not found` : ''}. Purchase date set to today, expiry auto-calculated. Google Sheets synced ✓`
-      });
-    }
-
-  } catch (err) {
-    console.error('Message handler error:', err);
-    try {
-      await client.chat.postMessage({ channel: message.channel, text: `Error: ${err.message}` });
-    } catch (_) {}
-  }
+/* -------------------- /infra (shared with the Domain Suggester app) -------------------- */
+// Add / renew / list, CSV import-renew-delete and renew/delete name lists live in
+// infra_slack.js so the Domain Suggester app can offer the same features.
+const INFRA_DEPS = {
+  Asset, dayjs, axios, syncAllAssetsToSheet, prepareAssetsForSheet, parseDate, parseCost,
+  resolveOwner, computeDaysLeft, parseCSVBuffer, buildNameQuery
+};
+require('./infra_slack').registerInfraHandlers(app, INFRA_DEPS, {
+  command: '/infra', messages: true, botToken: process.env.SLACK_BOT_TOKEN
 });
 
 /* -------------------- View Details Button Handlers -------------------- */
@@ -1088,111 +672,6 @@ app.action('view_expired_details', async ({ ack, body, client }) => {
     });
   } catch (e) {
     console.error('view_expired_details action error:', e.message);
-  }
-});
-
-/* -------------------- Modal Submit Handler -------------------- */
-app.view('ADD_ASSET_MODAL', async ({ ack, body, view, client }) => {
-  await ack();
-
-  const v = view.state.values;
-  const type = v.type.value.selected_option.value;
-
-  const asset = {
-    type,
-    name: v.name.value.value.trim().toLowerCase(),
-    client: v.client?.value?.value?.trim() || null,
-    provider: v.provider?.value?.value?.trim() || null,
-    workspace: v.workspace?.value?.value?.trim() || null,
-    campaign: v.campaign?.value?.value?.trim() || null,
-    purchaseDate: parseDate(v.purchaseDate?.value?.value),
-    expiryDate: parseDate(v.expiryDate?.value?.value),
-    status: v.status?.value?.selected_option?.value || 'Active',
-    brandedPrewarmed: v.brandedPrewarmed?.value?.selected_option?.value || null,
-    primaryOwner: resolveOwner(v.primaryOwner?.value?.selected_user) || null,
-    visibilityChannel: v.visibilityChannel?.value?.selected_channel || null,
-    yearlyCost: type === 'DOMAIN' ? parseCost(v.cost?.value?.value) : null,
-    monthlyCost: type === 'INBOX' ? parseCost(v.cost?.value?.value) : null,
-    currency: v.currency?.value?.selected_option?.value || 'USD',
-    notes: v.notes?.value?.value?.trim() || null,
-    createdBy: body.user.id,
-    updatedAt: new Date()
-  };
-
-  if (type === 'INBOX' && asset.name.includes('@')) {
-    asset.domain = asset.name.split('@')[1];
-  }
-
-  try {
-    await Asset.findOneAndUpdate({ name: asset.name }, asset, { upsert: true, new: true });
-
-    const allAssets = await Asset.find();
-    await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-
-    await client.chat.postMessage({
-      channel: body.user.id,
-      text: `✅ *${asset.name}* (${type}) saved successfully!\n` +
-            `Status: ${asset.status}\n` +
-            `Expiry: ${asset.expiryDate ? dayjs(asset.expiryDate).format('DD/MM/YYYY') : 'Auto-calculated'}`
-    });
-  } catch (error) {
-    console.error('Error saving asset:', error);
-    await client.chat.postMessage({
-      channel: body.user.id,
-      text: `❌ Error saving asset: ${error.message}`
-    });
-  }
-});
-
-/* -------------------- Renew Asset Modal Handler -------------------- */
-app.view('RENEW_ASSET_MODAL', async ({ ack, body, view, client }) => {
-  await ack();
-
-  const v = view.state.values;
-  const name = v.name.value.value.trim().toLowerCase();
-  const newPurchaseDate = parseDate(v.purchaseDate?.value?.value);
-  const newExpiryDate = parseDate(v.expiryDate?.value?.value);
-
-  try {
-    const asset = await Asset.findOne({ name });
-
-    if (!asset) {
-      await client.chat.postMessage({
-        channel: body.user.id,
-        text: `❌ Asset *${name}* not found in the database. Check the name and try again.`
-      });
-      return;
-    }
-
-    const updates = { updatedAt: new Date(), remindersSent: [] };
-    if (newPurchaseDate) updates.purchaseDate = newPurchaseDate;
-    if (newExpiryDate) updates.expiryDate = newExpiryDate;
-    if (newPurchaseDate && !newExpiryDate) updates.expiryDate = null;
-
-    await Asset.findOneAndUpdate({ name }, updates);
-
-    const allAssets = await Asset.find();
-    await syncAllAssetsToSheet(prepareAssetsForSheet(allAssets));
-
-    const updated = await Asset.findOne({ name });
-    const daysLeft = computeDaysLeft(updated);
-
-    await client.chat.postMessage({
-      channel: body.user.id,
-      text: `✅ *${name}* renewed successfully!\n` +
-            `• New Purchase Date: ${newPurchaseDate ? dayjs(newPurchaseDate).format('DD/MM/YYYY') : 'Unchanged'}\n` +
-            `• New Expiry Date: ${updates.expiryDate ? dayjs(updates.expiryDate).format('DD/MM/YYYY') : 'Auto-calculated'}\n` +
-            `• Days until expiry: ${daysLeft !== null ? daysLeft : 'N/A'}\n` +
-            `• Reminder history cleared ✓\n` +
-            `• Google Sheets synced ✓`
-    });
-
-  } catch (error) {
-    console.error('Error renewing asset:', error);
-    await client.chat.postMessage({
-      channel: body.user.id,
-      text: `❌ Error renewing asset: ${error.message}`
-    });
   }
 });
 
@@ -1600,7 +1079,7 @@ async function start() {
     // Bot app is owned by a deactivated user and its commands cannot be
     // edited. Failure here must not stop the main bot from serving.
     try {
-      domainsApp = await startDomainsApp(__dirname, { onTrackerChanged: resyncAssetSheet });
+      domainsApp = await startDomainsApp(__dirname, { onTrackerChanged: resyncAssetSheet, infraDeps: INFRA_DEPS });
     } catch (domErr) {
       console.warn('⚠️  /domains app failed to start:', domErr?.message || domErr);
     }
@@ -1686,6 +1165,52 @@ async function start() {
     }, {
       timezone: 'Asia/Kolkata'
     });
+
+    // Deliverability-test copy sync: Sunday 18:30 and Monday/Tuesday 05:00 IST, i.e.
+    // before the 06:00 scheduled tests. Copies the newest ACTIVE campaign's first step
+    // into each test campaign (Precise Leads, Melior, BettrData) so the tests send
+    // what is really running. Writes by default; COPY_SYNC_DISABLED=true makes it
+    // a dry run. Never writes to a live campaign.
+    cron.schedule('30 18 * * 0', () => runCopySync(), { timezone: 'Asia/Kolkata' });
+    cron.schedule('0 5 * * 1,2', () => runCopySync(), { timezone: 'Asia/Kolkata' });
+    function runCopySync() {
+      console.log(`[CRON] Test-copy sync firing at ${new Date().toISOString()}`);
+      const args = ['copy_sync.py'];
+      if (process.env.COPY_SYNC_DISABLED !== 'true') args.push('--apply');
+      const proc = spawn('python', args, {
+        cwd: path.join(__dirname, 'smartlead_sync'),
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[copy-sync] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[copy-sync] ${d}`));
+      proc.on('close', code => console.log(`[copy-sync] finished with code ${code}`));
+    }
+
+    // Deliverability report, Mondays and Tuesdays, hourly 08:00-12:00 IST plus a final
+    // run at 13:00 (tests start 06:00). Each run reports only tests not reported before, and only once
+    // 90% of a test's seeds are classified (SmartDelivery marks a test COMPLETED
+    // before that); the 13:00 run reports whatever is in. Posts to Slack (channel
+    // C0AGVSUNEFP), keeps per-inbox status in Mongo and writes the Inbox Status
+    // tab Campaign Desk reads. Grid cells only with PLACEMENT_GRID_ENABLED=true.
+    // PLACEMENT_REPORT_DISABLED=true makes it print-only.
+    cron.schedule('0 8-12 * * 1,2', () => runPlacementReport(false), { timezone: 'Asia/Kolkata' });
+    cron.schedule('0 13 * * 1,2', () => runPlacementReport(true), { timezone: 'Asia/Kolkata' });
+    function runPlacementReport(final) {
+      const today = new Date().toISOString().slice(0, 10);
+      ['PRECISE_LEADS', 'BETTRDATA'].forEach(account => {
+        const args = ['placement_report.py', '--account', account, '--since', today, '--only-new'];
+        if (final) args.push('--final');
+        if (process.env.PLACEMENT_REPORT_DISABLED !== 'true') args.push('--post', '--save', '--status-tab');
+        if (process.env.PLACEMENT_GRID_ENABLED === 'true') args.push('--grid');
+        const proc = spawn('python', args, {
+          cwd: path.join(__dirname, 'smartlead_sync'),
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+        });
+        proc.stdout.on('data', d => process.stdout.write(`[placement-report ${account}] ${d}`));
+        proc.stderr.on('data', d => process.stderr.write(`[placement-report ${account}] ${d}`));
+        proc.on('close', code => console.log(`[placement-report ${account}] finished with code ${code}`));
+      });
+    }
 
     // Placement result collector, 12:30 and 16:30 IST daily. Thursday's batch
     // lands in the first window; the later run catches stragglers, and the
@@ -1888,7 +1413,7 @@ async function start() {
     // Zapmail → /infra tracker sync at 9:30 AM IST: expiry dates, lapsed
     // domains, new current-client domains/inboxes. Writes only when
     // ZAPMAIL_ASSET_SYNC_ENABLED=true (otherwise logs a preview), then
-    // re-syncs the tracker sheet. ScaledMail stays manual.
+    // re-syncs the tracker sheet. ScaledMail has its own sync at 9:35.
     cron.schedule('30 9 * * *', () => {
       const apply = process.env.ZAPMAIL_ASSET_SYNC_ENABLED === 'true';
       console.log(`[CRON] Zapmail tracker sync (${apply ? 'apply' : 'preview'}) firing at ${new Date().toISOString()}`);
@@ -1922,6 +1447,55 @@ async function start() {
       proc.stdout.on('data', d => process.stdout.write(`[zapmail-digest] ${d}`));
       proc.stderr.on('data', d => process.stderr.write(`[zapmail-digest] ${d}`));
       proc.on('close', code => console.log(`[zapmail-digest] finished with code ${code}`));
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // ScaledMail at 9:35 (tracker sync) and 9:45 IST (digest). The sync
+    // writes only when SCALEDMAIL_ASSET_SYNC_ENABLED=true; the digest posts
+    // only when SCALEDMAIL_NOTIFY_CHANNEL is set. Both skip without a key.
+    const runScaledMail = (tag, args, after) => {
+      if (!process.env.SCALEDMAIL_API_KEY) return;
+      const proc = spawn('python', ['scaledmail_cli.py', ...args], {
+        cwd: path.join(__dirname, 'smartlead_sync'),
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[${tag}] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[${tag}] ${d}`));
+      proc.on('close', code => { console.log(`[${tag}] finished with code ${code}`); if (after) after(code); });
+    };
+    cron.schedule('35 9 * * *', () => {
+      const apply = process.env.SCALEDMAIL_ASSET_SYNC_ENABLED === 'true';
+      console.log(`[CRON] ScaledMail tracker sync (${apply ? 'apply' : 'preview'}) firing at ${new Date().toISOString()}`);
+      runScaledMail('scaledmail-sync', ['sync', ...(apply ? ['--apply'] : [])], code => {
+        if (apply && code === 0) {
+          resyncAssetSheet().catch(err => console.warn('[scaledmail-sync] sheet refresh failed:', err.message));
+        }
+      });
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+    cron.schedule('45 9 * * *', () => {
+      console.log(`[CRON] ScaledMail digest firing at ${new Date().toISOString()}`);
+      runScaledMail('scaledmail-digest', ['digest', '--post']);
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
+    // Infra audit at 10:20 AM IST Mon-Fri (read-only): MX / DMARC policy,
+    // name-server footprint, redirects, main-domain use, mailbox and domain
+    // caps, young inboxes in campaigns, warmup, signatures, provider mix, ESP
+    // matching, SMTP IP blacklists. Posts only when INFRA_AUDIT_CHANNEL is set.
+    cron.schedule('20 10 * * 1-5', () => {
+      console.log(`[CRON] Infra audit firing at ${new Date().toISOString()}`);
+      const args = ['infra_audit.py', ...(process.env.INFRA_AUDIT_CHANNEL ? ['--post'] : [])];
+      const proc = spawn('python', args, {
+        cwd: path.join(__dirname, 'smartlead_sync'),
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[infra-audit] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[infra-audit] ${d}`));
+      proc.on('close', code => console.log(`[infra-audit] finished with code ${code}`));
     }, {
       timezone: 'Asia/Kolkata'
     });

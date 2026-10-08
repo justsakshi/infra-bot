@@ -4,6 +4,12 @@
  * nothing is hidden - only the known ones get rewritten.
  */
 const RULES = [
+  [/SCALEDMAIL_ALLOW_SPEND/,
+    'Ordering on ScaledMail is switched off on this server (SCALEDMAIL_ALLOW_SPEND), so nothing was charged. Ask an admin if this order should go ahead.'],
+  [/SCALEDMAIL_ALLOW_CANCEL/,
+    'Cancelling ScaledMail orders is switched off on this server (SCALEDMAIL_ALLOW_CANCEL), so nothing was cancelled. Ask an admin.'],
+  [/SCALEDMAIL_API_KEY is not set/,
+    'ScaledMail is not connected on this server (SCALEDMAIL_API_KEY missing). Ask an admin.'],
   [/ZAPMAIL_ALLOW_SPEND/,
     'Spending is switched off on this server (ZAPMAIL_ALLOW_SPEND), so nothing was charged. Ask an admin if this purchase should go ahead.'],
   [/has no (configured )?Zapmail account|no Zapmail account configured/i,

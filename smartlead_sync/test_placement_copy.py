@@ -87,4 +87,17 @@ variants, problems = build_variants(
 ok(len(variants) == 1 and problems == [],
    f"build_variants works off seq_variants as well, got {variants} {problems}")
 
+# --- source filters (copy sync) ---
+mixed = [
+    {"id": 10, "name": "Melior - Round Table", "status": "ACTIVE", "created_at": "2026-10-05", "client_id": 12256},
+    {"id": 11, "name": "PL own outbound", "status": "ACTIVE", "created_at": "2026-10-01", "client_id": None},
+    {"id": 12, "name": "Deliverability Test Campaign", "status": "ACTIVE", "created_at": "2026-10-04", "client_id": None},
+    {"id": 13, "name": "PL older outbound", "status": "ACTIVE", "created_at": "2026-09-01", "client_id": None},
+]
+ok(pick_source_campaign(mixed, client_id=None)["id"] == 11, "own-campaign filter skips Melior and the test campaign")
+ok(pick_source_campaign(mixed, client_id=12256)["id"] == 10, "client filter picks that client's newest")
+ok(pick_source_campaign(mixed, client_id=None, exclude_ids=(11,))["id"] == 13, "excluded ids are skipped")
+ok(pick_source_campaign([mixed[0]], client_id=None) is None, "only Melior active -> None for PL, not Melior's copy")
+ok(pick_source_campaign(mixed)["id"] == 10, "no filter keeps the old behaviour")
+
 print("\nALL PASSED")
