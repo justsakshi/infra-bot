@@ -79,6 +79,10 @@ def main() -> int:
     errors: list[str] = []
     rows = collect(errors)
     col = _col()
+    if col is None:
+        # Without the saved state every run looks like a first run and stays
+        # silent - say so instead of quietly reporting nothing.
+        errors.append("Mongo unavailable — cannot compare with the last check, so no renewal alerts this run")
     prev = ((col.find_one({"_id": STATE_ID}) or {}).get("rows") or {}) if col is not None else {}
     today = date.today()
     # A provider that could not be read must not look "cancelled".

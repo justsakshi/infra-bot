@@ -1,0 +1,27 @@
+# Every push and pull request: run all tests. Render should deploy only when
+# this passes (Render → service → Settings → Auto-Deploy: "After CI checks pass").
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci || npm install
+      - name: Slack / Node tests
+        run: npm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python deps
+        run: pip install -r smartlead_sync/requirements-dev.txt
+      - name: Python tests (no network, no keys)
+        working-directory: smartlead_sync
+        run: |
+          python -m pytest -q -p no:cacheprovider $(ls test_*.py | grep -v '^test_smart_delivery.py$')
