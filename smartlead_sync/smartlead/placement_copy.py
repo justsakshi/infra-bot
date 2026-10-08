@@ -108,29 +108,38 @@ def eligible_sources(campaigns: list[dict], client_id=_ANY, exclude_ids: tuple =
     return out
 
 
-def choose_most_active(candidates: list[dict], sent_7d: dict, days: int = 7) -> tuple[dict | None, str]:
-    """The campaign this client is really sending this week (team rule, 2026-10-08):
+def is_current(campaign: dict, leads_left: dict) -> bool:
+    """Still sending next week: ACTIVE with leads not yet finished."""
+    return (str(campaign.get("status", "")).upper() == "ACTIVE"
+            and int(leads_left.get(campaign["id"]) or 0) > 0)
 
-    1. the ACTIVE campaign that sent the most emails in the last 7 days;
-    2. no active campaign sent anything: the newest ACTIVE one;
-    3. nothing active: the paused / completed campaign that sent the most in
-       the window (``days``; the caller widens it to 30) - the last active one;
+
+def choose_most_active(candidates: list[dict], this_week: dict, last_week: dict | None = None,
+                       leads_left: dict | None = None) -> tuple[dict | None, str]:
+    """The sequence that sent the most emails, recent first (team rule, 2026-10-08):
+
+    1. most sent in the last 7 days among CURRENT campaigns (active, leads left);
+    2. most sent in the last 7 days among any campaign;
+    3. most sent in the 7 days before that, current campaigns first;
     4. otherwise none — the test keeps its current copy.
+    This week always beats last week; a campaign still sending beats one that
+    has finished or been paused.
     """
+    leads_left = leads_left or {}
     newest = lambda cs: sorted(cs, key=lambda c: str(c.get("created_at", "")), reverse=True)
-    active = [c for c in candidates if str(c.get("status", "")).upper() == "ACTIVE"]
-    sending = [c for c in active if int(sent_7d.get(c["id"]) or 0) > 0]
-    if sending:
-        best = max(newest(sending), key=lambda c: int(sent_7d.get(c["id"]) or 0))
-        return best, f"most active this week: {int(sent_7d[best['id']])} emails sent in 7 days"
-    if active:
-        return newest(active)[0], "newest active campaign (none sent in the last 7 days)"
-    recent = [c for c in candidates if int(sent_7d.get(c["id"]) or 0) > 0]
-    if recent:
-        best = max(newest(recent), key=lambda c: int(sent_7d.get(c["id"]) or 0))
-        return best, (f"last active campaign ({str(best.get('status')).lower()}): "
-                      f"{int(sent_7d[best['id']])} emails sent in {days} days")
-    return None, f"no campaign sent anything in the last {days} days"
+    for sent, when in ((this_week, "this week"), (last_week or {}, "last week")):
+        sending = [c for c in candidates if int(sent.get(c["id"]) or 0) > 0]
+        current = [c for c in sending if is_current(c, leads_left)]
+        for pool in (current, sending):
+            if pool:
+                best = max(newest(pool), key=lambda c: int(sent.get(c["id"]) or 0))
+                state = (f"running, {int(leads_left.get(best['id']) or 0)} leads left"
+                         if is_current(best, leads_left)
+                         else "active, no leads left"
+                         if str(best.get("status", "")).upper() == "ACTIVE"
+                         else f"{str(best.get('status', '')).lower()} now")
+                return best, f"most sent {when}: {int(sent[best['id']])} emails ({state})"
+    return None, "no campaign sent anything in the last 14 days"
 
 
 def step_variants(step: dict) -> list[dict]:
@@ -186,8 +195,8 @@ def first_signature(accounts: list[dict]) -> str:
 async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
                                 store, dry_run: bool = False,
                                 source_client_id=_ANY, skip_words: tuple = ()) -> dict:
-    """Rewrite the test campaign's step from the client's most active campaign
-    this week (``choose_most_active``).
+    """Rewrite the test campaign's step from the client's campaign that sent the
+    most emails this week, else last week (``choose_most_active``).
 
     Returns {"written": bool, "source": campaign id or None, "hash": str,
     "reason": str}. Never raises: a refresh that cannot be done safely is
@@ -200,12 +209,10 @@ async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
     async with SmartleadClient(acc.api_key, acc.name) as c:
         candidates = eligible_sources(await c.list_campaigns(), client_id=source_client_id,
                                       exclude_ids=(int(test_campaign_id),), skip_words=skip_words)
-        end = date.today()
-        start = (end - timedelta(days=7)).isoformat()
-
+        today = date.today()
         unread: list = []
 
-        async def sent(cs, since=start):
+        async def sent(cs, since, until):
             out = {}
             for camp in cs:
                 an = None
@@ -213,7 +220,8 @@ async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
                     if wait:
                         await asyncio.sleep(wait)
                     try:
-                        an = await c.get_analytics_by_date(str(camp["id"]), since, end.isoformat())
+                        an = await c.get_analytics_by_date(str(camp["id"]), since.isoformat(),
+                                                           until.isoformat())
                         break
                     except Exception:  # noqa: BLE001 - retried, then reported below
                         an = None
@@ -223,18 +231,35 @@ async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
                     out[camp["id"]] = int(an.get("sent_count") or 0)
             return out
 
-        active = [x for x in candidates if str(x.get("status", "")).upper() == "ACTIVE"]
-        sent_7d = await sent(active)
-        if not active:
-            # Nothing active: look at recently touched paused / completed ones.
-            recent = sorted(candidates, key=lambda x: str(x.get("updated_at") or x.get("created_at") or ""),
-                            reverse=True)[:10]
-            sent_7d.update(await sent(recent, (end - timedelta(days=30)).isoformat()))
+        # Only campaigns that could have sent in the last 14 days: active ones, plus
+        # paused / completed ones whose status changed in the last 21 days.
+        cutoff = (today - timedelta(days=21)).isoformat()
+        pool = [x for x in candidates if str(x.get("status", "")).upper() == "ACTIVE"
+                or str(x.get("updated_at") or "9999")[:10] >= cutoff]
+        this_week = await sent(pool, today - timedelta(days=7), today)
+        last_week = {}
+        if not any(this_week.values()):
+            last_week = await sent(pool, today - timedelta(days=14), today - timedelta(days=8))
+        # Lead progress, only for campaigns that sent: leads not started or mid-sequence.
+        leads_left = {}
+        for x in pool:
+            if str(x.get("status", "")).upper() == "ACTIVE" and (this_week.get(x["id"]) or last_week.get(x["id"])):
+                for wait in (0, 5, 20):
+                    if wait:
+                        await asyncio.sleep(wait)
+                    try:
+                        st = (await c.get_campaign_analytics(str(x["id"]))).get("campaign_lead_stats") or {}
+                        leads_left[x["id"]] = int(st.get("notStarted") or 0) + int(st.get("inprogress") or 0)
+                        break
+                    except Exception:  # noqa: BLE001 - retried, then reported below
+                        pass
+                else:
+                    unread.append(x["id"])
         if unread:
-            # An unread volume could be the busiest campaign: guessing would copy the wrong one.
+            # An unread number could change the pick: guessing would copy the wrong one.
             return {"written": False, "source": None, "hash": "",
-                    "reason": f"could not read this week's volume for campaign(s) {unread}; kept current copy"}
-        source, why = choose_most_active(candidates, sent_7d, days=7 if active else 30)
+                    "reason": f"could not read sends / lead progress for campaign(s) {unread}; kept current copy"}
+        source, why = choose_most_active(pool, this_week, last_week, leads_left)
         if not source:
             return {"written": False, "source": None, "hash": "", "reason": why}
         sid = source["id"]

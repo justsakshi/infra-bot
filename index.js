@@ -1185,10 +1185,10 @@ async function start() {
     });
 
     // Deliverability-test copy sync: Sunday 18:30 and Monday/Tuesday 05:00 IST, i.e.
-    // before the 06:00 scheduled tests. Copies the first step of each client's most
-    // active campaign this week (most emails sent in 7 days; nothing active -> the
-    // last active one in 30 days) into every test campaign, the five "DT ..." ones
-    // included, so the tests send what is really running. Posts a summary to Slack.
+    // before the 06:00 scheduled tests. Copies the first step of each client's
+    // campaign that sent the most emails this week (still-running campaigns with
+    // leads left first; nothing this week -> last week) into every test campaign,
+    // the five "DT ..." ones included, so the tests send what is really running. Posts a summary to Slack.
     // Writes by default; COPY_SYNC_DISABLED=true makes it a dry run. Never writes to
     // a live campaign.
     cron.schedule('30 18 * * 0', () => runCopySync(), { timezone: 'Asia/Kolkata' });
