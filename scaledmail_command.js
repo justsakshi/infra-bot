@@ -27,7 +27,7 @@ const ORDER_RE = /^rec[A-Za-z0-9]{8,20}$/;
 const PLAN_RE = /^[0-9a-f]{6}$/;
 const NAMES_RE = /^[A-Za-z][A-Za-z .'-]{0,40}(,\s*[A-Za-z][A-Za-z .'-]{0,40}){0,24}$/;
 const KEYWORD_RE = /^[a-z0-9-]{2,40}$/;
-const CLIENTS = ['Bettrdata', 'Belardi Wong', 'Melior', 'Precise Leads'];
+const CLIENTS = ['Bettrdata', 'Melior', 'Precise Leads'];   // Belardi Wong: past client since 2026-10-08
 const PROVIDERS = ['google', 'outlook', 'smtp'];
 const PNAME = { google: 'Google', outlook: 'Outlook', smtp: 'SMTP' };
 
@@ -398,7 +398,7 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     const picked = require('./domain_suggest_command').selectedDomains((body.state || {}).values);
     if (!picked.length) return eph(respond, { text: 'Tick at least one domain first, then press *Order on ScaledMail*.' });
-    const clientName = { bettrdata: 'Bettrdata', belardi_wong: 'Belardi Wong', melior: 'Melior', precise_leads: 'Precise Leads' }[
+    const clientName = { bettrdata: 'Bettrdata', melior: 'Melior', precise_leads: 'Precise Leads' }[
       String(action.value || '').toLowerCase().replace(/\s+/g, '_')] || String(action.value || '');
     await client.views.open({ trigger_id: body.trigger_id, view: orderModal(chan(body), { domains: picked.slice(0, 30), client: clientName }) });
   });

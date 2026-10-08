@@ -119,8 +119,22 @@ def client_account_map() -> dict[str, str]:
     return merged
 
 
+def ignored_accounts() -> set[str]:
+    """Zapmail accounts the bot must never touch. Belardi Wong's account is
+    theirs and they are no longer a client (2026-10-08): no reads, renewals,
+    billing or purchases. Override with ZAPMAIL_IGNORE_ACCOUNTS ("" = none)."""
+    raw = os.getenv("ZAPMAIL_IGNORE_ACCOUNTS")
+    raw = "Belardi Wong" if raw is None else raw
+    return {_norm(x) for x in raw.split(",") if x.strip()}
+
+
 def discover_zapmail_accounts() -> list[ZapmailAccount]:
-    """All Zapmail accounts found in the environment (primary first)."""
+    """All Zapmail accounts found in the environment (primary first), minus
+    ignored ones (see ``ignored_accounts``)."""
+    return [a for a in _all_zapmail_accounts() if _norm(a.name) not in ignored_accounts()]
+
+
+def _all_zapmail_accounts() -> list[ZapmailAccount]:
     accounts: list[ZapmailAccount] = []
 
     primary_key = os.getenv("ZAPMAIL_API_KEY")

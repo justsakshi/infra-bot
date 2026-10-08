@@ -74,8 +74,10 @@ function runPy(args, baseDir, timeoutMs = 4 * 60 * 1000) {
 
 /** Buttons, one per configured client. */
 function clientPickerBlocks(profiles) {
-  const ready = Object.entries(profiles).filter(([, p]) => profileReady(p));
-  const notReady = Object.entries(profiles).filter(([, p]) => !profileReady(p));
+  // Past clients ("active": false in domain_clients.json) get no button.
+  const live = Object.entries(profiles).filter(([, p]) => p && p.active !== false);
+  const ready = live.filter(([, p]) => profileReady(p));
+  const notReady = live.filter(([, p]) => !profileReady(p));
   const blocks = [{
     type: 'section',
     text: { type: 'mrkdwn', text: '*Suggest sending domains* — pick a client. Zapmail’s AI finder, ScaledMail’s ideas and our generator all run; you get names available now with both providers’ prices, checked against everything we already own and the blacklists. Takes 2-4 minutes.' }

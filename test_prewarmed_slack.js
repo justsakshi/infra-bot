@@ -18,7 +18,7 @@ assert.ok(!/stays in the Zapmail app/.test(JSON.stringify(blocks)), 'old "buy in
 
 const m = prewarmedModal(v, 'C1');
 assert.strictEqual(m.callback_id, 'zm_pw_submit');
-assert.deepStrictEqual(m.blocks[1].element.options.map(o => o.value), ['Bettrdata', 'Belardi Wong', 'Precise Leads', 'Melior']); n++;
+assert.deepStrictEqual(m.blocks[1].element.options.map(o => o.value), ['Bettrdata', 'Precise Leads', 'Melior']); n++;
 assert.ok(/nothing is bought until someone approves/.test(JSON.stringify(m))); n++;
 
 const awaiting = jobBlocks({ job_id: 'abcdef0123', client: 'Melior', domains: ['apexgtmcraft.co'], provider: 'GOOGLE',

@@ -40,11 +40,18 @@ def fleet_env(monkeypatch):
     ("Melior", "pl-key"),
     ("Bettrdata", "pl-key"),
     ("Better Data", "pl-key"),
-    ("Belardi Wong", "bw-key"),
 ])
 def test_clients_route_to_their_own_account(client, key):
     assert require_account(client).api_key == key
     assert open_client(client)._api_key == key
+
+
+def test_belardi_wong_account_is_never_used():
+    """Past client (2026-10-08): its Zapmail account is skipped everywhere."""
+    from smartlead.zapmail_accounts import discover_zapmail_accounts
+    assert "bw-key" not in [a.api_key for a in discover_zapmail_accounts()]
+    with pytest.raises(Exception):
+        require_account("Belardi Wong")
 
 
 @pytest.mark.parametrize("client,target", [

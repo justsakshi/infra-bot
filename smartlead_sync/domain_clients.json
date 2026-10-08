@@ -13,6 +13,8 @@
     },
     "Belardi Wong": {
       "label": "Belardi Wong",
+      "active": false,
+      "inactive_reason": "No longer a client (2026-10-08). Kept so their domains still count as owned.",
       "main_domain": "belardiwong.com",
       "description": "Catalog and direct-mail marketing agency for retail and DTC brands: postal prospecting, circulation strategy, catalog creative.",
       "keywords": ["catalog", "mailing", "postal", "retail", "prospecting", "response"],

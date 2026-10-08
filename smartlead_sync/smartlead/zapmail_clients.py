@@ -11,7 +11,9 @@ the rule lives here once:
      Melior, ``precise`` → Precise Leads, ``belardi`` → Belardi Wong).
   4. Otherwise None: unassigned — never guessed into a client.
 
-Current clients (2026-09-28): Belardi Wong, Precise Leads, BettrData, Melior.
+Current clients (2026-10-08): Precise Leads, BettrData, Melior. Belardi Wong
+stopped being a client on 2026-10-08: its domains now read as a past client's
+(left to lapse, no buttons, not added to the tracker).
 Names are the profile keys used by ``zapmail_accounts`` / ``domain_clients.json``.
 """
 
@@ -26,7 +28,7 @@ TRACKER_SPELLING: dict[str, str] = {
     "Melior": "Melior",
     "Precise Leads": "Precise Leads",
 }
-CURRENT_CLIENTS: tuple[str, ...] = tuple(TRACKER_SPELLING)
+CURRENT_CLIENTS: tuple[str, ...] = ("Bettrdata", "Melior", "Precise Leads")
 
 _BRANDS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"bettr|ingest"), "Bettrdata"),
@@ -61,9 +63,9 @@ def infer_client(domain: str, account: str | None,
     if tracker_client:            # tracked under a past client: keep it theirs
         return None
     if _squash(account) == "belardiwong":
-        return "Belardi Wong"
+        return None                      # past client's own account
     sld = str(domain or "").lower().split(".")[0]
     for rx, client in _BRANDS:
         if rx.search(sld):
-            return client
+            return client if client in CURRENT_CLIENTS else None
     return None

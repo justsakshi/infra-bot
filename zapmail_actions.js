@@ -18,7 +18,7 @@ const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-
 const EMAIL_RE = /^[a-z0-9](?:[a-z0-9._-]{0,63})@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAMES_RE = /^[A-Za-z][A-Za-z .'-]{0,40}(,\s*[A-Za-z][A-Za-z .'-]{0,40}){0,4}$/;
-const CURRENT_CLIENTS = ['Bettrdata', 'Belardi Wong', 'Melior', 'Precise Leads'];
+const CURRENT_CLIENTS = ['Bettrdata', 'Melior', 'Precise Leads'];   // Belardi Wong: past client since 2026-10-08
 
 function approvers() {
   return (process.env.ZAPMAIL_APPROVERS || process.env.ZAPMAIL_BUY_APPROVERS || '')
@@ -49,7 +49,7 @@ function homeBlocks() {
     return b;
   };
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: '*Zapmail* — domains, mailboxes and renewals for Precise Leads, BettrData, Melior and Belardi Wong. Views are read-only; changes are approver-only and ask first.' } },
+    { type: 'section', text: { type: 'mrkdwn', text: '*Zapmail* — domains, mailboxes and renewals for Precise Leads, BettrData and Melior. Views are read-only; changes are approver-only and ask first.' } },
     { type: 'actions', block_id: 'zm_home_1', elements: [
       btn('Fleet status', 'zm_nav_status', 'status'),
       btn('Renewals', 'zm_nav_renewals', 'renewals'),
@@ -297,7 +297,7 @@ function prewarmedText(res) {
 
 const PW_ID_RE = /^[A-Za-z0-9-]{6,64}$/;
 const JOB_ID_RE = /^[0-9a-f]{10}$/;
-const JOB_CLIENTS = ['Bettrdata', 'Belardi Wong', 'Precise Leads', 'Melior'];
+const JOB_CLIENTS = ['Bettrdata', 'Precise Leads', 'Melior'];
 
 /** Pre-warmed view with a "Set up for a client" button per for-sale domain. */
 function prewarmedBlocks(res) {

@@ -38,18 +38,19 @@ def test_infer_client():
     assert infer_client("dataingesthq.com", "PRECISE_LEADS") == "Bettrdata"
     assert infer_client("gomelior.com", "PRECISE_LEADS") == "Melior"
     assert infer_client("usepreciseleads.com", "PRECISE_LEADS") == "Precise Leads"
-    assert infer_client("anything.com", "Belardi Wong") == "Belardi Wong"
-    assert infer_client("reachbw.com", "PRECISE_LEADS") == "Belardi Wong"
+    # Belardi Wong stopped being a client on 2026-10-08: their domains are past-client
+    assert infer_client("anything.com", "Belardi Wong") is None
+    assert infer_client("reachbw.com", "PRECISE_LEADS") is None
     assert infer_client("b2bworldsummit.com", "PRECISE_LEADS") is None   # "bw" inside, not a BW domain
     assert infer_client("kombinatorfunds.com", "PRECISE_LEADS") is None
     # tracker wins; a past-client tracker row is never re-assigned
-    assert infer_client("x.com", "PRECISE_LEADS", "Belardiwong") == "Belardi Wong"
+    assert infer_client("x.com", "PRECISE_LEADS", "Belardiwong") is None
     assert infer_client("gomelior.com", "PRECISE_LEADS", "OSC - Srivatsan") is None
 
 
 def test_client_from_tracker_spellings():
     assert client_from_tracker("Preciseleads") == "Precise Leads"
-    assert client_from_tracker("Belardiwong") == "Belardi Wong"
+    assert client_from_tracker("Belardiwong") is None          # past client since 2026-10-08
     assert client_from_tracker("Darlean") is None
 
 
