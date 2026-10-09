@@ -51,8 +51,11 @@ class FakeGD:
                  "price_cents": self.price, "renewal_cents": 1499, "fees": []} for n in names]
 
     def quote(self, domain, period=1):
-        return {"quoteToken": "qt", "requiredAgreements": [{"agreementType": "API_DPA"}],
-                "items": [{"domain": domain, "period": 1, "price": {"currencyCode": "USD", "value": self.price}}]}
+        # The live shape (2026-10-09): price at the top level, not under items.
+        return {"quoteToken": "qt", "available": True, "domain": domain, "period": 1,
+                "requiredAgreements": [{"agreementType": "API_DPA"}],
+                "price": {"currencyCode": "USD", "value": self.price},
+                "renewalPrice": {"currencyCode": "USD", "value": 1499}}
 
     def register(self, domain, quote, *, agreed_at, key, period=1, approve=False):
         assert approve and agreed_at.endswith("Z")
@@ -244,3 +247,10 @@ def test_sync_adds_bot_bought_domains_and_follows_expiry():
     assert [o["name"] for o in ins] == ["warmmeetings.com"]
     assert ins[0]["doc"]["provider"] == "GoDaddy" and ins[0]["doc"]["client"] == "Precise Leads"
     assert plan["skipped"][0]["name"] == "random.com"
+
+
+def test_quote_terms_reads_live_and_documented_shapes():
+    from smartlead.godaddy import quote_terms
+    assert quote_terms({"price": {"value": 979}}) == (979, [])
+    assert quote_terms({"items": [{"price": {"value": 1199}, "fees": [{"type": "X"}]}]}) == (1199, [{"type": "X"}])
+    assert quote_terms({}) == (0, [])          # unknown shape reads as 0 -> refused, never "free"

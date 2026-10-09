@@ -81,6 +81,18 @@ def idempotency_key(*parts: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "godaddy:" + ":".join(parts)))
 
 
+def quote_terms(quote: dict) -> tuple[int, list]:
+    """(price in cents, extra fees) of a registration quote.
+
+    The live answer (2026-10-09) puts ``price`` and ``fees`` at the top level;
+    the docs' example nests them under ``items[0]``. Read both, so a docs-shaped
+    answer can never be mistaken for a free domain."""
+    item = (quote.get("items") or [{}])[0] or {}
+    price = cents(quote.get("price")) or cents(item.get("price")) or 0
+    fees = list(quote.get("fees") or []) + list(item.get("fees") or [])
+    return price, fees
+
+
 def cents(money: dict | None) -> int | None:
     try:
         return int((money or {}).get("value"))
@@ -219,7 +231,7 @@ class GoDaddyClient:
         self._require(approve, "register", "SPEND")
         consent: dict = {"agreedAt": agreed_at,
                          "agreementTypes": [a["agreementType"] for a in quote.get("requiredAgreements") or []]}
-        fees = [f for item in quote.get("items") or [] for f in item.get("fees") or []]
+        _, fees = quote_terms(quote)
         if fees:
             raise GoDaddyBlocked(f"{domain} carries extra fees {fees} (premium name) — not bought by the bot")
         body = {"quoteToken": quote["quoteToken"], "domain": domain, "period": period, "consent": consent}

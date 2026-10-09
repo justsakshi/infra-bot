@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 
 from smartlead.godaddy import (GoDaddyBlocked, GoDaddyError, GoDaddyHTTPError,
-                               GoDaddyOutcomeUnknown, idempotency_key, spend_allowed)
+                               GoDaddyOutcomeUnknown, idempotency_key, quote_terms, spend_allowed)
 from smartlead.zapmail_clients import CURRENT_CLIENTS, _squash, infer_client
 
 COLLECTION = "godaddy_domain_plans"
@@ -170,13 +170,16 @@ def _buy_one(gd, plan: dict, domain: str, agreed_at: str, prev: dict) -> dict:
     row = {"attempt": attempt, "key": key}
     try:
         quote = gd.quote(domain, plan.get("period", 1))
-        item = (quote.get("items") or [{}])[0]
-        price = int((item.get("price") or {}).get("value") or 0)
+        price, fees = quote_terms(quote)
         row["price_cents"] = price
-        if item.get("fees"):
+        if quote.get("available") is False:
+            return {**row, "status": "failed", "error": "no longer available"}
+        if fees:
             return {**row, "status": "failed", "error": "premium fees — not bought"}
         if not price or price > DOMAIN_CEILING_CENTS:
-            return {**row, "status": "failed", "error": f"quoted {price} cents, over the ceiling"}
+            return {**row, "status": "failed", "error": f"quoted {price} cents, outside 1..ceiling"}
+        if (quote.get("currencyCode") or (quote.get("price") or {}).get("currencyCode") or "USD") != "USD":
+            return {**row, "status": "failed", "error": "quote not in USD"}
         reg = gd.register(domain, quote, agreed_at=agreed_at, key=key,
                           period=plan.get("period", 1), approve=True)
         reg = _poll(gd, reg)
@@ -191,7 +194,17 @@ def _buy_one(gd, plan: dict, domain: str, agreed_at: str, prev: dict) -> dict:
     elif status == "FAILED":
         row.update(status="failed", error=str(reg.get("error") or reg)[:300])
     else:
-        row.update(status="unknown", error=f"still {status or 'pending'} after polling")
+        # Answer shape not what the docs say, or still running: the account is the truth.
+        try:
+            owned = _owned(gd, domain)
+        except GoDaddyError:
+            owned = None
+        if owned:
+            row.update(status="bought", expires_at=owned.get("expiresAt"),
+                       note=f"registration said {status or 'nothing'}; found in the account")
+        else:
+            row.update(status="unknown", error=f"still {status or 'pending'} after polling",
+                       response=str(reg)[:500])
     return row
 
 
