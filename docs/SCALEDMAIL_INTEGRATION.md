@@ -100,9 +100,10 @@ One order = ScaledMail registers the domains AND creates the mailboxes (`create-
    `SCALEDMAIL_ALLOW_SPEND=true python3 scaledmail_cli.py place <plan_id> --approve --user <name>`
    Set the gate on the command line for that one run, never in `.env`. The plan re-checks availability, blacklists and price ceilings first; a taken name fails the plan, nothing is charged.
 4. **Confirm the charge.** Indian cards may need the payment confirmed in the ScaledMail web app (Billing). An order stays "Active" in the API even while the payment says *Requires confirmation*, so look.
-5. **If the result is `unknown`** (timeout/5xx): never re-place. `reconcile <plan_id>` finds the order by its tag; only after checking the web app use `mark-failed`.
-6. **Smartlead.** API orders are not pushed into Smartlead (the `sequencer` field is Instantly-only). Ask ScaledMail support to upload them (they did for every order so far), and tag the inboxes in Smartlead with the vendor tag (`ScaledMail-Google` / `ScaledMail-Microsoft` / `ScaledMail-SMTP`) and the client.
-7. **Tracker.** The order tag `<client>-<plan>` names the client, so the 9:35 sync adds the domains and inboxes once they are Active (needs `SCALEDMAIL_ASSET_SYNC_ENABLED=true`). Warm 2-3 weeks before campaigns.
+5. **If the result is `payment_pending`** (live 2026-10-09: `400 Subscription created but unable to charge`): ScaledMail made the subscription, but the Indian card needs approval. Pay or confirm it in the web app (Billing), then run `reconcile <plan_id>`. If you cancel it there instead, run `mark-failed`. The bot refuses to place that plan again, because a second try would create a second subscription.
+6. **If the result is `unknown`** (timeout/5xx): never re-place. `reconcile <plan_id>` finds the order by its tag; only after checking the web app use `mark-failed`.
+7. **Smartlead.** API orders are not pushed into Smartlead (the `sequencer` field is Instantly-only). Ask ScaledMail support to upload them (they did for every order so far), and tag the inboxes in Smartlead with the vendor tag (`ScaledMail-Google` / `ScaledMail-Microsoft` / `ScaledMail-SMTP`) and the client.
+8. **Tracker.** The order tag `<client>-<plan>` names the client, so the 9:35 sync adds the domains and inboxes once they are Active (needs `SCALEDMAIL_ASSET_SYNC_ENABLED=true`). Warm 2-3 weeks before campaigns.
 
 ## Setup (Render)
 | Var | Value |

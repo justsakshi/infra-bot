@@ -380,3 +380,21 @@ def test_own_domains_refused_when_not_ours():
     store = so.PlanStore(FakeCol())
     r = _stage(FakeSM(), store, own_domains=True, ownership=lambda ds: ["b.com"])
     assert not r["staged"] and r["not_ours"] == ["b.com"] and not store.all()
+
+
+def test_subscription_created_but_not_charged_is_never_placed_again(monkeypatch):
+    """Live 2026-10-09: '400 Subscription created but unable to charge'. A 400 that
+    already made a subscription must not read as a retryable failure."""
+    monkeypatch.setenv("SCALEDMAIL_ALLOW_SPEND", "true")
+    store = so.PlanStore(FakeCol())
+    sm = FakeSM(order_exc=ScaledMailHTTPError(
+        "400 on /create-custom-order: Subscription created but unable to charge", 400))
+    pid = _stage(sm, store)["plan_id"]
+    r = so.place_order(sm, pid, approve=True, store=store)
+    assert r["status"] == "payment_pending" and "web app" in r["next"]
+    sm.order_exc = None
+    with pytest.raises(ScaledMailBlocked):
+        so.place_order(sm, pid, approve=True, store=store)
+    assert sm.placed == []
+    with pytest.raises(ScaledMailError):
+        so.drop_plan(pid, store=store)

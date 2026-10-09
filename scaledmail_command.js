@@ -246,7 +246,7 @@ function plansBlocks(r) {
   if (r.error) return [section(':x: ' + plain(r.error))];
   const plans = (r.plans || []).slice(0, 20);
   if (!plans.length) return [section('*Purchase plans* — none. Use *Order mailboxes* to stage one.')];
-  const icon = { planned: ':memo:', placed: ':white_check_mark:', failed: ':x:', unknown: ':warning:', in_progress: ':hourglass:' };
+  const icon = { planned: ':memo:', placed: ':white_check_mark:', failed: ':x:', unknown: ':warning:', in_progress: ':hourglass:', payment_pending: ':credit_card:' };
   const blocks = [section('*ScaledMail purchase plans*')];
   for (const p of plans) {
     const s = section((icon[p.status] || '•') + ' `' + p.plan_id + '` ' + p.status + ' · ' + p.client + ' · ' + PNAME[p.provider] + ' · '
@@ -254,7 +254,7 @@ function plansBlocks(r) {
       + (p.error ? NL + '_' + String(p.error).slice(0, 200) + '_' : '') + NL + '_staged ' + String(p.staged_at || '').slice(0, 10) + '_');
     if ((p.status === 'planned' || p.status === 'failed') && PLAN_RE.test(p.plan_id)) {
       s.accessory = placeButton(p.plan_id, p.monthly_usd, p.domains_usd, p.client);
-    } else if ((p.status === 'unknown' || p.status === 'in_progress') && PLAN_RE.test(p.plan_id)) {
+    } else if ((p.status === 'unknown' || p.status === 'in_progress' || p.status === 'payment_pending') && PLAN_RE.test(p.plan_id)) {
       s.accessory = btn('Reconcile', 'sm_reconcile', p.plan_id);
     }
     blocks.push(s);
@@ -508,10 +508,13 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
     await eph(respond, { text: ':hourglass: Placing ScaledMail order `' + action.value + '`…' });
     const r = await py(['scaledmail_cli.py', '--json', 'place', action.value, '--approve', '--user', user], 3 * 60 * 1000)
       .catch(e => ({ error: e.message }));
-    const t = r.error ? ':x: Not ordered. ' + plain(r.error)
-      : r.status === 'placed' ? ':white_check_mark: Ordered (plan `' + r.plan_id + '`, tag `' + r.tag + '`). Domains appear as *In Progress* on ScaledMail, then Active; the 9:35 sync adds them to the tracker.'
+    // Status first: an unknown or payment_pending answer also carries an error,
+    // and must never read as "Not ordered".
+    const t = r.status === 'placed' ? ':white_check_mark: Ordered (plan `' + r.plan_id + '`, tag `' + r.tag + '`). Domains appear as *In Progress* on ScaledMail, then Active; the 9:35 sync adds them to the tracker.'
+      : r.status === 'payment_pending' ? ':credit_card: ScaledMail *created the subscription* but could not charge the card. Confirm or pay it in the ScaledMail web app (Billing), then press *Reconcile*. Do NOT order this plan again.'
         : r.status === 'unknown' ? ':warning: ScaledMail did not answer clearly — it *may* have charged. Press *Reconcile* in Purchase plans before anything else. ' + plain(r.error)
-          : ':x: ' + r.status + ': ' + plain(r.error);
+          : r.error && !r.status ? ':x: Not ordered. ' + plain(r.error)
+            : ':x: ' + r.status + ': ' + plain(r.error);
     await eph(respond, { text: t });
   });
 

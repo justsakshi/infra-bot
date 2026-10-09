@@ -203,6 +203,12 @@ def stage_order(sm, *, client: str, provider: str, domains: list[str], senders_t
     return result
 
 
+def payment_pending(error: str) -> bool:
+    """ScaledMail made the subscription but the card was not charged (needs approval)."""
+    e = str(error or "").lower()
+    return "subscription created" in e or "unable to charge" in e
+
+
 def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
                 ownership=None, store: PlanStore | None = None) -> dict:
     """SPEND. The only call that orders on ScaledMail."""
@@ -214,7 +220,7 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
     plan = store.get(plan_id)
     if not plan:
         raise ScaledMailError(f"no plan {plan_id}")
-    if plan["status"] in ("placed", "in_progress", "unknown", "dropped"):
+    if plan["status"] in ("placed", "in_progress", "unknown", "dropped", "payment_pending"):
         raise ScaledMailBlocked(f"plan {plan_id} is {plan['status']} — "
                                 + {"placed": "already ordered", "dropped": "it was dropped; stage a new one"}
                                 .get(plan["status"], "reconcile it first"))
@@ -232,6 +238,14 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
         res = sm.create_custom_order(plan["payload"], source=plan.get("source", "buy"),
                                      tag=plan["tag"], approve=True)
     except ScaledMailHTTPError as exc:
+        if payment_pending(str(exc)):
+            # Live 2026-10-09: "400 Subscription created but unable to charge".
+            # The subscription EXISTS; placing again would create a second one.
+            note = ("ScaledMail created the subscription but could not charge the card (it needs "
+                    "approval). Pay or confirm it in the ScaledMail web app (Billing), then "
+                    "run reconcile; or cancel it there. Never place this plan again.")
+            store.settle(plan_id, "payment_pending", error=str(exc), note=note)
+            return {"plan_id": plan_id, "status": "payment_pending", "error": str(exc), "next": note}
         store.settle(plan_id, "failed", error=str(exc))
         return {"plan_id": plan_id, "status": "failed", "error": str(exc)}
     except ScaledMailOutcomeUnknown as exc:
@@ -250,7 +264,7 @@ def reconcile(sm, plan_id: str, *, store: PlanStore | None = None) -> dict:
     plan = store.get(plan_id)
     if not plan:
         raise ScaledMailError(f"no plan {plan_id}")
-    if plan["status"] not in ("unknown", "in_progress"):
+    if plan["status"] not in ("unknown", "in_progress", "payment_pending"):
         return {"plan_id": plan_id, "status": plan["status"], "note": "nothing to reconcile"}
     for o in sm.orders():
         detail = sm.order(o["id"])
@@ -278,7 +292,7 @@ def mark_failed(plan_id: str, *, user: str = "", store: PlanStore | None = None)
     """Human override after checking ScaledMail: an unknown plan was not ordered."""
     store = store or PlanStore()
     plan = store.get(plan_id)
-    if not plan or plan["status"] not in ("unknown", "in_progress"):
-        raise ScaledMailError(f"plan {plan_id} is not unknown/in_progress")
+    if not plan or plan["status"] not in ("unknown", "in_progress", "payment_pending"):
+        raise ScaledMailError(f"plan {plan_id} is not unknown/in_progress/payment_pending")
     store.settle(plan_id, "failed", error=f"marked not-ordered by {user or 'operator'}")
     return {"plan_id": plan_id, "status": "failed"}
