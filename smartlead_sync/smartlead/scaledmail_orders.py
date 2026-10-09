@@ -137,27 +137,55 @@ def _check_available(sm, domains: list[str]) -> dict:
     return out
 
 
+def not_in_our_godaddy(domains: list[str]) -> list[str]:
+    """Domains we do NOT own on GoDaddy (READ). Mailboxes on our own domains
+    are only ordered for domains we really hold."""
+    from smartlead.godaddy import GoDaddyClient, GoDaddyHTTPError
+    missing = []
+    with GoDaddyClient() as gd:
+        for d in domains:
+            try:
+                if str((gd.domain(d) or {}).get("domain", "")).lower() != d:
+                    missing.append(d)
+            except GoDaddyHTTPError:
+                missing.append(d)
+    return missing
+
+
 def stage_order(sm, *, client: str, provider: str, domains: list[str], senders_text: str,
                 per_domain: int | None = None, redirect: str = "", user: str = "",
+                own_domains: bool = False, ownership=None,
                 store: PlanStore | None = None) -> dict:
-    """READ only: price + record a plan. Nothing is ordered."""
+    """READ only: price + record a plan. Nothing is ordered.
+
+    ``own_domains``: the domains are already ours on GoDaddy (bought by the bot).
+    ScaledMail then only sells the mailboxes (``provider=other``); no registrar
+    login is sent (ScaledMail support, 2026-10-09: skip it, their team sends
+    custom nameservers after the order)."""
     if client not in CURRENT_CLIENTS:
         raise ScaledMailError(f"{client!r} is not a current client ({', '.join(CURRENT_CLIENTS)})")
     domains = sorted({d.strip().lower() for d in domains if d.strip()})
     senders = parse_senders(senders_text)
     payload = build_payload(provider, domains, senders, per_domain=per_domain, redirect=redirect)
     per = payload[provider].get("mailboxes_per_domain") or MAILBOXES_PER_DOMAIN[provider][0]
-    check = _check_available(sm, domains)
-    problems = check["taken"] + check["blacklisted"] + check["over_ceiling"]
+    if own_domains:
+        missing = (ownership or not_in_our_godaddy)(domains)
+        check = {"available": {}, "taken": [], "blacklisted": [], "over_ceiling": [], "not_ours": missing}
+    else:
+        check = _check_available(sm, domains)
+        check["not_ours"] = []
+    problems = check["taken"] + check["blacklisted"] + check["over_ceiling"] + check["not_ours"]
     monthly = monthly_cost(provider, len(domains), per)
     result = {"client": client, "provider": provider, "domains": domains, "mailboxes_per_domain": per,
               "mailboxes": len(domains) * per, "monthly_usd": monthly,
               "domains_usd": round(sum(check["available"].values()), 2),
               "taken": check["taken"], "blacklisted": check["blacklisted"],
-              "over_ceiling": check["over_ceiling"], "senders": [" ".join(s) for s in senders]}
+              "over_ceiling": check["over_ceiling"], "not_ours": check["not_ours"],
+              "senders": [" ".join(s) for s in senders], "source": "other" if own_domains else "buy"}
     if problems:
         result["staged"] = False
-        result["why"] = "some domains cannot be bought — drop them and stage again"
+        result["why"] = ("some domains are not in our GoDaddy account" if check["not_ours"]
+                         else "some domains cannot be bought — drop them and stage again")
         return result
     if monthly > MONTHLY_CEILING:
         result["staged"] = False
@@ -166,7 +194,7 @@ def stage_order(sm, *, client: str, provider: str, domains: list[str], senders_t
     store = store or PlanStore()
     plan_id = secrets.token_hex(3)
     doc = {"plan_id": plan_id, "status": "planned", "client": client, "provider": provider,
-           "tag": make_tag(client, plan_id), "source": "buy", "payload": payload,
+           "tag": make_tag(client, plan_id), "source": "other" if own_domains else "buy", "payload": payload,
            "domains": domains, "mailboxes": result["mailboxes"], "monthly_usd": monthly,
            "domain_prices": check["available"], "domains_usd": result["domains_usd"],
            "staged_by": user, "staged_at": datetime.now(timezone.utc).isoformat()}
@@ -176,7 +204,7 @@ def stage_order(sm, *, client: str, provider: str, domains: list[str], senders_t
 
 
 def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
-                store: PlanStore | None = None) -> dict:
+                ownership=None, store: PlanStore | None = None) -> dict:
     """SPEND. The only call that orders on ScaledMail."""
     if not approve:
         raise ScaledMailBlocked("placing an order charges the card: pass approve=True after a human confirmed it")
@@ -193,11 +221,14 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
     if not store.claim(plan_id, user):
         raise ScaledMailBlocked(f"plan {plan_id} was claimed by someone else just now")
     try:
-        check = _check_available(sm, plan["domains"])
-        bad = check["taken"] + check["blacklisted"] + check["over_ceiling"]
+        if plan.get("source") == "other":
+            bad = (ownership or not_in_our_godaddy)(plan["domains"])
+        else:
+            check = _check_available(sm, plan["domains"])
+            bad = check["taken"] + check["blacklisted"] + check["over_ceiling"]
         if bad:
-            store.settle(plan_id, "failed", error=f"no longer buyable: {', '.join(bad)}")
-            return {"plan_id": plan_id, "status": "failed", "error": f"no longer buyable: {', '.join(bad)}"}
+            store.settle(plan_id, "failed", error=f"no longer orderable: {', '.join(bad)}")
+            return {"plan_id": plan_id, "status": "failed", "error": f"no longer orderable: {', '.join(bad)}"}
         res = sm.create_custom_order(plan["payload"], source=plan.get("source", "buy"),
                                      tag=plan["tag"], approve=True)
     except ScaledMailHTTPError as exc:

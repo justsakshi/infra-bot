@@ -355,3 +355,28 @@ def test_dropped_plan_can_never_be_placed(monkeypatch):
     with pytest.raises(ScaledMailBlocked, match="dropped"):
         so.place_order(sm, pid, approve=True, store=store)
     assert not sm.placed
+
+
+def test_own_domains_order_mailboxes_only_and_never_send_a_registrar_login(monkeypatch):
+    """GoDaddy domains (2026-10-09): provider=other, no hosting block, and only for
+    domains really in our GoDaddy account — checked at stage AND at place."""
+    store = so.PlanStore(FakeCol())
+    sm = FakeSM(taken={"a.com", "b.com"})            # ScaledMail's search says taken: ignored for own domains
+    owned = {"a.com", "b.com"}
+    ownership = lambda ds: [d for d in ds if d not in owned]
+    r = _stage(sm, store, own_domains=True, ownership=ownership)
+    assert r["staged"] and r["source"] == "other" and r["domains_usd"] == 0
+    monkeypatch.setenv("SCALEDMAIL_ALLOW_SPEND", "true")
+    owned.discard("b.com")                           # lost between stage and place
+    res = so.place_order(sm, r["plan_id"], approve=True, ownership=ownership, store=store)
+    assert res["status"] == "failed" and "b.com" in res["error"] and sm.placed == []
+    owned.add("b.com")
+    res = so.place_order(sm, r["plan_id"], approve=True, ownership=ownership, store=store)
+    providers, source, tag = sm.placed[0]
+    assert res["status"] == "placed" and source == "other" and "hosting" not in providers
+
+
+def test_own_domains_refused_when_not_ours():
+    store = so.PlanStore(FakeCol())
+    r = _stage(FakeSM(), store, own_domains=True, ownership=lambda ds: ["b.com"])
+    assert not r["staged"] and r["not_ours"] == ["b.com"] and not store.all()

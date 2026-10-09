@@ -208,7 +208,8 @@ def run(args) -> dict:
             return stage_order(sm, client=_client(args.client), provider=args.provider,
                                domains=[_domain(d) for d in args.domains.split(",") if d.strip()],
                                senders_text=args.senders, per_domain=args.per_domain,
-                               redirect=args.redirect or "", user=args.user or "cli")
+                               redirect=args.redirect or "", user=args.user or "cli",
+                               own_domains=args.own_domains)
         if c == "place":
             from smartlead.scaledmail_orders import place_order
             return place_order(sm, args.plan_id, approve=args.approve, user=args.user or "cli")
@@ -250,6 +251,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--provider", required=True, choices=["google", "outlook", "smtp"])
     p.add_argument("--domains", required=True); p.add_argument("--senders", required=True)
     p.add_argument("--per-domain", type=int); p.add_argument("--redirect")
+    p.add_argument("--own-domains", action="store_true",
+                   help="domains are already ours on GoDaddy: order mailboxes only (provider=other)")
     p.add_argument("--user")
     p = sub.add_parser("place"); p.add_argument("plan_id"); p.add_argument("--approve", action="store_true")
     p.add_argument("--user")
