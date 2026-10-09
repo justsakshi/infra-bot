@@ -54,6 +54,9 @@ BANNED_SUBSTRINGS: frozenset[str] = frozenset({
     "click", "cash", "winner", "guaranteed",
     # UK English for a bulk mail-out; Zapmail's AI offered mailshotco.com.
     "mailshot",
+    # Cold-email cliches (team review 2026-10-09: "avoid outbound cliches and
+    # potential spam-filter words"; meetings / calendar words are fine).
+    "outbound", "outreach", "leadgen", "coldemail", "coldmail", "sales",
 })
 
 # Unintended words formed when two clean tokens are joined. Not exhaustive by

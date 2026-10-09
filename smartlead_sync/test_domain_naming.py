@@ -105,16 +105,16 @@ def test_generation_never_emits_a_brand_fragment_name(preciseleads):
 def test_generic_industry_noun_from_the_stem_is_still_usable(preciseleads):
     """'leads' appears in preciseleads but identifies nobody, so names may
     use it — the same rule that keeps 'data' usable for bettrdata."""
-    c = screen("leadsoutbound", ".com", preciseleads,
-               source_tokens=("leads", "outbound"))
+    c = screen("leadspipeline", ".com", preciseleads,
+               source_tokens=("leads", "pipeline"))
     assert c.ok, c.rejections
 
 
 def test_long_compound_sharing_letters_is_not_a_typosquat(preciseleads):
     """A long distinct compound must not trip the fuzzy-similarity rule just
     because it shares letters with the stem."""
-    c = screen("outboundpipeline", ".com", preciseleads,
-               source_tokens=("outbound", "pipeline"))
+    c = screen("pipelinemeetings", ".com", preciseleads,
+               source_tokens=("pipeline", "meetings"))
     assert c.ok, c.rejections
 
 
@@ -508,3 +508,11 @@ def test_narrow_vocabulary_still_produces_names():
     v = ClientVocabulary(name="X", main_domain="x.com",
                          value_nouns=["signal", "intent"])
     assert generate(v, limit=5), "a two-word vocabulary produced nothing"
+
+
+def test_cold_email_cliches_are_rejected(preciseleads):
+    """Team review 2026-10-09: no outbound/outreach/sales cliches in a sending domain."""
+    for sld in ("outboundcalendar", "salesmeetings", "outreachdesk", "leadgenteam"):
+        c = screen(sld, ".com", preciseleads)
+        assert any(r.startswith("banned-substring") for r in c.rejections), sld
+    assert screen("bookedmeetings", ".com", preciseleads).ok

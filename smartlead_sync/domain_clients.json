@@ -27,11 +27,11 @@
       "label": "Precise Leads",
       "main_domain": "preciseleads.in",
       "description": "B2B outbound lead-generation agency: finds prospects and books qualified sales meetings.",
-      "keywords": ["leads", "outbound", "pipeline", "prospect", "meetings", "booked"],
-      "lead_words": ["outbound", "pipeline", "booked", "qualified", "warm", "prospect", "sales"],
-      "head_nouns": ["leads", "meetings", "pipeline", "prospects", "calendar", "accounts", "deals", "revenue", "demand", "growth"],
-      "related": ["outreach", "booking", "meeting"],
-      "ai_seeds": [["outbound", "sales", "meetings"], ["qualified", "leads", "pipeline"], ["booked", "meetings", "growth"]]
+      "keywords": ["meetings", "booked", "calendar", "pipeline", "qualified", "accounts"],
+      "lead_words": ["booked", "qualified", "warm", "pipeline", "ready", "steady"],
+      "head_nouns": ["meetings", "calendar", "accounts", "pipeline", "revenue", "growth", "clients", "partners"],
+      "related": ["booking", "meeting", "schedule"],
+      "ai_seeds": [["booked", "meetings", "calendar"], ["qualified", "pipeline", "accounts"], ["warm", "meetings", "growth"]]
     },
     "Melior": {
       "label": "Melior",
