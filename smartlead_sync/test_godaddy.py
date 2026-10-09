@@ -254,3 +254,13 @@ def test_quote_terms_reads_live_and_documented_shapes():
     assert quote_terms({"price": {"value": 979}}) == (979, [])
     assert quote_terms({"items": [{"price": {"value": 1199}, "fees": [{"type": "X"}]}]}) == (1199, [{"type": "X"}])
     assert quote_terms({}) == (0, [])          # unknown shape reads as 0 -> refused, never "free"
+
+
+def test_billing_refusal_stops_the_plan(store, spend):
+    """Live 2026-10-09: no card on the account -> 422 on the first domain. Stop there."""
+    gd = FakeGD(register_error=GoDaddyHTTPError(
+        "422  on /registrations: no chargeable payment profile found for shopper", 422))
+    pid = orders.stage_plan(gd, client="Precise Leads", domains=["warmmeetings.com", "suremeetings.com"],
+                            store=store)["plan_id"]
+    r = orders.place_plan(gd, pid, approve=True, store=store)
+    assert r["status"] == "failed" and len(gd.keys) == 1 and len(r["results"]) == 1

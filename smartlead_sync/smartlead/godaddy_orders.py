@@ -130,6 +130,18 @@ def stage_plan(gd, *, client: str, domains: list[str], nameservers: list[str] | 
     return result
 
 
+# Billing refusals (live 2026-10-09: the quote succeeded with no card on the
+# account, the registration said "no chargeable payment profile found for
+# shopper"). The quote does NOT prove the account can pay.
+BILLING_ERRORS = ("payment profile", "no_payment_profile", "invalid_payment_info",
+                  "account_not_funded", "missing_contact", "chargeable")
+
+
+def billing_problem(error: str) -> bool:
+    e = str(error or "").lower()
+    return any(k in e for k in BILLING_ERRORS)
+
+
 def _owned(gd, domain: str) -> dict | None:
     try:
         d = gd.domain(domain)
@@ -240,11 +252,17 @@ def place_plan(gd, plan_id: str, *, approve: bool = False, user: str = "",
         for domain in plan["domains"]:
             prev = results.get(domain) or {}
             if prev.get("status") != "bought":
+                # Mark it in flight first: if anything crashes mid-purchase the
+                # domain stays "unknown" (and is looked up before any retry).
+                results[domain] = {**prev, "status": "unknown", "error": "interrupted mid-purchase"}
+                store.save(plan_id, results=results)
                 prev = {**prev, **_buy_one(gd, plan, domain, agreed_at, prev)}
             if prev.get("status") == "bought":
                 prev.update(_set_ns(gd, plan, domain, prev))
             results[domain] = prev
             store.save(plan_id, results=results)        # after every domain: a crash loses nothing
+            if billing_problem(prev.get("error", "")):
+                break   # the account cannot pay: every other domain would fail the same way
     finally:
         states = {r.get("status") for r in results.values()}
         bought = sum(1 for r in results.values() if r.get("status") == "bought")
@@ -252,7 +270,7 @@ def place_plan(gd, plan_id: str, *, approve: bool = False, user: str = "",
             final = "placed"
         elif bought:
             final = "partial"
-        elif "unknown" in states or len(results) < len(plan["domains"]):
+        elif "unknown" in states:
             final = "unknown"
         else:
             final = "failed"
