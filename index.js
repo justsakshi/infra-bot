@@ -1496,6 +1496,30 @@ async function start() {
     });
     // (The ScaledMail digest is part of the 9:40 "Domains & inboxes daily".)
 
+    // GoDaddy -> tracker at 9:37 AM IST: domains the bot bought on GoDaddy get a
+    // row (client from the purchase ledger), and every GoDaddy domain's expiry
+    // follows GoDaddy. Writes only with GODADDY_ASSET_SYNC_ENABLED=true; skips
+    // without GODADDY_PAT.
+    cron.schedule('37 9 * * *', () => {
+      if (!process.env.GODADDY_PAT) return;
+      const apply = process.env.GODADDY_ASSET_SYNC_ENABLED === 'true';
+      console.log(`[CRON] GoDaddy tracker sync (${apply ? 'apply' : 'preview'}) firing at ${new Date().toISOString()}`);
+      const proc = spawn('python', ['godaddy_cli.py', 'sync', ...(apply ? ['--apply'] : [])], {
+        cwd: path.join(__dirname, 'smartlead_sync'),
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[godaddy-sync] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[godaddy-sync] ${d}`));
+      proc.on('close', code => {
+        console.log(`[godaddy-sync] finished with code ${code}`);
+        if (apply && code === 0) {
+          resyncAssetSheet().catch(err => console.warn('[godaddy-sync] sheet refresh failed:', err.message));
+        }
+      });
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // Infra audit at 10:20 AM IST Mon-Fri (read-only): MX / DMARC policy,
     // name-server footprint, redirects, main-domain use, mailbox and domain
     // caps, young inboxes in campaigns, warmup, signatures, provider mix, ESP
