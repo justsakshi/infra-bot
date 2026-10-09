@@ -53,11 +53,14 @@ class ScaledMailBlocked(ScaledMailError):
 
 
 class ScaledMailHTTPError(ScaledMailError):
-    """A definitive 4xx: the request was NOT processed."""
+    """A 4xx. Usually not processed — but see ``payment_pending`` in
+    scaledmail_orders: "Subscription created but unable to charge" is a 400
+    that DID create a subscription. ``body`` keeps the raw answer to learn from."""
 
-    def __init__(self, message: str, status_code: int) -> None:
+    def __init__(self, message: str, status_code: int, body: str = "") -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.body = body
 
 
 class ScaledMailOutcomeUnknown(ScaledMailError):
@@ -158,7 +161,8 @@ class ScaledMailClient:
                     continue
                 raise ScaledMailOutcomeUnknown(f"{r.status_code} on {path}: {r.text[:200]}")
             if r.status_code >= 400:
-                raise ScaledMailHTTPError(f"{r.status_code} on {path}: {_error_text(r)}", r.status_code)
+                raise ScaledMailHTTPError(f"{r.status_code} on {path}: {_error_text(r)}", r.status_code,
+                                          body=r.text[:2000])
             try:
                 return r.json()
             except ValueError:

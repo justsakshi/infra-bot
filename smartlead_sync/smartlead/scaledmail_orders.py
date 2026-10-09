@@ -244,9 +244,10 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
             note = ("ScaledMail created the subscription but could not charge the card (it needs "
                     "approval). Pay or confirm it in the ScaledMail web app (Billing), then "
                     "run reconcile; or cancel it there. Never place this plan again.")
-            store.settle(plan_id, "payment_pending", error=str(exc), note=note)
+            store.settle(plan_id, "payment_pending", error=str(exc), note=note,
+                         raw_response=getattr(exc, "body", ""))
             return {"plan_id": plan_id, "status": "payment_pending", "error": str(exc), "next": note}
-        store.settle(plan_id, "failed", error=str(exc))
+        store.settle(plan_id, "failed", error=str(exc), raw_response=getattr(exc, "body", ""))
         return {"plan_id": plan_id, "status": "failed", "error": str(exc)}
     except ScaledMailOutcomeUnknown as exc:
         store.settle(plan_id, "unknown", error=str(exc))
