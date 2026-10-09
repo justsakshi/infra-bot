@@ -264,3 +264,14 @@ def test_billing_refusal_stops_the_plan(store, spend):
                             store=store)["plan_id"]
     r = orders.place_plan(gd, pid, approve=True, store=store)
     assert r["status"] == "failed" and len(gd.keys) == 1 and len(r["results"]) == 1
+
+
+def test_failed_registration_explains_itself():
+    """Live 2026-10-09: FAILED with no reason on the registration; the operation had it."""
+    class GD:
+        def operation(self, oid):
+            return {"error": {"name": "INVALID_BODY", "message": "Request body doesn't fulfill schema",
+                              "details": [{"field": "body.contacts.registrant.addressMailing.address1",
+                                           "issue": "MISMATCH_FORMAT"}]}}
+    why = orders.failure_reason(GD(), {"status": "FAILED", "operationId": "op1"})
+    assert "INVALID_BODY" in why and "address1 MISMATCH_FORMAT" in why and "double quotes" in why

@@ -142,6 +142,27 @@ def billing_problem(error: str) -> bool:
     return any(k in e for k in BILLING_ERRORS)
 
 
+def failure_reason(gd, reg: dict) -> str:
+    """Why a registration FAILED, in one line. The registration record does not
+    say; its operation does (live 2026-10-09: INVALID_BODY, the account address
+    contained double quotes, which the registry refuses)."""
+    err = reg.get("error")
+    if not err and reg.get("operationId"):
+        try:
+            err = (gd.operation(reg["operationId"]) or {}).get("error")
+        except GoDaddyError:
+            err = None
+    if not isinstance(err, dict):
+        return f"registration FAILED (no reason given; registrationId {reg.get('registrationId')})"
+    parts = [f"{d.get('field', '?').rsplit('.', 1)[-1]} {d.get('issue', '')}".strip()
+             for d in err.get("details") or []]
+    fix = ""
+    if any("address" in p for p in parts):
+        fix = (" — fix the address in GoDaddy (account.godaddy.com/profile): letters, digits and "
+               "- . , : ( ) ' # * @ / & only, no double quotes")
+    return f"{err.get('name') or 'FAILED'}: {err.get('message', '')} [{'; '.join(sorted(set(parts)))}]{fix}"[:500]
+
+
 def _owned(gd, domain: str) -> dict | None:
     try:
         d = gd.domain(domain)
@@ -204,7 +225,7 @@ def _buy_one(gd, plan: dict, domain: str, agreed_at: str, prev: dict) -> dict:
     if status == "COMPLETED":
         row.update(status="bought", expires_at=reg.get("expiresAt"))
     elif status == "FAILED":
-        row.update(status="failed", error=str(reg.get("error") or reg)[:300])
+        row.update(status="failed", error=failure_reason(gd, reg))
     else:
         # Answer shape not what the docs say, or still running: the account is the truth.
         try:

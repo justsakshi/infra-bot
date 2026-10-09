@@ -33,6 +33,7 @@ The GoDaddy account needs a payment method on file (or a Good as Gold balance) t
 ## Live lessons
 - 2026-10-09: a quote succeeds even with no card on the account. The first purchase then returned `422 no chargeable payment profile found for shopper`. Nothing was charged. A successful quote does not prove the account can pay, so the bot stops a plan at the first billing refusal.
 - The live quote puts `price` and `fees` at the top level, not under `items[0]` as the docs show. `quote_terms` reads both.
+- Second try (same day): payment went through to the registry step, then FAILED with `INVALID_BODY`. The account address contained double quotes (a personal name in quotes), and registry addresses allow only letters, digits and `- . , : ( ) ' # * @ / &`. The reason is on the registration's operation (`GET /operations/{id}`), not on the registration record; the bot now reads it.
 - Payment: GoDaddy's API purchases cannot do a card's extra authentication step (their docs say so for EEA cards). Indian cards normally ask for an OTP, so use a prepaid **Good as Gold** USD balance for API purchases.
 
 ## Tracking
