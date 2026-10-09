@@ -89,6 +89,21 @@ On 2026-10-08, order `recLP7iFrjZ27pq94` (agencyforumco.com, peerplaybook.com, p
 - Webhooks. There are none, so the daily sync and digest do the watching.
 - Mailbox health or warmup data. Our Smartlead placement tests (Mon/Tue) cover this.
 
+## Buying domains + mailboxes through the bot (runbook)
+One order = ScaledMail registers the domains AND creates the mailboxes (`create-custom-order?provider=buy`). Card on file is charged; the ScaledMail wallet balance is not used.
+
+1. **Names.** Only from the suggester (`domain_suggest.py --client "<client>"` or Slack *Suggest domains*). Never the client's brand, never outbound/outreach/sales cliches (`domain_naming.screen`). An availability search is not a naming check.
+2. **Stage** (free, writes the ledger only):
+   `python3 scaledmail_cli.py stage --client "Precise Leads" --provider google --domains a.com,b.com --senders "Avinash Haridas,Aravind Haridas" --per-domain 3 --redirect https://preciseleads.in`
+   Google: 2-4 mailboxes a domain, $3.50 each. Outlook: 25 a domain, $50. SMTP: 4 a domain, $3.75. Domains $15.50 (.com), renew at $17. One provider per plan. Senders alternate across domains. `plans` shows every payload exactly as it will be sent.
+3. **Place** (charges the card; one plan per command; a human said "place <id>"):
+   `SCALEDMAIL_ALLOW_SPEND=true python3 scaledmail_cli.py place <plan_id> --approve --user <name>`
+   Set the gate on the command line for that one run, never in `.env`. The plan re-checks availability, blacklists and price ceilings first; a taken name fails the plan, nothing is charged.
+4. **Confirm the charge.** Indian cards may need the payment confirmed in the ScaledMail web app (Billing). An order stays "Active" in the API even while the payment says *Requires confirmation*, so look.
+5. **If the result is `unknown`** (timeout/5xx): never re-place. `reconcile <plan_id>` finds the order by its tag; only after checking the web app use `mark-failed`.
+6. **Smartlead.** API orders are not pushed into Smartlead (the `sequencer` field is Instantly-only). Ask ScaledMail support to upload them (they did for every order so far), and tag the inboxes in Smartlead with the vendor tag (`ScaledMail-Google` / `ScaledMail-Microsoft` / `ScaledMail-SMTP`) and the client.
+7. **Tracker.** The order tag `<client>-<plan>` names the client, so the 9:35 sync adds the domains and inboxes once they are Active (needs `SCALEDMAIL_ASSET_SYNC_ENABLED=true`). Warm 2-3 weeks before campaigns.
+
 ## Setup (Render)
 | Var | Value |
 |---|---|
