@@ -30,3 +30,10 @@ coverage
 *.log
 __pycache__/
 *.pyc
+
+# client data and debug output: keep local (public repo)
+smartlead_sync/darlean_debug.py
+smartlead_sync/darlean_debug_out.txt
+docs/BOUNCE_POSTMORTEM_*.md
+rollback_snapshot_*.json
+change_log_headroom_cap_correction.json
