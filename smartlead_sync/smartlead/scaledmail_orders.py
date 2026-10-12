@@ -127,12 +127,15 @@ class PlanStore:
 
 def _check_available(sm, domains: list[str]) -> dict:
     """{available: {name: price}, taken: [], over_ceiling: [], blacklisted: []}."""
-    out: dict = {"available": {}, "taken": [], "over_ceiling": [], "blacklisted": []}
+    out: dict = {"available": {}, "taken": [], "over_ceiling": [], "blacklisted": [], "refused_raw": []}
     for i in range(0, len(domains), 30):
         for r in sm.search_domains(domains[i:i + 30]) or []:
             name = str(r.get("domain", "")).lower()
             if r.get("status") != "available":
+                # Live 2026-10-12: a search said all 7 names were not available,
+                # then "available" seconds later. Keep ScaledMail's own words.
                 out["taken"].append(name)
+                out["refused_raw"].append(r)
             elif r.get("blacklisted"):
                 out["blacklisted"].append(name)
             elif r.get("price") is None or float(r["price"]) > DOMAIN_PRICE_CEILING:
@@ -189,6 +192,7 @@ def stage_order(sm, *, client: str, provider: str, domains: list[str], senders_t
               "senders": [" ".join(s) for s in senders], "source": "other" if own_domains else "buy"}
     if problems:
         result["staged"] = False
+        result["refused_raw"] = check.get("refused_raw", [])
         result["why"] = ("some domains are not in our GoDaddy account" if check["not_ours"]
                          else "some domains cannot be bought — drop them and stage again")
         return result
@@ -242,7 +246,8 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
             check = _check_available(sm, plan["domains"])
             bad = check["taken"] + check["blacklisted"] + check["over_ceiling"]
         if bad:
-            store.settle(plan_id, "failed", error=f"no longer orderable: {', '.join(bad)}")
+            store.settle(plan_id, "failed", error=f"no longer orderable: {', '.join(bad)}",
+                         refused_raw=check.get("refused_raw", []) if plan.get("source") != "other" else [])
             return {"plan_id": plan_id, "status": "failed", "error": f"no longer orderable: {', '.join(bad)}"}
         res = sm.create_custom_order(plan["payload"], source=plan.get("source", "buy"),
                                      tag=plan["tag"], approve=True)

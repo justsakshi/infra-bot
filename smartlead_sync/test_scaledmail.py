@@ -227,6 +227,7 @@ def test_stage_refuses_taken_and_unknown_client():
     store = so.PlanStore(FakeCol())
     r = _stage(FakeSM(taken={"b.com"}), store)
     assert not r["staged"] and r["taken"] == ["b.com"] and not store.all()
+    assert r["refused_raw"] == [{"domain": "b.com", "status": "taken", "price": None, "blacklisted": []}]
     with pytest.raises(ScaledMailError):
         _stage(FakeSM(), store, client="Darlean")
 
