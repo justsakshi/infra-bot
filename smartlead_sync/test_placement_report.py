@@ -37,14 +37,17 @@ ok(rep["pairs"][("Outlook", "Google")]["spam"] == 1, "Outlook -> Google spam cou
 ok(a["by_receiver"]["Google"] == {"seeds": 2, "spam": 1}, "per-receiver counts kept per inbox")
 ok(counts(rep["inboxes"])["watch"] == 2, "counts by status")
 txt = format_slack("X", rep, ["t1"], "2026-10-12")
-ok(txt.splitlines()[0] == "*:warning: X deliverability (12 Oct): 2 of 2 mailboxes going to spam*",
-   f"headline says how many mailboxes are in spam, got {txt.splitlines()[0]}")
-ok("*Remove from live campaigns*\n• b@out.com — from Camp 1" in txt,
-   "names the mailbox to remove and the campaign to remove it from")
-ok("*Going to spam, in no live campaign*\n• a@gm.com" in txt, "names the spam mailbox that sends nowhere")
-ok("t1" not in txt and "→" not in txt, "no test names or provider breakdown in Slack")
+ok(txt.splitlines()[:2] == ["*X deliverability test results (12 Oct)*",
+                            ":warning: 0 of 2 mailboxes land in the inbox, *2 are going to spam* (list below)."],
+   f"title and one-line result first, got {txt.splitlines()[:2]}")
+ok("Outlook \u2192 Google: 1 of 1 in spam (100%)" in txt, "shows where the test emails landed")
+ok(txt.index("Where the test emails landed") < txt.index("*Mailboxes going to spam*"), "mailbox list comes last")
+ok("\u2022 b@out.com \u2014 remove from Camp 1\n\u2022 a@gm.com \u2014 not in a live campaign, nothing to remove" in txt,
+   "one list: each mailbox by name with what to do, live ones first")
 clean = format_slack("Y", build_report({"c@gm.com": [{"seed": "x@g.com", "folder": "Inbox"}]}, {"c@gm.com": "GMAIL"}, prov), ["t"])
-ok(clean == "", "all clear -> no Slack message")
+ok(":white_check_mark: All 1 mailboxes land in the inbox. All 1 domains are healthy." in clean
+   and "Google \u2192 Google: 0 of 1 in spam" in clean and "Mailboxes going to spam" not in clean,
+   "all clear still posts the result and where emails landed")
 
 # one domain: 3 mailboxes, one in spam -> the other two stay usable only for existing campaigns
 many = {f"m{i}@d.com": [{"seed": "x@g.com", "folder": "Inbox" if i else "Spam"} for _ in range(5)]

@@ -191,7 +191,7 @@ def main() -> int:
         report = build_report(group, types, seed_provider, attached)
         text = format_slack(client, report, names, tested_on)
         print("=" * 60)
-        print(text or f"{client}: all clear - no Slack post")
+        print(text)
         cmap = {e: client for e in group}
         grid = grid_writes(report, cmap, tested_on, apply=do_grid)
         status = write_status_tab(report, cmap, tested_on, apply=do_status)
@@ -207,9 +207,7 @@ def main() -> int:
             from smartlead.notify import _post
             token = os.getenv("SLACK_BOT_TOKEN", "")
             channel = os.getenv("PLACEMENT_REPORT_CHANNEL") or DEFAULT_CHANNEL
-            if not text:
-                ok = True     # all clear: the result lives in the sheet and Mongo only
-            elif not token:
+            if not token:
                 print("SLACK_BOT_TOKEN missing - not posted")
                 ok, code = False, 1
             else:
