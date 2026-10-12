@@ -339,7 +339,13 @@ async def set_domain_forwarding(domain: str, forward_to: str, *, client: str | N
             resp = await z.add_domain_forwarding(str(row["id"]), host, contains=domain, approve=True)
         except (ZapmailError, ValueError) as exc:
             return {**out, "ok": False, "error": str(exc)[:200]}
-    return {**out, "ok": True, "response": resp}
+        # Read it back: the domain row carries forwardTo.
+        after = await _domain_row(z, domain) or {}
+    shown = str(after.get("forwardTo") or "")
+    if _bare_host(shown) != host:
+        return {**out, "ok": False, "response": resp,
+                "error": f"Zapmail accepted it but the domain shows forwardTo {shown or 'nothing'}"}
+    return {**out, "ok": True, "response": resp, "confirmed": shown}
 
 
 async def _resolve_domain_id(z: ZapmailClient, domain: str) -> tuple[str | None, int]:

@@ -572,7 +572,9 @@ class ZapmailClient:
         if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host):
             raise ValueError(f"forward_to must be a host like client.com, not {forward_to!r}")
         return await self._request("POST", "/v2/domains/forwarding",
-                                   json={"domainIds": [str(domain_id)], "forwardTo": host,
+                                   # Full URL, like every forwardTo already on the account
+                                   # (live 2026-10-12: "https://Bettrdata.io").
+                                   json={"domainIds": [str(domain_id)], "forwardTo": "https://" + host,
                                          "contains": str(contains).strip().lower(), "tagIds": []})
 
     async def schedule_mailbox_removal(

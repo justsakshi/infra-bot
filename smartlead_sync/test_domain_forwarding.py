@@ -36,7 +36,7 @@ def test_client_needs_approval_one_domain_and_a_name_filter(monkeypatch):
     monkeypatch.setattr(z, "_request", fake)
     run(z.add_domain_forwarding("d1", "preciseleads.in", contains="a.com", approve=True))
     assert sent == [("POST", "/v2/domains/forwarding",
-                     {"json": {"domainIds": ["d1"], "forwardTo": "preciseleads.in", "contains": "a.com", "tagIds": []}})]
+                     {"json": {"domainIds": ["d1"], "forwardTo": "https://preciseleads.in", "contains": "a.com", "tagIds": []}})]
 
 
 class FakeZ:
@@ -61,7 +61,9 @@ def zap(monkeypatch):
         return "GOOGLE" if domain == "a.com" else None
 
     async def row(_z, domain):
-        return {"id": "d1", "domain": domain} if domain == "a.com" else None
+        if domain != "a.com":
+            return None
+        return {"id": "d1", "domain": domain, "forwardTo": "https://PreciseLeads.in" if z.calls else None}
     monkeypatch.setattr(dl, "open_client", fake_open)
     monkeypatch.setattr(dl, "domain_provider", provider)
     monkeypatch.setattr(dl, "_domain_row", row)
@@ -72,7 +74,15 @@ def test_set_forwarding_is_a_dry_run_first_and_sends_a_bare_host(zap):
     r = run(dl.set_domain_forwarding("A.com", "https://preciseleads.in/", client="Precise Leads"))
     assert r["dry_run"] and r["forward_to"] == "preciseleads.in" and zap.calls == []
     r = run(dl.set_domain_forwarding("a.com", "https://preciseleads.in/", client="Precise Leads", approve=True))
-    assert r["ok"] and zap.calls == [("d1", "preciseleads.in", "a.com")]
+    assert r["ok"] and r["confirmed"] == "https://PreciseLeads.in" and zap.calls == [("d1", "preciseleads.in", "a.com")]
+
+
+def test_set_forwarding_says_so_when_zapmail_did_not_keep_it(zap, monkeypatch):
+    async def row(_z, domain):
+        return {"id": "d1", "domain": domain, "forwardTo": "https://other.com"}
+    monkeypatch.setattr(dl, "_domain_row", row)
+    r = run(dl.set_domain_forwarding("a.com", "preciseleads.in", client="Precise Leads", approve=True))
+    assert r["ok"] is False and "other.com" in r["error"]
 
 
 def test_set_forwarding_refuses_a_domain_not_on_the_account(zap):
