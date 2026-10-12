@@ -34,7 +34,8 @@ except Exception:
 
 from smartlead.accounts import discover_accounts
 from smartlead.config import SMARTDELIVERY_BASE_URL
-from smartlead.placement_report import active_campaign, build_report, format_slack, mx_provider
+from smartlead.placement_report import (active_campaign, build_report, format_slack, mx_provider,
+                                        select_tests)
 from smartlead.report_sheet import client_label, grid_writes, write_status_tab
 
 DEFAULT_CHANNEL = "C0AGVSUNEFP"   # Slack channel for the weekly deliverability report
@@ -102,7 +103,7 @@ def pick_tests(key, since, ids):
     r = httpx.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": key},
                    json={"limit": 50}, headers=UA, timeout=60)
     r.raise_for_status()
-    return [t for t in r.json() if t["status"] == "COMPLETED" and t["created_at"][:10] >= since]
+    return select_tests(r.json(), since)
 
 
 def main() -> int:
@@ -133,8 +134,10 @@ def main() -> int:
 
     posted = _posted_collection() if args.only_new else None
     if args.only_new and posted is not None:
-        done = {d["test_id"] for d in posted.find({"account": acc.name}, {"test_id": 1})}
-        tests = [t for t in tests if t["spam_test_id"] not in done]
+        # A scheduled test reuses its id every week, so a report is one (test, run).
+        done = {(d["test_id"], d.get("run_no", 0))
+                for d in posted.find({"account": acc.name}, {"test_id": 1, "run_no": 1})}
+        tests = [t for t in tests if (t["spam_test_id"], t.get("run_no", 0)) not in done]
         if not tests:
             print("nothing new to report")
             return 0
@@ -213,9 +216,11 @@ def main() -> int:
                 code = code or (0 if ok else 1)
                 if ok and posted is not None:
                     for t in tests:
-                        posted.update_one({"account": acc.name, "test_id": t["spam_test_id"]},
+                        run = t.get("run_no", 0)
+                        posted.update_one({"account": acc.name, "test_id": t["spam_test_id"], "run_no": run},
                                           {"$set": {"account": acc.name, "test_id": t["spam_test_id"],
-                                                    "client": client, "posted_on": date.today().isoformat()}},
+                                                    "run_no": run, "client": client,
+                                                    "posted_on": date.today().isoformat()}},
                                           upsert=True)
     return code
 

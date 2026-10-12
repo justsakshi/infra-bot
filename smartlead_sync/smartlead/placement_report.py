@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import subprocess
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 SPAM_FOLDERS = {"spam", "junk"}
 GOOD_AT = 80.0     # a mailbox at or above this inbox rate lands in the inbox; below it, spam
@@ -32,6 +33,31 @@ def mx_provider(domain: str) -> str:
     if "google" in out or "googlemail" in out:
         return "Google"
     return "other"
+
+
+def select_tests(listing: list[dict], since: str) -> list[dict]:
+    """Tests from the SmartDelivery report list whose latest run started on or after
+    `since` (YYYY-MM-DD, UTC), each with `run_no` and `created_at` set to that run's day.
+
+    A manual test runs once: it counts when COMPLETED. A scheduled ("auto") test keeps
+    one id and stays ACTIVE until its end date, re-running every `every_days` from
+    `schedule_start_time`; `current_test_run_no` is 0 until its first run.
+    """
+    out = []
+    for t in listing:
+        if t.get("test_type") == "auto":
+            run = int(t.get("current_test_run_no") or 0)
+            if run < 1 or not t.get("schedule_start_time"):
+                continue
+            start = datetime.fromisoformat(str(t["schedule_start_time"]).replace("Z", "+00:00"))
+            day = (start + timedelta(days=(run - 1) * int(t.get("every_days") or 0))).date().isoformat()
+        elif t.get("status") == "COMPLETED":
+            run, day = 0, str(t.get("created_at", ""))[:10]
+        else:
+            continue
+        if day >= since:
+            out.append({**t, "created_at": day, "run_no": run})
+    return out
 
 
 def sender_provider(account_type: str) -> str:

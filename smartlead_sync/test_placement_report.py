@@ -1,5 +1,5 @@
 from smartlead.placement_report import (build_report, active_campaign, status_for, counts,
-                                        format_slack, inbox_rows, domain_verdict)
+                                        format_slack, inbox_rows, domain_verdict, select_tests)
 
 def ok(c, m): print(f"  {'PASS' if c else 'FAIL'}: {m}"); assert c, m
 
@@ -52,4 +52,23 @@ ok(usable == {"m0@d.com": "NO", "m1@d.com": "EXISTING", "m2@d.com": "EXISTING"},
 rep3 = build_report({f"m{i}@e.com": [{"seed": "x@g.com", "folder": "Inbox"}] * 5 for i in range(3)},
                     {f"m{i}@e.com": "GMAIL" for i in range(3)}, prov)
 ok({r[9] for r in inbox_rows(rep3)} == {"YES"}, "healthy domain -> every mailbox YES")
+
+# Report-list entries as SmartDelivery returned them on 2026-10-12
+auto = lambda i, start, run: {"spam_test_id": i, "test_type": "auto", "status": "ACTIVE", "every_days": 7,
+                              "created_at": "2026-10-08T13:50:44.154Z", "schedule_start_time": start,
+                              "current_test_run_no": run}
+listing = [
+    {"spam_test_id": 553145, "test_type": "manual", "status": "ACTIVE", "created_at": "2026-10-12T05:03:47.823Z"},
+    auto(550497, "2026-10-13T00:30:00.000Z", 0),
+    auto(550493, "2026-10-12T00:30:00.000Z", 1),
+    {"spam_test_id": 548461, "test_type": "manual", "status": "COMPLETED", "created_at": "2026-10-06T05:50:20.461Z"},
+]
+picked = {t["spam_test_id"]: t for t in select_tests(listing, "2026-10-12")}
+ok(set(picked) == {550493}, f"a scheduled test that ran today is picked though it is ACTIVE and created 8 Oct, got {set(picked)}")
+ok(picked[550493]["created_at"] == "2026-10-12" and picked[550493]["run_no"] == 1, "dated by its run, not its creation")
+ok(not select_tests([auto(550493, "2026-10-12T00:30:00.000Z", 1)], "2026-10-19"), "last week's run is not re-picked")
+ok(select_tests([auto(550493, "2026-10-12T00:30:00.000Z", 2)], "2026-10-19")[0]["created_at"] == "2026-10-19",
+   "run 2 is dated one interval after the start")
+ok([t["spam_test_id"] for t in select_tests(listing, "2026-10-06")] == [550493, 548461],
+   "a COMPLETED manual test still counts; a running manual one does not")
 print("\nALL PASSED")
