@@ -1,0 +1,25 @@
+{
+  "sending_days_per_month": 22,
+  "warmup_days": [21, 30],
+  "providers": {
+    "scaledmail": {
+      "label": "ScaledMail",
+      "blurb": "Google, Outlook or SMTP. ScaledMail sets up the inboxes; their support uploads them to Smartlead.",
+      "setup_business_days": 3,
+      "types": [
+        {"key": "google", "label": "Google Workspace", "per_domain": 3, "per_inbox_day": 20, "price": 3.5, "basis": "mailbox"},
+        {"key": "outlook", "label": "Microsoft Outlook", "per_domain": 25, "per_inbox_day": 8, "price": 50.0, "basis": "domain"},
+        {"key": "smtp", "label": "SMTP", "per_domain": 4, "per_inbox_day": 8, "price": 3.75, "basis": "domain"}
+      ]
+    },
+    "zapmail": {
+      "label": "Zapmail",
+      "blurb": "Google or Outlook. The bot buys the domains, creates the inboxes and connects them to Smartlead.",
+      "setup_business_days": 1,
+      "types": [
+        {"key": "GOOGLE", "label": "Google Workspace", "per_domain": 3, "per_inbox_day": 20, "price": 3.25, "basis": "mailbox"},
+        {"key": "MICROSOFT", "label": "Microsoft Outlook", "per_domain": 3, "per_inbox_day": 8, "price": 3.25, "basis": "mailbox"}
+      ]
+    }
+  }
+}

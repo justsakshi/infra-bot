@@ -521,3 +521,11 @@ def test_setup_watch_needs_every_domain_live():
     snap = {"domains": [_row("b.com", "o2", "Active")]}                           # c.com not listed yet
     w = so.setup_watch(snap, plans, today=date(2026, 10, 13))
     assert not w["newly_live"]
+
+def test_prices_come_from_the_offer_file():
+    offer = so.load_offer()
+    assert offer["sending_days_per_month"] == 22
+    assert so.PRICE == {"google": 3.5, "outlook": 50.0, "smtp": 3.75}
+    assert so.PRICE_BASIS == {"google": "mailbox", "outlook": "domain", "smtp": "domain"}
+    zm = {t["key"]: t for t in offer["providers"]["zapmail"]["types"]}
+    assert set(zm) == {"GOOGLE", "MICROSOFT"} and all(t["price"] == 3.25 and t["per_domain"] == 3 for t in zm.values())

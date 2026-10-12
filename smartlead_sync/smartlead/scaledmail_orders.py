@@ -33,8 +33,20 @@ from smartlead.scaledmail import (MAILBOXES_PER_DOMAIN, MAX_DOMAINS_PER_ORDER, S
 from smartlead.zapmail_clients import CURRENT_CLIENTS, _squash
 
 COLLECTION = "scaledmail_order_plans"
-PRICE = {"google": 3.50, "outlook": 50.0, "smtp": 3.75}   # live 2026-10-08
-PRICE_BASIS = {"google": "mailbox", "outlook": "domain", "smtp": "domain"}
+OFFER_FILE = os.getenv("INBOX_OFFER_FILE") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "inbox_offer.json")
+
+
+def load_offer() -> dict:
+    """The per-type offer (inboxes/domain, price, daily volume) shared with Slack's buy flow."""
+    import json
+    with open(OFFER_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+_SM_TYPES = load_offer()["providers"]["scaledmail"]["types"]
+PRICE = {t["key"]: float(t["price"]) for t in _SM_TYPES}          # live 2026-10-08
+PRICE_BASIS = {t["key"]: t["basis"] for t in _SM_TYPES}
 DOMAIN_PRICE_CEILING = float(os.getenv("SCALEDMAIL_DOMAIN_PRICE_CEILING", "25"))
 MONTHLY_CEILING = float(os.getenv("SCALEDMAIL_ORDER_MONTHLY_CEILING", "500"))
 
