@@ -124,7 +124,7 @@ def test_prewarmed_needs_exactly_one_chosen_domain():
 
 
 def test_steps_per_kind():
-    assert [s["name"] for s in job("new")["steps"]][:3] == ["buy_domains", "domains_active", "inbox_slots"]
+    assert [s["name"] for s in job("new")["steps"]][:4] == ["buy_domains", "domains_active", "redirect", "inbox_slots"]
     assert job("owned")["steps"][0]["name"] == "inbox_slots"
     assert [s["name"] for s in job("prewarmed")["steps"]][:2] == ["prewarmed_slot", "assign_prewarmed"]
 

@@ -45,7 +45,7 @@ JOBS_COLLECTION = os.getenv("INBOX_JOBS_COLLECTION", "inbox_setup_jobs")
 KINDS = ("new", "owned", "prewarmed")
 PROVIDERS = ("GOOGLE", "MICROSOFT")
 STEPS: dict[str, list[str]] = {
-    "new": ["buy_domains", "domains_active", "inbox_slots", "create_inboxes",
+    "new": ["buy_domains", "domains_active", "redirect", "inbox_slots", "create_inboxes",
             "inboxes_active", "into_smartlead", "smartlead_setup", "tracker"],
     "owned": ["inbox_slots", "create_inboxes", "inboxes_active", "into_smartlead",
               "smartlead_setup", "tracker"],
@@ -58,7 +58,7 @@ STEPS: dict[str, list[str]] = {
 }
 PAID_STEPS = frozenset({"buy_domains", "inbox_slots", "prewarmed_slot"})
 STEP_LABELS = {
-    "buy_domains": "Buy domains", "domains_active": "Domains ready",
+    "buy_domains": "Buy domains", "domains_active": "Domains ready", "redirect": "Redirect",
     "inbox_slots": "Inbox slots", "create_inboxes": "Create inboxes",
     "inboxes_active": "Inboxes ready", "into_smartlead": "Into Smartlead",
     "smartlead_setup": "Name, signature, warmup", "tracker": "Tracker",
@@ -115,6 +115,7 @@ def new_job(
     run_on: str | None = None,
     prewarmed_domain_id: str | None = None,
     created_by: str = "",
+    redirect: str = "",
 ) -> dict:
     """Validate a request and build its job document (status: awaiting_approval)."""
     kind = (kind or "").strip().lower()
@@ -153,6 +154,7 @@ def new_job(
         "client": client, "kind": kind, "provider": provider, "domains": doms,
         "inboxes_per_domain": int(inboxes_per_domain) if kind != "prewarmed" else 0,
         "names": clean_names, "signature": bool(signature), "run_on": run_on,
+        "redirect": str(redirect or "").strip(),
         "prewarmed_domain_id": prewarmed_domain_id,
         "status": "awaiting_approval", "created_by": created_by, "created_at": _now(),
         "approved_by": None, "approved_at": None, "cost": None,

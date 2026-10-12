@@ -310,6 +310,38 @@ async def _existing_usernames(z: ZapmailClient, domain: str) -> set[str]:
     return out
 
 
+def _bare_host(url: str) -> str:
+    """'https://preciseleads.in/x' -> 'preciseleads.in'."""
+    host = str(url or "").strip().lower()
+    for prefix in ("https://", "http://"):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    return host.split("/", 1)[0].removeprefix("www.")
+
+
+async def set_domain_forwarding(domain: str, forward_to: str, *, client: str | None,
+                                approve: bool = False) -> dict:
+    """Redirect ``domain``'s website to ``forward_to`` on Zapmail. Dry run
+    unless ``approve``. Free; Zapmail's domain forwarding."""
+    domain = domain.strip().lower()
+    host = _bare_host(forward_to)
+    out = {"domain": domain, "forward_to": host}
+    if not approve:
+        return {**out, "dry_run": True}
+    provider = await domain_provider(domain, client=client)
+    if provider is None:
+        return {**out, "ok": False, "error": "domain not on this client's Zapmail account"}
+    async with open_client(client, provider=provider) as z:
+        row = await _domain_row(z, domain)
+        if not row or not row.get("id"):
+            return {**out, "ok": False, "error": "domain id not found"}
+        try:
+            resp = await z.add_domain_forwarding(str(row["id"]), host, contains=domain, approve=True)
+        except (ZapmailError, ValueError) as exc:
+            return {**out, "ok": False, "error": str(exc)[:200]}
+    return {**out, "ok": True, "response": resp}
+
+
 async def _resolve_domain_id(z: ZapmailClient, domain: str) -> tuple[str | None, int]:
     """``(domain_id, assigned_count)`` if assignable, else ``(None, 0)``."""
     resp = await z.list_assignable_domains(contains=domain, page=1, limit=50)

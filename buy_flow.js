@@ -181,11 +181,11 @@ function confirmView(meta, defaults) {
   const blocks = [...totalsBlocks(meta), divider(),
     { type: 'input', block_id: 'senders', label: { type: 'plain_text', text: 'Sender names' }, element: senders,
       hint: { type: 'plain_text', text: 'First and last name each, comma-separated. Spread across the domains.' } }];
-  if (meta.p === 'scaledmail') {
-    const redirect = { type: 'plain_text_input', action_id: 'value', placeholder: { type: 'plain_text', text: 'https://client.com' } };
-    if (defaults.redirect) redirect.initial_value = defaults.redirect;
-    blocks.push({ type: 'input', block_id: 'redirect', optional: true, label: { type: 'plain_text', text: 'Redirect to' }, element: redirect });
-  }
+  // Both providers: ScaledMail sets it in the order, Zapmail in the job's Redirect step.
+  const redirect = { type: 'plain_text_input', action_id: 'value', placeholder: { type: 'plain_text', text: 'https://client.com' } };
+  if (defaults.redirect) redirect.initial_value = defaults.redirect;
+  blocks.push({ type: 'input', block_id: 'redirect', optional: true, label: { type: 'plain_text', text: 'Redirect to' }, element: redirect });
+
   const sigOpt = { text: { type: 'plain_text', text: 'Add ' + meta.c + '’s signature in Smartlead' }, value: 'yes' };
   blocks.push({ type: 'input', block_id: 'sig', optional: true, label: { type: 'plain_text', text: 'Signature' },
     element: { type: 'checkboxes', action_id: 'value', options: [sigOpt], initial_options: [sigOpt] },
@@ -212,7 +212,7 @@ function stageArgs(meta, i, names, senders, redirect, user, { signature = false 
   return ['inbox_jobs.py', '--create', '--client', meta.c, '--kind', 'new', '--provider', t.key,
     ...names.flatMap(d => ['--domain', d]), '--per-domain', String(t.per_domain),
     '--names', senders.split(',').map(s => s.trim()).filter(Boolean).join(';'),
-    ...(signature ? ['--signature'] : []), '--by', user, '--json'];
+    ...(redirect ? ['--redirect', redirect] : []), ...(signature ? ['--signature'] : []), '--by', user, '--json'];
 }
 
 function defaultsFor(clientKey, profiles, sendersByClient) {

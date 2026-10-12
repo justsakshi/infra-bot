@@ -98,14 +98,14 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     assert.deepStrictEqual(bf.setCount([2, 0, 3], 1, 99), [0, 5, 0]);
   });
 
-  await test('confirm view: senders prefilled, redirect only for ScaledMail, submit Stage', () => {
+  await test('confirm view: senders and redirect prefilled for both providers, submit Stage', () => {
     const v = bf.confirmView(meta(2, { p: 'scaledmail', k: [2, 0, 0] }), { senders: 'Avinash Haridas, Aravind Haridas', redirect: 'https://preciseleads.in' });
     assert.strictEqual(v.submit.text, 'Stage (no charge)');
     const ids = v.blocks.filter(b => b.type === 'input').map(b => b.block_id);
     assert.deepStrictEqual(ids, ['senders', 'redirect', 'sig']);
     assert.strictEqual(v.blocks.find(b => b.block_id === 'senders').element.initial_value, 'Avinash Haridas, Aravind Haridas');
     const z = bf.confirmView(meta(2, { p: 'zapmail', k: [2, 0] }), { senders: '', redirect: '' });
-    assert.deepStrictEqual(z.blocks.filter(b => b.type === 'input').map(b => b.block_id), ['senders', 'sig']);
+    assert.deepStrictEqual(z.blocks.filter(b => b.type === 'input').map(b => b.block_id), ['senders', 'redirect', 'sig']);
     assert.ok(!('initial_value' in z.blocks.find(b => b.block_id === 'senders').element));
   });
 
@@ -123,6 +123,13 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     const a = bf.stageArgs(z, 0, ['d.com'], 'A B', '', 'U1', { signature: true });
     assert.deepStrictEqual(a.slice(-4), ['--signature', '--by', 'U1', '--json']);
     assert.ok(!bf.stageArgs(z, 0, ['d.com'], 'A B', '', 'U1').includes('--signature'));
+  });
+
+  await test('stage args: Zapmail job carries the redirect', () => {
+    const z = meta(1, { p: 'zapmail', k: [1, 0] });
+    const a = bf.stageArgs(z, 0, ['d.com'], 'A B', 'https://preciseleads.in', 'U1');
+    assert.deepStrictEqual(a.slice(a.indexOf('--redirect'), a.indexOf('--redirect') + 2), ['--redirect', 'https://preciseleads.in']);
+    assert.ok(!bf.stageArgs(z, 0, ['d.com'], 'A B', '', 'U1').includes('--redirect'));
   });
 
   await test('20 names fit Slack limits', () => {

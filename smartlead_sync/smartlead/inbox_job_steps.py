@@ -155,6 +155,18 @@ class RealSteps:
             return StepOutcome("waiting", "staggered buying: " + "; ".join(waiting))
         return StepOutcome("done", f"bought {', '.join(job['domains'])}")
 
+    async def redirect(self, job: dict, step: dict) -> StepOutcome:
+        """Point each bought domain's website at the client's (free)."""
+        from smartlead import domain_lifecycle
+        target = str(job.get("redirect") or "").strip()
+        if not target:
+            return StepOutcome("done", "no redirect asked")
+        for d in job["domains"]:
+            r = await domain_lifecycle.set_domain_forwarding(d, target, client=job["client"], approve=True)
+            if not r.get("ok"):
+                return StepOutcome("failed", f"{d}: redirect not set ({r.get('error')})")
+        return StepOutcome("done", f"redirects to {domain_lifecycle._bare_host(target)}")
+
     async def domains_active(self, job: dict, step: dict) -> StepOutcome:
         from smartlead.zapmail_fleet import locate_domain
 

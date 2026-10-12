@@ -74,6 +74,7 @@ async def main() -> int:
     ap.add_argument("--signature", action="store_true")
     ap.add_argument("--run-on", help="YYYY-MM-DD (default: as soon as approved)")
     ap.add_argument("--prewarmed-id")
+    ap.add_argument("--redirect", default="", help="new domains' website forwards here (kind new)")
     ap.add_argument("--approve", metavar="JOB_ID")
     ap.add_argument("--cancel", metavar="JOB_ID")
     ap.add_argument("--by", default="")
@@ -94,7 +95,8 @@ async def main() -> int:
                           domains=args.domain, inboxes_per_domain=args.per_domain,
                           names=[n for n in args.names.split(";") if n.strip()],
                           signature=args.signature, run_on=args.run_on,
-                          prewarmed_domain_id=args.prewarmed_id, created_by=args.by)
+                          prewarmed_domain_id=args.prewarmed_id, created_by=args.by,
+                          redirect=args.redirect)
             job["cost"] = await steps.cost(job)
             store.insert(job)
             s = _summary(job)

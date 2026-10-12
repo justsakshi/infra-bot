@@ -554,6 +554,27 @@ class ZapmailClient:
         return await self._request("PUT", "/v2/mailboxes/retry-failed",
                                    json={"domainIds": ids}, service_provider=True)
 
+    async def add_domain_forwarding(self, domain_id: str, forward_to: str, *, contains: str,
+                                    approve: bool = False) -> dict:
+        """Redirect one domain's website to ``forward_to`` (a bare host). WRITE (free).
+
+        ``POST /v2/domains/forwarding`` also takes ``contains`` (a name filter)
+        and ``tagIds``; how they combine with ``domainIds`` is undocumented, so
+        ``contains`` must be this exact domain: only it can ever match.
+        """
+        import re
+        self._require(approve, "add_domain_forwarding", "WRITE")
+        if not str(domain_id or "").strip():
+            raise ValueError("add_domain_forwarding needs exactly one domain id")
+        if not str(contains or "").strip():
+            raise ValueError("add_domain_forwarding needs the exact domain name as its filter")
+        host = str(forward_to or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host):
+            raise ValueError(f"forward_to must be a host like client.com, not {forward_to!r}")
+        return await self._request("POST", "/v2/domains/forwarding",
+                                   json={"domainIds": [str(domain_id)], "forwardTo": host,
+                                         "contains": str(contains).strip().lower(), "tagIds": []})
+
     async def schedule_mailbox_removal(
         self, mailbox_ids: list[str], *, remove: bool = True, approve: bool = False,
     ) -> dict:
