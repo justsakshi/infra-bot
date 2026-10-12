@@ -273,7 +273,9 @@ function registerBuyFlow(app, baseDir, deps = {}) {
       try {
         const r = await runPy(stageArgs(meta, i, groups[i], sendersText, redirect, user));
         const blocks = meta.p === 'scaledmail' ? require('./scaledmail_command').stagedBlocks(r) : require('./zapmail_actions').jobBlocks(r);
-        await say(client, meta.ch, user, { text: types[i].label + ' plan', blocks });
+        // Row label first: an answered error renders as a bare ':x:' block otherwise.
+        await say(client, meta.ch, user, { text: types[i].label + ' plan',
+          blocks: [context('*' + types[i].label + '* · ' + groups[i].join(', ')), ...blocks] });
       } catch (err) {
         await say(client, meta.ch, user, { text: ':x: ' + types[i].label + ' (' + groups[i].join(', ') + '): ' + err.message });
       }

@@ -189,5 +189,15 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     assert.match(all, /Microsoft Outlook.*boom/);
     assert.match(all, /abc123/);
   });
+  await test('an answered error still says which row it was', async () => {
+    const h = harness(async args => (args.includes('MICROSOFT') ? { error: 'z.com is taken' } : { job_id: 'abcdef0123', status: 'pending_approval', client: 'Precise Leads', kind: 'new', provider: 'GOOGLE', domains: ['a.com'], inboxes_per_domain: 3, cost: null, progress: '' }));
+    const m = meta(2, { p: 'zapmail', k: [1, 1] });
+    const b = submitBody(m, 'Avinash Haridas');
+    await h.views.buy_flow({ ack: noop, body: b, view: b.view, client: h.client });
+    const outlook = h.said.find(p => JSON.stringify(p.blocks || []).includes('z.com is taken'));
+    assert.ok(outlook, 'error posted');
+    assert.match(JSON.stringify(outlook.blocks), /Microsoft Outlook\* · name1\.com/);
+  });
+
   console.log(passed + ' passed');
 })();
