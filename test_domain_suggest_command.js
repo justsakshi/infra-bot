@@ -44,7 +44,7 @@ test('suggestions become <=10-option checkbox groups + stage button', () => {
   assert.strictEqual(groups[1].elements[0].options.length, 2);
   assert.match(groups[0].elements[0].options[0].text.text, /name0\.com.*\$12\.99.*renews \$20\.99.*Zapmail AI/);
   const next = blocks.find(b => b.block_id === 'domains_next').elements.map(e => e.action_id);
-  assert.deepStrictEqual(next, ['domains_stage', 'domains_suggest_again']);
+  assert.deepStrictEqual(next, ['buy_open', 'domains_suggest_again']);
 });
 
 test('error result renders an error, no buttons to stage', () => {
@@ -60,6 +60,19 @@ test('selectedDomains reads every group and rejects junk values', () => {
     other: { x: {} }
   };
   assert.deepStrictEqual(m.selectedDomains(state), ['a.com', 'b.com']);
+});
+
+test('option value carries both prices; selectedPicks reads them back', () => {
+  const r = { ...RESULT, suggestions: [
+    { domain: 'a.com', price: 12.99, source: 'ai', scaledmail: { available: true, price: 15.5 } },
+    { domain: 'b.com', price: null, source: 'scaledmail', scaledmail: { available: true, price: 15.5 } },
+    { domain: 'c.com', price: 12.99, source: 'ai', scaledmail: { available: false, price: null } }] };
+  const opts = m.suggestionBlocks(r).find(b => b.block_id === 'domains_pick_0').elements[0].options;
+  assert.deepStrictEqual(opts.map(o => o.value), ['a.com|12.99|15.5', 'b.com||15.5', 'c.com|12.99|']);
+  const state = { domains_pick_0: { domains_pick: { selected_options: opts.map(o => ({ value: o.value })).concat([{ value: 'evil|1|1' }]) } } };
+  assert.deepStrictEqual(m.selectedPicks(state), [
+    { d: 'a.com', zp: 12.99, sp: 15.5 }, { d: 'b.com', zp: null, sp: 15.5 }, { d: 'c.com', zp: 12.99, sp: null }]);
+  assert.deepStrictEqual(m.selectedDomains(state), ['a.com', 'b.com', 'c.com']);
 });
 
 const STAGED = {

@@ -114,6 +114,13 @@ function suggestionLine(s) {
   return ('`' + s.domain + '` · ' + [zm, sm].filter(Boolean).join(' · ') + ' · ' + src).slice(0, 150);
 }
 
+/** "domain|zapmail price|scaledmail price" — prices travel with the tick so the buy flow can cost it. */
+function optionValue(s) {
+  const p = v => (v === null || v === undefined || !Number.isFinite(Number(v)) ? '' : String(Number(v)));
+  const sm = s.scaledmail && s.scaledmail.available ? p(s.scaledmail.price) : '';
+  return [s.domain, p(s.price), sm].join('|');
+}
+
 /** Result of domain_suggest.py → tick boxes + stage button. */
 function suggestionBlocks(r) {
   if (r.error) return [{ type: 'section', text: { type: 'mrkdwn', text: ':x: ' + r.error } }];
@@ -122,7 +129,7 @@ function suggestionBlocks(r) {
     + NL + 'Keywords: ' + (r.keywords || []).join(', ')
     + NL + 'Zapmail AI: ' + r.ai_usable + ' usable · our generator: ' + r.generator_usable + ' usable'
     + (r.scaledmail_usable !== undefined ? ' · ScaledMail: ' + r.scaledmail_usable + ' usable' : '')
-    + (rows.length ? NL + 'Tick the ones you want, then *Stage purchase*.' : '');
+    + (rows.length ? NL + 'Tick the ones you want, then *Buy these*.' : '');
   const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: head } }];
   if (!rows.length) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'Nothing available passed our checks this time — try again in 30 minutes (search budget), or widen the keywords.' } });
@@ -139,19 +146,15 @@ function suggestionBlocks(r) {
             type: 'mrkdwn',
             text: suggestionLine(s)
           },
-          value: s.domain
+          value: optionValue(s)
         }))
       }]
     });
   }
   const buttons = [];
   if (rows.length) {
-    buttons.push({ type: 'button', action_id: 'domains_stage', style: 'primary',
-      text: { type: 'plain_text', text: 'Buy on Zapmail' }, value: r.client });
-    if (rows.some(x => x.scaledmail && x.scaledmail.available)) {
-      buttons.push({ type: 'button', action_id: 'domains_sm_order',
-        text: { type: 'plain_text', text: 'Buy on ScaledMail (with inboxes)' }, value: r.client });
-    }
+    buttons.push({ type: 'button', action_id: 'buy_open', style: 'primary',
+      text: { type: 'plain_text', text: 'Buy these' }, value: r.client });
   }
   buttons.push({ type: 'button', action_id: 'domains_suggest_again',
     text: { type: 'plain_text', text: 'Suggest again' }, value: r.client });
@@ -164,18 +167,25 @@ function suggestionBlocks(r) {
   return blocks;
 }
 
-/** Ticked domains from a block_actions payload's state. */
-function selectedDomains(stateValues) {
+/** Ticked suggestions with their prices: [{d, zp, sp}] (null = not sold there). */
+function selectedPicks(stateValues) {
   const out = [];
+  const num = v => (v === '' || v === undefined ? null : Number(v));
   for (const block of Object.values(stateValues || {})) {
     const el = block && block.domains_pick;
     if (!el || !Array.isArray(el.selected_options)) continue;
     for (const o of el.selected_options) {
-      const d = String(o.value || '').toLowerCase();
-      if (SAFE_DOMAIN_RE.test(d) && !out.includes(d)) out.push(d);
+      const [d0, zp, sp] = String(o.value || '').split('|');
+      const d = String(d0 || '').toLowerCase();
+      if (SAFE_DOMAIN_RE.test(d) && !out.some(x => x.d === d)) out.push({ d, zp: num(zp), sp: num(sp) });
     }
   }
   return out;
+}
+
+/** Ticked domain names (older stage / ScaledMail-order buttons). */
+function selectedDomains(stateValues) {
+  return selectedPicks(stateValues).map(p => p.d);
 }
 
 /** A "Buy now" button (with a confirm dialog) for each batch due today. */
@@ -338,6 +348,7 @@ module.exports = {
   suggestionBlocks,
   suggestionLine,
   selectedDomains,
+  selectedPicks,
   stagedBlocks,
   buyButtonBlocks,
   approvers,
