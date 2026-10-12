@@ -29,7 +29,7 @@ SPEND (charges the card; --approve + SCALEDMAIL_ALLOW_SPEND=true):
     python scaledmail_cli.py stage --client Melior --provider google --domains a.com,b.com --senders "Jane Doe"
     python scaledmail_cli.py place <plan_id> --approve
     python scaledmail_cli.py reconcile <plan_id>         # after a timeout
-    python scaledmail_cli.py mark-failed <plan_id>       # only after checking the ScaledMail UI
+    python scaledmail_cli.py mark-failed <plan_id>       # only after checking the ScaledMail UI (--note "why")
 """
 from __future__ import annotations
 
@@ -115,7 +115,8 @@ def run(args) -> dict:
         return drop_plan(args.plan_id, user=os.getenv("USER") or os.getenv("USERNAME") or "cli")
     if c == "mark-failed":
         from smartlead.scaledmail_orders import mark_failed
-        return mark_failed(args.plan_id, user=os.getenv("USER") or os.getenv("USERNAME") or "cli")
+        return mark_failed(args.plan_id, user=os.getenv("USER") or os.getenv("USERNAME") or "cli",
+                           note=args.note or "")
     with ScaledMailClient() as sm:
         if c == "status":
             snap = fleet.snapshot(sm, tracker=_tracker())
@@ -258,6 +259,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--user")
     p = sub.add_parser("reconcile"); p.add_argument("plan_id")
     p = sub.add_parser("mark-failed"); p.add_argument("plan_id")
+    p.add_argument("--note", help="why it was not ordered (e.g. refunded to credits); kept in history")
     p = sub.add_parser("drop"); p.add_argument("plan_id")
     return ap
 

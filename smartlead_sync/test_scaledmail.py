@@ -162,6 +162,8 @@ class FakeCol:
         for d in self.docs.values():
             if self._m(d, q):
                 d.update(u.get("$set", {}))
+                for k, v in u.get("$push", {}).items():
+                    d.setdefault(k, []).append(copy.deepcopy(v))
                 return
         if upsert and "$setOnInsert" in u:
             self.docs[u["$setOnInsert"]["plan_id"]] = copy.deepcopy(u["$setOnInsert"])
@@ -177,6 +179,8 @@ class FakeCol:
             if self._m(d, q):
                 before = copy.deepcopy(d)
                 d.update(u["$set"])
+                for k, v in u.get("$push", {}).items():
+                    d.setdefault(k, []).append(copy.deepcopy(v))
                 return before
         return None
 
@@ -280,6 +284,27 @@ def test_mark_failed_only_unknown(monkeypatch):
     pid = _stage(FakeSM(), store)["plan_id"]
     with pytest.raises(ScaledMailError):
         so.mark_failed(pid, store=store)
+
+
+def test_history_keeps_every_request_and_answer(monkeypatch):
+    """Money trail: a later step never erases an earlier answer."""
+    monkeypatch.setenv("SCALEDMAIL_ALLOW_SPEND", "true")
+    store = so.PlanStore(FakeCol())
+    sm = FakeSM(order_exc=ScaledMailHTTPError("400 on /create-custom-order: Subscription created but "
+                                              "unable to charge", 400, body='{"error":"x"}'))
+    pid = _stage(sm, store)["plan_id"]
+    assert so.place_order(sm, pid, approve=True, user="U1", store=store)["status"] == "payment_pending"
+    so.mark_failed(pid, user="U1", note="refunded to credits", store=store)
+    sm.order_exc = None
+    assert so.place_order(sm, pid, approve=True, user="U1", store=store)["status"] == "placed"
+    h = store.get(pid)["history"]
+    assert [e["status"] for e in h] == ["in_progress", "payment_pending", "failed", "in_progress", "placed"]
+    assert h[1]["raw_response"] == '{"error":"x"}' and "unable to charge" in h[1]["error"]
+    assert h[1]["request"] == {"method": "POST", "path": "/create-custom-order", "params": {"provider": "buy"},
+                               "body": {"providers": store.get(pid)["payload"], "tag": store.get(pid)["tag"]}}
+    assert h[2]["note"] == "refunded to credits" and h[2]["by"] == "U1"
+    assert h[4]["response"] == {"success": True} and h[4]["request"] == h[1]["request"]
+    assert all(e.get("at") for e in h)
 
 
 # ── tracker sync ─────────────────────────────────────────────────────────────

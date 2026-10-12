@@ -109,15 +109,20 @@ class PlanStore:
 
     def claim(self, plan_id: str, user: str) -> dict | None:
         """planned/failed → in_progress, atomically. None when not claimable."""
+        now = datetime.now(timezone.utc).isoformat()
         return self.col.find_one_and_update(
             {"plan_id": plan_id, "status": {"$in": ["planned", "failed"]}},
-            {"$set": {"status": "in_progress", "claimed_by": user,
-                      "claimed_at": datetime.now(timezone.utc).isoformat()}})
+            {"$set": {"status": "in_progress", "claimed_by": user, "claimed_at": now},
+             "$push": {"history": {"at": now, "status": "in_progress", "by": user}}})
 
     def settle(self, plan_id: str, status: str, **fields) -> None:
+        """Set the current state AND append it to ``history``: the top-level
+        fields show the latest answer, ``history`` keeps every request and
+        answer (money trail; later steps never erase earlier ones)."""
+        now = datetime.now(timezone.utc).isoformat()
         self.col.update_one({"plan_id": plan_id},
-                            {"$set": {"status": status, **fields,
-                                      "settled_at": datetime.now(timezone.utc).isoformat()}})
+                            {"$set": {"status": status, **fields, "settled_at": now},
+                             "$push": {"history": {"at": now, "status": status, **fields}}})
 
 
 def _check_available(sm, domains: list[str]) -> dict:
@@ -226,6 +231,10 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
                                 .get(plan["status"], "reconcile it first"))
     if not store.claim(plan_id, user):
         raise ScaledMailBlocked(f"plan {plan_id} was claimed by someone else just now")
+    # Exactly what create_custom_order sends, kept with every answer.
+    request = {"method": "POST", "path": "/create-custom-order",
+               "params": {"provider": plan.get("source", "buy")},
+               "body": {"providers": plan["payload"], "tag": plan["tag"][:20]}}
     try:
         if plan.get("source") == "other":
             bad = (ownership or not_in_our_godaddy)(plan["domains"])
@@ -244,18 +253,19 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
             note = ("ScaledMail created the subscription but could not charge the card (it needs "
                     "approval). Pay or confirm it in the ScaledMail web app (Billing), then "
                     "run reconcile; or cancel it there. Never place this plan again.")
-            store.settle(plan_id, "payment_pending", error=str(exc), note=note,
+            store.settle(plan_id, "payment_pending", error=str(exc), note=note, request=request,
                          raw_response=getattr(exc, "body", ""))
             return {"plan_id": plan_id, "status": "payment_pending", "error": str(exc), "next": note}
-        store.settle(plan_id, "failed", error=str(exc), raw_response=getattr(exc, "body", ""))
+        store.settle(plan_id, "failed", error=str(exc), request=request,
+                     raw_response=getattr(exc, "body", ""))
         return {"plan_id": plan_id, "status": "failed", "error": str(exc)}
     except ScaledMailOutcomeUnknown as exc:
-        store.settle(plan_id, "unknown", error=str(exc))
+        store.settle(plan_id, "unknown", error=str(exc), request=request)
         return {"plan_id": plan_id, "status": "unknown", "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - never leave a plan stuck in_progress
-        store.settle(plan_id, "unknown", error=f"{type(exc).__name__}: {exc}")
+        store.settle(plan_id, "unknown", error=f"{type(exc).__name__}: {exc}", request=request)
         raise
-    store.settle(plan_id, "placed", response=res, placed_by=user)
+    store.settle(plan_id, "placed", response=res, placed_by=user, request=request)
     return {"plan_id": plan_id, "status": "placed", "response": res, "tag": plan["tag"]}
 
 
@@ -289,11 +299,14 @@ def drop_plan(plan_id: str, *, user: str = "", store: PlanStore | None = None) -
     return {"plan_id": plan_id, "status": "dropped"}
 
 
-def mark_failed(plan_id: str, *, user: str = "", store: PlanStore | None = None) -> dict:
-    """Human override after checking ScaledMail: an unknown plan was not ordered."""
+def mark_failed(plan_id: str, *, user: str = "", note: str = "",
+                store: PlanStore | None = None) -> dict:
+    """Human override after checking ScaledMail: an unknown plan was not ordered.
+    ``note`` says why (e.g. what ScaledMail refunded), kept in ``history``."""
     store = store or PlanStore()
     plan = store.get(plan_id)
     if not plan or plan["status"] not in ("unknown", "in_progress", "payment_pending"):
         raise ScaledMailError(f"plan {plan_id} is not unknown/in_progress/payment_pending")
-    store.settle(plan_id, "failed", error=f"marked not-ordered by {user or 'operator'}")
+    store.settle(plan_id, "failed", error=f"marked not-ordered by {user or 'operator'}",
+                 by=user or "operator", note=note)
     return {"plan_id": plan_id, "status": "failed"}

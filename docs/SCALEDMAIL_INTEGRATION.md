@@ -90,7 +90,11 @@ On 2026-10-08, order `recLP7iFrjZ27pq94` (agencyforumco.com, peerplaybook.com, p
 - Mailbox health or warmup data. Our Smartlead placement tests (Mon/Tue) cover this.
 
 ## Buying domains + mailboxes through the bot (runbook)
-One order = ScaledMail registers the domains AND creates the mailboxes (`create-custom-order?provider=buy`). Card on file is charged; the ScaledMail wallet balance is not used.
+One order = ScaledMail registers the domains AND creates the mailboxes (`create-custom-order?provider=buy`). Account credits are applied first on every charge (ScaledMail support, 2026-10-09); the Indian card only covers what credits do not, and that part fails on the OTP. So **top up credits before ordering**: "Add credits" in the portal fails on the card, so ask support for a Stripe credits invoice and pay that. The API has no balance endpoint; read "Balance" in the portal before and after.
+
+**Ledger = money trail.** Every plan in Mongo `scaledmail_order_plans` has a `history` list: one entry per claim / answer / human override, with the exact request sent (`request`: method, path, params, body), ScaledMail's full answer (`response`, or `raw_response` on a refusal) and a `note`. Top-level fields only show the latest state; `history` is never overwritten. Read it with `plans` or `PlanStore().get(<id>)["history"]`.
+
+**From WSL:** run the Windows venv (`smartlead_sync/.venv/Scripts/python.exe`; WSL `python3` lacks `httpx`), and pass env vars through interop: `SCALEDMAIL_ALLOW_SPEND=true WSLENV=SCALEDMAIL_ALLOW_SPEND ./.venv/Scripts/python.exe scaledmail_cli.py place ...`. Without `WSLENV` the gate stays shut (safe, nothing spent).
 
 1. **Names.** Only from the suggester (`domain_suggest.py --client "<client>"` or Slack *Suggest domains*). Never the client's brand, never outbound/outreach/sales cliches (`domain_naming.screen`). An availability search is not a naming check.
 2. **Stage** (free, writes the ledger only):
@@ -99,8 +103,10 @@ One order = ScaledMail registers the domains AND creates the mailboxes (`create-
 3. **Place** (charges the card; one plan per command; a human said "place <id>"):
    `SCALEDMAIL_ALLOW_SPEND=true python3 scaledmail_cli.py place <plan_id> --approve --user <name>`
    Set the gate on the command line for that one run, never in `.env`. The plan re-checks availability, blacklists and price ceilings first; a taken name fails the plan, nothing is charged.
-4. **Confirm the charge.** Indian cards may need the payment confirmed in the ScaledMail web app (Billing). An order stays "Active" in the API even while the payment says *Requires confirmation*, so look.
-5. **If the result is `payment_pending`** (live 2026-10-09: `400 Subscription created but unable to charge`): ScaledMail made the subscription, but the Indian card needs approval. Pay or confirm it in the web app (Billing), then run `reconcile <plan_id>`. If you cancel it there instead, run `mark-failed`. The bot refuses to place that plan again, because a second try would create a second subscription.
+   Before placing, run any read (`orders`) once: ScaledMail's API sometimes answers `502 Bad Gateway` (live 2026-10-12, gone within a minute). Never place while reads fail; a 5xx on the order leaves it `unknown`.
+   **A good answer** (live 2026-10-12, plan 13845d, paid from credits, ~35 s): `200 {"message": "Order created successfully", "order_id": "recu3iO3RR33xf614", "domains_purchased": ["warmmeetings.com"]}`. The order shows in `GET /orders` at once with our tag, status Active, `invoices: []`; the package status is "New Order" and the domain status blank until ScaledMail sets it up.
+4. **Confirm the charge.** Check the portal balance dropped by the order's first charge (domains + first month). Indian cards may need the payment confirmed in the ScaledMail web app (Billing). An order stays "Active" in the API even while the payment says *Requires confirmation*, so look.
+5. **If the result is `payment_pending`** (live 2026-10-09: `400 Subscription created but unable to charge`): ScaledMail made the subscription, but the Indian card needs approval. Pay or confirm it in the web app (Billing), then run `reconcile <plan_id>`. If you cancel it there instead, run `mark-failed <plan_id> --note "<why>"`. (Plan 43b616: invoice paid by card, ScaledMail never created the order and refunded the $26 as credit, so it was marked failed with that note on 2026-10-12.) The bot refuses to place that plan again, because a second try would create a second subscription.
 6. **If the result is `unknown`** (timeout/5xx): never re-place. `reconcile <plan_id>` finds the order by its tag; only after checking the web app use `mark-failed`.
 7. **Smartlead.** API orders are not pushed into Smartlead (the `sequencer` field is Instantly-only). Ask ScaledMail support to upload them (they did for every order so far), and tag the inboxes in Smartlead with the vendor tag (`ScaledMail-Google` / `ScaledMail-Microsoft` / `ScaledMail-SMTP`) and the client.
 8. **Tracker.** The order tag `<client>-<plan>` names the client, so the 9:35 sync adds the domains and inboxes once they are Active (needs `SCALEDMAIL_ASSET_SYNC_ENABLED=true`). Warm 2-3 weeks before campaigns.
@@ -119,6 +125,6 @@ One order = ScaledMail registers the domains AND creates the mailboxes (`create-
 
 ## Tests
 ```
-cd infra-bot\smartlead_sync && python3 -m pytest test_scaledmail.py -q     # 44: gates, routing, billing, ledger, sync
+cd infra-bot\smartlead_sync && python3 -m pytest test_scaledmail.py -q     # 49: gates, routing, billing, ledger, sync
 cd infra-bot && node test_scaledmail_command.js                             # 29: routing, rendering, approver gates, form checks
 ```
