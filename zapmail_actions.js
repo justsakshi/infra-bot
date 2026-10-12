@@ -399,23 +399,28 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     return client.chat.postMessage({ channel: user, ...payload });
   }
 
+  // One message per conversation: an action on a single card replaces that
+  // card (⌂ Home / ← Zapmail); refusals, bad requests and actions picked from a
+  // list (renewals) are added, so the rest of the list stays.
+  const { replace, add } = require('./slack_reply');
+  const BACK = { label: 'Zapmail', action_id: 'dh_zapmail' };
+
   async function guard(body, respond) {
     const user = body.user && body.user.id;
     if (isApprover(user)) return user;
-    await respond({ response_type: 'ephemeral', replace_original: false,
-      text: ':lock: Only Zapmail approvers can do this (ZAPMAIL_APPROVERS). Ask one, or use the CLI.' });
+    await add(respond, { text: ':lock: Only Zapmail approvers can do this (ZAPMAIL_APPROVERS). Ask one, or use the CLI.' });
     return null;
   }
 
-  async function runAndReport(respond, args, label, format, timeoutMs) {
-    await respond({ response_type: 'ephemeral', replace_original: false, text: ':hourglass: ' + label + '…' });
+  async function runAndReport(respond, args, label, format, timeoutMs, { inPlace = true } = {}) {
+    const out = p => (inPlace ? replace(respond, p, BACK) : add(respond, p));
+    await out({ text: ':hourglass: ' + label + '…' });
     try {
       const r = await runPy(args, baseDir, timeoutMs);
-      await respond({ response_type: 'ephemeral', replace_original: false, text: format(r) });
+      await out({ text: format(r) });
       return r;
     } catch (err) {
-      await respond({ response_type: 'ephemeral', replace_original: false,
-        text: ':x: ' + label + ' — not done. ' + require('./slack_text').plainError(err.message) });
+      await out({ text: ':x: ' + label + ' — not done. ' + require('./slack_text').plainError(err.message) });
       return null;
     }
   }
@@ -424,8 +429,7 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
   app.action('zm_home_suggest', async ({ ack, respond }) => {
     await ack();
     const flow = require('./domain_suggest_command');
-    await respond({ response_type: 'ephemeral', replace_original: false, text: 'Suggest domains',
-      blocks: flow.clientPickerBlocks(flow.loadProfiles(baseDir)) });
+    await replace(respond, { text: 'Suggest domains', blocks: flow.clientPickerBlocks(flow.loadProfiles(baseDir)) });
   });
 
   // Look-up form.
@@ -456,7 +460,7 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     if (!(await guard(body, respond))) return;
     const p = unpackValue(action.value);
-    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    if (checkPayload(p, ['domain', 'client'])) return add(respond, { text: ':x: bad request' });
     await client.views.open({ trigger_id: body.trigger_id, view: mailboxModal(p, body.channel && body.channel.id) });
   });
 
@@ -493,7 +497,7 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     if (!(await guard(body, respond))) return;
     const p = unpackValue(action.value);
-    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    if (checkPayload(p, ['domain', 'client'])) return add(respond, { text: ':x: bad request' });
     await client.views.open({ trigger_id: body.trigger_id, view: inboxModal(p, body.channel && body.channel.id) });
   });
 
@@ -531,7 +535,7 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     if (!(await guard(body, respond))) return;
     const p = unpackValue(action.value);
-    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    if (checkPayload(p, ['domain', 'client'])) return add(respond, { text: ':x: bad request' });
     await runAndReport(respond, ['zapmail_inboxes.py', '--retry-failed', p.domain, '--client', p.client, '--approve', '--json'],
       'Retrying failed inboxes on `' + p.domain + '`',
       r => r.ok ? ':white_check_mark: `' + p.domain + '`: ' + ((r.retried || []).length ? 'retrying ' + r.retried.join(', ') + ' — ' + (r.detail || '') : (r.detail || 'nothing to retry'))
@@ -543,7 +547,7 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     if (!(await guard(body, respond))) return;
     const p = unpackValue(action.value);
-    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    if (checkPayload(p, ['domain', 'client'])) return add(respond, { text: ':x: bad request' });
     await client.views.open({ trigger_id: body.trigger_id, view: retireModal(p, body.channel && body.channel.id) });
   });
 
@@ -574,7 +578,7 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     const p = unpackValue(action.value);
     if (!DOMAIN_RE.test(String(p.domain || '')) || !PW_ID_RE.test(String(p.id || ''))
         || !['GOOGLE', 'MICROSOFT'].includes(p.provider)) {
-      return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+      return add(respond, { text: ':x: bad request' });
     }
     await client.views.open({ trigger_id: body.trigger_id, view: prewarmedModal(p, body.channel && body.channel.id) });
   });
@@ -603,12 +607,12 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     if (!(await guard(body, respond))) return;
     if (!JOB_ID_RE.test(String(action.value || ''))) return;
-    await respond({ response_type: 'ephemeral', replace_original: false, text: ':hourglass: Starting job `' + action.value + '`…' });
+    await replace(respond, { text: ':hourglass: Starting job `' + action.value + '`…' }, BACK);
     try {
       const r = await runPy(['inbox_jobs.py', '--approve', action.value, '--by', body.user.id, '--json'], baseDir, 8 * 60 * 1000);
-      await respond({ response_type: 'ephemeral', replace_original: false, text: 'Inbox setup job', blocks: jobBlocks(r) });
+      await replace(respond, { text: 'Inbox setup job', blocks: jobBlocks(r) }, BACK);
     } catch (err) {
-      await respond({ response_type: 'ephemeral', replace_original: false, text: ':x: Job not started. ' + require('./slack_text').plainError(err.message) });
+      await replace(respond, { text: ':x: Job not started. ' + require('./slack_text').plainError(err.message) }, BACK);
     }
   });
 
@@ -618,8 +622,8 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     if (!JOB_ID_RE.test(String(action.value || ''))) return;
     const r = await runPy(['inbox_jobs.py', '--cancel', action.value, '--by', body.user.id, '--json'], baseDir)
       .catch(err => ({ error: err.message }));
-    await respond({ response_type: 'ephemeral', replace_original: false,
-      text: r && r.error ? ':x: ' + require('./slack_text').plainError(r.error) : ':no_entry_sign: Job `' + action.value + '` cancelled. Nothing more will run.' });
+    await replace(respond, {
+      text: r && r.error ? ':x: ' + require('./slack_text').plainError(r.error) : ':no_entry_sign: Job `' + action.value + '` cancelled. Nothing more will run.' }, BACK);
   });
 
   // Export (WRITE; approvers).
@@ -627,7 +631,7 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     if (!(await guard(body, respond))) return;
     const p = unpackValue(action.value);
-    if (checkPayload(p, ['domain', 'client'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    if (checkPayload(p, ['domain', 'client'])) return add(respond, { text: ':x: bad request' });
     await runAndReport(respond, ['zapmail_export.py', '--export', p.domain, '--client', p.client, '--approve', '--json'],
       'Exporting `' + p.domain + '` to ' + p.client + '’s Smartlead',
       r => { const x = Array.isArray(r) ? r[0] || {} : r;
@@ -636,18 +640,19 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
   });
 
   // Auto-renew (WRITE; approvers).
-  async function autoRenew(respond, p, enable) {
+  async function autoRenew(respond, p, enable, opts) {
     return runAndReport(respond, ['zapmail_maintenance.py', '--auto-renew', p.domain_id,
       enable ? '--enable' : '--disable', '--approve', '--client', p.client, '--json'],
       'Turning auto-renew ' + (enable ? 'on' : 'off') + ' for ' + (p.domain || p.domain_id),
-      r => (r && r.error) ? ':x: ' + require('./slack_text').plainError(r.error) : ':white_check_mark: Auto-renew ' + (enable ? 'on' : 'off') + ' for ' + (p.domain || p.domain_id) + '.');
+      r => (r && r.error) ? ':x: ' + require('./slack_text').plainError(r.error) : ':white_check_mark: Auto-renew ' + (enable ? 'on' : 'off') + ' for ' + (p.domain || p.domain_id) + '.',
+      undefined, opts);
   }
 
   app.action('zm_autorenew', async ({ ack, body, action, respond }) => {
     await ack();
     if (!(await guard(body, respond))) return;
     const p = unpackValue(action.value);
-    if (checkPayload(p, ['client', 'domain_id'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
+    if (checkPayload(p, ['client', 'domain_id'])) return add(respond, { text: ':x: bad request' });
     await autoRenew(respond, p, Boolean(p.enable));
   });
 
@@ -658,18 +663,19 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
     if (verb === 'lookup') {
       if (!DOMAIN_RE.test(id)) return;
       const r = await runPy(['zapmail_status.py', '--domain', id, '--json'], baseDir);
-      return respond({ response_type: 'ephemeral', replace_original: false, text: 'Zapmail: ' + id, blocks: domainBlocks(r) });
+      return add(respond, { text: 'Zapmail: ' + id, blocks: domainBlocks(r) });
     }
     if (!(await guard(body, respond))) return;
     // Name the domain in replies, not its Zapmail id.
     const p = { domain_id: id, client: clientName, domain: DOMAIN_RE.test(domainName || '') ? domainName : undefined };
-    if (checkPayload(p, ['client', 'domain_id'])) return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: bad request' });
-    if (verb === 'autorenew') return autoRenew(respond, p, true);
+    if (checkPayload(p, ['client', 'domain_id'])) return add(respond, { text: ':x: bad request' });
+    if (verb === 'autorenew') return autoRenew(respond, p, true, { inPlace: false });
     if (verb === 'renew') {
       return runAndReport(respond, ['zapmail_maintenance.py', '--renew', id, '--approve', '--client', clientName, '--json'],
         'Renewing ' + (DOMAIN_RE.test(domainName || '') ? '`' + domainName + '`' : id) + ' for ' + clientName
           + (accountName ? ' (paid from the ' + accountName + ' Zapmail wallet)' : ''),
-        r => (r && r.error) ? ':x: ' + require('./slack_text').plainError(r.error) : ':white_check_mark: Renewal submitted' + ((r && r.data && r.data.paymentLink) ? ' — <' + r.data.paymentLink + '|payment link>' : '') + '.');
+        r => (r && r.error) ? ':x: ' + require('./slack_text').plainError(r.error) : ':white_check_mark: Renewal submitted' + ((r && r.data && r.data.paymentLink) ? ' — <' + r.data.paymentLink + '|payment link>' : '') + '.',
+        undefined, { inPlace: false });
     }
   });
 

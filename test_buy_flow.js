@@ -199,5 +199,46 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     assert.match(JSON.stringify(outlook.blocks), /Microsoft Outlook\* · name1\.com/);
   });
 
+  await test('stage replaces the suggestions message; each card is its own message', async () => {
+    const posts = [];
+    const h = { actions: {}, views: {}, said: [] };
+    const app = { action: (id, fn) => { h.actions[id] = fn; }, view: (id, fn) => { h.views[id] = fn; } };
+    bf.registerBuyFlow(app, __dirname, {
+      runPy: async () => ({ staged: true, plan_id: 'abc123', client: 'Precise Leads', provider: 'google', domains: ['a.com'], mailboxes_per_domain: 3, mailboxes: 3, monthly_usd: 10.5, domains_usd: 15.5, senders: ['A B'] }),
+      say: async (c, ch, u, p) => { h.said.push(p); },
+      post: async (url, body) => { posts.push({ url, body }); },
+      profiles: () => ({}), senders: () => ({})
+    });
+    const opened = [];
+    const client = { views: { open: async a => opened.push(a.view) } };
+    await h.actions.buy_open({ ack: noop, action: { value: 'Precise Leads' }, body: { state: { values: tickState }, trigger_id: 't', channel: { id: 'C1' }, response_url: 'https://hooks.slack.com/x' }, client, respond: noop });
+    const m = JSON.parse(opened[0].private_metadata);
+    assert.strictEqual(m.ru, 'https://hooks.slack.com/x');
+    m.p = 'scaledmail'; m.k = [1, 1, 0];
+    const b = submitBody(m, 'Avinash Haridas', '');
+    await h.views.buy_flow({ ack: noop, body: b, view: b.view, client });
+    assert.strictEqual(h.said.length, 0, 'nothing posted outside the thread of clicks');
+    assert.deepStrictEqual(posts.map(x => x.body.replace_original), [true, false, false, true]);
+    assert.match(posts[0].body.text, /Staging/);
+    assert.match(JSON.stringify(posts[3].body.blocks), /Staged 2 order/);
+    assert.strictEqual(posts[3].body.blocks[posts[3].body.blocks.length - 1].block_id, 'nav_row');
+    assert.ok(posts.length <= 5, 'Slack allows 5 uses of a response_url');
+  });
+
+  await test('an expired response_url falls back to posting the cards', async () => {
+    const h = { actions: {}, views: {}, said: [] };
+    const app = { action: (id, fn) => { h.actions[id] = fn; }, view: (id, fn) => { h.views[id] = fn; } };
+    bf.registerBuyFlow(app, __dirname, {
+      runPy: async () => ({ staged: true, plan_id: 'abc123', client: 'Precise Leads', provider: 'google', domains: ['a.com'], mailboxes_per_domain: 3, mailboxes: 3, monthly_usd: 10.5, domains_usd: 15.5, senders: ['A B'] }),
+      say: async (c, ch, u, p) => { h.said.push(p); },
+      post: async () => { throw new Error('expired_url'); },
+      profiles: () => ({}), senders: () => ({})
+    });
+    const m = meta(1, { p: 'scaledmail', k: [1, 0, 0], ru: 'https://hooks.slack.com/x' });
+    const b = submitBody(m, 'Avinash Haridas', '');
+    await h.views.buy_flow({ ack: noop, body: b, view: b.view, client: {} });
+    assert.ok(JSON.stringify(h.said).includes('abc123'));
+  });
+
   console.log(passed + ' passed');
 })();

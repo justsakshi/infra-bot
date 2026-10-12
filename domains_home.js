@@ -56,12 +56,12 @@ function registerDomainsHome(app, baseDir, { infra, botToken } = {}) {
   app.action('dh_suggest', async ({ ack, respond }) => {
     await ack();
     const flow = require('./domain_suggest_command');
-    await respond({ response_type: 'ephemeral', replace_original: false, text: 'Suggest domains',
+    await require('./slack_reply').replace(respond, { text: 'Suggest domains',
       blocks: flow.clientPickerBlocks(flow.loadProfiles(baseDir)) });
   });
   app.action('dh_zapmail', async ({ ack, respond }) => {
     await ack();
-    await respond({ response_type: 'ephemeral', replace_original: false, text: 'Zapmail',
+    await require('./slack_reply').replace(respond, { text: 'Zapmail',
       blocks: require('./zapmail_actions').homeBlocks() });
   });
 
@@ -69,13 +69,14 @@ function registerDomainsHome(app, baseDir, { infra, botToken } = {}) {
   // redirects, caps, warmup, signatures, provider mix, IP blacklists.
   app.action('dh_audit', async ({ ack, respond }) => {
     await ack();
-    await respond({ response_type: 'ephemeral', replace_original: false, text: ':mag: Running the infra audit (about a minute)…' });
+    const { replace } = require('./slack_reply');
+    await replace(respond, { text: ':mag: Running the infra audit (about a minute)…' });
     try {
       const r = await require('./domain_suggest_command').runPy(['infra_audit.py', '--json'], baseDir, 6 * 60 * 1000);
       if (r.error) throw new Error(r.error);
-      await respond({ response_type: 'ephemeral', replace_original: false, text: 'Infra audit', blocks: auditBlocks(r.text) });
+      await replace(respond, { text: 'Infra audit', blocks: auditBlocks(r.text) });
     } catch (err) {
-      await respond({ response_type: 'ephemeral', replace_original: false, text: ':x: Audit failed: ' + require('./slack_text').plainError(err.message) });
+      await replace(respond, { text: ':x: Audit failed: ' + require('./slack_text').plainError(err.message) });
     }
   });
 

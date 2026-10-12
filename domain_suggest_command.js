@@ -103,15 +103,37 @@ function clientPickerBlocks(profiles) {
   return blocks;
 }
 
-/** One tick-box line: where it can be bought and for how much. */
-function suggestionLine(s) {
+/** A suggestion's three facts: Zapmail price, ScaledMail price (null = not sold there), source. */
+function lineParts(s) {
   const money = v => '$' + Number(v).toFixed(2);
   const src = { ai: 'Zapmail AI', generator: 'our generator', scaledmail: 'ScaledMail idea' }[s.source] || s.source;
   const zm = s.price !== null && s.price !== undefined
     ? 'Zapmail ' + money(s.price) + (s.renew_price ? ' (renews ' + money(s.renew_price) + ')' : '') : null;
   const sm = s.scaledmail && s.scaledmail.available && s.scaledmail.price !== null && s.scaledmail.price !== undefined
     ? 'ScaledMail ' + money(s.scaledmail.price) + (s.scaledmail.renew_price ? ' (renews ' + money(s.scaledmail.renew_price) + ')' : '') : null;
-  return ('`' + s.domain + '` · ' + [zm, sm].filter(Boolean).join(' · ') + ' · ' + src).slice(0, 150);
+  return { zm, sm, src };
+}
+
+/** The most common value of each fact across the list (said once, in the header). */
+function commonParts(rows) {
+  const out = {};
+  for (const k of ['zm', 'sm', 'src']) {
+    const n = new Map();
+    rows.forEach(r => { const v = lineParts(r)[k]; n.set(v, (n.get(v) || 0) + 1); });
+    out[k] = [...n.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  }
+  return out;
+}
+
+/** One tick-box line: the name, then only what differs from the header's common values. */
+function suggestionLine(s, common) {
+  const p = lineParts(s);
+  const c = common || {};
+  const diff = [];
+  if (p.zm !== c.zm || !common) diff.push(p.zm || 'not on Zapmail');
+  if (p.sm !== c.sm || !common) diff.push(p.sm || 'not on ScaledMail');
+  if (p.src !== c.src || !common) diff.push(p.src);
+  return ['`' + s.domain + '`', ...diff.filter(Boolean)].join(' · ').slice(0, 150);
 }
 
 /** "domain|zapmail price|scaledmail price" — prices travel with the tick so the buy flow can cost it. */
@@ -125,11 +147,13 @@ function optionValue(s) {
 function suggestionBlocks(r) {
   if (r.error) return [{ type: 'section', text: { type: 'mrkdwn', text: ':x: ' + r.error } }];
   const rows = r.suggestions || [];
+  const common = rows.length ? commonParts(rows) : {};
   const head = '*Domain suggestions for ' + r.label + '* (' + r.main_domain + ')'
     + NL + 'Keywords: ' + (r.keywords || []).join(', ')
     + NL + 'Zapmail AI: ' + r.ai_usable + ' usable · our generator: ' + r.generator_usable + ' usable'
     + (r.scaledmail_usable !== undefined ? ' · ScaledMail: ' + r.scaledmail_usable + ' usable' : '')
-    + (rows.length ? NL + 'Tick the ones you want, then *Buy these*.' : '');
+    + (rows.length ? NL + 'Most names: ' + [common.zm, common.sm, common.src].filter(Boolean).join(' · ')
+      + ' (a line shows only what differs).' + NL + 'Tick the ones you want, then *Buy these*.' : '');
   const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: head } }];
   if (!rows.length) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'Nothing available passed our checks this time — try again in 30 minutes (search budget), or widen the keywords.' } });
@@ -144,7 +168,7 @@ function suggestionBlocks(r) {
         options: rows.slice(i, i + MAX_PER_GROUP).map(s => ({
           text: {
             type: 'mrkdwn',
-            text: suggestionLine(s)
+            text: suggestionLine(s, common)
           },
           value: optionValue(s)
         }))
@@ -249,27 +273,31 @@ function resolveClientKey(profiles, text) {
 }
 
 /** Run suggestions for one client and post them (used by buttons + `/domains suggest X`). */
-async function runSuggest(clientKey, respond, baseDir) {
+async function runSuggest(clientKey, respond, baseDir, { inPlace = false } = {}) {
+  // From a button: each step replaces the clicked message (one message per
+  // conversation). From a typed command there is no message to replace.
+  const { replace, add } = require('./slack_reply');
+  const back = { label: 'Clients', action_id: 'dh_suggest' };
+  const say = (payload, nav) => (inPlace ? replace(respond, payload, nav ? back : undefined) : add(respond, payload));
   const p = loadProfiles(baseDir)[clientKey];
   if (!profileReady(p)) {
-    return respond({ response_type: 'ephemeral', replace_original: false,
-      text: ':x: `' + clientKey + '` has no ready domain profile (website + 3 keywords in domain_clients.json).' });
+    return say({
+      text: ':x: `' + clientKey + '` has no ready domain profile (website + 3 keywords in domain_clients.json).' }, true);
   }
-  await respond({ response_type: 'ephemeral', replace_original: false,
+  await say({
     text: ':mag: Finding domains for *' + (p.label || clientKey) + '* (Zapmail + ScaledMail + our generator, about 2-4 min — I’ll post here when done)…' });
   try {
     // Measured 2026-10-08: ~3.5 min for Precise Leads (Zapmail's AI finder +
     // live availability checks). The old 4-minute limit cut it off on Render.
     const r = await runPy(['domain_suggest.py', '--client', clientKey, '--count', '12', '--json'], baseDir,
       Number(process.env.DOMAIN_SUGGEST_TIMEOUT_MS) || 10 * 60 * 1000);
-    await respond({ response_type: 'ephemeral', replace_original: false,
-      text: 'Domain suggestions for ' + (p.label || clientKey), blocks: suggestionBlocks(r) });
+    await say({ text: 'Domain suggestions for ' + (p.label || clientKey), blocks: suggestionBlocks(r) }, true);
   } catch (err) {
     console.error('[domain-suggest] failed:', err);
-    await respond({ response_type: 'ephemeral', replace_original: false,
+    await say({
       text: ':x: ' + (err.message === 'timed out'
         ? 'Suggestions for ' + (p.label || clientKey) + ' took over 10 minutes and were stopped (usually Zapmail’s search limit — 100 searches per 30 min). Try again in 30 minutes.'
-        : err.message) });
+        : err.message) }, true);
   }
 }
 
@@ -279,7 +307,7 @@ function registerDomainSuggestFlow(app, baseDir) {
   // Client buttons (one action_id per client) + "Suggest again".
   app.action(/^domains_suggest(_again|_[a-z0-9_]+)$/, async ({ ack, action, respond }) => {
     await ack();
-    await runSuggest(String(action.value || ''), respond, baseDir);
+    await runSuggest(String(action.value || ''), respond, baseDir, { inPlace: true });
   });
 
   // Tick boxes: nothing to do until "Stage purchase" reads their state.

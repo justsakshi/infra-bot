@@ -233,17 +233,19 @@ function render(sub, result) {
   return { text: result.text || 'No digest.' };
 }
 
-async function runSub(sub, arg, baseDir, respond) {
+async function runSub(sub, arg, baseDir, respond, { inPlace = false } = {}) {
+  // From a menu button the view replaces the menu; typed commands add a message.
+  const { replace, add } = require('./slack_reply');
+  const out = p => (inPlace ? replace(respond, p, { label: 'Zapmail', action_id: 'dh_zapmail' }) : add(respond, p));
   const args = commandFor(sub, arg);
   if (!args) return respond({ response_type: 'ephemeral', text: ZAPMAIL_HELP });
-  await respond({ response_type: 'ephemeral', replace_original: false,
-    text: 'Checking Zapmail (`' + sub + '`)…' });
+  await out({ text: 'Checking Zapmail (`' + sub + '`)…' });
   try {
     const result = await runZapmailScript(args, baseDir);
-    return respond({ response_type: 'ephemeral', replace_original: false, ...render(sub, result) });
+    return out(render(sub, result));
   } catch (err) {
     console.error('[zapmail] failed:', err);
-    return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: ' + err.message });
+    return out({ text: ':x: ' + err.message });
   }
 }
 
@@ -279,7 +281,7 @@ function registerZapmailCommand(app, baseDir, opts = {}) {
     await ack();
     const sub = String(action.action_id).replace(/^zm_nav_/, '');
     if (!commandFor(sub, '')) return;
-    return runSub(sub, '', baseDir, respond);
+    return runSub(sub, '', baseDir, respond, { inPlace: true });
   });
 
   require('./zapmail_actions').registerZapmailActions(app, baseDir, opts);

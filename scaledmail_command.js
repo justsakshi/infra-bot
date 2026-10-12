@@ -383,12 +383,17 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
   const { runPy } = require('./domain_suggest_command');
   const py = (args, ms) => runPy(args, baseDir, ms || 2 * 60 * 1000);
   const DENY = ':lock: Only ScaledMail approvers can do this (SCALEDMAIL_APPROVERS). Ask one, or use `scaledmail_cli.py`.';
-  const eph = (respond, payload) => respond({ response_type: 'ephemeral', replace_original: false, ...payload });
+  // One message per conversation: a screen replaces the clicked message (with
+  // ⌂ Home / ← ScaledMail); refusals and "tick first" notes are added instead,
+  // so they never wipe the card or tick boxes the user is on.
+  const { replace, add } = require('./slack_reply');
+  const BACK = { label: 'ScaledMail', action_id: 'sm_home' };
+  const eph = (respond, payload) => replace(respond, payload, BACK);
 
   async function guard(body, respond) {
     const u = body.user && body.user.id;
     if (isApprover(u)) return u;
-    await eph(respond, { text: DENY });
+    await add(respond, { text: DENY });
     return null;
   }
   const chan = body => (body.channel && body.channel.id) || '';
@@ -397,7 +402,7 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
   app.action('domains_sm_order', async ({ ack, body, action, client, respond }) => {
     await ack();
     const picked = require('./domain_suggest_command').selectedDomains((body.state || {}).values);
-    if (!picked.length) return eph(respond, { text: 'Tick at least one domain first, then press *Order on ScaledMail*.' });
+    if (!picked.length) return add(respond, { text: 'Tick at least one domain first, then press *Order on ScaledMail*.' });
     const clientName = { bettrdata: 'Bettrdata', melior: 'Melior', precise_leads: 'Precise Leads' }[
       String(action.value || '').toLowerCase().replace(/\s+/g, '_')] || String(action.value || '');
     await client.views.open({ trigger_id: body.trigger_id, view: orderModal(chan(body), { domains: picked.slice(0, 30), client: clientName }) });
@@ -405,13 +410,13 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
 
   app.action('sm_home', async ({ ack, respond }) => {
     await ack();
-    return eph(respond, { text: 'ScaledMail', blocks: homeBlocks() });
+    return replace(respond, { text: 'ScaledMail', blocks: homeBlocks() });
   });
 
   app.action(/^sm_nav_[a-z]+$/, async ({ ack, action, respond }) => {
     await ack();
     const sub = String(action.action_id).replace(/^sm_nav_/, '');
-    return runSub(sub, [], baseDir, respond);
+    return runSub(sub, [], baseDir, respond, { inPlace: true });
   });
 
   const opener = (id, build, needsApprover) => app.action(id, async ({ ack, body, action, client, respond }) => {
@@ -522,7 +527,7 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
     await ack();
     if (!(await guard(body, respond)) || !PLAN_RE.test(String(action.value || ''))) return;
     const r = await py(['scaledmail_cli.py', '--json', 'reconcile', action.value]).catch(e => ({ error: e.message }));
-    await eph(respond, { text: r.error ? ':x: ' + plain(r.error) : 'Plan `' + action.value + '`: *' + r.status + '*' + (r.note ? ' — ' + r.note : '') + (r.order_id ? ' (order `' + r.order_id + '`)' : '') });
+    await add(respond, { text: r.error ? ':x: ' + plain(r.error) : 'Plan `' + action.value + '`: *' + r.status + '*' + (r.note ? ' — ' + r.note : '') + (r.order_id ? ' (order `' + r.order_id + '`)' : '') });
   });
 
   app.action('sm_order_menu', async ({ ack, body, action, client, respond }) => {
@@ -594,16 +599,19 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
   });
 }
 
-async function runSub(sub, args, baseDir, respond) {
+async function runSub(sub, args, baseDir, respond, { inPlace = false } = {}) {
+  // From a menu button the view replaces the menu; typed commands add a message.
+  const { replace, add } = require('./slack_reply');
+  const out = p => (inPlace ? replace(respond, p, { label: 'ScaledMail', action_id: 'sm_home' }) : add(respond, p));
   const cli = commandFor(sub, args);
-  if (!cli) return respond({ response_type: 'ephemeral', replace_original: false, text: HELP });
-  await respond({ response_type: 'ephemeral', replace_original: false, text: 'Checking ScaledMail (`' + sub + '`)…' });
+  if (!cli) return out({ text: HELP });
+  await out({ text: 'Checking ScaledMail (`' + sub + '`)…' });
   try {
     const r = await require('./domain_suggest_command').runPy(cli, baseDir, (sub === 'sync' ? 5 : 2) * 60 * 1000);
-    return respond({ response_type: 'ephemeral', replace_original: false, ...render(sub, r) });
+    return out(render(sub, r));
   } catch (err) {
     console.error('[scaledmail] failed:', err);
-    return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: ' + plain(err.message) });
+    return out({ text: ':x: ' + plain(err.message) });
   }
 }
 

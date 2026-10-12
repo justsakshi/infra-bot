@@ -42,9 +42,30 @@ test('suggestions become <=10-option checkbox groups + stage button', () => {
   assert.strictEqual(groups.length, 2);
   assert.strictEqual(groups[0].elements[0].options.length, 10);
   assert.strictEqual(groups[1].elements[0].options.length, 2);
-  assert.match(groups[0].elements[0].options[0].text.text, /name0\.com.*\$12\.99.*renews \$20\.99.*Zapmail AI/);
+  assert.strictEqual(groups[0].elements[0].options[0].text.text, '`name0.com`');            // 8 of 12 from Zapmail AI: said once, in the header
+  assert.strictEqual(groups[0].elements[0].options[8].text.text, '`name8.com` · our generator');
+  assert.match(blocks[0].text.text, /Most names: Zapmail \$12\.99 \(renews \$20\.99\)/);
   const next = blocks.find(b => b.block_id === 'domains_next').elements.map(e => e.action_id);
   assert.deepStrictEqual(next, ['buy_open', 'domains_suggest_again']);
+});
+
+test('lines show only what differs from the common price', () => {
+  const sm = { available: true, price: 15.5, renew_price: 17 };
+  const r = { ...RESULT, suggestions: [
+    { domain: 'meetingspath.com', price: 12.99, renew_price: 15.99, source: 'ai', scaledmail: sm },
+    { domain: 'exactpipeline.com', price: 12.99, source: 'generator', scaledmail: sm },
+    { domain: 'readypipeline.com', price: 12.99, source: 'generator', scaledmail: sm },
+    { domain: 'qualifiedbase.com', price: null, source: 'scaledmail', scaledmail: sm },
+    { domain: 'wholeclients.com', price: 12.99, source: 'generator', scaledmail: { available: false } }] };
+  const blocks = m.suggestionBlocks(r);
+  assert.match(blocks[0].text.text, /Most names: Zapmail \$12\.99 · ScaledMail \$15\.50 \(renews \$17\.00\) · our generator/);
+  const lines = blocks.find(b => b.block_id === 'domains_pick_0').elements[0].options.map(o => o.text.text);
+  assert.deepStrictEqual(lines, [
+    '`meetingspath.com` · Zapmail $12.99 (renews $15.99) · Zapmail AI',
+    '`exactpipeline.com`',
+    '`readypipeline.com`',
+    '`qualifiedbase.com` · not on Zapmail · ScaledMail idea',
+    '`wholeclients.com` · not on ScaledMail']);
 });
 
 test('error result renders an error, no buttons to stage', () => {

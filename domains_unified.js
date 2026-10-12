@@ -207,15 +207,19 @@ function notFound(provider, r) {
   return false;
 }
 
-async function runUnified(sub, args, baseDir, respond) {
-  if (!planFor(sub, args)) return respond({ response_type: 'ephemeral', replace_original: false, text: HELP });
-  await respond({ response_type: 'ephemeral', replace_original: false, text: ':hourglass: Checking Zapmail and ScaledMail…' });
+async function runUnified(sub, args, baseDir, respond, { inPlace = false } = {}) {
+  // From a menu button the view replaces the menu (⌂ Home to go back); typed
+  // commands add a message.
+  const { replace, add } = require('./slack_reply');
+  const say = p => (inPlace ? replace(respond, p) : add(respond, p));
+  if (!planFor(sub, args)) return say({ text: HELP });
+  await say({ text: ':hourglass: Checking Zapmail and ScaledMail…' });
   try {
     const out = await runView(sub, args, baseDir);
-    return respond({ response_type: 'ephemeral', replace_original: false, ...out });
+    return say(out);
   } catch (err) {
     console.error('[domains] unified view failed:', err);
-    return respond({ response_type: 'ephemeral', replace_original: false, text: ':x: ' + require('./slack_text').plainError(err.message) });
+    return say({ text: ':x: ' + require('./slack_text').plainError(err.message) });
   }
 }
 
@@ -242,7 +246,7 @@ function registerUnified(app, baseDir) {
   };
   app.action(/^u_nav_[a-z-]+$/, async ({ ack, action, respond }) => {
     await ack();
-    return runUnified(String(action.action_id).replace(/^u_nav_/, ''), [], baseDir, respond);
+    return runUnified(String(action.action_id).replace(/^u_nav_/, ''), [], baseDir, respond, { inPlace: true });
   });
   // One-click retire of flagged Zapmail inboxes (approver-only; removed at the next bill).
   app.action(/^u_retire_[a-z]+$/, async ({ ack, body, action, respond }) => {

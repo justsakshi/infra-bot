@@ -116,7 +116,7 @@ function providerView(meta) {
     if (ok.length) b.accessory = button('Use ' + o.label, 'buy_provider', prov, 'primary');
     blocks.push(b);
   }
-  return shell({ c: meta.c, ch: meta.ch, n: meta.n }, blocks);
+  return shell({ c: meta.c, ch: meta.ch, n: meta.n, ...(meta.ru ? { ru: meta.ru } : {}) }, blocks);
 }
 
 function totalsText(meta) {
@@ -198,6 +198,7 @@ function registerBuyFlow(app, baseDir, deps = {}) {
   const say = deps.say || require('./scaledmail_command').say;
   const profiles = deps.profiles || (() => suggest.loadProfiles(baseDir));
   const senders = deps.senders || (() => loadDefaultSenders(baseDir));
+  const post = deps.post || ((url, payload) => require('axios').post(url, payload));
   const metaOf = body => JSON.parse(body.view.private_metadata || '{}');
   const redraw = async (client, body, view) => {
     try {
@@ -213,9 +214,11 @@ function registerBuyFlow(app, baseDir, deps = {}) {
     await ack();
     const picks = suggest.selectedPicks((body.state || {}).values).slice(0, 30);
     if (!picks.length) {
-      return respond({ response_type: 'ephemeral', replace_original: false, text: 'Tick at least one domain first, then press *Buy these*.' });
+      return require('./slack_reply').add(respond, { text: 'Tick at least one domain first, then press *Buy these*.' });
     }
-    const meta = { c: String(action.value || ''), ch: (body.channel && body.channel.id) || '', n: picks };
+    // ru: the suggestions message's response_url, so Stage can replace it.
+    const meta = { c: String(action.value || ''), ch: (body.channel && body.channel.id) || '', n: picks,
+      ru: String(body.response_url || '') };
     await client.views.open({ trigger_id: body.trigger_id, view: providerView(meta) });
   });
 
@@ -267,18 +270,45 @@ function registerBuyFlow(app, baseDir, deps = {}) {
     const user = body.user.id;
     const groups = split(usable(meta.n, meta.p).map(p => p.d), meta.k);
     const types = typesFor(meta.p);
-    await say(client, meta.ch, user, { text: ':hourglass: Staging ' + groups.filter(g => g.length).length + ' order(s) — nothing is bought yet…' });
+    // One message per conversation: through the suggestions message's
+    // response_url (30 min, 5 uses: Staging + up to 3 cards + summary) the
+    // suggestions become "Staging…" then a summary, and each card is its own
+    // message so Place / Approve can replace just that card. If the link has
+    // expired, everything is posted the old way.
+    let viaUrl = /^https:\/\/hooks\.slack\.com\//.test(meta.ru || '');
+    const send = async (payload, replaceOriginal) => {
+      if (viaUrl) {
+        try {
+          await post(meta.ru, { response_type: 'ephemeral', replace_original: replaceOriginal, ...payload });
+          return;
+        } catch (err) {
+          viaUrl = false;
+          console.error('[buy-flow] response_url failed, posting instead:', err.message);
+        }
+      }
+      await say(client, meta.ch, user, payload);
+    };
+    const rows = groups.filter(g => g.length).length;
+    let staged = 0;
+    await send({ text: ':hourglass: Staging ' + rows + ' order(s) for ' + meta.c + ' — nothing is bought yet…' }, true);
     for (let i = 0; i < types.length; i++) {
       if (!groups[i].length) continue;
       try {
         const r = await runPy(stageArgs(meta, i, groups[i], sendersText, redirect, user));
         const blocks = meta.p === 'scaledmail' ? require('./scaledmail_command').stagedBlocks(r) : require('./zapmail_actions').jobBlocks(r);
+        if (!r.error && (r.staged || r.job_id)) staged += 1;
         // Row label first: an answered error renders as a bare ':x:' block otherwise.
-        await say(client, meta.ch, user, { text: types[i].label + ' plan',
-          blocks: [context('*' + types[i].label + '* · ' + groups[i].join(', ')), ...blocks] });
+        await send({ text: types[i].label + ' plan',
+          blocks: [context('*' + types[i].label + '* · ' + groups[i].join(', ')), ...blocks] }, false);
       } catch (err) {
-        await say(client, meta.ch, user, { text: ':x: ' + types[i].label + ' (' + groups[i].join(', ') + '): ' + err.message });
+        await send({ text: ':x: ' + types[i].label + ' (' + groups[i].join(', ') + '): ' + err.message }, false);
       }
+    }
+    if (viaUrl) {
+      const { screen } = require('./slack_reply');
+      await send(screen({ text: ':memo: Staged ' + staged + ' order(s) of ' + rows + ' for *' + meta.c + '* on '
+        + OFFER.providers[meta.p].label + ' — the cards are below. Nothing is bought until an approver presses '
+        + (meta.p === 'scaledmail' ? '*Place order*.' : '*Approve & start*.') }), true);
     }
   });
 }
