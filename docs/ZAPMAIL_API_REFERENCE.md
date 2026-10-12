@@ -253,7 +253,8 @@ decomposed into exact method/path/fields (fetch on demand before use):
   authenticator code, custom OAuth, retry creation of failed mailboxes.
 - **Export:** get export status, fetch workspaces by app, list third-party
   accounts.
-- **Domains (misc):** add/remove domain forwarding, enable/remove email
+- **Domain forwarding (verified live 2026-10-12):** `POST /v2/domains/forwarding` `{domainIds:[id], forwardTo:"https://host", contains:"<exact domain>", tagIds:[]}` → `200 {message: "Domain forwarding will be enabled in sometime"}`. The domain row's `forwardTo` shows the new value at once (read it back). `contains` = the exact domain keeps it to that domain (tested: 1 of 21 changed). Used by `domain_lifecycle.set_domain_forwarding` and the inbox job's Redirect step.
+- **Domains (misc):** remove domain forwarding, enable/remove email
   forwarding, enable/remove catch-all, check DNS records, remove unused
   domains, get domain connection requests / remove them, add Google Client ID
   to domain.
