@@ -189,7 +189,7 @@ def main() -> int:
     code = 0
     for client, group in sorted(by_client.items()):
         report = build_report(group, types, seed_provider, attached)
-        text = format_slack(client, report, names)
+        text = format_slack(client, report, names, tested_on)
         print("=" * 60)
         print(text)
         cmap = {e: client for e in group}

@@ -10,9 +10,10 @@ seed domain's MX reproduces that split exactly (verified 2026-10-06 on test
 """
 from __future__ import annotations
 
-import subprocess
 from collections import defaultdict
 from datetime import datetime, timedelta
+
+import httpx
 
 SPAM_FOLDERS = {"spam", "junk"}
 GOOD_AT = 80.0     # a mailbox at or above this inbox rate lands in the inbox; below it, spam
@@ -22,10 +23,11 @@ _PROVIDER = {"GMAIL": "Google", "OUTLOOK": "Outlook", "SMTP": "SMTP"}
 
 
 def mx_provider(domain: str) -> str:
-    """Google / Outlook / other, from the domain's MX records."""
+    """Google / Outlook / other, from the domain's MX records (DNS over HTTPS: the
+    server image has no nslookup, which silently made every seed 'other')."""
     try:
-        out = subprocess.run(["nslookup", "-type=MX", domain], capture_output=True,
-                             text=True, timeout=20).stdout.lower()
+        r = httpx.get("https://dns.google/resolve", params={"name": domain, "type": "MX"}, timeout=20)
+        out = " ".join(a.get("data", "") for a in r.json().get("Answer") or []).lower()
     except Exception:
         return "other"
     if "protection.outlook.com" in out:
@@ -171,33 +173,55 @@ PAIR_ORDER = [("Google", "Google"), ("Google", "Outlook"),
               ("Outlook", "Outlook"), ("Outlook", "Google")]
 
 
-def format_slack(client: str, report: dict, test_names: list[str]) -> str:
+def format_slack(client: str, report: dict, test_names: list[str], tested_on: str = "") -> str:
+    """The Slack message: verdict first, then where test emails landed, then the
+    mailboxes going to spam and what to do about them."""
     ib, dm = report["inboxes"], report["domains"]
     ci, cd = counts(ib), counts(dm)
-    lines = [f"*Deliverability test - {client}* ({', '.join(test_names)})",
-             f"Inboxes tested {len(ib)}: *{ci['good']} in inbox* (80%+), "
-             f"*{ci['watch'] + ci['bad']} in spam* (under 80%; {ci['bad']} of them under 50%)" + (f", {ci['untested']} no data" if ci["untested"] else ""),
-             f"Domains tested {len(dm)}: *{cd['good']} good*, {cd['watch']} keep out of NEW campaigns "
-             f"(some mailboxes in spam), *{cd['bad']} spam* (half or more mailboxes in spam)",
-             "", "*Spam by sender -> receiver*"]
+    measured = len(ib) - ci["untested"]
+    in_spam = ci["watch"] + ci["bad"]
+    when = ""
+    if tested_on:
+        try:
+            when = f" ({datetime.fromisoformat(tested_on):%d %b})"
+        except ValueError:
+            when = f" ({tested_on})"
+    lines = [f"*{client} deliverability test{when}*"]
+    if in_spam == 0 and cd["watch"] + cd["bad"] == 0:
+        lines.append(f":white_check_mark: All clear: all {measured} mailboxes land in the inbox, "
+                     f"all {len(dm)} domains are healthy.")
+    else:
+        badly = f" ({ci['bad']} badly: under half their test emails reached the inbox)" if ci["bad"] else ""
+        lines.append(f":warning: {in_spam} of {measured} mailboxes are going to spam{badly}.")
+        lines.append(f"Domains: {cd['good']} healthy, {cd['watch']} keep out of new campaigns, "
+                     f"{cd['bad']} in spam (of {len(dm)}).")
+    if ci["untested"]:
+        lines.append(f"{ci['untested']} mailbox(es) had no results yet.")
+
+    pair_lines = []
     for sp, rp in PAIR_ORDER:
         p = report["pairs"].get((sp, rp))
-        if not p:
-            continue
-        pct = 100.0 * p["spam"] / p["seeds"] if p["seeds"] else 0
-        lines.append(f"- {sp} -> {rp}: {p['spam']}/{p['seeds']} in spam ({pct:.0f}%), "
-                     f"{p['inboxes_hit']} inbox(es) affected")
+        if p and p["seeds"]:
+            pair_lines.append(f"\u2022 {sp} \u2192 {rp}: {p['spam']} of {p['seeds']} in spam "
+                              f"({100.0 * p['spam'] / p['seeds']:.0f}%)")
+    if pair_lines:
+        lines += ["", "*Where the test emails landed* (sending mailbox \u2192 receiving inbox)", *pair_lines]
+
     flagged = sorted((i for i in ib.values() if i["status"] in ("watch", "bad")),
                      key=lambda i: (i["pct"] if i["pct"] is not None else 101))
-    lines += ["", f"*Flagged inboxes ({len(flagged)})* - :warning: = attached to an active campaign"]
-    for i in flagged[:40]:
-        mark = f" :warning: {', '.join(i['campaigns'])}" if i["campaigns"] else ""
-        lines.append(f"- `{i['status']}` {i['email']} - {i['pct']:.0f}% inbox ({i['sender']}){mark}")
-    if len(flagged) > 40:
-        lines.append(f"...and {len(flagged) - 40} more")
-    live = [i for i in flagged if i["campaigns"]]
-    lines += ["", f"*Flagged AND sending now: {len(live)} inbox(es)*" +
-              (" - consider pulling them from the campaigns above." if live else " - none.")]
+    if flagged:
+        lines += ["", "*Mailboxes going to spam*"]
+        for i in flagged[:40]:
+            live = f" \u2014 :warning: sending in {', '.join(i['campaigns'])}" if i["campaigns"] else ""
+            lines.append(f"\u2022 {i['email']} ({i['sender']}): {i['pct']:.0f}% reached the inbox{live}")
+        if len(flagged) > 40:
+            lines.append(f"...and {len(flagged) - 40} more")
+        live = [i for i in flagged if i["campaigns"]]
+        lines += ["", f"*To do:* take the {len(live)} :warning: mailbox(es) out of their live campaigns."
+                  if live else "None of these is in a live campaign right now."]
+
+    lines += ["", f"_A mailbox passes when 80%+ of its test emails reach the inbox. "
+                  f"Tests: {', '.join(test_names)}._"]
     return "\n".join(lines)
 
 
