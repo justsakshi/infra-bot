@@ -37,14 +37,14 @@ ok(rep["pairs"][("Outlook", "Google")]["spam"] == 1, "Outlook -> Google spam cou
 ok(a["by_receiver"]["Google"] == {"seeds": 2, "spam": 1}, "per-receiver counts kept per inbox")
 ok(counts(rep["inboxes"])["watch"] == 2, "counts by status")
 txt = format_slack("X", rep, ["t1"], "2026-10-12")
-ok(txt.startswith("*X deliverability test (12 Oct)*\n:warning: 2 of 2 mailboxes are going to spam"),
-   f"verdict first, dated, got {txt.splitlines()[:2]}")
-ok("Outlook → Google: 1 of 1 in spam (100%)" in txt, "names the sender -> receiver pair")
-ok("b@out.com (Outlook): 50% reached the inbox — :warning: sending in Camp 1" in txt
-   and "*To do:* take the 1 :warning: mailbox(es) out" in txt, "flags the spam mailbox that is in a live campaign")
+ok(txt.splitlines()[0] == "*:warning: X deliverability (12 Oct): 2 of 2 mailboxes going to spam*",
+   f"headline says how many mailboxes are in spam, got {txt.splitlines()[0]}")
+ok("*Remove from live campaigns*\n• b@out.com — from Camp 1" in txt,
+   "names the mailbox to remove and the campaign to remove it from")
+ok("*Going to spam, in no live campaign*\n• a@gm.com" in txt, "names the spam mailbox that sends nowhere")
+ok("t1" not in txt and "→" not in txt, "no test names or provider breakdown in Slack")
 clean = format_slack("Y", build_report({"c@gm.com": [{"seed": "x@g.com", "folder": "Inbox"}]}, {"c@gm.com": "GMAIL"}, prov), ["t"])
-ok(":white_check_mark: All clear: all 1 mailboxes land in the inbox" in clean and "Mailboxes going to spam" not in clean
-   and "Google → Google: 0 of 1 in spam" in clean, "all-clear message still shows where emails landed")
+ok(clean == "", "all clear -> no Slack message")
 
 # one domain: 3 mailboxes, one in spam -> the other two stay usable only for existing campaigns
 many = {f"m{i}@d.com": [{"seed": "x@g.com", "folder": "Inbox" if i else "Spam"} for _ in range(5)]

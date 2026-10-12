@@ -191,7 +191,7 @@ def main() -> int:
         report = build_report(group, types, seed_provider, attached)
         text = format_slack(client, report, names, tested_on)
         print("=" * 60)
-        print(text)
+        print(text or f"{client}: all clear - no Slack post")
         cmap = {e: client for e in group}
         grid = grid_writes(report, cmap, tested_on, apply=do_grid)
         status = write_status_tab(report, cmap, tested_on, apply=do_status)
@@ -207,21 +207,23 @@ def main() -> int:
             from smartlead.notify import _post
             token = os.getenv("SLACK_BOT_TOKEN", "")
             channel = os.getenv("PLACEMENT_REPORT_CHANNEL") or DEFAULT_CHANNEL
-            if not token:
+            if not text:
+                ok = True     # all clear: the result lives in the sheet and Mongo only
+            elif not token:
                 print("SLACK_BOT_TOKEN missing - not posted")
-                code = 1
+                ok, code = False, 1
             else:
                 ok = _post(token, channel, text)
                 print("posted" if ok else "post FAILED")
                 code = code or (0 if ok else 1)
-                if ok and posted is not None:
-                    for t in tests:
-                        run = t.get("run_no", 0)
-                        posted.update_one({"account": acc.name, "test_id": t["spam_test_id"], "run_no": run},
-                                          {"$set": {"account": acc.name, "test_id": t["spam_test_id"],
-                                                    "run_no": run, "client": client,
-                                                    "posted_on": date.today().isoformat()}},
-                                          upsert=True)
+            if ok and posted is not None:
+                for t in tests:
+                    run = t.get("run_no", 0)
+                    posted.update_one({"account": acc.name, "test_id": t["spam_test_id"], "run_no": run},
+                                      {"$set": {"account": acc.name, "test_id": t["spam_test_id"],
+                                                "run_no": run, "client": client,
+                                                "posted_on": date.today().isoformat()}},
+                                      upsert=True)
     return code
 
 

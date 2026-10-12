@@ -169,59 +169,38 @@ def counts(items: dict) -> dict:
     return out
 
 
-PAIR_ORDER = [("Google", "Google"), ("Google", "Outlook"),
-              ("Outlook", "Outlook"), ("Outlook", "Google")]
-
-
 def format_slack(client: str, report: dict, test_names: list[str], tested_on: str = "") -> str:
-    """The Slack message: verdict first, then where test emails landed, then the
-    mailboxes going to spam and what to do about them."""
+    """The Slack message, or "" when every mailbox and domain is fine (an all-clear
+    is not posted). Names every mailbox to pull and the campaigns to pull it from."""
     ib, dm = report["inboxes"], report["domains"]
-    ci, cd = counts(ib), counts(dm)
-    measured = len(ib) - ci["untested"]
-    in_spam = ci["watch"] + ci["bad"]
+    flagged = sorted((i for i in ib.values() if i["status"] in ("watch", "bad")),
+                     key=lambda i: (i["pct"] if i["pct"] is not None else 101))
+    if not flagged:
+        return ""
     when = ""
     if tested_on:
         try:
             when = f" ({datetime.fromisoformat(tested_on):%d %b})"
         except ValueError:
             when = f" ({tested_on})"
-    lines = [f"*{client} deliverability test{when}*"]
-    if in_spam == 0 and cd["watch"] + cd["bad"] == 0:
-        lines.append(f":white_check_mark: All clear: all {measured} mailboxes land in the inbox, "
-                     f"all {len(dm)} domains are healthy.")
-    else:
-        badly = f" ({ci['bad']} badly: under half their test emails reached the inbox)" if ci["bad"] else ""
-        lines.append(f":warning: {in_spam} of {measured} mailboxes are going to spam{badly}.")
-        lines.append(f"Domains: {cd['good']} healthy, {cd['watch']} keep out of new campaigns, "
-                     f"{cd['bad']} in spam (of {len(dm)}).")
-    if ci["untested"]:
-        lines.append(f"{ci['untested']} mailbox(es) had no results yet.")
-
-    pair_lines = []
-    for sp, rp in PAIR_ORDER:
-        p = report["pairs"].get((sp, rp))
-        if p and p["seeds"]:
-            pair_lines.append(f"\u2022 {sp} \u2192 {rp}: {p['spam']} of {p['seeds']} in spam "
-                              f"({100.0 * p['spam'] / p['seeds']:.0f}%)")
-    if pair_lines:
-        lines += ["", "*Where the test emails landed* (sending mailbox \u2192 receiving inbox)", *pair_lines]
-
-    flagged = sorted((i for i in ib.values() if i["status"] in ("watch", "bad")),
-                     key=lambda i: (i["pct"] if i["pct"] is not None else 101))
-    if flagged:
-        lines += ["", "*Mailboxes going to spam*"]
-        for i in flagged[:40]:
-            live = f" \u2014 :warning: sending in {', '.join(i['campaigns'])}" if i["campaigns"] else ""
-            lines.append(f"\u2022 {i['email']} ({i['sender']}): {i['pct']:.0f}% reached the inbox{live}")
-        if len(flagged) > 40:
-            lines.append(f"...and {len(flagged) - 40} more")
-        live = [i for i in flagged if i["campaigns"]]
-        lines += ["", f"*To do:* take the {len(live)} :warning: mailbox(es) out of their live campaigns."
-                  if live else "None of these is in a live campaign right now."]
-
-    lines += ["", f"_A mailbox passes when 80%+ of its test emails reach the inbox. "
-                  f"Tests: {', '.join(test_names)}._"]
+    measured = len(ib) - counts(ib)["untested"]
+    lines = [f"*:warning: {client} deliverability{when}: {len(flagged)} of {measured} mailboxes going to spam*"]
+    live = [i for i in flagged if i["campaigns"]]
+    idle = [i for i in flagged if not i["campaigns"]]
+    if live:
+        lines += ["", "*Remove from live campaigns*"]
+        lines += [f"\u2022 {i['email']} \u2014 from {', '.join(i['campaigns'])}" for i in live]
+    if idle:
+        lines += ["", "*Going to spam, in no live campaign*"]
+        lines += [f"\u2022 {i['email']}" for i in idle]
+    avoid = sorted(d["domain"] for d in dm.values() if d["verdict"] == "avoid_new")
+    spam = sorted(d["domain"] for d in dm.values() if d["verdict"] == "spam")
+    if avoid or spam:
+        lines.append("")
+    if avoid:
+        lines.append(f"*Keep out of new campaigns:* {', '.join(avoid)}")
+    if spam:
+        lines.append(f"*Domains in spam:* {', '.join(spam)}")
     return "\n".join(lines)
 
 
