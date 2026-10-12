@@ -632,5 +632,5 @@ function registerScaledMailCommand(app, baseDir, opts = {}) {
 module.exports = {
   registerScaledMailCommand, handleScaledMailText, commandFor, render, homeBlocks, statusBlocks,
   renewalsBlocks, ordersBlocks, domainBlocks, quoteText, findBlocks, stagedBlocks, plansBlocks,
-  syncBlocks, reportsText, prewarmedText, orderModal, quoteModal, approvers, isApprover, HELP
+  syncBlocks, reportsText, prewarmedText, orderModal, quoteModal, approvers, isApprover, HELP, say
 };

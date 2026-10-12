@@ -162,5 +162,124 @@ function confirmView(meta, defaults) {
   return shell(meta, blocks, 'Stage (no charge)');
 }
 
+const NAMES_RE = /^[A-Za-z][A-Za-z .'-]{0,40}(,\s*[A-Za-z][A-Za-z .'-]{0,40}){0,24}$/;
+const URL_RE = /^(https?:\/\/)?[a-z0-9.-]+\.[a-z]{2,}(\/[^\s]*)?$/i;
+
+function stageArgs(meta, i, names, senders, redirect, user) {
+  const t = typesFor(meta.p)[i];
+  if (meta.p === 'scaledmail') {
+    const a = ['scaledmail_cli.py', '--json', 'stage', '--client', meta.c, '--provider', t.key, '--domains', names.join(','),
+      '--senders', senders, '--user', user];
+    if (t.key === 'google') a.push('--per-domain', String(t.per_domain));
+    if (redirect) a.push('--redirect', redirect);
+    return a;
+  }
+  return ['inbox_jobs.py', '--create', '--client', meta.c, '--kind', 'new', '--provider', t.key,
+    ...names.flatMap(d => ['--domain', d]), '--per-domain', String(t.per_domain),
+    '--names', senders.split(',').map(s => s.trim()).filter(Boolean).join(';'), '--by', user, '--json'];
+}
+
+function defaultsFor(clientKey, profiles, sendersByClient) {
+  const p = profiles[clientKey] || {};
+  return { senders: (sendersByClient[clientKey] || []).join(', '),
+    redirect: p.redirect || (p.main_domain ? 'https://' + p.main_domain : '') };
+}
+
+function loadDefaultSenders(baseDir) {
+  try {
+    const all = JSON.parse(fs.readFileSync(path.join(baseDir, 'smartlead_sync', 'inbox_profiles.json'), 'utf8')).clients || {};
+    return Object.fromEntries(Object.entries(all).map(([k, v]) => [k, v.default_senders || []]));
+  } catch (e) { return {}; }
+}
+
+function registerBuyFlow(app, baseDir, deps = {}) {
+  const suggest = require('./domain_suggest_command');
+  const runPy = deps.runPy || (args => suggest.runPy(args, baseDir, 3 * 60 * 1000));
+  const say = deps.say || require('./scaledmail_command').say;
+  const profiles = deps.profiles || (() => suggest.loadProfiles(baseDir));
+  const senders = deps.senders || (() => loadDefaultSenders(baseDir));
+  const metaOf = body => JSON.parse(body.view.private_metadata || '{}');
+  const redraw = async (client, body, view) => {
+    try {
+      await client.views.update({ view_id: body.view.id, hash: body.view.hash, view });
+    } catch (err) {
+      // Two quick clicks: Slack refuses the older redraw. The next click works.
+      const code = (err.data && err.data.error) || err.message;
+      if (code !== 'hash_conflict') console.error('[buy-flow] redraw failed:', code);
+    }
+  };
+
+  app.action('buy_open', async ({ ack, action, body, client, respond }) => {
+    await ack();
+    const picks = suggest.selectedPicks((body.state || {}).values).slice(0, 30);
+    if (!picks.length) {
+      return respond({ response_type: 'ephemeral', replace_original: false, text: 'Tick at least one domain first, then press *Buy these*.' });
+    }
+    const meta = { c: String(action.value || ''), ch: (body.channel && body.channel.id) || '', n: picks };
+    await client.views.open({ trigger_id: body.trigger_id, view: providerView(meta) });
+  });
+
+  app.action('buy_provider', async ({ ack, action, body, client }) => {
+    await ack();
+    const meta = metaOf(body);
+    if (!OFFER.providers[action.value]) return;
+    meta.p = action.value;
+    meta.k = initialCounts(meta.p, usable(meta.n, meta.p).length);
+    await redraw(client, body, mixView(meta));
+  });
+
+  for (const [id, delta] of [['buy_plus', 1], ['buy_minus', -1]]) {
+    app.action(id, async ({ ack, action, body, client }) => {
+      await ack();
+      const meta = metaOf(body);
+      const i = Number(action.value);
+      if (!Number.isInteger(i) || i < 0 || i >= (meta.k || []).length) return;
+      meta.k = rebalance(meta.k, i, delta);
+      await redraw(client, body, mixView(meta));
+    });
+  }
+
+  app.action('buy_next', async ({ ack, body, client }) => {
+    await ack();
+    const meta = metaOf(body);
+    await redraw(client, body, confirmView(meta, defaultsFor(meta.c, profiles(), senders())));
+  });
+
+  app.action('buy_back', async ({ ack, action, body, client }) => {
+    await ack();
+    const meta = metaOf(body);
+    if (action.value === 'mix') return redraw(client, body, mixView(meta));
+    return redraw(client, body, providerView(meta));
+  });
+
+  app.view('buy_flow', async ({ ack, body, view, client }) => {
+    const v = view.state.values;
+    const sendersText = String(((v.senders || {}).value || {}).value || '').trim();
+    const redirect = String(((v.redirect || {}).value || {}).value || '').trim();
+    const errors = {};
+    if (!NAMES_RE.test(sendersText) || !sendersText.split(',').every(n => n.trim().split(/\s+/).length >= 2)) {
+      errors.senders = 'First and last name each: "Jane Doe, John Roe"';
+    }
+    if (redirect && !URL_RE.test(redirect)) errors.redirect = 'A web address like https://client.com';
+    if (Object.keys(errors).length) return ack({ response_action: 'errors', errors });
+    await ack();
+    const meta = JSON.parse(view.private_metadata || '{}');
+    const user = body.user.id;
+    const groups = split(usable(meta.n, meta.p).map(p => p.d), meta.k);
+    const types = typesFor(meta.p);
+    await say(client, meta.ch, user, { text: ':hourglass: Staging ' + groups.filter(g => g.length).length + ' order(s) — nothing is bought yet…' });
+    for (let i = 0; i < types.length; i++) {
+      if (!groups[i].length) continue;
+      try {
+        const r = await runPy(stageArgs(meta, i, groups[i], sendersText, redirect, user));
+        const blocks = meta.p === 'scaledmail' ? require('./scaledmail_command').stagedBlocks(r) : require('./zapmail_actions').jobBlocks(r);
+        await say(client, meta.ch, user, { text: types[i].label + ' plan', blocks });
+      } catch (err) {
+        await say(client, meta.ch, user, { text: ':x: ' + types[i].label + ' (' + groups[i].join(', ') + '): ' + err.message });
+      }
+    }
+  });
+}
+
 module.exports = { OFFER, typesFor, domainMonthly, rowMath, usable, initialCounts, rebalance, split, totals,
-  addBusinessDays, readyRange, providerView, mixView, confirmView };
+  addBusinessDays, readyRange, providerView, mixView, confirmView, registerBuyFlow, stageArgs, defaultsFor };

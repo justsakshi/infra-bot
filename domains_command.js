@@ -640,6 +640,7 @@ async function startDomainsApp(baseDir, opts = {}) {
   registerZapmailCommand(domainsApp, baseDir, opts);
   require('./scaledmail_command').registerScaledMailCommand(domainsApp, baseDir, opts);
   suggestFlow.registerDomainSuggestFlow(domainsApp, baseDir);
+  require('./buy_flow').registerBuyFlow(domainsApp, baseDir);
   require('./domains_unified').registerUnified(domainsApp, baseDir);
   // DMs and the app's Messages ("agent") tab: talk to it like the slash command.
   require('./domains_home').registerDomainsHome(domainsApp, baseDir, { infra, botToken: token });

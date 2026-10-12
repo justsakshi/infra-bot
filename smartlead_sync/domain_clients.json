@@ -26,6 +26,7 @@
     "Precise Leads": {
       "label": "Precise Leads",
       "main_domain": "preciseleads.in",
+      "redirect": "https://preciseleads.in",
       "description": "B2B outbound lead-generation agency: finds prospects and books qualified sales meetings.",
       "keywords": ["meetings", "booked", "calendar", "pipeline", "qualified", "accounts"],
       "lead_words": ["booked", "qualified", "warm", "pipeline", "ready", "steady"],
