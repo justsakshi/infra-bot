@@ -70,16 +70,32 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     assert.ok(!v.submit && v.callback_id === 'buy_flow' && v.title.text.length <= 24);
   });
 
-  await test('mix view: a row per type with − / + and the running total', () => {
+  await test('mix view: one tidy row per type with a count picker, totals in a grid', () => {
     const v = bf.mixView(meta(7, { p: 'scaledmail', k: [7, 0, 0] }));
-    const s = txt(v);
-    assert.match(s, /Google Workspace/);
-    assert.match(s, /3 inboxes\/domain · 60\/day · 1,320\/mo · \$10\.50\/mo per domain/);
-    assert.match(s, /21 inboxes · ~420\/day · ~9,240\/mo/);
-    assert.match(s, /\$73\.50\/mo/);
-    assert.match(s, /ready to send around/i);
-    const plus = v.blocks.flatMap(b => b.elements || []).filter(e => e.action_id === 'buy_plus');
-    assert.strictEqual(plus.length, 3);
+    const rows = v.blocks.filter(b => b.accessory && b.accessory.action_id === 'buy_count');
+    assert.strictEqual(rows.length, 3);
+    assert.match(rows[0].text.text, /\*Google Workspace\*\n3 inboxes\/domain · 60\/day · 1,320\/mo · \$10\.50\/mo per domain/);
+    assert.strictEqual(rows[0].accessory.initial_option.value, '0|7');
+    assert.strictEqual(rows[0].accessory.options.length, 8);                     // 0..7
+    assert.strictEqual(rows[0].accessory.options[1].text.text, '1 domain');
+    assert.strictEqual(rows[1].accessory.initial_option.value, '1|0');
+    const s = JSON.stringify(v.blocks);
+    assert.match(s, /`name0\.com`/);                                            // code, not a link
+    assert.ok(v.blocks.filter(b => b.type === 'divider').length >= 3);
+    const grid = v.blocks.find(b => b.fields);
+    assert.deepStrictEqual(grid.fields.map(f => f.text), ['*Domains*\n7', '*Inboxes*\n21', '*Per day*\n~420', '*Per month*\n~9,240',
+      '*First charge*\n$182.00', '*Then*\n$73.50/mo']);
+    assert.match(s, /Ready to send around/);
+    const nav = v.blocks.find(b => b.block_id === 'nav').elements;
+    assert.deepStrictEqual(nav.map(e => [e.action_id, e.style || '']), [['buy_back', ''], ['buy_next', 'primary']]);
+  });
+
+  await test('setCount moves domains between rows and keeps the sum', () => {
+    assert.deepStrictEqual(bf.setCount([5, 0, 0], 2, 3), [2, 0, 3]);
+    assert.deepStrictEqual(bf.setCount([2, 0, 3], 2, 1), [4, 0, 1]);
+    assert.deepStrictEqual(bf.setCount([2, 0, 3], 0, 5), [5, 0, 0]);
+    assert.deepStrictEqual(bf.setCount([2, 0, 3], 0, 0), [0, 2, 3]);
+    assert.deepStrictEqual(bf.setCount([2, 0, 3], 1, 99), [0, 5, 0]);
   });
 
   await test('confirm view: senders prefilled, redirect only for ScaledMail, submit Stage', () => {
@@ -151,6 +167,13 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     assert.strictEqual(h.updated[2].blocks.find(b => b.block_id === 'senders').element.initial_value, 'Aravind Haridas, Avinash Haridas');
   });
 
+  await test('picking a count redraws with the new split', async () => {
+    const h = harness();
+    const v = bf.mixView(meta(3, { p: 'scaledmail', k: [3, 0, 0] }));
+    await h.actions.buy_count({ ack: noop, action: { selected_option: { value: '2|1' } }, body: { view: { id: 'V1', hash: 'h', private_metadata: v.private_metadata } }, client: h.client });
+    assert.deepStrictEqual(JSON.parse(h.updated[0].private_metadata).k, [2, 0, 1]);
+  });
+
   await test('open with nothing ticked says so and opens nothing', async () => {
     const h = harness();
     const said = [];
@@ -196,7 +219,7 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     await h.views.buy_flow({ ack: noop, body: b, view: b.view, client: h.client });
     const outlook = h.said.find(p => JSON.stringify(p.blocks || []).includes('z.com is taken'));
     assert.ok(outlook, 'error posted');
-    assert.match(JSON.stringify(outlook.blocks), /Microsoft Outlook\* · name1\.com/);
+    assert.match(JSON.stringify(outlook.blocks), /Microsoft Outlook\* · `name1\.com`/);
   });
 
   await test('stage replaces the suggestions message; each card is its own message', async () => {

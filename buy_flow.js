@@ -44,6 +44,18 @@ function rebalance(counts, i, delta) {
   return c;
 }
 
+/** Set row i to n domains (clamped), moving the difference to/from other rows. */
+function setCount(counts, i, n) {
+  let c = counts.slice();
+  const want = Math.max(0, Math.min(c.reduce((a, b) => a + b, 0), Math.floor(Number(n) || 0)));
+  for (let guard = 0; c[i] !== want && guard < 1000; guard++) {
+    const next = rebalance(c, i, c[i] < want ? 1 : -1);
+    if (next[i] === c[i]) break;
+    c = next;
+  }
+  return c;
+}
+
 function split(names, counts) {
   const out = [];
   let at = 0;
@@ -119,29 +131,46 @@ function providerView(meta) {
   return shell({ c: meta.c, ch: meta.ch, n: meta.n, ...(meta.ru ? { ru: meta.ru } : {}) }, blocks);
 }
 
-function totalsText(meta) {
-  const ok = usable(meta.n, meta.p);
-  const t = totals(meta.p, ok, meta.k);
+const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+const divider = () => ({ type: 'divider' });
+const field = (label, value) => ({ type: 'mrkdwn', text: '*' + label + '*' + NL + value });
+
+/** The running total as a two-column grid, then the ready-to-send dates. */
+function totalsBlocks(meta) {
+  const t = totals(meta.p, usable(meta.n, meta.p), meta.k);
   const [from, to] = readyRange(new Date().toISOString().slice(0, 10), meta.p);
-  return '*Total:* ' + t.domains + ' domains · ' + t.inboxes + ' inboxes · ~' + fmt(t.perDay) + '/day · ~' + fmt(t.perMonth) + '/mo'
-    + NL + 'First charge ' + usd(t.firstChargeUsd) + ' (domains ' + usd(t.domainsUsd) + ' + first month) · then ' + usd(t.monthlyUsd) + '/mo'
-    + NL + 'Ready to send around ' + from + ' to ' + to + ' (setup, then 21-30 days of warmup)';
+  return [
+    { type: 'section', fields: [field('Domains', t.domains), field('Inboxes', t.inboxes),
+      field('Per day', '~' + fmt(t.perDay)), field('Per month', '~' + fmt(t.perMonth)),
+      field('First charge', usd(t.firstChargeUsd)), field('Then', usd(t.monthlyUsd) + '/mo')] },
+    context('First charge = domains ' + usd(t.domainsUsd) + ' + first month. Ready to send around ' + from + ' to ' + to
+      + ' (setup, then 21-30 days of warmup).')];
+}
+
+/** Domain-count picker for one row: "0 domains" … "N domains". */
+function countPicker(i, max, current) {
+  const options = Array.from({ length: Math.min(max, 99) + 1 },
+    (_, n) => ({ text: { type: 'plain_text', text: plural(n, 'domain') }, value: i + '|' + n }));
+  return { type: 'static_select', action_id: 'buy_count', options,
+    initial_option: options[Math.min(current, options.length - 1)] };
 }
 
 function mixView(meta) {
   const types = typesFor(meta.p);
   const ok = usable(meta.n, meta.p);
   const groups = split(ok.map(p => p.d), meta.k);
-  const blocks = [section('*' + OFFER.providers[meta.p].label + '* · ' + meta.c + ' · set how many domains get each inbox type'
-    + ' (' + OFFER.sending_days_per_month + ' sending days a month).')];
+  const blocks = [section('*' + OFFER.providers[meta.p].label + '* · ' + meta.c + NL
+    + 'Pick how many domains get each inbox type (' + OFFER.sending_days_per_month + ' sending days a month).'), divider()];
   types.forEach((t, i) => {
     const one = rowMath(t, 1);
-    blocks.push(section('*' + t.label + '* · ' + meta.k[i] + ' domain(s)' + NL
-      + t.per_domain + ' inboxes/domain · ' + fmt(one.perDay) + '/day · ' + fmt(one.perMonth) + '/mo · ' + usd(one.monthlyUsd) + '/mo per domain'
-      + (groups[i].length ? NL + groups[i].join(', ') : '')));
-    blocks.push({ type: 'actions', block_id: 'row_' + i, elements: [button('−', 'buy_minus', i), button('+', 'buy_plus', i)] });
+    const row = section('*' + t.label + '*' + NL + t.per_domain + ' inboxes/domain · ' + fmt(one.perDay) + '/day · '
+      + fmt(one.perMonth) + '/mo · ' + usd(one.monthlyUsd) + '/mo per domain');
+    row.accessory = countPicker(i, ok.length, meta.k[i]);
+    blocks.push(row);
+    if (groups[i].length) blocks.push(context(groups[i].map(d => '`' + d + '`').join('  ')));
+    blocks.push(divider());
   });
-  blocks.push(section(totalsText(meta)));
+  blocks.push(...totalsBlocks(meta));
   blocks.push({ type: 'actions', block_id: 'nav', elements: [button('Back', 'buy_back', 'provider'), button('Next', 'buy_next', 'x', 'primary')] });
   return shell(meta, blocks);
 }
@@ -149,7 +178,7 @@ function mixView(meta) {
 function confirmView(meta, defaults) {
   const senders = { type: 'plain_text_input', action_id: 'value', placeholder: { type: 'plain_text', text: 'Jane Doe, John Roe' } };
   if (defaults.senders) senders.initial_value = defaults.senders;
-  const blocks = [section(totalsText(meta)),
+  const blocks = [...totalsBlocks(meta), divider(),
     { type: 'input', block_id: 'senders', label: { type: 'plain_text', text: 'Sender names' }, element: senders,
       hint: { type: 'plain_text', text: 'First and last name each, comma-separated. Spread across the domains.' } }];
   if (meta.p === 'scaledmail') {
@@ -231,6 +260,16 @@ function registerBuyFlow(app, baseDir, deps = {}) {
     await redraw(client, body, mixView(meta));
   });
 
+  app.action('buy_count', async ({ ack, action, body, client }) => {
+    await ack();
+    const meta = metaOf(body);
+    const [i, n] = String((action.selected_option || {}).value || '').split('|').map(Number);
+    if (!Number.isInteger(i) || i < 0 || i >= (meta.k || []).length || !Number.isInteger(n)) return;
+    meta.k = setCount(meta.k, i, n);
+    await redraw(client, body, mixView(meta));
+  });
+
+  // − / + from forms opened before the count picker (kept so those still work).
   for (const [id, delta] of [['buy_plus', 1], ['buy_minus', -1]]) {
     app.action(id, async ({ ack, action, body, client }) => {
       await ack();
@@ -299,7 +338,7 @@ function registerBuyFlow(app, baseDir, deps = {}) {
         if (!r.error && (r.staged || r.job_id)) staged += 1;
         // Row label first: an answered error renders as a bare ':x:' block otherwise.
         await send({ text: types[i].label + ' plan',
-          blocks: [context('*' + types[i].label + '* · ' + groups[i].join(', ')), ...blocks] }, false);
+          blocks: [context('*' + types[i].label + '* · ' + groups[i].map(d => '`' + d + '`').join('  ')), ...blocks] }, false);
       } catch (err) {
         await send({ text: ':x: ' + types[i].label + ' (' + groups[i].join(', ') + '): ' + err.message }, false);
       }
@@ -313,5 +352,5 @@ function registerBuyFlow(app, baseDir, deps = {}) {
   });
 }
 
-module.exports = { OFFER, typesFor, domainMonthly, rowMath, usable, initialCounts, rebalance, split, totals,
+module.exports = { OFFER, typesFor, domainMonthly, rowMath, usable, initialCounts, rebalance, setCount, split, totals,
   addBusinessDays, readyRange, providerView, mixView, confirmView, registerBuyFlow, stageArgs, defaultsFor };

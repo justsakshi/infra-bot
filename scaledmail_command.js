@@ -227,7 +227,7 @@ function findBlocks(r) {
 function stagedBlocks(r) {
   if (r.error) return [section(':x: ' + plain(r.error))];
   let t = (r.staged ? ':memo: *Staged* plan `' + r.plan_id + '`' : ':x: *Not staged* — ' + r.why) + NL
-    + r.client + ' · ' + PNAME[r.provider] + ' · ' + r.domains.length + ' domains × ' + r.mailboxes_per_domain + ' = ' + r.mailboxes + ' mailboxes'
+    + r.client + ' · ' + PNAME[r.provider] + ' · ' + r.domains.length + (r.domains.length === 1 ? ' domain × ' : ' domains × ') + r.mailboxes_per_domain + ' = ' + r.mailboxes + ' mailboxes'
     + NL + '*' + money(r.monthly_usd) + '/month* + domains ' + money(r.domains_usd) + ' (first year)'
     + NL + 'Senders: ' + (r.senders || []).join(', ') + NL + 'Domains: ' + r.domains.map(d => '`' + d + '`').join(', ');
   ['taken', 'blacklisted', 'over_ceiling'].forEach(k => { if ((r[k] || []).length) t += NL + ':x: ' + k.replace('_', ' ') + ': ' + r[k].join(', '); });

@@ -18,6 +18,13 @@ async function call(text) {
   return out;
 }
 
+// ── staged card: singular, names as code ──
+{
+  const one = sm.stagedBlocks({ staged: true, plan_id: 'abc123', client: 'Precise Leads', provider: 'google', domains: ['a.com'],
+    mailboxes_per_domain: 3, mailboxes: 3, monthly_usd: 10.5, domains_usd: 15.5, senders: ['A B'] })[0].text.text;
+  ok(/1 domain × 3 = 3 mailboxes/.test(one), 'one domain, not "1 domains"');
+}
+
 // ── typed commands → CLI args ────────────────────────────────────────────
 ok(sm.commandFor('status')[2] === 'status', 'status');
 ok(sm.commandFor('domain', ['a.com']).join(' ') === 'scaledmail_cli.py --json domain a.com', 'domain');
