@@ -86,5 +86,81 @@ function readyRange(todayIso, provider) {
   return [addDays(live, OFFER.warmup_days[0]), addDays(live, OFFER.warmup_days[1])];
 }
 
+const NL = String.fromCharCode(10);
+const fmt = n => Number(n).toLocaleString('en-US');
+const usd = v => '$' + Number(v).toFixed(2);
+const section = text => ({ type: 'section', text: { type: 'mrkdwn', text: String(text).slice(0, 2900) } });
+const context = text => ({ type: 'context', elements: [{ type: 'mrkdwn', text: String(text).slice(0, 2900) }] });
+const button = (text, action_id, value, style) => {
+  const b = { type: 'button', action_id, text: { type: 'plain_text', text }, value: String(value) };
+  if (style) b.style = style;
+  return b;
+};
+
+function shell(meta, blocks, submit) {
+  const v = { type: 'modal', callback_id: 'buy_flow', private_metadata: JSON.stringify(meta),
+    title: { type: 'plain_text', text: 'Buy domains + inboxes' }, close: { type: 'plain_text', text: 'Cancel' }, blocks };
+  if (submit) v.submit = { type: 'plain_text', text: submit };
+  return v;
+}
+
+function providerView(meta) {
+  const blocks = [section('*' + meta.n.length + ' domain(s) ticked for ' + meta.c + '.* Pick who sets up the inboxes.')];
+  for (const prov of ['scaledmail', 'zapmail']) {
+    const o = OFFER.providers[prov];
+    const ok = usable(meta.n, prov);
+    const out = meta.n.filter(p => !ok.includes(p)).map(p => p.d);
+    const line = '*' + o.label + '* · ' + o.blurb + NL + ok.length + ' of ' + meta.n.length + ' names available'
+      + (out.length ? ' · left out: ' + out.join(', ') : '');
+    const b = section(line);
+    if (ok.length) b.accessory = button('Use ' + o.label, 'buy_provider', prov, 'primary');
+    blocks.push(b);
+  }
+  return shell({ c: meta.c, ch: meta.ch, n: meta.n }, blocks);
+}
+
+function totalsText(meta) {
+  const ok = usable(meta.n, meta.p);
+  const t = totals(meta.p, ok, meta.k);
+  const [from, to] = readyRange(new Date().toISOString().slice(0, 10), meta.p);
+  return '*Total:* ' + t.domains + ' domains · ' + t.inboxes + ' inboxes · ~' + fmt(t.perDay) + '/day · ~' + fmt(t.perMonth) + '/mo'
+    + NL + 'First charge ' + usd(t.firstChargeUsd) + ' (domains ' + usd(t.domainsUsd) + ' + first month) · then ' + usd(t.monthlyUsd) + '/mo'
+    + NL + 'Ready to send around ' + from + ' to ' + to + ' (setup, then 21-30 days of warmup)';
+}
+
+function mixView(meta) {
+  const types = typesFor(meta.p);
+  const ok = usable(meta.n, meta.p);
+  const groups = split(ok.map(p => p.d), meta.k);
+  const blocks = [section('*' + OFFER.providers[meta.p].label + '* · ' + meta.c + ' · set how many domains get each inbox type'
+    + ' (' + OFFER.sending_days_per_month + ' sending days a month).')];
+  types.forEach((t, i) => {
+    const one = rowMath(t, 1);
+    blocks.push(section('*' + t.label + '* · ' + meta.k[i] + ' domain(s)' + NL
+      + t.per_domain + ' inboxes/domain · ' + fmt(one.perDay) + '/day · ' + fmt(one.perMonth) + '/mo · ' + usd(one.monthlyUsd) + '/mo per domain'
+      + (groups[i].length ? NL + groups[i].join(', ') : '')));
+    blocks.push({ type: 'actions', block_id: 'row_' + i, elements: [button('−', 'buy_minus', i), button('+', 'buy_plus', i)] });
+  });
+  blocks.push(section(totalsText(meta)));
+  blocks.push({ type: 'actions', block_id: 'nav', elements: [button('Back', 'buy_back', 'provider'), button('Next', 'buy_next', 'x', 'primary')] });
+  return shell(meta, blocks);
+}
+
+function confirmView(meta, defaults) {
+  const senders = { type: 'plain_text_input', action_id: 'value', placeholder: { type: 'plain_text', text: 'Jane Doe, John Roe' } };
+  if (defaults.senders) senders.initial_value = defaults.senders;
+  const blocks = [section(totalsText(meta)),
+    { type: 'input', block_id: 'senders', label: { type: 'plain_text', text: 'Sender names' }, element: senders,
+      hint: { type: 'plain_text', text: 'First and last name each, comma-separated. Spread across the domains.' } }];
+  if (meta.p === 'scaledmail') {
+    const redirect = { type: 'plain_text_input', action_id: 'value', placeholder: { type: 'plain_text', text: 'https://client.com' } };
+    if (defaults.redirect) redirect.initial_value = defaults.redirect;
+    blocks.push({ type: 'input', block_id: 'redirect', optional: true, label: { type: 'plain_text', text: 'Redirect to' }, element: redirect });
+  }
+  blocks.push({ type: 'actions', block_id: 'nav', elements: [button('Back', 'buy_back', 'mix')] });
+  blocks.push(context('Stage only prices and records the order. Nothing is bought until an approver presses *Place order* (ScaledMail) or *Approve & start* (Zapmail).'));
+  return shell(meta, blocks, 'Stage (no charge)');
+}
+
 module.exports = { OFFER, typesFor, domainMonthly, rowMath, usable, initialCounts, rebalance, split, totals,
-  addBusinessDays, readyRange };
+  addBusinessDays, readyRange, providerView, mixView, confirmView };

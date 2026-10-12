@@ -56,5 +56,49 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     assert.deepStrictEqual(bf.readyRange('2026-10-12', 'zapmail'), ['2026-11-03', '2026-11-12']);
   });
 
+  const meta = (n, extra) => ({ c: 'Precise Leads', ch: 'C1', n: picks(n), ...extra });
+  const txt = v => JSON.stringify(v.blocks);
+
+  await test('provider view: a button per provider that sells something, left-out names listed', () => {
+    const n = [{ d: 'a.com', zp: 12.99, sp: null }, { d: 'b.com', zp: 12.99, sp: 15.5 }];
+    const v = bf.providerView({ c: 'Melior', ch: 'C1', n });
+    const btns = v.blocks.filter(b => b.accessory && b.accessory.action_id === 'buy_provider').map(b => b.accessory.value);
+    assert.deepStrictEqual(btns, ['scaledmail', 'zapmail']);
+    assert.match(txt(v), /left out: a\.com/);
+    const none = bf.providerView({ c: 'Melior', ch: 'C1', n: [{ d: 'a.com', zp: 12.99, sp: null }] });
+    assert.deepStrictEqual(none.blocks.filter(b => b.accessory && b.accessory.action_id === 'buy_provider').map(b => b.accessory.value), ['zapmail']);
+    assert.ok(!v.submit && v.callback_id === 'buy_flow' && v.title.text.length <= 24);
+  });
+
+  await test('mix view: a row per type with − / + and the running total', () => {
+    const v = bf.mixView(meta(7, { p: 'scaledmail', k: [7, 0, 0] }));
+    const s = txt(v);
+    assert.match(s, /Google Workspace/);
+    assert.match(s, /3 inboxes\/domain · 60\/day · 1,320\/mo · \$10\.50\/mo per domain/);
+    assert.match(s, /21 inboxes · ~420\/day · ~9,240\/mo/);
+    assert.match(s, /\$73\.50\/mo/);
+    assert.match(s, /ready to send around/i);
+    const plus = v.blocks.flatMap(b => b.elements || []).filter(e => e.action_id === 'buy_plus');
+    assert.strictEqual(plus.length, 3);
+  });
+
+  await test('confirm view: senders prefilled, redirect only for ScaledMail, submit Stage', () => {
+    const v = bf.confirmView(meta(2, { p: 'scaledmail', k: [2, 0, 0] }), { senders: 'Avinash Haridas, Aravind Haridas', redirect: 'https://preciseleads.in' });
+    assert.strictEqual(v.submit.text, 'Stage (no charge)');
+    const ids = v.blocks.filter(b => b.type === 'input').map(b => b.block_id);
+    assert.deepStrictEqual(ids, ['senders', 'redirect']);
+    assert.strictEqual(v.blocks.find(b => b.block_id === 'senders').element.initial_value, 'Avinash Haridas, Aravind Haridas');
+    const z = bf.confirmView(meta(2, { p: 'zapmail', k: [2, 0] }), { senders: '', redirect: '' });
+    assert.deepStrictEqual(z.blocks.filter(b => b.type === 'input').map(b => b.block_id), ['senders']);
+    assert.ok(!('initial_value' in z.blocks.find(b => b.block_id === 'senders').element));
+  });
+
+  await test('20 names fit Slack limits', () => {
+    const m = meta(20, { p: 'scaledmail', k: [10, 5, 5] });
+    for (const v of [bf.providerView(m), bf.mixView(m), bf.confirmView(m, { senders: 'A B', redirect: '' })]) {
+      assert.ok(v.blocks.length <= 100, 'blocks ' + v.blocks.length);
+      assert.ok(v.private_metadata.length <= 3000, 'metadata ' + v.private_metadata.length);
+    }
+  });
   console.log(passed + ' passed');
 })();
