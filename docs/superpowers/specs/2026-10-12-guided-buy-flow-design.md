@@ -24,7 +24,7 @@ One guided path in Slack from the domain suggestions to a staged order, the same
 | Zapmail | google | 3 | 20 | $3.25/mailbox | 60 | 1,320 | 9.75 |
 | Zapmail | outlook | 3 | 8 | $3.25/mailbox | 24 | 528 | 9.75 |
 
-Also in the file: `sending_days_per_month: 22`, `setup_days` (ScaledMail 3 business days, Zapmail 1), `warmup_days: [21, 30]`. Domain registration is added at the price the suggester showed for each name. `scaledmail_orders.PRICE` and the ScaledMail order-form labels read this file instead of their own constants.
+Also in the file: `sending_days_per_month: 22`, `setup_days` (ScaledMail 3 business days, Zapmail 1), `warmup_days: [21, 30]`. Domain registration is added at the price the suggester showed for each name. `scaledmail_orders.PRICE` reads this file instead of its own constants (the old order form's text labels stay as they are).
 
 ## Flow (one modal, redrawn with `views.update`)
 Entry: the suggestions message keeps its tick boxes; its buy buttons become one **Buy these** (plus *Suggest again*). The ticked names and the client go into the modal's `private_metadata`. Fewer than 1 ticked → ephemeral "tick at least one domain".
