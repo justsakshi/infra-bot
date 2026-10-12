@@ -4,17 +4,17 @@ copy, and the resulting spam verdict being written against a healthy domain.
 """
 from smartlead.placement_copy import (
     resolve_merge_fields, pick_source_campaign, build_variants, copy_hash,
-    sample_custom_fields, first_signature, step_variants,
+    sample_lead_fields, merge_names, first_signature, step_variants,
 )
 
 def ok(c, m): print(f"  {'PASS' if c else 'FAIL'}: {m}"); assert c, m
 
-FIELDS = {"providers_line": "Alesco, ADS and Averick sit behind one login."}
+FIELDS = {"first_name": "Dana", "providers_line": "Alesco, ADS and Averick sit behind one login."}
 SIG = "<div>Aaron Dix<br>BettrData</div>"
 
 # --- merge fields ---
 text, missing = resolve_merge_fields("Hi {{first_name}}, {{providers_line}} Bye.<br>%signature%", FIELDS, SIG)
-ok("{{first_name}}" in text, "standard field is left for Smartlead to fill")
+ok(text.startswith("Hi Dana,"), "standard field filled too: seed inboxes are not leads")
 ok("Alesco, ADS and Averick" in text, "custom field substituted from the sample lead")
 ok("{{providers_line}}" not in text, "no literal braces remain for a resolved field")
 ok(text.endswith(SIG), "%signature% replaced with the sender's signature")
@@ -65,12 +65,21 @@ ok(h1 == h2, "identical copy hashes identically")
 changed = [dict(v) for v in variants]; changed[0]["subject"] = "different"
 ok(copy_hash(changed) != h1, "a subject change changes the hash")
 
-# --- sampling helpers ---
-leads = [{"lead": {"custom_fields": {"providers_line": ""}}},
-         {"lead": {"custom_fields": {"providers_line": "X sits behind one login."}}}]
-ok(sample_custom_fields(leads) == {"providers_line": "X sits behind one login."},
-   "first lead with a non-empty field is the sample")
-ok(sample_custom_fields([]) == {}, "no leads -> empty sample")
+# --- sampling: one lead with every field the email uses ---
+STEP2 = {"sequence_variants": [{"variant_label": "A", "subject": "{{company_name}} question",
+                                "email_body": "Hi {{first_name}}, {{providers_line}}"}]}
+ok(merge_names(STEP2) == {"company_name", "first_name", "providers_line"}, "finds fields in subject and body")
+leads = [{"lead": {"first_name": "Ann", "company_name": "", "custom_fields": {"providers_line": "X."}}},
+         {"lead": {"first_name": "", "company_name": "Acme", "custom_fields": {"providers_line": "Y."}}},
+         {"lead": {"first_name": "Raj", "company_name": "Brio", "email": "raj@brio.com",
+                   "custom_fields": {"providers_line": "Z."}}}]
+sample = sample_lead_fields(leads, merge_names(STEP2))
+ok(sample["email"] == "raj@brio.com", "skips leads with any field empty, takes the first complete one")
+v, problems = build_variants(STEP2, sample, SIG)
+ok(v[0]["subject"] == "Brio question" and v[0]["email_body"] == "Hi Raj, Z." and not problems,
+   f"whole email filled from that one lead, got {v}")
+ok(sample_lead_fields(leads[:2], merge_names(STEP2)) is None, "no complete lead -> None (copy is kept)")
+ok(sample_lead_fields([], set()) is None, "no leads at all -> None")
 ok(first_signature([{"signature": ""}, {"signature": "  <b>S</b> "}]) == "<b>S</b>",
    "first non-empty signature, trimmed")
 

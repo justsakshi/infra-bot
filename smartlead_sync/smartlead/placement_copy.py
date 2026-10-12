@@ -11,11 +11,12 @@ This module reads the newest active campaign's first step (read-only) and
 rewrites the test campaign's first step to match. Live campaigns are never
 written to.
 
-Merge fields are the trap. A live campaign fills {{providers_line}} from each
-lead; the test campaign has no such lead, so the seed panel would receive the
-literal braces, which is itself a spam signal. Custom fields are therefore
-resolved from a sample lead before the write, and a refresh that cannot
-resolve one is skipped rather than sent degraded.
+Merge fields are the trap. A live campaign fills {{first_name}} and
+{{providers_line}} from each lead; the seed inboxes are not leads, so they would
+receive "Hi ," or literal braces, which is itself a spam signal. Every field is
+therefore filled from ONE real lead of the source campaign that has all of them
+filled, so the test sends one complete, real-looking email. If no lead has them
+all, the refresh is skipped rather than sent degraded.
 """
 from __future__ import annotations
 
@@ -25,24 +26,17 @@ import json
 import re
 
 _MERGE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
-# Smartlead fills these itself for every recipient, seed inboxes included.
-_STANDARD_FIELDS = {"first_name", "last_name", "email", "company_name",
-                    "phone_number", "website", "linkedin_profile", "location"}
 
 
 def resolve_merge_fields(text: str, sample_fields: dict,
                          signature: str) -> tuple[str, list[str]]:
-    """Substitute custom {{fields}} and %signature% with concrete values.
-
-    Standard fields are left for Smartlead. Returns the text and the names of
-    any custom fields that had no sample value.
+    """Substitute every {{field}} and %signature% with concrete values. Returns
+    the text and the names of any fields that had no sample value.
     """
     unresolved: list[str] = []
 
     def _sub(match: re.Match) -> str:
         name = match.group(1)
-        if name in _STANDARD_FIELDS:
-            return match.group(0)
         value = sample_fields.get(name)
         if value in (None, ""):
             unresolved.append(name)
@@ -174,14 +168,25 @@ def copy_hash(variants: list[dict]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def sample_custom_fields(leads: list[dict]) -> dict:
-    """Custom-field values from the first lead that has any."""
+def merge_names(step: dict) -> set[str]:
+    """Every {{field}} used in the step's subjects and bodies."""
+    names: set[str] = set()
+    for v in step_variants(step):
+        for text in (v.get("subject"), v.get("email_body")):
+            names.update(_MERGE.findall(text or ""))
+    return names
+
+
+def sample_lead_fields(leads: list[dict], names: set[str]) -> dict | None:
+    """All fields (standard and custom) of the first lead that has every one of
+    `names` filled, so the whole email comes from one real lead. None if no lead does."""
     for entry in leads:
         lead = entry.get("lead") or entry
-        fields = lead.get("custom_fields") or {}
-        if any(v not in (None, "") for v in fields.values()):
-            return dict(fields)
-    return {}
+        fields = {k: v for k, v in lead.items() if isinstance(v, (str, int, float))}
+        fields.update(lead.get("custom_fields") or {})
+        if all(str(fields.get(n) or "").strip() for n in names):
+            return fields
+    return None
 
 
 def first_signature(accounts: list[dict]) -> str:
@@ -269,17 +274,24 @@ async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
             return {"written": False, "source": sid, "hash": "", "reason": "source has no steps"}
         leads = await c.get_campaign_leads(str(sid))
         senders = await c.get_campaign_email_accounts(str(sid))
-        variants, problems = build_variants(
-            steps[0], sample_custom_fields(leads), first_signature(senders))
+        names = merge_names(steps[0])
+        sample = sample_lead_fields(leads, names)
+        if sample is None:
+            tags = ", ".join("{{%s}}" % n for n in sorted(names))
+            return {"written": False, "source": sid, "hash": "",
+                    "reason": f"no lead in '{source.get('name', '')[:50]}' has all of {tags} filled; kept current copy"}
+        variants, problems = build_variants(steps[0], sample, first_signature(senders))
         if problems:
             return {"written": False, "source": sid, "hash": "",
                     "reason": "; ".join(problems)}
         digest = copy_hash(variants)
         if dry_run:
             return {"written": False, "source": sid, "source_name": source.get("name", ""), "hash": digest,
-                    "reason": f"dry-run: would write {len(variants)} variant(s) from '{source.get('name', '')[:50]}' — {why}"}
+                    "reason": f"dry-run: would write {len(variants)} variant(s) from '{source.get('name', '')[:50]}', "
+                              f"filled from lead {sample.get('email', '?')} — {why}"}
         current = await c._get(f"/campaigns/{test_campaign_id}/sequences")
         store.save_copy_snapshot(acc.name, test_campaign_id, current)
         await c.save_campaign_sequence_variants(str(test_campaign_id), step_id, variants)
     return {"written": True, "source": sid, "source_name": source.get("name", ""), "hash": digest,
-            "reason": f"{len(variants)} variant(s) from '{source.get('name', '')[:50]}' — {why}"}
+            "reason": f"{len(variants)} variant(s) from '{source.get('name', '')[:50]}', "
+                      f"filled from lead {sample.get('email', '?')} — {why}"}
