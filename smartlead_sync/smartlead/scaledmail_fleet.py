@@ -65,7 +65,8 @@ def client_for(domain: str, *, tracker_client: str | None = None, tag: str | Non
 
 
 def next_billing(created_at: str, today: date) -> str:
-    """Next monthly billing day (today counts) for an order created on created_at."""
+    """Next monthly billing day (today counts) for an order created on created_at.
+    The creation day itself is the first charge, not a renewal."""
     try:
         d0 = datetime.strptime(str(created_at)[:10], "%Y-%m-%d").date()
     except ValueError:
@@ -74,7 +75,7 @@ def next_billing(created_at: str, today: date) -> str:
     for _ in range(2):
         day = min(d0.day, calendar.monthrange(y, m)[1])
         cand = date(y, m, day)
-        if cand >= today and cand >= d0:
+        if cand >= today and cand > d0:
             return cand.isoformat()
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
     return ""  # pragma: no cover

@@ -92,6 +92,7 @@ def test_client_from_name_last():
     ("2026-07-08", date(2026, 10, 8), "2026-10-08"),    # bills today
     ("2026-01-31", date(2026, 2, 10), "2026-02-28"),    # short month
     ("2026-10-07", date(2026, 10, 8), "2026-11-07"),
+    ("2026-10-12", date(2026, 10, 12), "2026-11-12"),  # created today: first charge was today, next is next month
     ("bad", date(2026, 10, 8), ""),
 ])
 def test_next_billing(created, today, want):
@@ -199,13 +200,21 @@ class FakeSM:
         if self.order_exc:
             raise self.order_exc
         self.placed.append((providers, source, tag))
-        return {"success": True}
+        (prov, block), = providers.items()
+        names = [d["domain"] for d in block["domains"]]
+        oid = f"rec{len(self.placed)}"
+        self._orders.append({"id": oid, "tag": tag, "status": "Active", "amount": self.amount,
+                             "packages": [{"type": prov.title(), "status": "New Order",
+                                           "domains": [{"name": n, "status": ""} for n in names]}]})
+        return {"message": "Order created successfully", "order_id": oid, "domains_purchased": names}
+
+    amount = 21.0
 
     def orders(self):
         return [{"id": o["id"]} for o in self._orders]
 
     def order(self, oid):
-        return next(o for o in self._orders if o["id"] == oid)
+        return next((o for o in self._orders if o["id"] == oid), {})
 
 
 def _stage(sm, store, **kw):
@@ -299,13 +308,50 @@ def test_history_keeps_every_request_and_answer(monkeypatch):
     sm.order_exc = None
     assert so.place_order(sm, pid, approve=True, user="U1", store=store)["status"] == "placed"
     h = store.get(pid)["history"]
-    assert [e["status"] for e in h] == ["in_progress", "payment_pending", "failed", "in_progress", "placed"]
+    assert [e["status"] for e in h] == ["in_progress", "payment_pending", "failed", "in_progress", "placed", "verified"]
     assert h[1]["raw_response"] == '{"error":"x"}' and "unable to charge" in h[1]["error"]
     assert h[1]["request"] == {"method": "POST", "path": "/create-custom-order", "params": {"provider": "buy"},
                                "body": {"providers": store.get(pid)["payload"], "tag": store.get(pid)["tag"]}}
     assert h[2]["note"] == "refunded to credits" and h[2]["by"] == "U1"
-    assert h[4]["response"] == {"success": True} and h[4]["request"] == h[1]["request"]
+    assert h[4]["response"]["order_id"] == "rec1" and h[4]["request"] == h[1]["request"]
+    assert h[5]["status"] == "verified" and h[5]["ok"]
     assert all(e.get("at") for e in h)
+
+
+def test_place_reads_its_order_back(monkeypatch):
+    monkeypatch.setenv("SCALEDMAIL_ALLOW_SPEND", "true")
+    store = so.PlanStore(FakeCol())
+    sm = FakeSM()
+    pid = _stage(sm, store)["plan_id"]
+    r = so.place_order(sm, pid, approve=True, store=store)
+    v = r["verify"]
+    assert v["ok"] and v["order_id"] == "rec1" and v["amount"] == 21.0 and not v["problems"]
+    assert store.get(pid)["order_id"] == "rec1"
+
+
+@pytest.mark.parametrize("break_it,problem", [
+    (lambda o: o.update(tag="other"), "tag"),
+    (lambda o: o["packages"][0]["domains"].pop(), "missing"),
+    (lambda o: o.update(amount=99.0), "amount"),
+    (lambda o: o.update(id="other"), "not found"),
+])
+def test_verify_flags_a_mismatch(break_it, problem):
+    plan = {"tag": "melior-abc", "domains": ["a.com", "b.com"], "monthly_usd": 21.0}
+    sm = FakeSM(orders=[{"id": "o1", "tag": "melior-abc", "status": "Active", "amount": 21.0,
+                         "packages": [{"domains": [{"name": "a.com"}, {"name": "b.com"}]}]}])
+    break_it(sm._orders[0])
+    v = so.verify_order(sm, plan, "o1")
+    assert not v["ok"] and any(problem in p for p in v["problems"])
+
+
+def test_verify_never_raises_after_a_spend(monkeypatch):
+    monkeypatch.setenv("SCALEDMAIL_ALLOW_SPEND", "true")
+    store = so.PlanStore(FakeCol())
+    sm = FakeSM()
+    pid = _stage(sm, store)["plan_id"]
+    sm.order = lambda oid: (_ for _ in ()).throw(ScaledMailOutcomeUnknown("502"))
+    r = so.place_order(sm, pid, approve=True, store=store)
+    assert r["status"] == "placed" and not r["verify"]["ok"] and "502" in r["verify"]["problems"][0]
 
 
 # ── tracker sync ─────────────────────────────────────────────────────────────
@@ -424,3 +470,54 @@ def test_subscription_created_but_not_charged_is_never_placed_again(monkeypatch)
     assert sm.placed == []
     with pytest.raises(ScaledMailError):
         so.drop_plan(pid, store=store)
+
+
+# ── setup watcher ────────────────────────────────────────────────────────────
+
+def _placed(pid, oid, domains, placed_on, *extra):
+    return {"plan_id": pid, "status": "placed", "order_id": oid, "domains": domains,
+            "history": [{"at": f"{placed_on}T08:00:00+00:00", "status": "placed"}, *extra]}
+
+
+def _row(name, oid, status, n=3):
+    return {"domain": name, "order_id": oid, "status": status, "mailboxes": n}
+
+
+def test_business_days():
+    assert so.business_days(date(2026, 10, 12), date(2026, 10, 12)) == 0     # Monday, same day
+    assert so.business_days(date(2026, 10, 12), date(2026, 10, 15)) == 3     # Mon -> Thu
+    assert so.business_days(date(2026, 10, 16), date(2026, 10, 19)) == 1     # Fri -> Mon
+
+
+def test_setup_watch_reports_waiting_late_and_live():
+    plans = [_placed("p1", "o1", ["a.com"], "2026-10-12"),
+             _placed("p2", "o2", ["b.com", "c.com"], "2026-10-12"),
+             _placed("p3", "o3", ["d.com"], "2026-10-05"),
+             {"plan_id": "p4", "status": "planned", "domains": ["e.com"], "history": []}]
+    snap = {"domains": [_row("a.com", "o1", "New Order"),
+                        _row("b.com", "o2", "Active"), _row("c.com", "o2", "Active", 25),
+                        _row("d.com", "o3", "In Progress")]}
+    w = so.setup_watch(snap, plans, today=date(2026, 10, 14))
+    text = "\n".join(w["lines"])
+    assert w["newly_live"] == ["p2"]
+    assert "b.com, c.com" in text and "28 inboxes" in text and "o2" in text and "Smartlead" in text
+    assert "a.com" in text and "business day 2" in text
+    assert "Late" in text and "d.com" in text
+    assert "e.com" not in text
+    assert w["covered"] == {"a.com", "b.com", "c.com", "d.com"}
+
+
+def test_setup_watch_live_only_until_two_days_after():
+    live = {"at": "2026-10-14T04:00:00+00:00", "status": "setup_live"}
+    plans = [_placed("p2", "o2", ["b.com"], "2026-10-12", live)]
+    snap = {"domains": [_row("b.com", "o2", "Active")]}
+    assert so.setup_watch(snap, plans, today=date(2026, 10, 15))["lines"]        # still shown
+    w = so.setup_watch(snap, plans, today=date(2026, 10, 17))
+    assert not w["lines"] and not w["newly_live"]
+
+
+def test_setup_watch_needs_every_domain_live():
+    plans = [_placed("p2", "o2", ["b.com", "c.com"], "2026-10-12")]
+    snap = {"domains": [_row("b.com", "o2", "Active")]}                           # c.com not listed yet
+    w = so.setup_watch(snap, plans, today=date(2026, 10, 13))
+    assert not w["newly_live"]

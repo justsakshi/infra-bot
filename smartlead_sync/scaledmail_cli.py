@@ -29,6 +29,7 @@ SPEND (charges the card; --approve + SCALEDMAIL_ALLOW_SPEND=true):
     python scaledmail_cli.py stage --client Melior --provider google --domains a.com,b.com --senders "Jane Doe"
     python scaledmail_cli.py place <plan_id> --approve
     python scaledmail_cli.py reconcile <plan_id>         # after a timeout
+    python scaledmail_cli.py setup                       # placed orders: setting up / late / LIVE
     python scaledmail_cli.py mark-failed <plan_id>       # only after checking the ScaledMail UI (--note "why")
 """
 from __future__ import annotations
@@ -80,13 +81,30 @@ def _client(arg: str) -> str:
     raise ScaledMailError(f"{arg!r} is not a current client ({', '.join(CURRENT_CLIENTS)})")
 
 
+def setup_lines(snap: dict) -> dict:
+    """Setup watcher over the order ledger; logs ``setup_live`` the first time
+    an order is seen live. Without Mongo it says so and the digest goes on."""
+    from datetime import date
+    from smartlead.scaledmail_orders import PlanStore, setup_watch
+    try:
+        store = PlanStore()
+        w = setup_watch(snap, store.all(), today=date.today())
+        for pid in w["newly_live"]:
+            store.log(pid, "setup_live")
+        return w
+    except Exception as exc:  # noqa: BLE001 - the rest of the digest still posts
+        return {"lines": [f"Order ledger unreadable, setup not checked: {str(exc)[:100]}"],
+                "newly_live": [], "covered": set()}
+
+
 def digest(sm) -> dict:
     snap = fleet.snapshot(sm, tracker=_tracker())
     ren = fleet.renewals(snap, domain_days=14, billing_days=3)
-    stuck = [d for d in snap["domains"] if d["status"] != "Active"]
+    watch = setup_lines(snap)
+    stuck = [d for d in snap["domains"] if d["status"] != "Active" and d["domain"] not in watch["covered"]]
     unassigned = [d["domain"] for d in snap["domains"] if not d["client"]]
     rep = fleet.report_summary(sm.reporting())
-    lines = []
+    lines = list(watch["lines"])
     if ren["billing"]:
         lines.append("Orders billing in 3 days: " + "; ".join(
             f"{o['description'].replace('*', '×')} ${o['amount']:.2f} on {o['billing_day']} ({', '.join(o['clients'])})"
@@ -123,6 +141,9 @@ def run(args) -> dict:
             return {k: snap[k] for k in ("orders", "monthly_total", "active_orders", "by_provider",
                                          "by_client", "today")} | {"inventory": snap["inventory"],
                                                                    "domain_count": len(snap["domains"])}
+        if c == "setup":
+            w = setup_lines(fleet.snapshot(sm, tracker=_tracker()))
+            return {"lines": w["lines"], "newly_live": w["newly_live"]}
         if c == "renewals":
             return fleet.renewals(fleet.snapshot(sm, tracker=_tracker()), domain_days=args.days)
         if c == "domain":
@@ -258,6 +279,7 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("place"); p.add_argument("plan_id"); p.add_argument("--approve", action="store_true")
     p.add_argument("--user")
     p = sub.add_parser("reconcile"); p.add_argument("plan_id")
+    sub.add_parser("setup", help="where placed orders are in ScaledMail's 2-3 day setup")
     p = sub.add_parser("mark-failed"); p.add_argument("plan_id")
     p.add_argument("--note", help="why it was not ordered (e.g. refunded to credits); kept in history")
     p = sub.add_parser("drop"); p.add_argument("plan_id")

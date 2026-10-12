@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from smartlead.scaledmail import (MAILBOXES_PER_DOMAIN, MAX_DOMAINS_PER_ORDER, ScaledMailBlocked,
                                   ScaledMailError, ScaledMailHTTPError, ScaledMailOutcomeUnknown,
@@ -123,6 +123,15 @@ class PlanStore:
         self.col.update_one({"plan_id": plan_id},
                             {"$set": {"status": status, **fields, "settled_at": now},
                              "$push": {"history": {"at": now, "status": status, **fields}}})
+
+    def log(self, plan_id: str, event: str, *, set_fields: dict | None = None, **fields) -> None:
+        """Append an event (verified, charge_confirmed, setup_live) WITHOUT
+        changing the plan's status. ``set_fields`` also go on the top level."""
+        now = datetime.now(timezone.utc).isoformat()
+        update: dict = {"$push": {"history": {"at": now, **fields, "status": event}}}
+        if set_fields:
+            update["$set"] = dict(set_fields)
+        self.col.update_one({"plan_id": plan_id}, update)
 
 
 def _check_available(sm, domains: list[str]) -> dict:
@@ -270,8 +279,45 @@ def place_order(sm, plan_id: str, *, approve: bool = False, user: str = "",
     except Exception as exc:  # noqa: BLE001 - never leave a plan stuck in_progress
         store.settle(plan_id, "unknown", error=f"{type(exc).__name__}: {exc}", request=request)
         raise
-    store.settle(plan_id, "placed", response=res, placed_by=user, request=request)
-    return {"plan_id": plan_id, "status": "placed", "response": res, "tag": plan["tag"]}
+    order_id = (res or {}).get("order_id") if isinstance(res, dict) else None
+    store.settle(plan_id, "placed", response=res, placed_by=user, request=request,
+                 **({"order_id": order_id} if order_id else {}))
+    verify = verify_order(sm, plan, order_id)
+    store.log(plan_id, "verified", set_fields={"verified": verify["ok"]}, **verify)
+    return {"plan_id": plan_id, "status": "placed", "response": res, "tag": plan["tag"], "verify": verify}
+
+
+def verify_order(sm, plan: dict, order_id: str | None) -> dict:
+    """READ the order back after a spend: tag, domains and monthly amount must
+    match the plan. Never raises (the money is already spent); problems are
+    reported for a human to check in the ScaledMail web app."""
+    out: dict = {"ok": False, "order_id": order_id, "problems": []}
+    if not order_id:
+        out["problems"].append("ScaledMail's answer had no order_id")
+        return out
+    try:
+        o = sm.order(order_id) or {}
+    except Exception as exc:  # noqa: BLE001
+        out["problems"].append(f"could not read the order back: {exc}")
+        return out
+    if not o:
+        out["problems"].append(f"order {order_id} not found")
+        return out
+    names = {str(d.get("name", "")).lower() for p in o.get("packages") or [] for d in p.get("domains") or []}
+    missing = sorted(set(plan["domains"]) - names)
+    out.update(order_status=o.get("status"), amount=o.get("amount"), tag=o.get("tag"),
+               description=o.get("description"), domains=sorted(names))
+    if str(o.get("tag") or "") != plan["tag"]:
+        out["problems"].append(f"tag is {o.get('tag')!r}, expected {plan['tag']!r}")
+    if missing:
+        out["problems"].append("domains missing from the order: " + ", ".join(missing))
+    try:
+        if abs(float(o.get("amount")) - float(plan["monthly_usd"])) > 0.01:
+            out["problems"].append(f"amount is ${o.get('amount')}/mo, plan said ${plan['monthly_usd']}")
+    except (TypeError, ValueError, KeyError):
+        out["problems"].append(f"amount unreadable: {o.get('amount')!r}")
+    out["ok"] = not out["problems"]
+    return out
 
 
 def reconcile(sm, plan_id: str, *, store: PlanStore | None = None) -> dict:
@@ -315,3 +361,63 @@ def mark_failed(plan_id: str, *, user: str = "", note: str = "",
     store.settle(plan_id, "failed", error=f"marked not-ordered by {user or 'operator'}",
                  by=user or "operator", note=note)
     return {"plan_id": plan_id, "status": "failed"}
+
+
+# ── setup watcher (READ; the 9:40 digest) ───────────────────────────────────
+SETUP_DAYS = 3        # ScaledMail support, 2026-10-12: 2-3 business days, Smartlead upload after
+LIVE_SHOWN_DAYS = 2   # keep the "ask support to upload" line up this many days
+
+
+def business_days(start: date, end: date) -> int:
+    """Weekdays after ``start`` up to and including ``end``."""
+    n, d = 0, start
+    while d < end:
+        d += timedelta(days=1)
+        n += d.weekday() < 5
+    return n
+
+
+def _event_day(plan: dict, status: str) -> date | None:
+    for e in plan.get("history") or []:
+        if e.get("status") == status and e.get("at"):
+            return date.fromisoformat(str(e["at"])[:10])
+    return None
+
+
+def setup_watch(snap: dict, plans: list[dict], *, today: date) -> dict:
+    """Pure. Where each placed order is in ScaledMail's setup.
+
+    lines       Slack lines: setting up / late / LIVE (+ the message for support)
+    newly_live  plan ids live for the first time: log ``setup_live`` on them
+    covered     domains these lines speak for (the digest skips them elsewhere)"""
+    lines, newly, covered = [], [], set()
+    for plan in sorted(plans, key=lambda p: p.get("plan_id", "")):
+        oid = plan.get("order_id") or ((plan.get("response") or {}).get("order_id")
+                                       if isinstance(plan.get("response"), dict) else None)
+        placed = _event_day(plan, "placed")
+        if plan.get("status") != "placed" or not oid or not placed:
+            continue
+        live_day = _event_day(plan, "setup_live")
+        if live_day and (today - live_day).days > LIVE_SHOWN_DAYS:
+            continue
+        rows = [d for d in snap.get("domains") or [] if d.get("order_id") == oid]
+        names = sorted({d["domain"] for d in rows} | set(plan.get("domains") or []))
+        covered.update(names)
+        listed = {d["domain"] for d in rows}
+        live = bool(rows) and set(plan.get("domains") or []) <= listed and all(d["status"] == "Active" for d in rows)
+        if live:
+            if not live_day:
+                newly.append(plan["plan_id"])
+            n = sum(int(d.get("mailboxes") or 0) for d in rows)
+            lines.append(f"LIVE: {', '.join(names)} ({n} inboxes, order {oid}). Send ScaledMail support: "
+                         f"\"Order {oid} is active. Could you upload its {n} inboxes to our Smartlead "
+                         f"account? Thanks.\"")
+            continue
+        days = business_days(placed, today)
+        waiting = ", ".join(f"{d['domain']} ({d['status'] or 'not listed'})" for d in rows) or ", ".join(names)
+        if days > SETUP_DAYS:
+            lines.append(f"Late, business day {days} (support says 2-3), order {oid}: {waiting}. Ask support.")
+        else:
+            lines.append(f"Setting up, business day {days} of 2-3, order {oid}: {len(names)} domain(s): "
+                         + ", ".join(names))
+    return {"lines": lines, "newly_live": newly, "covered": covered}

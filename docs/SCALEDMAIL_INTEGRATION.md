@@ -105,9 +105,11 @@ One order = ScaledMail registers the domains AND creates the mailboxes (`create-
    Set the gate on the command line for that one run, never in `.env`. The plan re-checks availability, blacklists and price ceilings first; a taken name fails the plan, nothing is charged.
    Before placing, run any read (`orders`) once: ScaledMail's API sometimes answers `502 Bad Gateway` (live 2026-10-12, gone within a minute). Never place while reads fail; a 5xx on the order leaves it `unknown`.
    **A good answer** (live 2026-10-12, plan 13845d, paid from credits, ~35 s): `200 {"message": "Order created successfully", "order_id": "recu3iO3RR33xf614", "domains_purchased": ["warmmeetings.com"]}`. The order shows in `GET /orders` at once with our tag, status Active, `invoices: []`; the package status is "New Order" and the domain status blank until ScaledMail sets it up.
+   `place` then reads the order back (`verify_order`): tag, every domain and the monthly amount must match the plan. It prints `verify` with `ok` and any `problems`, and logs a `verified` event. It never raises: the money is already spent, so a problem means "check the web app".
 4. **Confirm the charge.** Check the portal balance dropped by the order's first charge (domains + first month). Indian cards may need the payment confirmed in the ScaledMail web app (Billing). An order stays "Active" in the API even while the payment says *Requires confirmation*, so look.
 5. **If the result is `payment_pending`** (live 2026-10-09: `400 Subscription created but unable to charge`): ScaledMail made the subscription, but the Indian card needs approval. Pay or confirm it in the web app (Billing), then run `reconcile <plan_id>`. If you cancel it there instead, run `mark-failed <plan_id> --note "<why>"`. (Plan 43b616: invoice paid by card, ScaledMail never created the order and refunded the $26 as credit, so it was marked failed with that note on 2026-10-12.) The bot refuses to place that plan again, because a second try would create a second subscription.
 6. **If the result is `unknown`** (timeout/5xx): never re-place. `reconcile <plan_id>` finds the order by its tag; only after checking the web app use `mark-failed`.
+   **Setup (2-3 business days, support 2026-10-12).** The 9:40 digest (and `scaledmail_cli.py setup`) lists each placed order as *Setting up, business day N*, *Late* (past 3), or *LIVE* with a ready message for support to upload the inboxes to Smartlead. The first live sighting logs `setup_live`; the LIVE line stays 2 days.
 7. **Smartlead.** API orders are not pushed into Smartlead (the `sequencer` field is Instantly-only). Ask ScaledMail support to upload them (they did for every order so far), and tag the inboxes in Smartlead with the vendor tag (`ScaledMail-Google` / `ScaledMail-Microsoft` / `ScaledMail-SMTP`) and the client.
 8. **Tracker.** The order tag `<client>-<plan>` names the client, so the 9:35 sync adds the domains and inboxes once they are Active (needs `SCALEDMAIL_ASSET_SYNC_ENABLED=true`). Warm 2-3 weeks before campaigns.
 
@@ -125,6 +127,6 @@ One order = ScaledMail registers the domains AND creates the mailboxes (`create-
 
 ## Tests
 ```
-cd infra-bot\smartlead_sync && python3 -m pytest test_scaledmail.py -q     # 49: gates, routing, billing, ledger, sync
+cd infra-bot\smartlead_sync && python3 -m pytest test_scaledmail.py -q     # 60: gates, routing, billing, ledger, sync
 cd infra-bot && node test_scaledmail_command.js                             # 29: routing, rendering, approver gates, form checks
 ```
