@@ -25,7 +25,7 @@ const awaiting = jobBlocks({ job_id: 'abcdef0123', client: 'Melior', domains: ['
   status: 'awaiting_approval', progress: 'Pre-warmed slot · Assign', cost: { lines: [
     { what: 'pre-warmed starter plan (3 inboxes)', usd: 39, when: 'first month, then $24/month' }], total_now_usd: 39 } });
 const act = awaiting.find(b => b.type === 'actions');
-assert.ok(act && act.elements[0].action_id === 'zm_job_approve' && act.elements[0].value === 'abcdef0123'); n++;
+assert.ok(act && act.elements[0].action_id === 'zm_job_approve' && act.elements[0].value === 'abcdef0123'); n++; assert.strictEqual(act.elements[0].style, 'danger', 'Approve & start can spend: red'); n++;
 assert.ok(/\$39\.00/.test(act.elements[0].confirm.text.text) && /Total charged when it runs: \$39\.00/.test(awaiting[0].text.text)); n++;
 
 const done = jobBlocks({ job_id: 'abcdef0123', client: 'Melior', domains: ['x.co'], provider: 'GOOGLE', status: 'done', cost: { lines: [], total_now_usd: 0 } });

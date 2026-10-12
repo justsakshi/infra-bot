@@ -102,11 +102,27 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     const v = bf.confirmView(meta(2, { p: 'scaledmail', k: [2, 0, 0] }), { senders: 'Avinash Haridas, Aravind Haridas', redirect: 'https://preciseleads.in' });
     assert.strictEqual(v.submit.text, 'Stage (no charge)');
     const ids = v.blocks.filter(b => b.type === 'input').map(b => b.block_id);
-    assert.deepStrictEqual(ids, ['senders', 'redirect']);
+    assert.deepStrictEqual(ids, ['senders', 'redirect', 'sig']);
     assert.strictEqual(v.blocks.find(b => b.block_id === 'senders').element.initial_value, 'Avinash Haridas, Aravind Haridas');
     const z = bf.confirmView(meta(2, { p: 'zapmail', k: [2, 0] }), { senders: '', redirect: '' });
-    assert.deepStrictEqual(z.blocks.filter(b => b.type === 'input').map(b => b.block_id), ['senders']);
+    assert.deepStrictEqual(z.blocks.filter(b => b.type === 'input').map(b => b.block_id), ['senders', 'sig']);
     assert.ok(!('initial_value' in z.blocks.find(b => b.block_id === 'senders').element));
+  });
+
+  await test('confirm view: signature box, ticked by default, names the client', () => {
+    const v = bf.confirmView(meta(1, { p: 'zapmail', k: [1, 0] }), { senders: 'A B', redirect: '' });
+    const sig = v.blocks.find(b => b.block_id === 'sig');
+    assert.strictEqual(sig.element.type, 'checkboxes');
+    assert.match(sig.element.options[0].text.text, /Precise Leads/);
+    assert.deepStrictEqual(sig.element.initial_options.map(o => o.value), ['yes']);
+    assert.ok(sig.optional);
+  });
+
+  await test('stage args: Zapmail job asks for the signature when ticked', () => {
+    const z = meta(1, { p: 'zapmail', k: [1, 0] });
+    const a = bf.stageArgs(z, 0, ['d.com'], 'A B', '', 'U1', { signature: true });
+    assert.deepStrictEqual(a.slice(-4), ['--signature', '--by', 'U1', '--json']);
+    assert.ok(!bf.stageArgs(z, 0, ['d.com'], 'A B', '', 'U1').includes('--signature'));
   });
 
   await test('20 names fit Slack limits', () => {
@@ -191,6 +207,16 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
 
   const submitBody = (m, senders, redirect) => ({ user: { id: 'U1' }, view: { private_metadata: JSON.stringify(m), state: { values: {
     senders: { value: { value: senders } }, ...(redirect !== undefined ? { redirect: { value: { value: redirect } } } : {}) } } } });
+
+  await test('submit passes the ticked signature to the Zapmail job', async () => {
+    const calls = [];
+    const h = harness(async args => { calls.push(args); return { job_id: 'abcdef0123', status: 'awaiting_approval', client: 'Precise Leads', domains: ['a.com'], provider: 'GOOGLE', cost: null }; });
+    const m = meta(1, { p: 'zapmail', k: [1, 0] });
+    const b = submitBody(m, 'Avinash Haridas');
+    b.view.state.values.sig = { value: { selected_options: [{ value: 'yes' }] } };
+    await h.views.buy_flow({ ack: noop, body: b, view: b.view, client: h.client });
+    assert.ok(calls[0].includes('--signature'));
+  });
 
   await test('submit refuses senders without a last name', async () => {
     const h = harness();

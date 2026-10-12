@@ -186,6 +186,12 @@ function confirmView(meta, defaults) {
     if (defaults.redirect) redirect.initial_value = defaults.redirect;
     blocks.push({ type: 'input', block_id: 'redirect', optional: true, label: { type: 'plain_text', text: 'Redirect to' }, element: redirect });
   }
+  const sigOpt = { text: { type: 'plain_text', text: 'Add ' + meta.c + '’s signature in Smartlead' }, value: 'yes' };
+  blocks.push({ type: 'input', block_id: 'sig', optional: true, label: { type: 'plain_text', text: 'Signature' },
+    element: { type: 'checkboxes', action_id: 'value', options: [sigOpt], initial_options: [sigOpt] },
+    hint: { type: 'plain_text', text: meta.p === 'zapmail'
+      ? 'Added by the job once the inboxes reach Smartlead.'
+      : 'ScaledMail inboxes reach Smartlead later; the 9:40 message says when to add it.' } });
   blocks.push({ type: 'actions', block_id: 'nav', elements: [button('Back', 'buy_back', 'mix')] });
   blocks.push(context('Stage only prices and records the order. Nothing is bought until an approver presses *Place order* (ScaledMail) or *Approve & start* (Zapmail).'));
   return shell(meta, blocks, 'Stage (no charge)');
@@ -194,7 +200,7 @@ function confirmView(meta, defaults) {
 const NAMES_RE = /^[A-Za-z][A-Za-z .'-]{0,40}(,\s*[A-Za-z][A-Za-z .'-]{0,40}){0,24}$/;
 const URL_RE = /^(https?:\/\/)?[a-z0-9.-]+\.[a-z]{2,}(\/[^\s]*)?$/i;
 
-function stageArgs(meta, i, names, senders, redirect, user) {
+function stageArgs(meta, i, names, senders, redirect, user, { signature = false } = {}) {
   const t = typesFor(meta.p)[i];
   if (meta.p === 'scaledmail') {
     const a = ['scaledmail_cli.py', '--json', 'stage', '--client', meta.c, '--provider', t.key, '--domains', names.join(','),
@@ -205,7 +211,8 @@ function stageArgs(meta, i, names, senders, redirect, user) {
   }
   return ['inbox_jobs.py', '--create', '--client', meta.c, '--kind', 'new', '--provider', t.key,
     ...names.flatMap(d => ['--domain', d]), '--per-domain', String(t.per_domain),
-    '--names', senders.split(',').map(s => s.trim()).filter(Boolean).join(';'), '--by', user, '--json'];
+    '--names', senders.split(',').map(s => s.trim()).filter(Boolean).join(';'),
+    ...(signature ? ['--signature'] : []), '--by', user, '--json'];
 }
 
 function defaultsFor(clientKey, profiles, sendersByClient) {
@@ -298,6 +305,7 @@ function registerBuyFlow(app, baseDir, deps = {}) {
     const v = view.state.values;
     const sendersText = String(((v.senders || {}).value || {}).value || '').trim();
     const redirect = String(((v.redirect || {}).value || {}).value || '').trim();
+    const signature = (((v.sig || {}).value || {}).selected_options || []).length > 0;
     const errors = {};
     if (!NAMES_RE.test(sendersText) || !sendersText.split(',').every(n => n.trim().split(/\s+/).length >= 2)) {
       errors.senders = 'First and last name each: "Jane Doe, John Roe"';
@@ -333,7 +341,7 @@ function registerBuyFlow(app, baseDir, deps = {}) {
     for (let i = 0; i < types.length; i++) {
       if (!groups[i].length) continue;
       try {
-        const r = await runPy(stageArgs(meta, i, groups[i], sendersText, redirect, user));
+        const r = await runPy(stageArgs(meta, i, groups[i], sendersText, redirect, user, { signature }));
         const blocks = meta.p === 'scaledmail' ? require('./scaledmail_command').stagedBlocks(r) : require('./zapmail_actions').jobBlocks(r);
         if (!r.error && (r.staged || r.job_id)) staged += 1;
         // Row label first: an answered error renders as a bare ':x:' block otherwise.

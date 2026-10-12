@@ -475,7 +475,7 @@ def test_subscription_created_but_not_charged_is_never_placed_again(monkeypatch)
 # ── setup watcher ────────────────────────────────────────────────────────────
 
 def _placed(pid, oid, domains, placed_on, *extra):
-    return {"plan_id": pid, "status": "placed", "order_id": oid, "domains": domains,
+    return {"plan_id": pid, "status": "placed", "order_id": oid, "domains": domains, "client": "Precise Leads",
             "history": [{"at": f"{placed_on}T08:00:00+00:00", "status": "placed"}, *extra]}
 
 
@@ -501,6 +501,7 @@ def test_setup_watch_reports_waiting_late_and_live():
     text = "\n".join(w["lines"])
     assert w["newly_live"] == ["p2"]
     assert "b.com, c.com" in text and "28 inboxes" in text and "o2" in text and "Smartlead" in text
+    assert 'inbox_setup.py --client "Precise Leads" --domain b.com --signature' in text
     assert "a.com" in text and "business day 2" in text
     assert "Late" in text and "d.com" in text
     assert "e.com" not in text

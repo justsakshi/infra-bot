@@ -349,7 +349,8 @@ function jobBlocks(s) {
   const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: t.slice(0, 2900) } }];
   if (s.status === 'awaiting_approval' && JOB_ID_RE.test(s.job_id)) {
     blocks.push({ type: 'actions', elements: [
-      { type: 'button', action_id: 'zm_job_approve', style: 'primary', text: { type: 'plain_text', text: 'Approve & start' }, value: s.job_id,
+      // Red: approving can spend (domains + inbox slots), like ScaledMail's Place order.
+      { type: 'button', action_id: 'zm_job_approve', style: 'danger', text: { type: 'plain_text', text: 'Approve & start' }, value: s.job_id,
         confirm: { title: { type: 'plain_text', text: 'Start this job?' },
           text: { type: 'plain_text', text: 'It can charge up to $' + Number(cost.total_now_usd || 0).toFixed(2) + ' now (see the list). Paid steps also need spending switched on for the server.' },
           confirm: { type: 'plain_text', text: 'Approve' }, deny: { type: 'plain_text', text: 'Not yet' } } },
