@@ -130,6 +130,12 @@ def _fake_sources(monkeypatch, ai_names, held):
     monkeypatch.setattr(domain_suggest, "ai_suggest", ai)
     monkeypatch.setattr(domain_suggest, "check_blacklists", clean)
     monkeypatch.setattr(batch, "BatchStore", _Store)
+    import smartlead.scaledmail_orders as smo
+
+    class _NoPlans:
+        def all(self):
+            return []
+    monkeypatch.setattr(smo, "PlanStore", _NoPlans)
     return lambda: asyncio.run(domain_suggest.suggest("Belardi Wong", use_generator=False))
 
 
@@ -139,6 +145,22 @@ def test_names_already_in_a_purchase_plan_are_not_suggested(monkeypatch):
     got = run()
     assert [s["domain"] for s in got["suggestions"]] == ["postcarddesk.com"]
     assert got["held_in_plans"] == 2
+
+
+def test_names_in_a_scaledmail_order_are_not_suggested(monkeypatch):
+    """Live 2026-10-12: 4 domains bought on ScaledMail that morning came back
+    as 'available on Zapmail' (registration not visible yet)."""
+    run = _fake_sources(monkeypatch, ["postalcraft.com", "postalnest.com", "postcarddesk.com"], held=())
+    import smartlead.scaledmail_orders as smo
+
+    class _Plans:
+        def all(self):
+            return [{"status": "placed", "domains": ["postalcraft.com"]},
+                    {"status": "planned", "domains": ["POSTALNEST.com"]},
+                    {"status": "dropped", "domains": ["postcarddesk.com"]}]
+    monkeypatch.setattr(smo, "PlanStore", _Plans)
+    got = run()
+    assert [s["domain"] for s in got["suggestions"]] == ["postcarddesk.com"]
 
 
 def test_an_unreachable_ledger_is_reported_not_fatal(monkeypatch):

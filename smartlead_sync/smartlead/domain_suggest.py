@@ -233,18 +233,32 @@ def _scaledmail_prices(rows: list[dict], errors: list[str]) -> None:
                                "price": x.get("price"), "renew_price": x.get("renewPrice")}
 
 
+SCALEDMAIL_HOLDING = ("planned", "in_progress", "placed", "unknown", "payment_pending")
+
+
 def _held_in_plans(errors: list[str]) -> set[str]:
-    """Domains in a planned / in-flight / bought batch of the purchase ledger."""
+    """Domains in a planned / in-flight / bought batch of either purchase
+    ledger (Zapmail batches, ScaledMail order plans). Live 2026-10-12: names
+    bought on ScaledMail that morning were offered again on Zapmail because
+    their registration was not visible yet."""
+    held: set[str] = set()
     try:
         from smartlead.domain_batch import BatchStore
         store = BatchStore()
         if not store.available:
             errors.append("purchase ledger unreachable: names already staged may reappear")
-            return set()
-        return store.held_domains()
+        else:
+            held |= store.held_domains()
     except Exception as exc:  # noqa: BLE001 - suggestions still work without it
         errors.append(f"purchase ledger: {str(exc)[:150]}")
-        return set()
+    try:
+        from smartlead.scaledmail_orders import PlanStore
+        for plan in PlanStore().all():
+            if plan.get("status") in SCALEDMAIL_HOLDING:
+                held.update(str(d).lower() for d in plan.get("domains") or [])
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"ScaledMail order ledger: {str(exc)[:150]}")
+    return held
 
 
 async def suggest(

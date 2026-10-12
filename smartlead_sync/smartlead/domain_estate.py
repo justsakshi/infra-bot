@@ -31,6 +31,7 @@ is how one client's reputation problem becomes everyone's.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from datetime import datetime, timezone
@@ -243,6 +244,17 @@ def register_domains(domains: list[str], added_by: str = "") -> tuple[list[str],
     return cleaned, bad
 
 
+def scaledmail_owned() -> list[str]:
+    """Domains on ScaledMail (orders + purchased registrations). [] when not configured."""
+    from smartlead.scaledmail import ScaledMailClient, configured
+    if not configured():
+        return []
+    with ScaledMailClient() as sm:
+        names = {str(d.get("domain", "")).lower() for d in sm.domains()}
+        names |= {str(d.get("domain", "")).lower() for d in sm.purchased_domains()}
+    return sorted(n for n in names if n)
+
+
 async def owned_domain_list(
     extra: list[str] | None = None,
 ) -> tuple[list[str], bool, dict[str, int]]:
@@ -287,6 +299,18 @@ async def owned_domain_list(
     except Exception as exc:  # noqa: BLE001
         print(f"  [Estate] ⚠ Zapmail unreachable ({exc})", file=sys.stderr)
         counts["zapmail"] = 0
+
+    # Every domain ScaledMail holds for us: live orders AND registrations not
+    # yet in an order (inventory). Live 2026-10-12: names bought on ScaledMail
+    # that morning were offered again because no other source had them yet.
+    try:
+        sm = await asyncio.to_thread(scaledmail_owned)
+        merged.update(sm)
+        counts["scaledmail"] = len(sm)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Estate] ⚠ ScaledMail unreachable ({exc})", file=sys.stderr)
+        counts["scaledmail"] = 0
+        complete = False
 
     seed = read_seed_file()
     merged.update(seed)
