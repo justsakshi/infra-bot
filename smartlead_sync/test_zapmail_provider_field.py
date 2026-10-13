@@ -74,3 +74,45 @@ def test_fleet_status_counts_domains_by_their_provider(monkeypatch):
     s = asyncio.run(zf.fleet_status())["PRECISE_LEADS"]
     assert s["domains"] == {"GOOGLE": 2, "MICROSOFT": 1}
     assert s["active_mailboxes_total"] == 69
+
+
+class FakeLists(FakeZ):
+    """Renewal-soon and mailbox lists, also identical whatever provider is asked."""
+    async def list_renewal_soon(self, page=1, limit=200):
+        return {"data": {"domains": [dict(r, expireOn="2026-10-29T00:00:00Z", assignedMailboxesCount=0) for r in ROWS]}}
+
+    async def list_mailboxes(self, contains=None, page=1, limit=50):
+        groups = [{"id": r["id"], "domain": r["domain"], "status": "ACTIVE",
+                   "mailboxes": [{"id": "mb-" + r["id"], "email": "x@" + r["domain"], "status": "ACTIVE"}]}
+                  for r in ROWS if not contains or contains in r["domain"]]
+        return {"data": {"domains": groups, "totalPages": 1}}
+
+
+def _lists(monkeypatch):
+    monkeypatch.setattr(zf, "discover_zapmail_accounts", lambda: [ACC])
+    monkeypatch.setattr(zf, "_client", lambda acc, provider: FakeLists())
+
+
+def test_all_domains_lists_each_domain_once_with_its_own_provider(monkeypatch):
+    _lists(monkeypatch)
+    rows = asyncio.run(zf.all_domains())
+    assert sorted((r["domain"], r["provider"]) for r in rows) == [
+        ("a.com", "GOOGLE"), ("b.com", "GOOGLE"), ("out.com", "MICROSOFT")]
+
+
+def test_all_mailboxes_lists_each_mailbox_once_with_its_domains_provider(monkeypatch):
+    _lists(monkeypatch)
+    rows = asyncio.run(zf.all_mailboxes())
+    assert sorted((r["email"], r["provider"]) for r in rows) == [
+        ("x@a.com", "GOOGLE"), ("x@b.com", "GOOGLE"), ("x@out.com", "MICROSOFT")]
+
+
+def test_renewals_list_each_domain_once(monkeypatch):
+    _lists(monkeypatch)
+    import smartlead.zapmail_asset_sync as sync
+    import smartlead.zapmail_clients as clients
+    monkeypatch.setattr(sync, "read_tracker", lambda: {})
+    monkeypatch.setattr(clients, "infer_client", lambda d, a, t: None)
+    rows = asyncio.run(zf.renewals_asof())
+    assert sorted((r["domain"], r["provider"]) for r in rows) == [
+        ("a.com", "GOOGLE"), ("b.com", "GOOGLE"), ("out.com", "MICROSOFT")]

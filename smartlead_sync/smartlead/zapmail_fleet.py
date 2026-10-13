@@ -112,6 +112,7 @@ async def renewals_asof(errors: list[str] | None = None) -> list[dict]:
     """
     rows: list[dict] = []
     for acc in discover_zapmail_accounts():
+        seen: set = set()                # Zapmail ignores the provider header: both calls list everything
         for provider in PROVIDERS:
             try:
                 async with _client(acc, provider) as z:
@@ -123,6 +124,10 @@ async def renewals_asof(errors: list[str] | None = None) -> list[dict]:
                     errors.append(msg)
                 continue
             for d in ((resp or {}).get("data") or {}).get("domains") or []:
+                key = d.get("id") or d.get("domain")
+                if key in seen:
+                    continue
+                seen.add(key)
                 rows.append({
                     "domain": str(d.get("domain", "")).strip().lower(),
                     "domain_id": d.get("id", ""),
@@ -152,6 +157,7 @@ async def all_domains(errors: list[str] | None = None) -> list[dict]:
     """
     rows: list[dict] = []
     for acc in discover_zapmail_accounts():
+        seen: set = set()                # Zapmail ignores the provider header: both calls list everything
         for provider in PROVIDERS:
             try:
                 async with _client(acc, provider) as z:
@@ -160,6 +166,10 @@ async def all_domains(errors: list[str] | None = None) -> list[dict]:
                         data = ((await z.list_domains(page=page, limit=_PAGE_LIMIT))
                                 or {}).get("data") or {}
                         for d in data.get("domains") or []:
+                            key = d.get("id") or d.get("domain")
+                            if key in seen:
+                                continue
+                            seen.add(key)
                             rows.append({
                                 "domain": str(d.get("domain", "")).strip().lower(),
                                 "domain_id": d.get("id", ""),
@@ -167,7 +177,7 @@ async def all_domains(errors: list[str] | None = None) -> list[dict]:
                                 "expire_on": _iso_to_date(d.get("expireOn")),
                                 "registered_on": _iso_to_date(d.get("registeredOn")),
                                 "auto_renew": d.get("autoRenew"),
-                                "provider": provider,
+                                "provider": str(d.get("serviceProvider") or provider).upper(),
                                 "assigned_mailboxes": d.get("assignedMailboxesCount", 0),
                                 "account": acc.name,
                             })
@@ -183,6 +193,28 @@ async def all_domains(errors: list[str] | None = None) -> list[dict]:
     return rows
 
 
+async def _domain_providers(acc, contains: str | None = None) -> dict:
+    """{domain_id: GOOGLE|MICROSOFT} from the domain list, which carries
+    `serviceProvider` (mailbox rows do not). Empty on failure."""
+    out: dict = {}
+    try:
+        async with _client(acc, "GOOGLE") as z:
+            page = 1
+            while page <= _MAX_PAGES:
+                data = ((await z.list_domains(contains=contains, page=page, limit=_PAGE_LIMIT))
+                        or {}).get("data") or {}
+                rows = data.get("domains") or []
+                for d in rows:
+                    if d.get("id") and d.get("serviceProvider"):
+                        out[d["id"]] = str(d["serviceProvider"]).upper()
+                if len(rows) < _PAGE_LIMIT or page >= int(data.get("totalPages") or page):
+                    break
+                page += 1
+    except ZapmailError as exc:
+        print(f"  [Zapmail] domain providers failed — {acc.name}: {str(exc)[:160]}")
+    return out
+
+
 async def all_mailboxes(errors: list[str] | None = None,
                         domain: str | None = None) -> list[dict]:
     """Every mailbox on every account, both providers (paginated). READ-ONLY.
@@ -194,6 +226,8 @@ async def all_mailboxes(errors: list[str] | None = None,
     """
     rows: list[dict] = []
     for acc in discover_zapmail_accounts():
+        seen: set = set()                # Zapmail ignores the provider header: both calls list everything
+        provider_of = await _domain_providers(acc, domain)   # mailbox rows carry no provider
         for provider in PROVIDERS:
             try:
                 async with _client(acc, provider) as z:
@@ -207,6 +241,9 @@ async def all_mailboxes(errors: list[str] | None = None,
                                 email = str(m.get("email") or "").strip().lower()
                                 if not email or (domain and email.partition("@")[2] != domain):
                                     continue
+                                if (m.get("id") or email) in seen:
+                                    continue
+                                seen.add(m.get("id") or email)
                                 rows.append({
                                     "email": email,
                                     "domain": email.partition("@")[2],
@@ -215,7 +252,7 @@ async def all_mailboxes(errors: list[str] | None = None,
                                     "expire_on": _iso_to_date(m.get("expireOn")),
                                     "assigned_on": _iso_to_date(m.get("assignedOn")),
                                     "warmed_up": m.get("isWarmedUp"),
-                                    "provider": provider,
+                                    "provider": provider_of.get(d.get("id")) or provider,
                                     "account": acc.name,
                                 })
                         if page >= int(data.get("totalPages") or 1):
