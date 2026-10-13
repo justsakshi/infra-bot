@@ -143,3 +143,43 @@ def test_each_inbox_subscription_once_with_its_inboxes_provider(monkeypatch):
     rows = asyncio.run(zf.subscriptions_billing(days=60, today="2026-10-13"))
     assert sorted((r["subscription_id"], r["provider"], r["domains"][0]) for r in rows) == [
         ("sub_g", "GOOGLE", "a.com"), ("sub_m", "MICROSOFT", "out.com")]
+
+
+PRE = [{"subscriptionId": "sub_g", "subscriptionStatus": "ACTIVE", "price": 105, "totalMailboxQuantity": 15,
+        "periodEnd": "2026-10-18T00:00:00Z", "serviceProvider": "GOOGLE", "plan": "Growth Addon"},
+       {"subscriptionId": "sub_o", "subscriptionStatus": "ACTIVE", "price": 84, "totalMailboxQuantity": 12,
+        "periodEnd": "2026-10-14T00:00:00Z", "serviceProvider": "MICROSOFT", "plan": "Growth Addon"}]
+
+
+class FakePre(FakeSubs):
+    """Pre-warmed plans: both plans whatever provider is asked; each says its own serviceProvider."""
+    async def prewarmed_subscriptions(self):
+        return {"data": {"subscriptions": PRE}}
+
+    async def _request(self, method, path, json=None, **kw):
+        if path == "/v2/subscriptions":
+            return {"data": []}
+        return await super()._request(method, path, json=json, **kw)
+
+    async def list_mailboxes(self, contains=None, page=1, limit=50):
+        return {"data": {"domains": [], "totalAssignedPreWarmedUpMailboxes": 27}}
+
+    async def prewarmed_count(self):
+        return {"data": {"google": 460, "microsoft": 52}}
+
+    async def prewarmed_domains(self, page=1, limit=10):
+        return {"data": {"domains": []}}
+
+
+def test_prewarmed_plans_once_with_their_own_provider(monkeypatch):
+    monkeypatch.setattr(zf, "discover_zapmail_accounts", lambda: [ACC])
+    monkeypatch.setattr(zf, "_client", lambda acc, provider: FakePre())
+    rows = asyncio.run(zf.subscriptions_billing(days=60, today="2026-10-13"))
+    assert sorted((r["provider"], r["mailboxes"]) for r in rows) == [("GOOGLE", 15), ("MICROSOFT", 12)]
+
+
+def test_prewarmed_slots_per_provider(monkeypatch):
+    monkeypatch.setattr(zf, "discover_zapmail_accounts", lambda: [ACC])
+    monkeypatch.setattr(zf, "_client", lambda acc, provider: FakePre())
+    acc = asyncio.run(zf.prewarmed_overview())["accounts"]["PRECISE_LEADS"]
+    assert acc["GOOGLE"]["slots"] == 15 and acc["MICROSOFT"]["slots"] == 12

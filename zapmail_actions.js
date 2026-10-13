@@ -281,12 +281,20 @@ function prewarmedText(res) {
   const stock = p.stock || {};
   let t = '*Pre-warmed mailboxes*' + NL + 'Zapmail stock: *' + (stock.google ?? '?') + '* Google · *' + (stock.microsoft ?? '?') + '* Outlook';
   for (const [acc, per] of Object.entries(p.accounts || {})) {
+    let used = null;
     for (const [prov, s] of Object.entries(per)) {
       if (s.error) { t += NL + '• ' + acc + ' ' + prov + ': :warning: ' + s.error; continue; }
       if (!s.slots) continue;
       const subs = (s.subscriptions || []).map(x => x.plan + ' $' + x.price + '/mo × ' + x.mailboxes + ' (renews ' + x.renews + ')').join('; ');
-      t += NL + '• *' + acc + '* ' + (prov === 'MICROSOFT' ? 'Outlook' : 'Google') + ': ' + s.assigned + '/' + s.slots + ' slots used'
+      // Zapmail counts used slots for the whole account, not per provider.
+      const own = s.assigned === null || s.assigned === undefined ? '' : s.assigned + '/';
+      t += NL + '• *' + acc + '* ' + (prov === 'MICROSOFT' ? 'Outlook' : 'Google') + ': ' + own + s.slots + ' slots' + (own ? ' used' : '')
         + (s.free ? ' — *' + s.free + ' free*' : '') + ' · ' + subs;
+      if (s.assigned_all !== undefined) used = s;
+    }
+    if (used) {
+      t += NL + '• *' + acc + '*: ' + used.assigned_all + ' of ' + used.slots_all + ' pre-warmed slots used'
+        + (used.free_all ? ' — *' + used.free_all + ' free*' : '');
     }
   }
   for (const [prov, list] of Object.entries(p.for_sale || {})) {

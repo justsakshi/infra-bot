@@ -32,3 +32,16 @@ const done = jobBlocks({ job_id: 'abcdef0123', client: 'Melior', domains: ['x.co
 assert.ok(!done.find(b => b.type === 'actions'), 'no approve button once running/done'); n++;
 assert.ok(/:x:/.test(jobBlocks({ error: 'x.co is not confirmed available' })[0].text.text)); n++;
 console.log(n + ' passed');
+
+// Slots per provider; "used" only for the whole account (Zapmail counts it that way). Live 2026-10-13 showed "27/15".
+{
+  const { prewarmedText } = require('./zapmail_actions');
+  const sub = (n, p) => ({ plan: 'Growth Addon', price: p, mailboxes: n, renews: '2026-10-18' });
+  const t = prewarmedText({ prewarmed: { stock: { google: 460, microsoft: 52 }, accounts: { PRECISE_LEADS: {
+    GOOGLE: { slots: 15, assigned: null, assigned_all: 27, slots_all: 27, free_all: 0, subscriptions: [sub(15, 105)] },
+    MICROSOFT: { slots: 12, assigned: null, assigned_all: 27, slots_all: 27, free_all: 0, subscriptions: [sub(12, 84)] } } }, for_sale: {} } });
+  assert.ok(/\*PRECISE_LEADS\* Google: 15 slots · Growth Addon \$105\/mo × 15/.test(t), t); n++;
+  assert.ok(/\*PRECISE_LEADS\* Outlook: 12 slots/.test(t) && !/27\/15/.test(t), t); n++;
+  assert.strictEqual((t.match(/27 of 27 pre-warmed slots used/g) || []).length, 1, t); n++;
+  console.log('prewarmed slots: 3 passed');
+}

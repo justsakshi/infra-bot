@@ -305,17 +305,26 @@ async def prewarmed_overview(sample: int = 5) -> dict:
             except ZapmailError as exc:
                 per[provider] = {"error": str(exc)[:160]}
                 continue
+            # Live 2026-10-13: both provider calls list every plan; each plan
+            # names its serviceProvider. Zapmail counts assigned slots for the
+            # whole account only, so "assigned" is per account, not per provider.
             active = [s for s in subs.get("subscriptions") or []
-                      if str(s.get("subscriptionStatus", "")).upper() == "ACTIVE"]
+                      if str(s.get("subscriptionStatus", "")).upper() == "ACTIVE"
+                      and str(s.get("serviceProvider") or provider).upper() == provider]
             slots = sum(int(s.get("totalMailboxQuantity") or 0) for s in active)
-            assigned = int(boxes.get("totalAssignedPreWarmedUpMailboxes") or 0)
+            assigned_all = int(boxes.get("totalAssignedPreWarmedUpMailboxes") or 0)
             per[provider] = {
                 "subscriptions": [{"plan": s.get("plan"), "price": s.get("price"),
                                    "mailboxes": s.get("totalMailboxQuantity"),
                                    "renews": _iso_to_date(s.get("periodEnd"))}
                                   for s in active],
-                "slots": slots, "assigned": assigned, "free": max(0, slots - assigned),
+                "slots": slots, "assigned": None, "assigned_all": assigned_all,
             }
+        slots_all = sum(v.get("slots") or 0 for v in per.values() if isinstance(v, dict))
+        for v in per.values():
+            if isinstance(v, dict) and "assigned_all" in v:
+                v["slots_all"] = slots_all
+                v["free_all"] = max(0, slots_all - v["assigned_all"])
         out["accounts"][acc.name] = per
     return out
 
@@ -435,7 +444,8 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                             if (kind, s.get("subscriptionId")) in seen:
                                 continue
                             seen.add((kind, s.get("subscriptionId")))
-                            row = {"account": acc.name, "provider": provider, "kind": kind,
+                            row = {"account": acc.name, "kind": kind,
+                                   "provider": str(s.get("serviceProvider") or provider).upper(),
                                    "plan": s.get("uniquePlanKey") or s.get("plan"),
                                    "price": s.get("price"), "mailboxes": s.get("totalMailboxQuantity"),
                                    "bills_on": _iso_to_date(s.get("periodEnd")), "status": status,
