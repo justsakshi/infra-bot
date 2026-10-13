@@ -116,3 +116,30 @@ def test_renewals_list_each_domain_once(monkeypatch):
     rows = asyncio.run(zf.renewals_asof())
     assert sorted((r["domain"], r["provider"]) for r in rows) == [
         ("a.com", "GOOGLE"), ("b.com", "GOOGLE"), ("out.com", "MICROSOFT")]
+
+
+class FakeSubs(FakeLists):
+    """/v2/subscriptions answers the same whatever provider is asked (live 2026-10-13)."""
+    async def _request(self, method, path, json=None, **kw):
+        if path == "/v2/subscriptions":
+            return {"data": [{"subscriptionId": "sub_g", "subscriptionStatus": "ACTIVE", "price": 9.75,
+                              "totalMailboxQuantity": 3, "periodEnd": "2026-10-27T00:00:00Z", "plan": "x"},
+                             {"subscriptionId": "sub_m", "subscriptionStatus": "ACTIVE", "price": 9.75,
+                              "totalMailboxQuantity": 3, "periodEnd": "2026-10-28T00:00:00Z", "plan": "x"}]}
+        if path == "/v2/subscriptions/mailboxes":
+            dom = "a.com" if json["subscriptionId"] == "sub_g" else "out.com"
+            return {"data": [{"username": u, "domain": dom} for u in ("x", "y", "z")]}
+        raise AssertionError(path)
+
+    async def prewarmed_subscriptions(self):
+        return {"data": {"subscriptions": []}}
+
+
+def test_each_inbox_subscription_once_with_its_inboxes_provider(monkeypatch):
+    monkeypatch.setattr(zf, "discover_zapmail_accounts", lambda: [ACC])
+    monkeypatch.setattr(zf, "_client", lambda acc, provider: FakeSubs())
+    import smartlead.zapmail_clients as clients
+    monkeypatch.setattr(clients, "infer_client", lambda d, a: "Bettrdata")
+    rows = asyncio.run(zf.subscriptions_billing(days=60, today="2026-10-13"))
+    assert sorted((r["subscription_id"], r["provider"], r["domains"][0]) for r in rows) == [
+        ("sub_g", "GOOGLE", "a.com"), ("sub_m", "MICROSOFT", "out.com")]

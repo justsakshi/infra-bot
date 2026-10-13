@@ -207,12 +207,18 @@ async def _domain_providers(acc, contains: str | None = None) -> dict:
                 for d in rows:
                     if d.get("id") and d.get("serviceProvider"):
                         out[d["id"]] = str(d["serviceProvider"]).upper()
+                        out.setdefault("_names", {})[str(d.get("domain") or "").lower()] = out[d["id"]]
                 if len(rows) < _PAGE_LIMIT or page >= int(data.get("totalPages") or page):
                     break
                 page += 1
     except ZapmailError as exc:
         print(f"  [Zapmail] domain providers failed — {acc.name}: {str(exc)[:160]}")
     return out
+
+
+def _provider_by_name(provider_of: dict, domain: str) -> str | None:
+    """provider_of is keyed by domain id; ``_names`` maps names too (set by _domain_providers)."""
+    return (provider_of.get("_names") or {}).get(domain)
 
 
 async def all_mailboxes(errors: list[str] | None = None,
@@ -411,6 +417,11 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
     horizon = (today_d + timedelta(days=days)).isoformat()
     rows: list[dict] = []
     for acc in discover_zapmail_accounts():
+        # Live 2026-10-13: /v2/subscriptions ignores the provider header (both
+        # calls list the same add-ons), so each is listed once and takes its
+        # provider from its inboxes' domains. Pre-warmed plans do follow it.
+        seen: set = set()
+        provider_of = await _domain_providers(acc)
         for provider in PROVIDERS:
             try:
                 async with _client(acc, provider) as z:
@@ -421,6 +432,9 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                             status = str(s.get("subscriptionStatus") or "").upper()
                             if status not in ("ACTIVE", "PAST_DUE", "TRIALING", "UNPAID"):
                                 continue
+                            if (kind, s.get("subscriptionId")) in seen:
+                                continue
+                            seen.add((kind, s.get("subscriptionId")))
                             row = {"account": acc.name, "provider": provider, "kind": kind,
                                    "plan": s.get("uniquePlanKey") or s.get("plan"),
                                    "price": s.get("price"), "mailboxes": s.get("totalMailboxQuantity"),
@@ -430,7 +444,7 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                                    # Stripe invoice page: pay / see the latest bill from here.
                                    "invoice_url": s.get("invoiceDetails") or "",
                                    "domains": [], "clients": []}
-                            if kind == "inboxes" and row["bills_on"] and (all_inboxes or row["bills_on"] <= horizon):
+                            if kind == "inboxes":       # always: the inboxes say which provider it is
                                 boxes = ((await z._request("POST", "/v2/subscriptions/mailboxes",
                                                            json={"subscriptionId": s.get("subscriptionId")}))
                                          or {}).get("data") or []
@@ -439,6 +453,10 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                                 row["inboxes"] = sorted({f"{b.get('username')}@{b.get('domain')}".lower()
                                                          for b in boxes if b.get("username") and b.get("domain")})
                                 row["clients"] = sorted({infer_client(d, acc.name) or "unassigned" for d in doms})
+                                provs = [provider_of[b["domainId"]] for b in boxes if provider_of.get(b.get("domainId"))]
+                                provs = provs or [p for d in doms for p in [_provider_by_name(provider_of, d)] if p]
+                                if provs:
+                                    row["provider"] = max(set(provs), key=provs.count)
                             rows.append(row)
             except ZapmailError as exc:
                 msg = f"{acc.name}/{provider}: {str(exc)[:160]}"
