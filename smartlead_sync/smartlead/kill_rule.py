@@ -72,10 +72,17 @@ def judge(email: str, tests: list[dict], domain_verdict: tuple[bool, str] | None
     ct = counting_tests(tests)
     fresh = [(t, g) for t, g in ct if (today - date.fromisoformat(t["date"])).days <= FRESH_DAYS]
     if domain_verdict and domain_verdict[0]:
-        return {"email": email, "verdict": KILL, "rule": "c", "why": domain_verdict[1]}
+        return {"email": email, "verdict": KILL, "rule": "c", "why": domain_verdict[1],
+                "pct": domain_verdict[2] if len(domain_verdict) > 2 else None}
     if not ct:
         return {"email": email, "verdict": NO_DATA, "rule": "", "why": f"no test with {MIN_SEEDS}+ seeds"}
     (t1, g1) = ct[0]
+    out = _judge_latest(email, ct, fresh, t1, g1)
+    out["pct"] = g1
+    return out
+
+
+def _judge_latest(email: str, ct: list, fresh: list, t1: dict, g1: float) -> dict:
     if g1 < DEAD_BELOW and t1["seeds"] >= DEAD_MIN_SEEDS and fresh:
         return {"email": email, "verdict": KILL, "rule": "b",
                 "why": f"only {g1:.0f}% of {t1['seeds']} test emails reached the inbox ({t1['date']})"}
@@ -109,7 +116,7 @@ def domain_verdicts(tests_by_email: dict[str, list[dict]], today: date) -> dict[
         pooled = 100.0 * inbox / seeds if seeds else 100.0
         dead = seeds >= DOMAIN_MIN_SEEDS and pooled < GOOD_AT and struck * 2 >= len(rows)
         out[dom] = (dead, f"whole domain: {pooled:.0f}% of {seeds} test emails reached the inbox "
-                          f"(needs {GOOD_AT:.0f}%), {struck} of {len(rows)} inboxes failed")
+                          f"(needs {GOOD_AT:.0f}%), {struck} of {len(rows)} inboxes failed", pooled)
     return out
 
 

@@ -79,6 +79,14 @@ def test_kill_report_groups_by_client_and_warns_live_campaigns():
     head, thread = kp.format_report(res, [], T)
     txt = "\n".join(thread)
     assert head[0].startswith("\U0001f6a8 Kill warnings")
-    assert "Warning only" in txt and "`a@x.com` (Scaledmail)" in txt and "still sending in: Exec search" in txt
+    assert "Warning only" in txt and "`a@x.com` is sending in Exec search" in txt
     assert "c@z.com" not in txt
     assert any("Could not read Smartlead X: 429" in h for h in kp.format_report(res, ["Smartlead X: 429"], T)[0])
+
+
+def test_verdicts_carry_the_number_behind_them():
+    one = {"a@x.com": [{"date": "2026-10-05", "seeds": 20, "spam": 12, "by": {}}]}      # 40%: clearly dead
+    assert round(kr.judge_all(one, T)["a@x.com"]["pct"]) == 40
+    dom = {f"m{i}@d.com": [{"date": "2026-10-05", "seeds": 20, "spam": 7, "by": {}}] for i in range(3)}
+    v = kr.judge_all(dom, T)["m0@d.com"]
+    assert v["rule"] == "c" and round(v["pct"]) == 65                              # pooled over the domain

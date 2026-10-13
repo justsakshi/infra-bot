@@ -67,10 +67,9 @@ def build(facts: dict[str, dict], today: date, platform: dict[str, str]) -> dict
                        for k in (kr.KILL, kr.WATCH, kr.GOOD, kr.NO_DATA)}}
 
 
-RULE = "How we decide: a test passes when 80%+ of its emails reach the inbox."
-DECIDE = ("Take an inbox out after 2 failed tests a week apart, or one test under 50% (20+ test emails). "
-          "Take a whole domain out when its inboxes together reach the inbox under 80% of the time "
-          "over 40+ test emails.")
+RULE = "Rule: an inbox passes a test when 80%+ of its test emails reach the inbox."
+DECIDE = ("2 fails a week apart, or one under 50%, means stop using it; a whole domain when its inboxes "
+          "together stay under 80% over 40+ test emails.")
 _ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 
@@ -92,90 +91,121 @@ def _idle(r: dict) -> list[str]:
     return [c for c in r.get("campaigns") or [] if c not in (r.get("sending") or [])]
 
 
-def _inbox(r: dict, why: str = "") -> str:
-    plat = f" ({r['platform']})" if r.get("platform") not in ("", "?", None) else ""
-    where = ""
-    if r.get("sending"):
-        where = f" · 🚨 still sending in: {', '.join(r['sending'][:2])}"
-    elif _idle(r):
-        where = f" · in switched-on campaigns that sent nothing in 7 days: {', '.join(_idle(r)[:2])}"
-    return f"• `{r['email']}`{plat}{' — ' + why if why else ''}{where}"
+def _pct(rows: list[dict]) -> str:
+    vals = sorted(round(r["pct"]) for r in rows if r.get("pct") is not None)
+    if not vals:
+        return "?"
+    return f"{vals[0]}%" if vals[0] == vals[-1] else f"{vals[0]}-{vals[-1]}%"
 
 
-def _client_part(client: str, kill: list[dict]) -> str:
-    """One thread reply: a client's inboxes to take out, grouped by domain;
-    a whole domain's reason is said once on its header line."""
-    by_dom: dict[str, list[dict]] = defaultdict(list)
-    for r in kill:
-        by_dom[r["email"].split("@")[1]].append(r)
-    lines = [f"*{client}: {_n(len(kill), 'inbox', 'inboxes')} to take out*"]
-    # whole domains first (biggest first), then inbox-level reasons
-    order = sorted(by_dom.items(), key=lambda kv: (not any(r["rule"] == "c" for r in kv[1]), -len(kv[1]), kv[0]))
-    for dom, rows in order:
-        rows = sorted(rows, key=lambda r: r["email"])
-        if all(r["rule"] == "c" for r in rows):
-            lines.append(f"*{dom}* — {_short(rows[0]['why'])}")
-            lines += [_inbox(r) for r in rows]
-        else:
-            lines.append(f"*{dom}*")
-            lines += [_inbox(r, _short(r["why"])) for r in rows]
-    return "\n".join(lines)
+def bill_dates(bills: list[dict]) -> dict[str, dict]:
+    """domain -> its next bill {bills_on, provider, label, price} (the earliest
+    bill listing one of its inboxes). Pre-warmed plans list no inboxes, so
+    their domains get no bill. Pure."""
+    out: dict[str, dict] = {}
+    for b in bills:
+        for email in b.get("inboxes") or []:
+            dom = email.lower().split("@")[-1]
+            if dom not in out or b["bills_on"] < out[dom]["bills_on"]:
+                out[dom] = {k: b.get(k) for k in ("bills_on", "provider", "label", "price")}
+    return out
 
 
-def format_report(res: dict, errors: list[str], today: date) -> tuple[list[str], list[str]]:
-    """(headline_lines, thread_parts): the headline goes in the channel, the
-    lists and how we decide go in its thread (spec 2026-10-13)."""
+def _bill(dom: str, bills: dict | None) -> str:
+    if bills is None:
+        return ""
+    b = bills.get(dom)
+    return f" · bills {_day(date.fromisoformat(b['bills_on']))}" if b else " · no bill found"
+
+
+def format_report(res: dict, errors: list[str], today: date,
+                  bills: dict | None = None) -> tuple[list[str], list[str]]:
+    """(headline_lines, parts): one message, action first. ``bills`` =
+    bill_dates(...) or None when bills were not read."""
     c = res["counts"]
     by_client = res["by_client"]
-    kills = [r for d in by_client.values() for r in d.get(kr.KILL, [])]
-    watch = [(cl, r) for cl, d in by_client.items() for r in d.get(kr.WATCH, [])]
-    sending = sorted(r["email"] for r in kills if r.get("sending"))
-    idle = [r for r in kills if not r.get("sending") and _idle(r)]
-    domains = {r["email"].split("@")[1] for r in kills}
+    rank = {cl: i for i, cl in enumerate(CURRENT_CLIENTS)}
+    kills = [(cl, r) for cl, d in by_client.items() for r in d.get(kr.KILL, [])]
+    watch = sorted(((cl, r) for cl, d in by_client.items() for r in d.get(kr.WATCH, [])), key=lambda x: x[1]["email"])
+    sending = sorted(((cl, r) for cl, r in kills if r.get("sending")), key=lambda x: x[1]["email"])
+    idle = sorted(((cl, r) for cl, r in kills if not r.get("sending") and _idle(r)), key=lambda x: x[1]["email"])
+    doms: dict[tuple, list[dict]] = defaultdict(list)
+    for cl, r in kills:
+        doms[(cl, r["email"].split("@")[1])].append(r)
     when = _day(today)
-    retest = f" · {len(watch)} to retest" if watch else ""
 
     if not kills:
-        head = [f"✅ Kill warnings, {when}: nothing to take out" + (f", {len(watch)} to retest" if watch else "")]
+        head = [f"✅ Kill warnings, {when}: no domain is landing in spam"]
     else:
-        icon = "🚨" if sending else "⚠️"
-        one = len(kills) == 1
-        head = [f"{icon} Kill warnings, {when}: {_n(len(kills), 'inbox', 'inboxes')} "
-                f"{'is' if one else 'are'} landing in spam, take {'it' if one else 'them'} out of campaigns "
-                f"({_n(len(domains), 'domain', 'domains')})"]
+        n = len(doms)
+        head = [f"{'🚨' if sending else '⚠️'} Kill warnings, {when}: {_n(n, 'domain is', 'domains are')} "
+                f"landing in spam, stop using {'it' if n == 1 else 'them'}"]
         if sending:
-            more = f" +{len(sending) - 3} more" if len(sending) > 3 else ""
-            head.append(f"{len(sending)} still sending: {', '.join(f'`{e}`' for e in sending[:3])}{more}, start there")
-        elif idle:
-            head.append(f"None is sending now; {len(idle)} {'sits' if len(idle) == 1 else 'sit'} in switched-on "
-                        "campaigns that sent nothing in 7 days")
-        per = {cl: len(by_client.get(cl, {}).get(kr.KILL, [])) for cl in CURRENT_CLIENTS}
-        per.update({cl: len(d.get(kr.KILL, [])) for cl, d in by_client.items()})
-        rank = {cl: i for i, cl in enumerate(CURRENT_CLIENTS)}
-        head.append(" · ".join(f"{cl} {k}" for cl, k in
-                               sorted(per.items(), key=lambda kv: (-kv[1], rank.get(kv[0], 99), kv[0]))) + retest)
+            k = len(sending)
+            head.append(f"{k} of their inboxes {'is' if k == 1 else 'are'} still sending: "
+                        f"take {'it' if k == 1 else 'them'} out of campaigns today.")
+        else:
+            head.append("None of them is sending right now. Don't add them to campaigns; "
+                        "retire or replace them at their next bill.")
     if errors:
         head.append(f"Could not read {'; '.join(errors)}; inboxes there are missing from this list")
 
-    thread: list[str] = []
-    for client, d in sorted(by_client.items(), key=lambda kv: (-len(kv[1].get(kr.KILL, [])), kv[0])):
-        if d.get(kr.KILL):
-            thread.append(_client_part(client, d[kr.KILL]))
-    if watch:
-        thread.append("\n".join([f"*To retest ({len(watch)}): one failed test is not proof yet*"]
-                                + [_inbox(r, f"{cl}: {_short(r['why'])}")
-                                   for cl, r in sorted(watch, key=lambda x: (x[0], x[1]["email"]))]))
-    thread.append("\n".join([
-        f"_{RULE} {DECIDE}_",
-        "What to do: take them out of campaigns now, then retire or replace them at their next bill (`/domains review`).",
-        f"Also checked: {c[kr.GOOD]} passed, {c[kr.NO_DATA]} with no recent test. Warning only: the bot changes nothing."]))
-    return head, thread
+    parts: list[str] = []
+    look = []
+    for cl, r in sending:
+        look.append(f"• `{r['email']}` is sending in {', '.join(r['sending'][:2])} and is on the kill list "
+                    f"({_short(r['why'])}). Take it out of campaigns today.")
+    for cl, r in idle:
+        camps = _idle(r)
+        one = len(camps) == 1
+        look.append(f"• `{r['email']}` is in {_n(len(camps), 'campaign', 'campaigns')} that "
+                    f"{'is' if one else 'are'} switched on but not sending ({', '.join(camps[:2])}). "
+                    f"Pause {'it' if one else 'them'} so {'it' if one else 'they'} can't restart.")
+    for cl, r in watch:
+        if r.get("sending"):
+            look.append(f"• `{r['email']}` is sending in {', '.join(r['sending'][:2])} and failed its last test "
+                        f"({_pct([r])} reached the inbox). Retest it this week; take it out if it fails again.")
+    if look:
+        parts.append("\n".join(["*Needs a look today*"] + look))
+
+    if doms:
+        lines = ["*Stop using these domains*"]
+        per_client = defaultdict(int)
+        for (cl, _), rows in doms.items():
+            per_client[cl] += len(rows)
+        order = sorted(doms.items(), key=lambda kv: (-per_client[kv[0][0]], rank.get(kv[0][0], 99), kv[0][0],
+                                                     not all(r["rule"] == "c" for r in kv[1]), -len(kv[1]), kv[0][1]))
+        for (cl, dom), rows in order:
+            who = (f"({rows[0]['email'].split('@')[0]}@)" if len(rows) == 1 and rows[0]["rule"] != "c"
+                   else f"({_n(len(rows), 'inbox', 'inboxes')})")
+            lines.append(f"• {cl} · {dom} {who} · {_pct(rows)} reached the inbox{_bill(dom, bills)}")
+        parts.append("\n".join(lines))
+
+    retest = [(cl, r) for cl, r in watch if not r.get("sending")]
+    if retest:
+        parts.append("\n".join(["*Retest*"] + [f"• `{r['email']}` ({cl}) · failed 1 test ({_pct([r])})"
+                                               for cl, r in retest]))
+    parts.append(f"_{RULE} {DECIDE} Also checked: {c[kr.GOOD]} passed, {c[kr.NO_DATA]} with no recent test. "
+                 "Warning only: the bot changes nothing._")
+    return head, parts
 
 
-def render_text(head: list[str], thread: list[str]) -> str:
-    """Both parts as one text (print mode and the /domains kill screen)."""
-    return "\n".join(head) + "".join(f"\n\n— thread —\n{p}" if i == 0 else f"\n\n{p}"
-                                     for i, p in enumerate(thread))
+def render_text(head: list[str], parts: list[str]) -> str:
+    """The whole message, as posted (one message, no thread)."""
+    return "\n".join(head) + "".join(f"\n\n{p}" for p in parts)
+
+
+def _bills(errors: list[str]) -> dict | None:
+    """Every Zapmail and ScaledMail bill in the next 35 days (all monthly bills),
+    as domain -> next bill. None when neither could be read."""
+    try:
+        from renewal_review import scaledmail_bills, zapmail_bills
+        n = len(errors)
+        bills = zapmail_bills(35, errors) + scaledmail_bills(35, errors)
+        return bill_dates(bills) if bills or len(errors) == n else None
+    except Exception as exc:  # noqa: BLE001 - the warnings still post, without bill dates
+        errors.append(f"bills ({type(exc).__name__})")
+        return None
 
 
 def main() -> int:
@@ -189,7 +219,7 @@ def main() -> int:
     try:
         facts = smartlead_facts(errors)
         res = build(facts, today, _platform_of())
-        head, thread = format_report(res, errors, today)
+        head, thread = format_report(res, errors, today, _bills(errors))
     except Exception as exc:  # noqa: BLE001 - say so in Slack too
         res = {"error": f"{type(exc).__name__}: {exc}"}
         head = [f"🚨 Kill warnings, {_day(today)}: the check failed ({type(exc).__name__}: {exc}). "
@@ -200,7 +230,7 @@ def main() -> int:
         from smartlead.notify import post_with_thread
         token = os.getenv("SLACK_BOT_TOKEN", "")
         channel = os.getenv("KILL_REPORT_CHANNEL") or os.getenv("PLACEMENT_REPORT_CHANNEL") or DEFAULT_CHANNEL
-        res["posted"] = bool(token and post_with_thread(token, channel, head, thread))
+        res["posted"] = bool(token and post_with_thread(token, channel, [render_text(head, thread)], []))
     print(json.dumps({**res, "headline": head, "thread": thread, "text": text}, default=str)
           if args.json else text)
     return 0

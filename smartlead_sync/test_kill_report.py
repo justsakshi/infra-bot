@@ -9,7 +9,7 @@ import kill_report as kp
 from smartlead import kill_rule as kr
 
 TODAY = date(2026, 10, 13)
-RULE = "How we decide: a test passes when 80%+ of its emails reach the inbox."
+RULE = "Rule: an inbox passes a test when 80%+ of its test emails reach the inbox."
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 
@@ -43,7 +43,8 @@ def _fixture():
             add(f"{u}@{dom}", "Precise Leads", [_t("2026-10-12", 20, 7)])
     # watch: one strike each, on domains with healthy siblings
     add("virginia@myscalegrid.co", "Bettrdata", [_t("2026-10-12", 20, 6)])
-    add("rmarkman@meliorbase.com", "Melior", [_t("2026-10-12", 20, 6)])
+    add("rmarkman@meliorbase.com", "Melior", [_t("2026-10-12", 20, 6)],
+        ["Accounting firm roundtable | Melior"], ["Accounting firm roundtable | Melior"])
     for i in range(3):
         add(f"good{i}@myscalegrid.co", "Bettrdata", [_t("2026-10-12", 20, 0)])
         add(f"good{i}@meliorbase.com", "Melior", [_t("2026-10-12", 20, 0)])
@@ -67,78 +68,80 @@ def test_fixture_counts_match_todays_post():
     assert (c[kr.KILL], c[kr.WATCH], c[kr.GOOD], c[kr.NO_DATA]) == (19, 2, 129, 162)
 
 
-def test_headline_says_what_to_do_and_who_is_still_sending():
-    head, thread = kp.format_report(_build(), [], TODAY)
-    assert 1 <= len(head) <= 4
-    assert head[0] == ("🚨 Kill warnings, 13 Oct: 19 inboxes are landing in spam, "
-                       "take them out of campaigns (6 domains)")
-    assert head[1] == "1 still sending: `dan@bettrdatahq.co`, start there"
-    assert head[2] == "Bettrdata 13 · Precise Leads 6 · Melior 0 · 2 to retest"
-    assert not any(w in "\n".join(head) for w in ("strike", "pooled", "seeds"))
+BILLS = {"bettrdatasgroup.com": {"bills_on": "2026-11-08", "provider": "Zapmail"},
+         "gopreciseleads.com": {"bills_on": "2026-11-12", "provider": "ScaledMail"}}
 
 
-def test_switched_on_but_silent_campaigns_are_not_called_sending():
-    head, thread = kp.format_report(_build(), [], TODAY)
-    body = "\n".join(thread)
-    assert "🚨 still sending in: Ingest | Main" in body
-    assert "eve@bettrdatahq.co" in body and "in switched-on campaigns that sent nothing in 7 days: Marketplace | New Agencies" in body
-    assert "still sending in: Marketplace" not in body
+def _report(bills=BILLS):
+    return kp.format_report(_build(), [], TODAY, bills)
 
 
-def test_every_inbox_is_in_the_thread_once_per_client():
-    res = _build()
-    head, thread = kp.format_report(res, [], TODAY)
-    body = "\n".join(thread)
-    for d in res["by_client"].values():
-        for r in d.get(kr.KILL, []) + d.get(kr.WATCH, []):
-            assert r["email"] in body, r["email"]
-    assert any(p.startswith("*Bettrdata: 13 inboxes to take out*") for p in thread)
-    assert any(p.startswith("*Precise Leads: 6 inboxes to take out*") for p in thread)
+def test_headline_counts_domains_and_says_what_to_do():
+    head, parts = _report()
+    assert head[0] == "🚨 Kill warnings, 13 Oct: 6 domains are landing in spam, stop using them"
+    assert head[1] == "1 of their inboxes is still sending: take it out of campaigns today."
+    assert len(head) == 2 and not EMAIL.search("\n".join(head))
 
 
-def test_reasons_in_plain_words_domain_said_once():
-    head, thread = kp.format_report(_build(), [], TODAY)
-    bd = next(p for p in thread if p.startswith("*Bettrdata"))
-    assert bd.count("*bettrdatasgroup.com* — whole domain: 65% of 60 test emails reached the inbox (needs 80%)") == 1
-    assert bd.count("whole domain:") == 3
-    assert "failed 2 tests: 65% (5 Oct), then 70% (12 Oct)" in bd
-    assert not any(w in "\n".join(thread) for w in ("strike", "pooled", "seeds", "struck"))
+def test_needs_a_look_today_comes_first():
+    head, parts = _report()
+    look = parts[0].split("\n")
+    assert look[0] == "*Needs a look today*"
+    assert any(l.startswith("• `dan@bettrdatahq.co` is sending in Ingest | Main") for l in look)
+    assert any(l.startswith("• `eve@bettrdatahq.co` is in 1 campaign that is switched on but not sending "
+                            "(Marketplace | New Agencies). Pause it") for l in look)
+    assert any(l.startswith("• `rmarkman@meliorbase.com` is sending in Accounting firm roundtable | Melior "
+                            "and failed its last test (70% reached the inbox). Retest it this week") for l in look)
 
 
-def test_retest_list_then_how_we_decide_last():
-    head, thread = kp.format_report(_build(), [], TODAY)
-    watch = next(p for p in thread if p.startswith("*To retest (2)"))
-    assert "virginia@myscalegrid.co" in watch and "rmarkman@meliorbase.com" in watch
-    assert "failed 1 test: 70% of 20 test emails reached the inbox (12 Oct)" in watch
-    assert thread.index(watch) == len(thread) - 2
-    last = thread[-1]
-    assert RULE in last and "2 failed tests a week apart" in last and "next bill" in last
-    assert "Warning only: the bot changes nothing." in last
-    everything = "\n".join(head + thread)
-    assert everything.count(RULE) == 1
+def test_one_line_per_domain_with_its_bill():
+    head, parts = _report()
+    stop = next(p for p in parts if p.startswith("*Stop using these domains*")).split("\n")
+    assert "• Bettrdata · bettrdatasgroup.com (3 inboxes) · 65% reached the inbox · bills 8 Nov" in stop
+    assert "• Bettrdata · bettrdatahq.co (4 inboxes) · 70% reached the inbox · no bill found" in stop
+    assert "• Precise Leads · gopreciseleads.com (3 inboxes) · 65% reached the inbox · bills 12 Nov" in stop
+    assert len(stop) == 1 + 6 and not any("@" in l for l in stop)
+
+
+def test_retest_then_rule_last_in_one_message():
+    head, parts = _report()
+    retest = next(p for p in parts if p.startswith("*Retest*"))
+    assert retest == "*Retest*\n• `virginia@myscalegrid.co` (Bettrdata) · failed 1 test (70%)"
+    assert parts[-1].startswith("_" + RULE) and "129 passed, 162 with no recent test" in parts[-1]
+    assert "Warning only: the bot changes nothing." in parts[-1]
+    text = kp.render_text(head, parts)
+    assert text.startswith(head[0]) and "thread" not in text and text.count(RULE) == 1
+    assert not any(w in text for w in ("strike", "pooled", "seeds", "struck"))
+
+
+def test_without_bills_no_bill_text():
+    head, parts = kp.format_report(_build(), [], TODAY, None)
+    assert "bills " not in "\n".join(parts) and "no bill found" not in "\n".join(parts)
 
 
 def test_nothing_to_take_out():
     facts = {"a@ok.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 0)]}}
-    head, thread = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY)
-    assert head[0] == "✅ Kill warnings, 13 Oct: nothing to take out"
-    assert RULE in thread[-1]
+    head, parts = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY)
+    assert head == ["✅ Kill warnings, 13 Oct: no domain is landing in spam"]
+    assert parts[-1].startswith("_" + RULE)
 
 
-def test_warning_icon_when_none_still_sending():
-    facts = {"a@x.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 12)], "campaigns": ["Old"], "sending": []}}
+def test_none_sending_says_wait_for_the_bill():
+    facts = {"a@x.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 12)], "campaigns": [], "sending": []}}
     head, _ = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY)
-    assert head[0].startswith("⚠️ Kill warnings, 13 Oct: 1 inbox is landing in spam, take it out of campaigns (1 domain)")
-    assert head[1] == "None is sending now; 1 sits in switched-on campaigns that sent nothing in 7 days"
+    assert head == ["⚠️ Kill warnings, 13 Oct: 1 domain is landing in spam, stop using it",
+                    "None of them is sending right now. Don't add them to campaigns; retire or replace them at their next bill."]
 
 
 def test_read_errors_are_said_plainly():
-    head, thread = kp.format_report(_build(), ["Smartlead (Bettrdata): timeout"], TODAY)
-    assert len(head) <= 5
+    head, parts = kp.format_report(_build(), ["Smartlead (Bettrdata): timeout"], TODAY)
     assert any("Could not read Smartlead (Bettrdata)" in h for h in head)
 
 
-def test_render_text_has_both_parts():
-    head, thread = kp.format_report(_build(), [], TODAY)
-    text = kp.render_text(head, thread)
-    assert text.startswith(head[0]) and thread[-1] in text and "virginia@myscalegrid.co" in text
+def test_bill_dates_by_domain_takes_the_earliest():
+    bills = [{"bills_on": "2026-11-08", "provider": "Zapmail", "label": "21 Google inboxes", "price": 68.25,
+              "inboxes": ["a@one.com", "b@one.com"]},
+             {"bills_on": "2026-10-27", "provider": "Zapmail", "label": "3 Google", "price": 9, "inboxes": ["c@one.com"]},
+             {"bills_on": "2026-10-14", "provider": "Zapmail", "label": "12 Outlook pre-warmed", "price": 84, "inboxes": []}]
+    out = kp.bill_dates(bills)
+    assert out == {"one.com": {"bills_on": "2026-10-27", "provider": "Zapmail", "label": "3 Google", "price": 9}}
