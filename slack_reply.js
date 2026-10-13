@@ -51,10 +51,23 @@ function textSections(text) {
 
 const hasClose = blocks => blocks.some(b => (b.elements || []).some(e => e.action_id === 'nav_close'));
 
-/** The reply with a ✕ Close button, once. Messages everyone sees and
- *  delete-only replies pass through untouched. */
+/** Keys and tokens out of a reply's text and its blocks' text (slack_text.redact). */
+function scrub(p) {
+  const { redact } = require('./slack_text');
+  const fix = t => (t && typeof t.text === 'string' ? { ...t, text: redact(t.text) } : t);
+  const out = { ...p };
+  if (typeof out.text === 'string') out.text = redact(out.text);
+  if (Array.isArray(out.blocks)) {
+    out.blocks = out.blocks.map(b => ({ ...b, ...(b.text ? { text: fix(b.text) } : {}),
+      ...(b.type === 'context' && b.elements ? { elements: b.elements.map(fix) } : {}) }));
+  }
+  return out;
+}
+
+/** The reply with a ✕ Close button, once, and no keys in its text. Messages
+ *  everyone sees and delete-only replies get no button. */
 function withClose(payload) {
-  const p = typeof payload === 'string' ? { text: payload } : { ...payload };
+  const p = scrub(typeof payload === 'string' ? { text: payload } : payload);
   if (p.delete_original || p.response_type === 'in_channel') return p;
   const blocks = p.blocks && p.blocks.length ? p.blocks : textSections(p.text);
   if (!blocks.length || hasClose(blocks)) return p;

@@ -50,6 +50,12 @@ async function test(name, fn) {
     assert.strictEqual(r.withClose('plain').blocks[0].text.text, 'plain', 'a string reply works too');
   });
 
+  await test('no reply carries a key, even one that skipped plainError', async () => {
+    const p = r.withClose({ text: ':x: ' + "401 for url 'https://server.smartlead.ai/x?api_key=SECRET123'", blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc' } }] });
+    assert.ok(!/SECRET123|eyJhbGci/.test(JSON.stringify(p)), JSON.stringify(p));
+  });
+
   await test('a long text reply is split into sections, not cut', async () => {
     const line = 'x'.repeat(100);
     const text = Array.from({ length: 80 }, () => line).join('\n');

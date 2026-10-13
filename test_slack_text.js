@@ -14,6 +14,19 @@ assert.ok(/no Smartlead account connected/.test(plainError('FAILED — no export
 assert.strictEqual(plainError('ERROR: something new'), 'something new'); n++;   // unknown: passed through
 assert.ok(plainError('').length > 0); n++;
 
+// Keys never reach Slack, and HTTP errors read as one sentence.
+{
+  const sl401 = plainError("HTTPStatusError: Client error '401 Unauthorized' for url 'https://server.smartlead.ai/api/v1/email-accounts/?api_key=SECRETKEY123&offset=0&limit=100'");
+  assert.ok(!/SECRETKEY123|api_key|https?:/.test(sl401), 'no key or URL: ' + sl401); n++;
+  assert.ok(/Smartlead rejected an API key/.test(sl401) && /SMARTLEAD_IGNORE_ACCOUNTS/.test(sl401), sl401); n++;
+  const html = plainError('502 on /organizations: <html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>');
+  assert.ok(!/<html|nginx/.test(html) && /502/.test(html) && /try again/i.test(html), html); n++;
+  const sm = plainError("Server error '503 Service Unavailable' for url 'https://server.scaledmail.com/api/v1/orders'");
+  assert.ok(/ScaledMail/.test(sm) && /503/.test(sm) && !/https?:/.test(sm), sm); n++;
+  const passthrough = plainError('odd failure with Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF and token=xoxb-123-456-abc');
+  assert.ok(!/eyJhbGci|xoxb-123/.test(passthrough) && /odd failure/.test(passthrough), passthrough); n++;
+}
+
 const blocks = renewalBlocks({ renewals: [{
   domain: 'gomelior.com', domain_id: '050da6e0-82a7-4e9d-834b-7b45d9735666',
   client: 'Melior', account: 'PRECISE_LEADS', expire_on: '2026-10-29' }] });

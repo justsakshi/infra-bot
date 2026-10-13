@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 
 import requests
@@ -60,9 +61,25 @@ def build_full_lists(rows: list[dict]) -> dict[str, list[str]]:
     return out
 
 
+_SECRETS = [
+    (re.compile(r"((?:api_?key|token|key|secret|password)=)[^&\s'\"]+", re.I), r"\1<hidden>"),
+    (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer <hidden>"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?"), "<hidden>"),
+    (re.compile(r"xox[abposr]-[A-Za-z0-9-]+"), "<hidden>"),
+    (re.compile(r"<(?:!doctype|html)\b.*?(?:</html>|$)", re.I | re.S), "(error page)"),
+]
+
+
+def redact(text: str) -> str:
+    """Keys, tokens and raw provider error pages out of anything sent to Slack."""
+    for pattern, repl in _SECRETS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> str | None:
     """Post one message; returns its ts on success, None on failure."""
-    body = {"channel": channel, "text": text, "unfurl_links": False}
+    body = {"channel": channel, "text": redact(text), "unfurl_links": False}
     if thread_ts:
         body["thread_ts"] = thread_ts
     try:

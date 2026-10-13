@@ -60,3 +60,19 @@ def test_empty_parts_are_skipped(monkeypatch):
     sent = _fake(monkeypatch)
     notify.post_with_thread("t", "C1", ["h"], ["", "  ", "real"])
     assert [s[0] for s in sent[1:]] == ["real"]
+
+
+def test_keys_and_error_pages_never_reach_slack(monkeypatch):
+    bodies = []
+
+    class Resp:
+        def json(self):
+            return {"ok": True, "ts": "1.1"}
+
+    monkeypatch.setattr(notify.requests, "post", lambda url, headers, json, timeout: bodies.append(json) or Resp())
+    notify._post("t", "C1", "failed: 'https://server.smartlead.ai/api/v1/x?api_key=SECRET123&limit=1' "
+                            "then 502 on /organizations: <html><head><title>502</title></head><body>nginx</body></html> "
+                            "and Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc")
+    text = bodies[0]["text"]
+    assert "SECRET123" not in text and "eyJhbGci" not in text and "nginx" not in text and "<html" not in text
+    assert "502" in text and "error page" in text
