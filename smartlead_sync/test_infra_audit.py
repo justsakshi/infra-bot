@@ -78,8 +78,8 @@ def test_summary_worst_first():
     fs = [ia.finding("signature_missing", "P2", "A", "x@a.com", "no signature", "fix"),
           ia.finding("main_domain", "P0", "B", "b.com", "main", "fix")]
     txt = ia.summarize(fs, {"domains": 2, "inboxes": 2})
-    assert txt.index("Sending from the main domain") < txt.index("No signature") and "*1 P0*" in txt
-    assert "All checks passed" in ia.summarize([], {})
+    assert txt.index("Sending from the main domain") < txt.index("No signature") and "P0 1" in txt
+    assert "no problems" in ia.summarize([], {})
 
 
 def test_inbox_job_refuses_main_domain():

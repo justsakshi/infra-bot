@@ -98,6 +98,18 @@ def _yesterdays_cumulative(col, dom: str, yesterday: str) -> dict:
         return {}
 
 
+def _alert_parts(alert_lines: list[str]) -> tuple[list[str], list[str]]:
+    """(headline_lines, thread_parts). Up to 3 alerts sit in the headline; a
+    longer list goes in the thread (all of it, split by post_with_thread)."""
+    n = len(alert_lines)
+    head = [f"⚠️ Reply-rate alert: {n} drop{'s' if n != 1 else ''}, "
+            "earliest deliverability warning"]
+    if n <= 3:
+        return head + alert_lines, []
+    return head + ["Pause or investigate per the daily P0 flow; the list is in the thread."], \
+        ["\n".join(alert_lines)]
+
+
 async def main() -> None:
     today = date.today().isoformat()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
@@ -168,10 +180,12 @@ async def main() -> None:
         # nobody reads wasted that lead time entirely, so push it to Slack.
         # Silent when no channel is configured.
         try:
-            from smartlead.notify import post_digest
-            post_digest("*📉 Reply-rate alert — earliest deliverability warning*\n"
-                        + "\n".join(alert_lines[:25])
-                        + ("\n   • …and more, see the job log" if len(alert_lines) > 25 else ""))
+            from smartlead.config import HEALTH_NOTIFY_CHANNEL
+            from smartlead.notify import post_with_thread
+            token = os.getenv("SLACK_BOT_TOKEN", "")
+            if token and HEALTH_NOTIFY_CHANNEL:
+                head, thread = _alert_parts(alert_lines)
+                post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, thread)
         except Exception as exc:  # noqa: BLE001 - alerting must never break the job
             print(f"  [ReplyMon] Slack alert failed (non-fatal): {exc}")
 

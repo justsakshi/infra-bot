@@ -63,7 +63,7 @@ def compare(prev: dict[str, dict], now: list[dict], today: date) -> list[dict]:
         else:   # ScaledMail: bill day is computed from the order date; no payment state in the API
             if nb == t and p.get("bill_day_noted") != t:
                 events.append({**base, "event": "bill_day",
-                               "detail": "bills today — ScaledMail's API does not show payment state; check the card payment went through (it can need confirmation)"})
+                               "detail": "bills today, check the card payment went through"})
     for k, p in prev.items():
         if k not in seen and str(p.get("status")).upper() == "ACTIVE":
             events.append({"key": k, "provider": p["provider"], "label": p["label"], "clients": p.get("clients") or [],
@@ -73,26 +73,37 @@ def compare(prev: dict[str, dict], now: list[dict], today: date) -> list[dict]:
 
 
 ALERT = {"not_renewed", "payment", "status", "new", "gone", "bill_day"}
+URGENT = {"not_renewed", "payment", "status"}
 ICON = {"not_renewed": ":rotating_light:", "payment": ":x:", "status": ":warning:", "new": ":new:",
         "gone": ":wastebasket:", "bill_day": ":credit_card:", "renewed": ":white_check_mark:"}
+ADVICE = "_Unpaid inboxes get suspended. Fix the card / wallet in the provider, or let them lapse on purpose._"
+SCALEDMAIL_NOTE = ("_ScaledMail's API does not show payment state, so on its bill day check the card payment "
+                   "went through in ScaledMail (it can need 3-D Secure confirmation)._")
 
 
-def format_events(events: list[dict]) -> str:
+def format_events(events: list[dict], today: date | None = None) -> tuple[list[str], list[str]]:
+    """``(headline_lines, thread_parts)``: a title line plus one line per event
+    in the channel; the what-to-do advice once, in the thread."""
     alerts = [e for e in events if e["event"] in ALERT]
     ok = [e for e in events if e["event"] == "renewed"]
     if not alerts and not ok:
-        return ""
-    lines = ["*💳 Inbox billing watch*"]
+        return [], []
+    icon = "🚨" if any(e["event"] in URGENT for e in alerts) else "⚠️" if alerts else "✅"
+    when = f", {today.day} {today:%b}" if today else ""
+    head = [f"{icon} Inbox billing watch{when}"]
     for e in alerts + ok:
         who = ", ".join(e["clients"]) if e["clients"] else ""
         pay = ""
         if e.get("invoice_url") and e["event"] in ("payment", "not_renewed", "status", "bill_day"):
             pay = f" · <{e['invoice_url']}|{'Pay / see invoice' if e['provider'] == 'Zapmail' else 'Open ScaledMail billing'}>"
-        lines.append(f"{ICON[e['event']]} *{e['provider']} · {e['label']}*" + (f" ({who})" if who else "")
-                     + f" — {e['detail']}{pay}")
-    if any(e["event"] in ("not_renewed", "payment", "status") for e in alerts):
-        lines.append("_Unpaid inboxes get suspended. Fix the card / wallet in the provider, or let them lapse on purpose._")
-    return "\n".join(lines)
+        head.append(f"{ICON[e['event']]} *{e['provider']} · {e['label']}*" + (f" ({who})" if who else "")
+                    + f" — {e['detail']}{pay}")
+    advice = []
+    if any(e["event"] in URGENT for e in alerts):
+        advice.append(ADVICE)
+    if any(e["event"] == "bill_day" for e in alerts):
+        advice.append(SCALEDMAIL_NOTE)
+    return head, (["\n".join(advice)] if advice else [])
 
 
 def remember(prev: dict[str, dict], now: list[dict], events: list[dict], today: date) -> dict[str, dict]:

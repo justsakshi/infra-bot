@@ -117,24 +117,81 @@ def ready_lines(apply: bool) -> dict:
         return {"lines": [f"Inbox readiness not checked: {str(exc)[:120]}"], "ready": []}
 
 
+_READY_RE = __import__("re").compile(r"^✅ Ready: (\d+) (\S+) inboxes \((\d+) domains?, plan ([^)\s]+)\)")
+
+
+def _plans_by_id() -> dict:
+    """plan_id -> plan from the order ledger, for client and domain names; {} without Mongo."""
+    try:
+        from smartlead.scaledmail_orders import PlanStore
+        return {p.get("plan_id"): p for p in PlanStore().all()}
+    except Exception:  # noqa: BLE001 - the post still goes out, just without names
+        return {}
+
+
+def ready_message(lines: list[str], plans: dict | None = None) -> tuple[list[str], list[str]]:
+    """``(headline_lines, thread_parts)`` for "Inboxes ready in Smartlead". Pure.
+    Headline: the inboxes made ready, summed over orders, and whose they are;
+    thread: one line per order (+ its domains), then anything still waiting."""
+    plans = plans or {}
+    total, kinds, clients, per_order, other = 0, [], [], [], []
+    for line in lines:
+        m = _READY_RE.match(line)
+        if not m:
+            other.append("• " + line)
+            continue
+        n, kind, pid = int(m.group(1)), m.group(2), m.group(4)
+        plan = plans.get(pid) or {}
+        total += n
+        if kind not in kinds:
+            kinds.append(kind)
+        client = plan.get("client") or ""
+        if client and client not in clients:
+            clients.append(client)
+        doms = plan.get("domains") or []
+        per_order.append("• " + (f"*{client}*: " if client else "") + line
+                         + (f" Domains: {', '.join(doms)}" if doms else ""))
+    kind = f"{kinds[0]} " if len(kinds) == 1 else ""
+    who = f" ({', '.join(clients)})" if clients else ""
+    if total:
+        head = [f"✅ {total} {kind}inboxes ready in Smartlead{who}"]
+    else:
+        head = ["⏳ Inboxes on the way to Smartlead"]
+    mismatch = sum(1 for l in per_order if "⚠️" in l)
+    if mismatch:
+        head.append(f"Sender name differs from the order on {mismatch} order(s), see the thread")
+    waiting = sum(1 for l in other if l.startswith("• ⏳"))
+    if waiting:
+        head.append(f"{waiting} more order(s) still waiting for inboxes")
+    parts = ["\n".join(per_order + other)] if per_order or other else []
+    return head, parts
+
+
 def post_lines(title: str, lines: list[str]) -> bool:
-    """Post to SCALEDMAIL_NOTIFY_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL); False when not set up."""
-    from smartlead.notify import _post
+    """Post to SCALEDMAIL_NOTIFY_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL); False when not set up.
+    Headline in the channel, one line per order in its thread (spec 2026-10-13)."""
+    from smartlead.notify import post_with_thread
     channel = (os.getenv("SCALEDMAIL_NOTIFY_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL") or "").strip()
     token = (os.getenv("SLACK_BOT_TOKEN") or os.getenv("DOMAINS_SLACK_BOT_TOKEN") or "").strip()
     if not channel or not token:
         return False
-    return _post(token, channel, title + "\n" + "\n".join("• " + l for l in lines)) is not None
+    head, parts = ready_message(lines, _plans_by_id())
+    if not any(_READY_RE.match(l) for l in lines):
+        head = [title.strip("*")] + head[1:]
+    return post_with_thread(token, channel, head, parts) is not None
 
 
 def digest(sm) -> dict:
+    """ScaledMail's part of the 09:40 "Domains & inboxes daily": the full lines
+    (thread) plus the counts and sums the headline needs."""
     snap = fleet.snapshot(sm, tracker=_tracker())
     ren = fleet.renewals(snap, domain_days=14, billing_days=3)
     watch = setup_lines(snap)
+    ready = ready_lines(os.getenv("INBOX_READY_ENABLED", "").lower() == "true")["lines"]
     stuck = [d for d in snap["domains"] if d["status"] != "Active" and d["domain"] not in watch["covered"]]
     unassigned = [d["domain"] for d in snap["domains"] if not d["client"]]
     rep = fleet.report_summary(sm.reporting())
-    lines = list(watch["lines"]) + ready_lines(os.getenv("INBOX_READY_ENABLED", "").lower() == "true")["lines"]
+    lines = list(watch["lines"]) + ready
     if ren["billing"]:
         lines.append("Orders billing in 3 days: " + "; ".join(
             f"{o['description'].replace('*', '×')} ${o['amount']:.2f} on {o['billing_day']} ({', '.join(o['clients'])})"
@@ -145,11 +202,17 @@ def digest(sm) -> dict:
     if stuck:
         lines.append("Still being set up: " + ", ".join(f"{d['domain']} ({d['status']})" for d in stuck))
     if unassigned:
-        lines.append(f"No client on {len(unassigned)} domain(s) — set the order tag: " + ", ".join(unassigned[:10]))
+        lines.append(f"No client on {len(unassigned)} domain(s) — set the order tag: " + ", ".join(unassigned))
     if rep.get("flagged"):
         lines.append(f"Placement week {rep['weekof']}: " + ", ".join(
-            f"{r['domain']} {r['score']}%" for r in rep["flagged"][:10]))
+            f"{r['domain']} {r['score']}%" for r in rep["flagged"]))
+    w = watch["lines"]
     return {"lines": lines, "monthly_total": snap["monthly_total"],
+            "billing": ren["billing"], "unassigned": unassigned,
+            "setting_up": sum(1 for l in w if l.startswith("Setting up")),
+            "late": sum(1 for l in w if l.startswith("Late")),
+            "live": sum(1 for l in w if l.startswith("LIVE")),
+            "ready": sum(1 for l in ready if _READY_RE.match(l)),
             "text": ("*ScaledMail today*\n" + "\n".join("• " + l for l in lines)) if lines else ""}
 
 

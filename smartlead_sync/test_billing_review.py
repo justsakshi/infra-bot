@@ -54,7 +54,8 @@ def test_scaledmail_bill_day_note_once():
     assert [x["event"] for x in e] == ["bill_day"]
     saved = bw.remember(prev, [_s("o", "2026-10-08")], e, T)
     assert ev(saved, [_s("o", "2026-10-08")]) == []
-    assert "check the card payment" in bw.format_events(e)
+    head, thread = bw.format_events(e)
+    assert "check the card payment" in head[1] and "3-D Secure" in thread[0]
 
 
 def _facts(pct=95.0, tested_on="2026-10-05", seeds=20, history=(), **kw):
@@ -93,14 +94,14 @@ def test_review_bill_counts_and_savings():
                         "inboxes": ["a@x.com", "b@x.com", "c@x.com", "d@y.com"]}, facts, T)
     assert r["counts"] == {"KEEP": 1, "RETIRE": 3, "CHECK": 0}
     assert r["retire_saves_monthly"] == 9.75
-    assert "saves *$9.75/month*" in rr.format_review([r], 3)
+    assert "saves $9.75/mo" in rr.format_review([r], 3)[0][0]
     assert all(row["why"].startswith("should kill") for row in r["rows"] if row["verdict"] == "RETIRE")
 
 
 def test_failed_payment_carries_the_invoice_link():
     prev = state(_z("a", "2026-10-08"))
     now = [dict(_z("a", "2026-10-08", fail="card declined"), invoice_url="https://invoice.stripe.com/i/x")]
-    txt = bw.format_events(bw.compare(prev, now, T))
+    txt = "\n".join(bw.format_events(bw.compare(prev, now, T))[0])
     assert "<https://invoice.stripe.com/i/x|Pay / see invoice>" in txt
 
 

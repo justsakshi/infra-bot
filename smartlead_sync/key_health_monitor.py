@@ -80,22 +80,31 @@ def _save(results: list[dict], checked_at: str) -> None:
         print(f"  [KeyHealth] Mongo write failed (non-fatal): {exc}")
 
 
+def _alert_parts(dead: list[dict], unreachable: list[dict]) -> tuple[list[str], list[str]]:
+    """(headline_lines, thread_parts): who is broken in the channel, the advice in the thread."""
+    icon = "🚨" if dead else "⚠️"
+    head = [f"{icon} Smartlead API key alert, {len(dead) + len(unreachable)} account(s)"]
+    if dead:
+        head.append("Key rejected: " + ", ".join(f"*{r['client']}* (`…{r.get('key_tail', '')}`)" for r in dead))
+    if unreachable:
+        head.append("Smartlead unreachable: " + ", ".join(f"*{r['client']}* ({r['detail']})" for r in unreachable))
+    thread = []
+    if dead:
+        thread.append("Every job is blind for these clients until a new key is set "
+                      "in `.env` AND on Render.")
+    return head, thread
+
+
 def _alert(dead: list[dict], unreachable: list[dict]) -> None:
     """Slack alert — only fires when a channel is configured, and only when
     something is actually broken (never a daily all-clear ping)."""
     from smartlead.config import HEALTH_NOTIFY_CHANNEL
     token = os.getenv("SLACK_BOT_TOKEN", "")
-    if not token or not HEALTH_NOTIFY_CHANNEL:
+    if not token or not HEALTH_NOTIFY_CHANNEL or not (dead or unreachable):
         return
-    lines = ["*🔑 Smartlead API key alert*", ""]
-    for r in dead:
-        lines.append(f"   • *{r['client']}* — key rejected (`…{r.get('key_tail', '')}`). "
-                     "Every job is blind for this client until a new key is set "
-                     "in `.env` AND on Render.")
-    for r in unreachable:
-        lines.append(f"   • *{r['client']}* — Smartlead unreachable: {r['detail']}")
-    from smartlead.notify import post_digest
-    post_digest("\n".join(lines))
+    from smartlead.notify import post_with_thread
+    head, thread = _alert_parts(dead, unreachable)
+    post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, thread)
 
 
 async def main() -> None:

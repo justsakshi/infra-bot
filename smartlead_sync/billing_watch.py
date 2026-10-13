@@ -89,9 +89,12 @@ def main() -> int:
     failed = {"ScaledMail" if e.startswith("ScaledMail") else "Zapmail" for e in errors}
     events = [e for e in bw.compare(prev, rows, today)
               if not (e["event"] == "gone" and e["provider"] in failed)]
-    text = bw.format_events(events)
+    headline, thread = bw.format_events(events, today)
     if errors:
-        text = (text + "\n" if text else "*💳 Inbox billing watch*\n") + ":warning: could not read: " + "; ".join(errors)
+        if not headline:
+            headline = [f"⚠️ Inbox billing watch, {today.day} {today:%b}"]
+        headline.append(":warning: could not read: " + "; ".join(errors))
+    text = "\n".join(headline) + ("\n\n" + "\n\n".join(thread) if thread else "")
     posted = False
     if not args.dry:
         new_state = bw.remember(prev, rows, events, today)
@@ -101,11 +104,11 @@ def main() -> int:
         if col is not None:
             col.update_one({"_id": STATE_ID}, {"$set": {"rows": new_state, "at": today.isoformat()}}, upsert=True)
         if text and (any(e["event"] in bw.ALERT for e in events) or errors):
-            from smartlead.notify import _post
+            from smartlead.notify import post_with_thread
             token = os.getenv("SLACK_BOT_TOKEN", "")
             channel = os.getenv("RENEWAL_REVIEW_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "")
-            posted = bool(token and channel and _post(token, channel, text[:39000]))
-    out = {"rows": len(rows), "events": events, "text": text, "errors": errors, "posted": posted,
+            posted = bool(token and channel and post_with_thread(token, channel, headline, thread))
+    out = {"rows": len(rows), "events": events, "headline": headline, "thread": thread, "text": text, "errors": errors, "posted": posted,
            "first_run": not prev, "mongo": col is not None}
     print(json.dumps(out, default=str) if args.json else (text or f"No billing changes ({len(rows)} subscriptions / orders watched)."))
     return 0

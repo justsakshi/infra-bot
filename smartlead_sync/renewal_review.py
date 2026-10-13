@@ -191,10 +191,14 @@ def run(days: int) -> dict:
     for rv in reviews:          # whose inbox it is: retiring is per client
         for row in rv["rows"]:
             row["client"] = infer_client(row["email"].split("@")[1], rv.get("account"))
-    text = rr.format_review(reviews, days)
+    headline, thread = rr.format_review(reviews, days)
     if errors:
-        text += "\n:warning: " + "; ".join(errors)
-    return {"days": days, "reviews": reviews, "errors": errors, "text": text}
+        # A half-read review can call good inboxes CHECK: say so up front, details in the thread.
+        headline.append(":warning: Some sources could not be read, so some verdicts are CHECK (details in the thread)")
+        thread.insert(len(thread) - 1, ":warning: could not read: " + "; ".join(errors))
+    text = "\n".join(headline) + ("\n\n" + "\n\n".join(thread) if thread else "")
+    return {"days": days, "reviews": reviews, "errors": errors, "headline": headline, "thread": thread,
+            "text": text}
 
 
 def flag_tracker(res: dict) -> dict:
@@ -242,10 +246,10 @@ def main() -> int:
     if args.flag_tracker:
         res["flagged"] = flag_tracker(res)
     if args.post and res["reviews"]:
-        from smartlead.notify import _post
+        from smartlead.notify import post_with_thread
         token = os.getenv("SLACK_BOT_TOKEN", "")
         channel = os.getenv("RENEWAL_REVIEW_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "")
-        res["posted"] = bool(token and channel and _post(token, channel, res["text"][:39000]))
+        res["posted"] = bool(token and channel and post_with_thread(token, channel, res["headline"], res["thread"]))
     print(json.dumps(res, default=str) if args.json else res["text"])
     return 0
 

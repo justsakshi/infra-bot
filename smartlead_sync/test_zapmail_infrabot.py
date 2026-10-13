@@ -15,7 +15,13 @@ from smartlead import domain_provision
 from smartlead.zapmail_accounts import (
     ZapmailAccountMissing, client_account_map, open_client, require_account,
 )
-from zapmail_digest import format_digest
+from zapmail_digest import format_digest as _format_digest
+
+
+def format_digest(*a, **kw):
+    """Headline + thread joined, so these checks read the whole message."""
+    head, parts, actions = _format_digest(*a, **kw)
+    return "\n".join(head + parts), actions
 
 
 def run(coro):
@@ -289,8 +295,10 @@ def test_digest_ignores_past_client_expiries():
          "account": "PRECISE_LEADS", "client": None},
     ]
     text, actions = format_digest(OK_STATUS, renewals, [], today=TODAY, ledger_ok=True)
-    assert "gomelior.com" in text and "kombinatorfunds.com" not in text
-    assert "1 past-client domain(s) lapsing" in text
+    # the past-client domain is only in its own "lapsing" line, never an action
+    assert "gomelior.com" in text
+    assert [l for l in text.split("\n") if "kombinatorfunds.com" in l] == [
+        "_1 past-client domain lapsing (left to expire, no action): kombinatorfunds.com_"]
     assert actions == 1
 
 

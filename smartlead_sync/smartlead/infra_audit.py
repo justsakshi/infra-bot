@@ -231,27 +231,45 @@ NAMES = {
 SEV_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 
 
-def summarize(findings: list[dict], checked: dict) -> str:
-    """Slack text: counts per check, worst first, a few examples each."""
+NOT_CHECKABLE = ("_Not checkable by the bot: Google Postmaster / Microsoft SNDS reputation (needs account "
+                 "access), spam traps, profile photos. Blacklists, bounces, placement and reply drops run in their own jobs._")
+
+
+def summary_parts(findings: list[dict], checked: dict, today=None) -> tuple[list[str], list[str]]:
+    """(headline_lines, thread_parts) for notify.post_with_thread (spec 2026-10-13).
+
+    Headline: one line with the count per severity + what was checked. Thread:
+    one reply per problem type (worst first) listing every item and its fix,
+    then the not-checkable note once."""
+    today = today or datetime.now().date()
+    day = f"{today.day} {today:%b}"
     sev = Counter(f["severity"] for f in findings)
-    head = (f"*🔎 Infra audit* — {checked.get('domains', 0)} domains, {checked.get('inboxes', 0)} inboxes · "
-            f"*{sev.get('P0', 0)} P0* · {sev.get('P1', 0)} P1 · {sev.get('P2', 0)} P2")
+    scope = f"Checked {checked.get('domains', 0)} domains, {checked.get('inboxes', 0)} inboxes"
     if not findings:
-        return head + "\nAll checks passed."
+        return [f"✅ Infra audit, {day}: no problems", scope], [NOT_CHECKABLE]
+    n = len(findings)
+    icon = "🚨" if sev.get("P0") else "⚠️"     # a P0 is act-today (spec rule 1)
+    head = [f"{icon} Infra audit, {day}: {n} problem{'s' if n != 1 else ''} "
+            f"(P0 {sev.get('P0', 0)} · P1 {sev.get('P1', 0)} · P2 {sev.get('P2', 0)})", scope]
+    by_client = Counter(f["client"] for f in findings)
+    head.append(" · ".join(f"{c} {k}" for c, k in by_client.most_common()))
     groups: dict[str, list[dict]] = defaultdict(list)
     for f in findings:
         groups[f["check"]].append(f)
-    lines = [head]
+    thread = []
     for check, items in sorted(groups.items(), key=lambda kv: (min(SEV_ORDER[f["severity"]] for f in kv[1]), kv[0])):
         s = min((f["severity"] for f in items), key=SEV_ORDER.get)
-        by_client = Counter(f["client"] for f in items)
-        lines.append(f"\n*{s} · {NAMES.get(check, check)}* ({len(items)}) — "
-                     + ", ".join(f"{c} {n}" for c, n in by_client.most_common()))
-        for f in items[:4]:
-            lines.append(f"   • `{f['subject']}` — {f['detail']}")
-        if len(items) > 4:
-            lines.append(f"   • …and {len(items) - 4} more")
-        lines.append(f"   _Fix: {items[0]['fix']}_")
-    lines.append("\n_Not checkable by the bot: Google Postmaster / Microsoft SNDS reputation (needs account "
-                 "access), spam traps, profile photos. Blacklists, bounces, placement and reply drops run in their own jobs._")
-    return "\n".join(lines)
+        clients = Counter(f["client"] for f in items)
+        lines = [f"*{s} · {NAMES.get(check, check)}* ({len(items)}): "
+                 + ", ".join(f"{c} {k}" for c, k in clients.most_common())]
+        lines += [f"   • `{f['subject']}` ({f['client']}): {f['detail']}" for f in items]
+        lines.append(f"_Fix: {items[0]['fix']}_")
+        thread.append("\n".join(lines))
+    thread.append(NOT_CHECKABLE)
+    return head, thread
+
+
+def summarize(findings: list[dict], checked: dict, today=None) -> str:
+    """Plain text of both parts (print / --json): headline, then each thread reply."""
+    head, thread = summary_parts(findings, checked, today)
+    return "\n\n".join(["\n".join(head), *thread])

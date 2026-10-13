@@ -76,7 +76,9 @@ def test_kill_report_groups_by_client_and_warns_live_campaigns():
              "c@z.com": {"client": "Belardi Wong", "tests": tests}}                 # past client: left out
     res = kp.build(facts, T, {"a@x.com": "Scaledmail"})
     assert res["counts"][kr.KILL] == 1 and res["counts"][kr.WATCH] == 1
-    txt = kp.format_report(res, [], T)
+    head, thread = kp.format_report(res, [], T)
+    txt = "\n".join(thread)
+    assert head[0].startswith("\U0001f6a8 Kill warnings")
     assert "warning only" in txt and "`a@x.com` (Scaledmail)" in txt and "still in Exec search" in txt
     assert "c@z.com" not in txt
-    assert "could not read" in kp.format_report(res, ["Smartlead X: 429"], T)
+    assert any("Could not read Smartlead X: 429" in h for h in kp.format_report(res, ["Smartlead X: 429"], T)[0])

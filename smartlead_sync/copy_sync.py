@@ -114,16 +114,26 @@ async def main() -> int:
     return 1 if failed else 0
 
 
+def _summary_parts(written: int, problems: list[str]) -> tuple[list[str], list[str]]:
+    """(headline_lines, thread_parts): one line in the channel, problems in its thread."""
+    verb = "refreshed" if written else "not refreshed"
+    if not problems:
+        return [f"\u2705 Message sequences {verb}" if written else f"\u26a0\ufe0f Message sequences {verb}"], []
+    n = len(problems)
+    return ([f"\u26a0\ufe0f Message sequences {verb}: {n} problem{'s' if n != 1 else ''}"],
+            ["\n".join(problems)])
+
+
 def _post_summary(written: int, problems: list[str]) -> None:
-    """One line for the team; per-campaign detail stays in the logs."""
+    """One line for the team; problems in the thread, per-campaign detail in the logs."""
     token = os.getenv("SLACK_BOT_TOKEN", "")
     channel = os.getenv("PLACEMENT_REPORT_CHANNEL") or "C0AGVSUNEFP"
     if not token:
         return
     try:
-        from smartlead.notify import _post
-        head = "*:envelope: Message sequence refreshed*" if written else "*:warning: Message sequence not refreshed*"
-        _post(token, channel, "\n".join([head, *problems]))
+        from smartlead.notify import post_with_thread
+        head, thread = _summary_parts(written, problems)
+        post_with_thread(token, channel, head, thread)
     except Exception as exc:  # noqa: BLE001
         print(f"[CopySync] Slack summary failed: {exc}")
 

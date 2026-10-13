@@ -186,7 +186,9 @@ def run(only: str | None = None) -> dict:
     findings.sort(key=lambda f: (ia.SEV_ORDER[f["severity"]], f["check"], f["client"], f["subject"]))
     checked = {"domains": len(domains), "inboxes": len(accounts), "in_campaigns": len(active),
                "active_campaigns": len(campaigns), "smtp_hosts": len(smtp_hosts)}
-    return {"checked": checked, "findings": findings, "text": ia.summarize(findings, checked),
+    headline, thread = ia.summary_parts(findings, checked)
+    return {"checked": checked, "findings": findings, "headline": headline, "thread": thread,
+            "text": ia.summarize(findings, checked),
             "unknown": {"mx": sum(1 for v in mx.values() if v is None),
                         "dmarc": sum(1 for v in dmarc.values() if v is None)}}
 
@@ -203,10 +205,10 @@ def main() -> int:
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}) if args.json else f"ERROR: {exc}")
         return 0 if args.json else 1
     if args.post:
-        from smartlead.notify import _post
+        from smartlead.notify import post_with_thread
         token = os.getenv("SLACK_BOT_TOKEN", "")
         channel = os.getenv("INFRA_AUDIT_CHANNEL") or os.getenv("HEALTH_NOTIFY_CHANNEL", "")
-        res["posted"] = bool(token and channel and _post(token, channel, res["text"][:39000]))
+        res["posted"] = bool(token and channel and post_with_thread(token, channel, res["headline"], res["thread"]))
         if not res["posted"]:
             print("  [Audit] INFRA_AUDIT_CHANNEL / SLACK_BOT_TOKEN missing or post failed — printed only")
     if args.json:

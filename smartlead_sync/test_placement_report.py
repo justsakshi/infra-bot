@@ -36,17 +36,18 @@ ok(rep["pairs"][("Google", "Google")] == {"seeds": 2, "spam": 1, "inboxes_hit": 
 ok(rep["pairs"][("Outlook", "Google")]["spam"] == 1, "Outlook -> Google spam counted")
 ok(a["by_receiver"]["Google"] == {"seeds": 2, "spam": 1}, "per-receiver counts kept per inbox")
 ok(counts(rep["inboxes"])["watch"] == 2, "counts by status")
-txt = format_slack("X", rep, ["t1"], "2026-10-12")
-ok(txt.splitlines()[:2] == ["*X deliverability test results (12 Oct)*",
-                            ":warning: 0 of 2 mailboxes land in the inbox, *2 are going to spam* (list below)."],
-   f"title and one-line result first, got {txt.splitlines()[:2]}")
-ok("Outlook \u2192 Google: 1 of 1 in spam (100%)" in txt, "shows where the test emails landed")
-ok(txt.index("Where the test emails landed") < txt.index("*Mailboxes going to spam*"), "mailbox list comes last")
+head, parts = format_slack("X", rep, ["t1"], "2026-10-12")
+txt = "\n".join(parts)
+ok(head == ["\U0001f6a8 X, 12 Oct: 2 of 2 mailboxes in spam (2 domains in spam)",
+            "Outlook\u2192Google 100% spam \u00b7 Google\u2192Google 50%"],
+   f"headline: icon, client, date, result, got {head}")
+ok("Outlook \u2192 Google: 1 of 1 in spam (100%)" in txt, "thread shows where the test emails landed")
+ok(txt.index("*Mailboxes in spam (2)*") < txt.index("Where the test emails landed"), "mailbox list comes first in the thread")
 ok("\u2022 b@out.com \u2014 remove from Camp 1\n\u2022 a@gm.com \u2014 not in a live campaign, nothing to remove" in txt,
    "one list: each mailbox by name with what to do, live ones first")
-clean = format_slack("Y", build_report({"c@gm.com": [{"seed": "x@g.com", "folder": "Inbox"}]}, {"c@gm.com": "GMAIL"}, prov), ["t"])
-ok(":white_check_mark: All 1 mailboxes land in the inbox. All 1 domains are healthy." in clean
-   and "Google \u2192 Google: 0 of 1 in spam" in clean and "Mailboxes going to spam" not in clean,
+ch, cp = format_slack("Y", build_report({"c@gm.com": [{"seed": "x@g.com", "folder": "Inbox"}]}, {"c@gm.com": "GMAIL"}, prov), ["t"])
+ok(ch == ["\u2705 Y: the mailbox lands in the inbox"]
+   and "Google \u2192 Google: 0 of 1 in spam" in "\n".join(cp) and "Mailboxes in spam" not in "\n".join(cp),
    "all clear still posts the result and where emails landed")
 
 # one domain: 3 mailboxes, one in spam -> the other two stay usable only for existing campaigns

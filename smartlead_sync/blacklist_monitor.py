@@ -273,6 +273,33 @@ def _save(results: list[dict], today: str) -> None:
         print(f"  [Blacklist] Mongo write failed: {exc}")
 
 
+def _alert_parts(serious: list[dict], surbl_only: int = 0) -> tuple[list[str], list[str]]:
+    """(headline_lines, thread_parts). Up to 3 domains sit in the headline; a
+    longer list and the advice go in the thread."""
+    n = len(serious)
+    head = [f"🚨 Domain blacklisted (Spamhaus / URIBL): {n} domain{'s' if n != 1 else ''}, "
+            "inbox placement at risk"]
+    lines = [f"   • *{r['domain']}* ({', '.join(r['clients'])}) — {', '.join(r['listed_on'])}"
+             for r in serious]
+    thread = []
+    if n <= 3:
+        head += lines
+    else:
+        by_client: dict[str, int] = {}
+        for r in serious:
+            for c in r["clients"] or ["?"]:
+                by_client[c] = by_client.get(c, 0) + 1
+        head.append(" · ".join(f"{c} {k}" for c, k in sorted(by_client.items(), key=lambda kv: -kv[1])))
+        thread.append("\n".join(lines))
+    advice = ("Pause campaigns on these domains and file a delisting request. "
+              "Domains under 30 days old: replace instead.")
+    if surbl_only:
+        advice += (f"\n_Also {surbl_only} domain(s) on SURBL only (link reputation; "
+                   "check the links in the copy)._")
+    thread.append(advice)
+    return head, thread
+
+
 async def main() -> None:
     today = date.today().strftime("%Y-%m-%d")
     if len(sys.argv) > 1:
@@ -316,15 +343,12 @@ async def main() -> None:
         surbl_only = [r for r in listed if r not in serious]
         if serious:
             try:
-                from smartlead.notify import post_digest
-                post_digest(
-                    "*🚨 Domain blacklisted (Spamhaus / URIBL) — inbox placement at risk*\n"
-                    + "\n".join(f"   • *{r['domain']}* ({', '.join(r['clients'])}) "
-                                f"— {', '.join(r['listed_on'])}" for r in serious[:20])
-                    + "\n\nPause campaigns on these domains and file a delisting "
-                      "request. Domains under 30 days old: replace instead."
-                    + (f"\n_Also {len(surbl_only)} domain(s) on SURBL only (link reputation; "
-                       "check the links in the copy)._" if surbl_only else ""))
+                from smartlead.config import HEALTH_NOTIFY_CHANNEL
+                from smartlead.notify import post_with_thread
+                token = os.getenv("SLACK_BOT_TOKEN", "")
+                if token and HEALTH_NOTIFY_CHANNEL:
+                    head, thread = _alert_parts(serious, len(surbl_only))
+                    post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, thread)
             except Exception as exc:  # noqa: BLE001
                 print(f"  [Blacklist] Slack alert failed (non-fatal): {exc}")
     else:

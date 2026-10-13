@@ -6,7 +6,7 @@ pair, flagged inboxes, which of them sit in an ACTIVE campaign. Dry-run
     python3 placement_report.py --account PRECISE_LEADS --tests 547669
     python3 placement_report.py --account BETTRDATA --since 2026-10-06 --post --status-tab
 
-  --post         post one Slack message per client (channel C0AGVSUNEFP)
+  --post         post one Slack message per client, details in its thread (channel C0AGVSUNEFP)
   --status-tab   write the "Inbox Status" tab Campaign Desk reads
   --grid         write the domain cells into the client's grid tab
   --sheet        both sheet writes
@@ -189,9 +189,12 @@ def main() -> int:
     code = 0
     for client, group in sorted(by_client.items()):
         report = build_report(group, types, seed_provider, attached)
-        text = format_slack(client, report, names, tested_on)
+        headline, thread = format_slack(client, report, names, tested_on)
         print("=" * 60)
-        print(text)
+        print("\n".join(headline))
+        for part in thread:
+            print("\n--- thread reply ---")
+            print(part)
         cmap = {e: client for e in group}
         grid = grid_writes(report, cmap, tested_on, apply=do_grid)
         status = write_status_tab(report, cmap, tested_on, apply=do_status)
@@ -204,14 +207,14 @@ def main() -> int:
             for i in report["inboxes"].values():
                 store.save_result(i["email"], i["domain"], i["status"], tested_on, "weekly_report")
         if args.post:
-            from smartlead.notify import _post
+            from smartlead.notify import post_with_thread
             token = os.getenv("SLACK_BOT_TOKEN", "")
             channel = os.getenv("PLACEMENT_REPORT_CHANNEL") or DEFAULT_CHANNEL
             if not token:
                 print("SLACK_BOT_TOKEN missing - not posted")
                 ok, code = False, 1
             else:
-                ok = _post(token, channel, text)
+                ok = bool(post_with_thread(token, channel, headline, thread))
                 print("posted" if ok else "post FAILED")
                 code = code or (0 if ok else 1)
             if ok and posted is not None:

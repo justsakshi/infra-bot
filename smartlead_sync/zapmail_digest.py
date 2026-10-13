@@ -41,6 +41,10 @@ def _money(v) -> str:
         return "$?"
 
 
+def _plural(n: int, word: str, many: str | None = None) -> str:
+    return f"{n} {word if n == 1 else (many or word + 's')}"
+
+
 def format_digest(
     status: dict,
     renewals: list[dict],
@@ -51,21 +55,27 @@ def format_digest(
     renewal_errors: list[str] | tuple = (),
     wallet_min: float = 30.0,
     expiry_days: int = 14,
-) -> tuple[str, int]:
-    """``(slack_text, action_count)``. Pure — no I/O, so it is unit-tested."""
-    actions = 0
-    # Say what this covers: on 2026-09-29 the team saw "0 expiring" here and
-    # "5 expire today" in the Daily Renewal Check - those 5 were on Inboxkit,
-    # which Zapmail cannot see.
-    lines = [f"*📬 Domains & inboxes daily — {today.isoformat()}*",
-             "_Zapmail and ScaledMail (sections below). Inboxkit is in the Daily Renewal Check._",
-             ""]
+    zap_billing: list[dict] | tuple = (),
+    scaledmail: dict | None = None,
+    errors: list[str] | tuple = (),
+) -> tuple[list[str], list[str], int]:
+    """``(headline_lines, thread_parts, action_count)``. Pure - no I/O.
 
-    lines.append("*Accounts*")
+    Headline (spec 2026-10-13): ✅/⚠️ + date, then at most 3 short lines: what
+    bills soon, what is being set up / became ready, what needs a look. Every
+    list (accounts, domains, batches, bills, past-client domains) is in the
+    thread; the boilerplate is said once, in the last reply."""
+    actions = 0
+    look: list[str] = []          # "needs a look" counts for the headline
+
+    # ── Zapmail ──
+    zap = ["*Zapmail*", "*Accounts*"]
+    unreachable = low_wallets = 0
     for name, s in sorted(status.items()):
         if not s.get("ok"):
             actions += 1
-            lines.append(f"• *{name}* — :warning: unreachable ({s.get('error', '')[:80]})")
+            unreachable += 1
+            zap.append(f"• *{name}* — :warning: unreachable ({s.get('error', '')[:80]})")
             continue
         wallet = s.get("wallet_balance")
         recharge = "auto-recharge on" if s.get("auto_recharge") else "auto-recharge OFF"
@@ -73,68 +83,127 @@ def format_digest(
         act = s.get("active_mailboxes") or {}
         boxes = (f"{act.get('GOOGLE', '?')} Google + {act.get('MICROSOFT', '?')} Outlook mailboxes"
                  if act else f"{s.get('assigned_mailboxes')} mailboxes")
-        lines.append(
-            f"• *{name}* — wallet {_money(wallet)} ({recharge}) · {boxes}"
-            + (f" · {credits} placement credits" if credits is not None else ""))
+        zap.append(f"• *{name}* — wallet {_money(wallet)} ({recharge}) · {boxes}"
+                   + (f" · {credits} placement credits" if credits is not None else ""))
         try:
             low = not s.get("auto_recharge") and float(wallet or 0) < wallet_min
         except (TypeError, ValueError):
             low = False
         if low:
             actions += 1
-            lines.append(f"   :warning: wallet under {_money(wallet_min)} with auto-recharge off "
-                         "— purchases and renewals will fail")
+            low_wallets += 1
+            zap.append(f"   :warning: wallet under {_money(wallet_min)} with auto-recharge off "
+                       "— purchases and renewals will fail")
+    if unreachable:
+        look.append(f"{_plural(unreachable, 'Zapmail account')} unreachable")
+    if low_wallets:
+        look.append(f"{_plural(low_wallets, 'wallet')} low")
 
     cutoff = (today + timedelta(days=expiry_days)).isoformat()
     expiring = sorted((r for r in renewals if r.get("expire_on") and r["expire_on"] <= cutoff),
                       key=lambda r: r["expire_on"])
     # Rows tagged with no current client are past-client domains being left
-    # to lapse (standup 2026-09-29): reported as a count, never as an action.
+    # to lapse (standup 2026-09-29): one thread line, never an action.
     past = [r for r in expiring if "client" in r and not r["client"]]
     soon = [r for r in expiring if r not in past]
-    lines += ["", f"*Current-client domains expiring within {expiry_days} days* ({len(soon)})"]
+    zap += ["", f"*Current-client domains expiring within {expiry_days} days* ({len(soon)})"]
     for e in renewal_errors:
         actions += 1
-        lines.append(f":warning: could not check renewals for {e[:120]}")
+        zap.append(f":warning: could not check renewals for {e[:120]}")
+    if renewal_errors:
+        look.append(f"renewals not checked on {_plural(len(renewal_errors), 'account')}")
     if soon:
         actions += len(soon)
-        for r in soon[:15]:
+        look.append(f"{_plural(len(soon), 'client domain')} expiring")
+        for r in soon:
             who = f" · {r['client']}" if r.get("client") else ""
-            lines.append(f"• `{r['domain']}` — {r['expire_on']}{who} · {r.get('account')}"
-                         f" · {r.get('assigned_mailboxes', 0)} inboxes")
-        if len(soon) > 15:
-            lines.append(f"• …and {len(soon) - 15} more (`/zapmail renewals`)")
+            zap.append(f"• `{r['domain']}` — {r['expire_on']}{who} · {r.get('account')}"
+                       f" · {r.get('assigned_mailboxes', 0)} inboxes")
     elif not renewal_errors:
-        lines.append("_none_")
-    if past:
-        lines.append(f"_{len(past)} past-client domain(s) lapsing too — left to expire._")
+        zap.append("_none_")
 
     today_s = today.isoformat()
     due = [b for b in batches if b.get("status") in ("planned", "failed")
            and (b.get("earliest_date") or "") <= today_s]
     blocked = [b for b in batches if b.get("status") in BLOCKED_STATUSES]
-    lines += ["", "*Domain purchases*"]
+    zap += ["", "*Domain purchases*"]
     if not ledger_ok:
-        lines.append(":warning: purchase ledger unreachable (Mongo)")
+        zap.append(":warning: purchase ledger unreachable (Mongo)")
+        look.append("purchase ledger unreachable")
     if due:
         actions += len(due)
-        lines.append(f"Ready to buy ({len(due)}):")
+        look.append(f"{_plural(len(due), 'purchase batch', 'purchase batches')} due")
+        zap.append(f"Ready to buy ({len(due)}):")
         for b in sorted(due, key=lambda x: x.get("earliest_date", "")):
-            lines.append(f"• `{b['batch_id']}` {b.get('client') or 'primary'} — "
-                         f"{', '.join(b.get('domains', []))} · est. "
-                         f"{_money(b.get('estimated_usd'))} · due {b.get('earliest_date')}")
+            zap.append(f"• `{b['batch_id']}` {b.get('client') or 'primary'} — "
+                       f"{', '.join(b.get('domains', []))} · est. "
+                       f"{_money(b.get('estimated_usd'))} · due {b.get('earliest_date')}")
     if blocked:
         actions += len(blocked)
-        lines.append(f"Needs reconcile ({len(blocked)}):")
+        look.append(f"{_plural(len(blocked), 'batch', 'batches')} to reconcile")
+        zap.append(f"Needs reconcile ({len(blocked)}):")
         for b in blocked:
-            lines.append(f"• `{b['batch_id']}` is *{b.get('status')}* — run "
-                         f"`zapmail_buy.py --reconcile {b['batch_id']}`")
+            zap.append(f"• `{b['batch_id']}` is *{b.get('status')}* — run "
+                       f"`zapmail_buy.py --reconcile {b['batch_id']}`")
     if not due and not blocked and ledger_ok:
-        lines.append("_nothing due_")
+        zap.append("_nothing due_")
 
-    if actions == 0:
-        lines += ["", "✅ Nothing needs action today."]
-    return "\n".join(lines), actions
+    bill_lines = billing_lines(list(zap_billing), today=today)
+    if bill_lines:
+        actions += len(bill_lines)
+        zap += ["", "*Inbox subscriptions billing in 3 days*"] + bill_lines
+    horizon = (today + timedelta(days=3)).isoformat()
+    bills = [float(r.get("price") or 0) for r in zap_billing
+             if r.get("bills_on") and r["bills_on"] <= horizon]
+    failed = sum(1 for r in zap_billing if r.get("payment_failure"))
+    if failed:
+        look.append(f"{_plural(failed, 'payment')} failed")
+
+    # ── ScaledMail ──
+    sm = scaledmail or {}
+    sm_part = ""
+    setup_bits: list[str] = []
+    if scaledmail is not None:
+        sm_lines = list(sm.get("lines") or [])
+        actions += len(sm_lines)
+        sm_part = "\n".join(["*ScaledMail*"] + (["• " + l for l in sm_lines] or ["_nothing to act on_"]))
+        bills += [float(o.get("amount") or 0) for o in sm.get("billing") or []]
+        for key, word in (("setting_up", "setting up"), ("live", "live"),
+                          ("ready", "ready in Smartlead")):
+            if sm.get(key):
+                setup_bits.append(f"{sm[key]} {word}")
+        if sm.get("late"):
+            look.append(f"{_plural(sm['late'], 'ScaledMail order')} late")
+        if sm.get("live"):
+            look.append(f"{_plural(sm['live'], 'live order')} to send to support")
+        if sm.get("unassigned"):
+            look.append(f"{_plural(len(sm['unassigned']), 'domain')} with no client")
+    if errors:
+        look.append(f"{_plural(len(errors), 'report')} could not be read")
+
+    # ── headline ──
+    attention = bool(look)
+    head = [f"{'⚠️' if attention else '✅'} Domains & inboxes, {today.day} {today:%b}"]
+    if bills:
+        head.append(f"Bills in 3 days: {_money(sum(bills))} across {_plural(len(bills), 'bill')}")
+    if setup_bits:
+        head.append("ScaledMail orders: " + ", ".join(setup_bits))
+    head.append(("Needs a look: " + ", ".join(look)) if attention else "Nothing needs action today.")
+
+    # ── thread ──
+    parts = ["\n".join(zap)]
+    if sm_part:
+        parts.append(sm_part)
+    if past:
+        parts.append(f"_{_plural(len(past), 'past-client domain')} lapsing (left to expire, no action): "
+                     + ", ".join(r["domain"] for r in past) + "_")
+    if errors:
+        parts.append("\n".join(f":warning: {e[:160]}" for e in errors))
+    tail = ["_Covers Zapmail and ScaledMail. Inboxkit is in the Daily Renewal Check._"]
+    if bills:
+        tail.append("_To stop paying for some inboxes: `/domains domain <name>` → Retire inboxes._")
+    parts.append("\n".join(tail))
+    return head, parts, actions
 
 
 async def collect(today: date) -> dict:
@@ -170,42 +239,42 @@ def billing_lines(rows: list[dict], *, today: date, days: int = 3) -> list[str]:
     return out
 
 
-async def extra_sections(today: date) -> tuple[str, int]:
-    """Zapmail inbox billing + ScaledMail digest, as one block of text."""
-    parts, n = [], 0
+async def extra_sections(today: date) -> dict:
+    """Zapmail inbox billing rows + the ScaledMail digest, for format_digest.
+    A read failure becomes an error line; the digest still posts."""
+    out: dict = {"zap_billing": [], "scaledmail": None, "errors": []}
     try:
         from smartlead.zapmail_fleet import subscriptions_billing
-        lines = billing_lines(await subscriptions_billing(days=3), today=today)
-        if lines:
-            parts.append("*Inbox subscriptions billing in 3 days (Zapmail)*\n" + "\n".join(lines)
-                         + "\n_To stop paying for some inboxes: `/domains domain <name>` → Retire inboxes._")
-            n += len(lines)
+        out["zap_billing"] = await subscriptions_billing(days=3)
     except Exception as exc:  # noqa: BLE001 - the domain digest still posts
-        parts.append(f":warning: Zapmail billing could not be read: {str(exc)[:120]}")
+        out["errors"].append(f"Zapmail billing could not be read: {str(exc)[:120]}")
     try:
         from smartlead.scaledmail import configured
         if configured():
             from scaledmail_cli import digest as sm_digest
             from smartlead.scaledmail import ScaledMailClient
             with ScaledMailClient() as sm:
-                d = await asyncio.to_thread(sm_digest, sm)
-            if d.get("lines"):
-                parts.append("*ScaledMail*\n" + "\n".join("• " + l for l in d["lines"]))
-                n += len(d["lines"])
+                out["scaledmail"] = await asyncio.to_thread(sm_digest, sm)
     except Exception as exc:  # noqa: BLE001
-        parts.append(f":warning: ScaledMail could not be read: {str(exc)[:120]}")
-    return "\n\n".join(parts), n
+        out["errors"].append(f"ScaledMail could not be read: {str(exc)[:120]}")
+    return out
 
 
-def post_to_slack(text: str) -> bool:
-    from smartlead.notify import _post
+def post_to_slack(headline_lines: list[str], thread_parts: list[str]) -> bool:
+    from smartlead.notify import post_with_thread
     channel = os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "").strip()
     token = os.getenv("SLACK_BOT_TOKEN") or os.getenv("DOMAINS_SLACK_BOT_TOKEN") or ""
     if not channel or not token:
         print("  [Zapmail digest] ZAPMAIL_NOTIFY_CHANNEL or Slack token not set — "
               "printed only, not posted.")
         return False
-    return _post(token, channel, text) is not None
+    return post_with_thread(token, channel, headline_lines, thread_parts) is not None
+
+
+def as_text(headline_lines: list[str], thread_parts: list[str]) -> str:
+    """Both parts as the terminal shows them."""
+    return "\n".join(headline_lines) + "".join(
+        f"\n\n--- thread reply {i} ---\n{p}" for i, p in enumerate(thread_parts, 1))
 
 
 async def main() -> int:
@@ -216,23 +285,21 @@ async def main() -> int:
 
     today = date.today()
     data = await collect(today)
-    text, actions = format_digest(
+    # One daily message for both providers (2026-10-08): inbox subscriptions
+    # billing soon (and failed payments) + ScaledMail's own items.
+    extra = await extra_sections(today)
+    head, parts, actions = format_digest(
         data["status"], data["renewals"], data["batches"], today=today,
         ledger_ok=data["ledger_ok"], renewal_errors=data["renewal_errors"],
         wallet_min=float(os.getenv("ZAPMAIL_WALLET_MIN", "30")),
-        expiry_days=int(os.getenv("ZAPMAIL_EXPIRY_ALERT_DAYS", "14")))
-    # One daily message for both providers (2026-10-08): inbox subscriptions
-    # billing soon (and failed payments) + ScaledMail's own items.
-    extra, n_extra = await extra_sections(today)
-    if extra:
-        text += "\n\n" + extra
-        actions += n_extra
+        expiry_days=int(os.getenv("ZAPMAIL_EXPIRY_ALERT_DAYS", "14")), **extra)
     if args.json:
-        print(json.dumps({"text": text, "actions": actions}, default=str))
+        print(json.dumps({"headline": head, "thread": parts, "text": as_text(head, parts),
+                          "actions": actions}, default=str))
     else:
-        print(text)
+        print(as_text(head, parts))
     if not args.no_post:
-        post_to_slack(text)
+        post_to_slack(head, parts)
     return 0
 
 

@@ -79,30 +79,62 @@ def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool 
     return out
 
 
-def format_review(reviews: list[dict], days: int) -> str:
+EXPLAIN = ("_Zapmail: *Retire* removes the inboxes at this bill (domain kept, can be undone before). "
+           "ScaledMail bills per order: retiring one domain means *Replace domain* or cancelling the order._")
+
+
+def _money(v) -> str:
+    return f"${float(v or 0):,.2f}"
+
+
+def format_review(reviews: list[dict], days: int) -> tuple[list[str], list[str]]:
+    """``(headline_lines, thread_parts)`` for notify.post_with_thread: the
+    totals in the channel, one reply per bill (every inbox), then each
+    copy-ready support message, then the how-to-retire note once."""
     if not reviews:
-        return f"*🧾 Renewal review* — nothing bills in the next {days} days."
-    total_save = sum(r["retire_saves_monthly"] for r in reviews)
-    lines = [f"*🧾 Renewal review — bills in the next {days} days* · retiring the flagged inboxes saves "
-             f"*${total_save:,.2f}/month*"]
+        return [f"✅ Nothing bills in the next {days} days"], []
+    total = sum(float(r.get("price") or 0) for r in reviews)
+    save = sum(r["retire_saves_monthly"] for r in reviews)
+    n = len(reviews)
+    c = {k: sum(r["counts"][k] for r in reviews) for k in ("KEEP", "RETIRE", "CHECK")}
+    lead = f"Bills in the next {days} days: {_money(total)} across {n} bill{'s' if n != 1 else ''}"
+    if c["RETIRE"]:
+        head = [f"⚠️ {lead} · retiring the flagged inboxes saves {_money(save)}/mo"]
+    elif c["CHECK"]:
+        head = [f"⚠️ {lead}, nothing to retire, {c['CHECK']} inbox{'es' if c['CHECK'] != 1 else ''} to check"]
+    else:
+        head = [f"✅ {lead}, nothing to retire"]
+    by_prov: dict[str, list[float]] = {}
     for r in reviews:
-        c = r["counts"]
-        lines.append(f"\n*{r['bills_on']} · {r['provider']} · {r['label']}* — ${float(r.get('price') or 0):,.2f} · "
-                     f"{len(r['rows'])} inboxes: {c['KEEP']} keep · *{c['RETIRE']} retire* · {c['CHECK']} check"
-                     + (f" · {', '.join(r.get('clients') or [])}" if r.get("clients") else ""))
+        by_prov.setdefault(r["provider"], []).append(float(r.get("price") or 0))
+    head.append(" · ".join(f"{p} {_money(sum(v))} ({len(v)} bill{'s' if len(v) != 1 else ''})"
+                           for p, v in by_prov.items()))
+    head.append(f"{c['KEEP']} keep · {c['RETIRE']} retire · {c['CHECK']} check")
+
+    thread: list[str] = []
+    for r in reviews:
+        k = r["counts"]
+        lines = [f"*{r['bills_on']} · {r['provider']} · {r['label']}* — {_money(r.get('price'))}"
+                 + (f" · {', '.join(r.get('clients') or [])}" if r.get("clients") else ""),
+                 f"{len(r['rows'])} inboxes: {k['KEEP']} keep · *{k['RETIRE']} retire* · {k['CHECK']} check"
+                 + (f" · retiring saves {_money(r['retire_saves_monthly'])}/mo" if k["RETIRE"] else "")]
         if r.get("note"):
-            lines.append(f"   _{r['note']}_")
-        for row in [x for x in r["rows"] if x["verdict"] == "RETIRE"][:15]:
+            lines.append(f"_{r['note']}_")
+        for row in [x for x in r["rows"] if x["verdict"] == "RETIRE"]:
             live = " :warning: in " + ", ".join(row["campaigns"][:2]) if row["campaigns"] else ""
-            lines.append(f"   :x: `{row['email']}` — {row['why']}{live}")
-        for row in [x for x in r["rows"] if x["verdict"] == "CHECK"][:8]:
-            lines.append(f"   :grey_question: `{row['email']}` — {row['why']}")
+            lines.append(f":x: `{row['email']}` — {row['why']}{live}")
+        for row in [x for x in r["rows"] if x["verdict"] == "CHECK"]:
+            lines.append(f":grey_question: `{row['email']}` — {row['why']}")
+        keep = [x["email"] for x in r["rows"] if x["verdict"] == "KEEP"]
+        if keep:
+            lines.append(f":white_check_mark: keep ({len(keep)}): " + ", ".join(keep))
+        thread.append("\n".join(lines))
+    for r in reviews:
         if r.get("support_message"):
-            lines.append(f"   _Message for {r['provider']} support (copy & send):_")
-            lines.append("```" + r["support_message"] + "```")
-    lines.append("\n_Zapmail: *Retire* removes the inboxes at this bill (domain kept, can be undone before). "
-                 "ScaledMail bills per order: retiring one domain means *Replace domain* or cancelling the order._")
-    return "\n".join(lines)
+            thread.append(f"_Message for {r['provider']} support · {r['bills_on']} · {r['label']} (copy & send):_\n"
+                          "```" + r["support_message"] + "```")
+    thread.append(EXPLAIN)
+    return head, thread
 
 
 def support_message(review: dict) -> str:
