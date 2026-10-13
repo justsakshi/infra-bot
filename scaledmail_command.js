@@ -65,6 +65,38 @@ function confirmBox(title, text, yes) {
 }
 const opt = (text, value) => ({ text: { type: 'plain_text', text }, value });
 
+const QUOTE_USAGE = "Couldn't read that quote. Type it like `/domains quote 30000 google,outlook 70,30 low`:"
+  + ' emails a month (at least 500), providers (google, outlook, smtp), the % split when you pick two or more, and low, medium or max.';
+
+/** Typed quote words, read by what each looks like, in any order: 30000 / 30,000 / 30k
+ *  = volume, google,outlook = providers, 70,30 = split, low|medium|max = tier.
+ *  The same rules as the form. null = a word fits nothing, or the request is incomplete. */
+function parseQuote(args) {
+  const q = { volume: 0, providers: [], split: '', tier: 'low' };
+  const words = (args || []).join(' ').toLowerCase().replace(/,\s+/g, ',').split(/\s+/).filter(Boolean);
+  for (const w of words) {
+    const parts = w.split(',').filter(Boolean);
+    const k = /^(\d+(?:\.\d+)?)k$/.exec(w);
+    if (/^[1-9]\d?(,[1-9]\d?){1,2}$/.test(w) && parts.reduce((s, x) => s + Number(x), 0) === 100) {
+      if (q.split) return null;
+      q.split = w;
+    } else if (k || /^\d{1,3}(,\d{3})+$/.test(w) || /^\d+$/.test(w)) {
+      if (q.volume) return null;
+      q.volume = k ? Math.round(Number(k[1]) * 1000) : Number(w.replace(/,/g, ''));
+    } else if (parts.length && parts.every(p => PROVIDERS.includes(p))) {
+      parts.forEach(p => { if (!q.providers.includes(p)) q.providers.push(p); });
+    } else if (['low', 'medium', 'max'].includes(w)) {
+      q.tier = w;
+    } else {
+      return null;
+    }
+  }
+  if (!q.providers.length) q.providers = ['google'];
+  if (!(q.volume >= 500)) return null;
+  if (q.split && q.split.split(',').length !== q.providers.length) return null;
+  return q;
+}
+
 /** Typed sub-command → CLI args (all read-only). null = unknown. */
 function commandFor(sub, args) {
   const a = args || [];
@@ -77,13 +109,10 @@ function commandFor(sub, args) {
     case 'find':
       return KEYWORD_RE.test(a[0] || '') ? ['scaledmail_cli.py', '--json', 'suggest', a[0]] : null;
     case 'quote': {
-      const vol = parseInt(a[0], 10);
-      const provs = String(a[1] || 'google').split(',').filter(p => PROVIDERS.includes(p));
-      const split = String(a[2] || '');
-      const tier = ['low', 'medium', 'max'].includes(a[3]) ? a[3] : 'low';
-      if (!(vol > 0) || !provs.length || (split && !/^\d{1,3}(,\d{1,3}){0,2}$/.test(split))) return null;
-      const out = ['scaledmail_cli.py', '--json', 'quote', String(vol), '--providers', provs.join(','), '--tier', tier];
-      if (split) out.push('--split', split);
+      const q = parseQuote(a);
+      if (!q) return null;
+      const out = ['scaledmail_cli.py', '--json', 'quote', String(q.volume), '--providers', q.providers.join(','), '--tier', q.tier];
+      if (q.split) out.push('--split', q.split);
       return out;
     }
     default: return null;
@@ -525,16 +554,16 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
     const errors = {};
     if (!(vol >= 500)) errors.volume = 'A number of emails per month, at least 500';
     if (!provs.length) errors.providers = 'Tick at least one';
+    const parts = split.split(',').map(Number);
     if (provs.length > 1) {
-      const parts = split.split(',').map(Number);
-      if (parts.length !== provs.length || parts.some(n => !Number.isInteger(n)) || parts.reduce((a, b) => a + b, 0) !== 100) {
+      if (parts.length !== provs.length || parts.some(n => !Number.isInteger(n) || n < 1) || parts.reduce((a, b) => a + b, 0) !== 100) {
         errors.split = 'One % per ticked provider, adding up to 100';
       }
     }
     if (Object.keys(errors).length) return ack({ response_action: 'errors', errors });
     await ack();
     const meta = unpack(view.private_metadata);
-    const args = commandFor('quote', [String(vol), provs.join(','), provs.length > 1 ? split : '', tier]);
+    const args = commandFor('quote', [String(vol), provs.join(','), provs.length > 1 ? parts.join(',') : '', tier]);
     const r = await py(args).catch(e => ({ error: e.message }));
     await say(client, meta.channel, body.user.id, { text: quoteText(r) });
   });
@@ -711,5 +740,5 @@ module.exports = {
   registerScaledMailCommand, handleScaledMailText, commandFor, render, homeBlocks, statusBlocks,
   renewalsBlocks, ordersBlocks, domainBlocks, quoteText, findBlocks, stagedBlocks, plansBlocks,
   ordersListBlocks, pastRenewalsBlocks, oldPlansBlocks,
-  syncBlocks, reportsText, prewarmedText, orderModal, quoteModal, approvers, isApprover, HELP, say
+  syncBlocks, reportsText, prewarmedText, orderModal, quoteModal, approvers, isApprover, HELP, QUOTE_USAGE, say
 };

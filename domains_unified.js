@@ -95,7 +95,7 @@ function planFor(sub, args) {
     case 'sync': return [z('sync'), s('sync')];
     case 'digest': return [z('digest'), s('digest')];
     case 'cross-check': return [z('cross-check')];
-    case 'quote': return [s('quote', a)];
+    case 'quote': return [{ ...s('quote', a), usage: sm.QUOTE_USAGE }];
     case 'find': return [s('find', a)];
     case 'kill': return [{ provider: 'Kill warnings', sub: 'kill', cli: ['kill_report.py', '--json'],
       render: r => ({ text: 'Kill warnings', blocks: require('./domains_home').reportBlocks(r) }) }];
@@ -228,7 +228,7 @@ async function runView(sub, args, baseDir) {
   let shown = 0;
   for (const { p, r, err } of results) {
     if ((sub === 'domain' || sub === 'lookup') && r && !err && notFound(p.provider, r)) continue;
-    const part = err ? { text: failText(p.provider, err.message) } : p.render(r);
+    const part = !p.cli && p.usage ? { text: p.usage } : err ? { text: failText(p.provider, err.message) } : p.render(r);
     const partBlocks = (part.blocks && part.blocks.length ? part.blocks : textBlocks(part.text)).slice(0, 22);
     if (results.length > 1) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*' + p.provider + '*' }] });
     blocks.push(...partBlocks, { type: 'divider' });

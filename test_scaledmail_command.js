@@ -33,6 +33,23 @@ ok(sm.commandFor('find', ['bettr data']) === null && sm.commandFor('find', ['bet
 ok(sm.commandFor('quote', ['30000', 'google,outlook', '70,30', 'low']).join(' ')
   === 'scaledmail_cli.py --json quote 30000 --providers google,outlook --tier low --split 70,30', 'quote');
 ok(sm.commandFor('quote', ['x']) === null, 'bad volume refused');
+// Typed quote words are read by what they look like, in any order.
+{
+  const q = t => { const c = sm.commandFor('quote', t.split(' ')); return c && c.slice(2).join(' '); };
+  ok(q('30000 google low') === 'quote 30000 --providers google --tier low', 'tier without a split');
+  ok(q('30000 outlook medium') === 'quote 30000 --providers outlook --tier medium', 'one provider + tier');
+  ok(q('30,000 google') === 'quote 30000 --providers google --tier low', '30,000 is thirty thousand, not 30');
+  ok(q('30k') === 'quote 30000 --providers google --tier low', '30k is thirty thousand');
+  ok(q('low 70,30 google,outlook 30000') === 'quote 30000 --providers google,outlook --tier low --split 70,30', 'any order');
+  ok(q('30000 google, outlook 70,30') === 'quote 30000 --providers google,outlook --tier low --split 70,30', 'space after the comma');
+  ok(q('30000 google  low') === 'quote 30000 --providers google --tier low', 'form call with an empty split');
+  ok(q('100,000 google') === 'quote 100000 --providers google --tier low', '100,000 is a volume, not a 100/0 split');
+  ok(q('50,050') === 'quote 50050 --providers google --tier low', 'a 3-digit group is a volume');
+  ok(q('300') === null, 'under 500 a month refused, as on the form');
+  ok(q('30000 google 70,30') === null, 'a split needs one % per provider');
+  ok(q('30000 google,outlook 60,30') === null, 'a split adds up to 100');
+  ok(q('30000 yahoo') === null && q('30000 40000') === null, 'unknown word or two volumes refused');
+}
 ok(sm.commandFor('place', ['abc123']) === null && sm.commandFor('cancel', ['recX']) === null,
   'spend / cancel are never typed commands');
 

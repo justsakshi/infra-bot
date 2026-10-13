@@ -48,6 +48,9 @@ const u = require('./domains_unified');
   const none = await u.runView('domain', ['nothere.com'], __dirname);
   ok(/not on Zapmail or ScaledMail/.test(none.text), 'neither → one clear line');
 
+  const badQuote = JSON.stringify(await u.runView('quote', ['30000', 'yahoo'], __dirname));
+  ok(/quote 30000 google,outlook 70,30 low/.test(badQuote) && !/Try again/.test(badQuote), 'unreadable quote shows how to type it');
+
   const home = u.homeBlocks(__dirname);
   const ids = home.filter(b => b.type === 'actions').flatMap(b => b.elements.map(e => e.action_id));
   ok(ids.some(i => /^domains_suggest_/.test(i)), 'menu has the per-client suggest buttons');
