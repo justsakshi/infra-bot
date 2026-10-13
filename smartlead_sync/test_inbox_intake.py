@@ -1,0 +1,149 @@
+"""Inbox intake: new inboxes set up once, proven by read-back (spec 2026-10-13). No network."""
+import asyncio
+from datetime import date
+
+from smartlead import inbox_intake as ii
+
+TODAY, SINCE = date(2026, 10, 13), date(2026, 10, 12)
+PROF = {"signature_lines": ["{full_name}", "Precise Leads"], "company": "Precise Leads", "website": "preciseleads.in"}
+MELIOR = {**PROF, "smartlead_client_id": 12256}
+TAGS = [{"id": 3212, "name": "PreciseLeads"}, {"id": 266037, "name": "Melior"}, {"id": 153335, "name": "ScaledMail-Google"},
+        {"id": 154156, "name": "ScaledMail-Microsoft"}, {"id": 9, "name": "Bot-Setup"}]
+
+
+def acct(i, email, *, created="2026-10-13T10:00:00Z", type_="GMAIL", tags=(), client_id=None):
+    return {"id": i, "from_email": email, "from_name": "Avinash Haridas", "type": type_, "smtp_host": None,
+            "created_at": created, "client_id": client_id, "signature": "", "message_per_day": 10,
+            "custom_tracking_domain": None, "tags": [{"tag_id": t, "tag_name": n} for t, n in tags],
+            "warmup_details": {"status": "ACTIVE", "max_email_per_day": 30, "reply_rate": 65,
+                               "warmup_created_at": "2026-10-13T10:49:25Z", "warmup_reputation": "100%"}}
+
+
+class FakeSL:
+    """Applies writes to its accounts, so read-back sees them; `ignore` drops a field."""
+    def __init__(self, accounts, ignore=(), fail=()):
+        self.accounts = {a["id"]: a for a in accounts}
+        self.ignore, self.fail, self.tagged, self.writes = set(ignore), set(fail), [], []
+
+    async def list_email_accounts(self): return list(self.accounts.values())
+    async def list_tags(self): return TAGS
+
+    async def update_email_account(self, i, fields):
+        if int(i) in self.fail:
+            raise RuntimeError("429 for url 'https://server.smartlead.ai/x?api_key=SECRET'")
+        self.writes.append((int(i), dict(fields)))
+        a = self.accounts[int(i)]
+        if "max_email_per_day" in fields and "limit" not in self.ignore:
+            a["message_per_day"] = fields["max_email_per_day"]
+        for k in ("signature", "client_id"):
+            if k in fields:
+                a[k] = fields[k]
+
+    async def set_warmup(self, i, enabled, total_per_day, daily_rampup, reply_rate, auto_adjust, weekdays_only):
+        w = self.accounts[int(i)]["warmup_details"]
+        w["max_email_per_day"] = total_per_day
+        w["reply_rate"] = reply_rate if "reply" not in self.ignore else w["reply_rate"]
+
+    async def get_email_account(self, i): return self.accounts[int(i)]
+    async def assign_tags(self, ids, tag_ids): self.tagged.append((sorted(ids), sorted(tag_ids)))
+
+
+class FakeCol:
+    def __init__(self): self.docs = {}
+    def find_one(self, q, proj=None): return self.docs.get(q["email"])
+    def update_one(self, q, upd, upsert=False):
+        d = self.docs.setdefault(q["email"], {"email": q["email"], "tries": 0, "history": []})
+        d.update(upd.get("$set", {}))
+        for k, v in upd.get("$inc", {}).items(): d[k] = d.get(k, 0) + v
+        for k, v in upd.get("$push", {}).items(): d[k].append(v)
+
+
+PLAN = {"plan_id": "13845d", "status": "placed", "client": "Precise Leads", "provider": "google",
+        "domains": ["warmmeetings.com"], "mailboxes": 3}
+
+
+def run(sl, store=None, approve=True, plans=(PLAN,), jobs=(), tracker=None, account="PRECISE_LEADS"):
+    store = store or ii.IntakeStore(FakeCol())
+    out = asyncio.run(ii.run_account(sl, account, approve=approve, since=SINCE, today=TODAY,
+                                     by_domain=ii.deliveries(list(plans), list(jobs)), tracker=tracker or {},
+                                     store=store, profile=lambda c: MELIOR if c == "Melior" else PROF))
+    return out, store
+
+
+THREE = [acct(i, f"a{i}@warmmeetings.com") for i in (1, 2, 3)]
+
+
+def test_new_scaledmail_inboxes_are_set_up_proven_and_tagged():
+    sl = FakeSL(THREE)
+    out, store = run(sl)
+    assert [r["email"] for r in out["set_up"]] == ["a1@warmmeetings.com", "a2@warmmeetings.com", "a3@warmmeetings.com"]
+    a = sl.accounts[1]
+    assert a["message_per_day"] == 15 and a["warmup_details"]["max_email_per_day"] == 25 and a["warmup_details"]["reply_rate"] == 30
+    assert "Avinash Haridas" in a["signature"] and ("custom_tracking_url", "") in sl.writes[0][1].items()
+    assert sl.tagged == [([1, 2, 3], [9, 3212, 153335])]
+    assert store.done("a1@warmmeetings.com") and out["complete"] == ["13845d"]
+    assert out["set_up"][0]["ready_on"] == date(2026, 10, 27)
+
+
+def test_preview_writes_nothing():
+    sl = FakeSL(THREE)
+    out, store = run(sl, approve=False)
+    assert len(out["would"]) == 3 and not out["set_up"] and not sl.writes and not sl.tagged
+    assert not store.done("a1@warmmeetings.com")
+
+
+def test_old_or_already_done_inboxes_are_never_written():           # Review Focus 1
+    old = acct(7, "old@warmmeetings.com", created="2026-09-01T00:00:00Z")
+    tagged = acct(8, "t@warmmeetings.com", tags=[(9, "Bot-Setup")])
+    sl = FakeSL([old, tagged])
+    out, _ = run(sl, plans=())
+    assert not sl.writes and not out["set_up"] and not out["problems"]
+
+
+def test_unknown_client_is_reported_not_guessed():                  # Review Focus 2
+    sl = FakeSL([acct(5, "x@mystery.com")])
+    out, _ = run(sl, plans=())
+    assert not sl.writes and any("mystery.com" in p and "no client" in p for p in out["problems"])
+
+
+def test_melior_from_tracker_gets_melior_client():
+    sl = FakeSL([acct(6, "r@meliorbase.com")])
+    out, _ = run(sl, plans=(), tracker={"meliorbase.com": {"client": "Melior", "provider": "Scaledmail"}})
+    assert sl.accounts[6]["client_id"] == 12256 and out["set_up"][0]["client"] == "Melior"
+
+
+def test_readback_mismatch_is_retried_then_stuck():                 # Review Focus 3
+    store = ii.IntakeStore(FakeCol())
+    for n in range(3):
+        sl = FakeSL([acct(1, "a1@warmmeetings.com")], ignore={"reply"})
+        out, _ = run(sl, store=store, plans=({**PLAN, "mailboxes": 1},))
+        assert not out["set_up"] and not sl.tagged
+        assert any("reply rate 65%, want 30%" in p for p in out["problems"])
+    sl = FakeSL([acct(1, "a1@warmmeetings.com")], ignore={"reply"})
+    out, _ = run(sl, store=store, plans=({**PLAN, "mailboxes": 1},))
+    assert not sl.writes and any("stuck after 3 tries" in p for p in out["problems"])
+
+
+def test_partial_delivery_waits():                                  # Review Focus 4
+    sl = FakeSL(THREE[:2])
+    out, _ = run(sl)
+    assert not sl.writes and out["waiting"] == ["⏳ 2 of 3 inboxes in Smartlead for ScaledMail order 13845d (warmmeetings.com), waiting for the rest"]
+
+
+def test_one_failing_inbox_does_not_stop_the_rest_and_hides_keys():  # Review Focus 5
+    sl = FakeSL(THREE, fail={2})
+    out, _ = run(sl)
+    assert [r["email"] for r in out["set_up"]] == ["a1@warmmeetings.com", "a3@warmmeetings.com"]
+    msg = " ".join(out["problems"])
+    assert "a2@warmmeetings.com" in msg and "SECRET" not in msg and out["complete"] == []
+
+
+def test_dense_outlook_gets_five_and_five():
+    boxes = [acct(i, f"o{i}@qualifiedcalendar.com", type_="OUTLOOK") for i in range(1, 26)]
+    sl = FakeSL(boxes)
+    plan = {"plan_id": "85b1cd", "status": "placed", "client": "Precise Leads", "provider": "outlook",
+            "domains": ["qualifiedcalendar.com"], "mailboxes": 25}
+    out, _ = run(sl, plans=(plan,))
+    assert len(out["set_up"]) == 25 and sl.accounts[1]["message_per_day"] == 5
+    assert sl.accounts[1]["warmup_details"]["max_email_per_day"] == 5 and out["set_up"][0]["kind"] == "outlook_dense"
+    assert [len(ids) for ids, _ in sl.tagged] == [25]
