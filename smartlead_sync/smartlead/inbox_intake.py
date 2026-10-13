@@ -16,6 +16,7 @@ from smartlead import inbox_standard as st
 
 COLLECTION = "inbox_intake"
 MAX_TRIES = 3
+POSTED_KEY = "__posted_problems__"   # ledger doc: problems already posted to the channel
 TAG_BATCH = 25
 CURRENT_ACCOUNTS = ("PRECISE_LEADS", "BETTRDATA")
 CLIENT_TAG = {"Precise Leads": "PreciseLeads", "Melior": "Melior", "Bettrdata": "BettrData"}
@@ -50,10 +51,20 @@ class IntakeStore:
     def tries(self, email: str) -> int:
         return int(self._doc(email).get("tries") or 0)
 
-    def record(self, email: str, ok: bool, **fields) -> None:
-        self.col.update_one({"email": email},
-                            {"$set": {"ok": ok, "updated_at": _now(), **fields}, "$inc": {"tries": 1},
-                             "$push": {"history": {"at": _now(), "ok": ok, **fields}}}, upsert=True)
+    def record(self, email: str, ok: bool, *, count_try: bool = True, **fields) -> None:
+        """count_try=False for Smartlead outages and tag failures: only a
+        read-back that differs uses up one of the MAX_TRIES."""
+        upd = {"$set": {"ok": ok, "updated_at": _now(), **fields},
+               "$push": {"history": {"at": _now(), "ok": ok, **fields}}}
+        upd["$inc"] = {"tries": 1 if count_try else 0}
+        self.col.update_one({"email": email}, upd, upsert=True)
+
+    def posted_problems(self) -> list[str]:
+        return list(self._doc(POSTED_KEY).get("problems") or [])
+
+    def save_posted_problems(self, problems: list[str]) -> None:
+        self.col.update_one({"email": POSTED_KEY}, {"$set": {"problems": list(problems), "updated_at": _now()}},
+                            upsert=True)
 
 
 def deliveries(plans: list[dict], jobs: list[dict]) -> dict[str, dict]:
@@ -100,29 +111,41 @@ def _vendor(d: dict | None, tracker_row: dict) -> str:
 
 
 async def run_account(sl, account_name: str, *, approve: bool, since: date, today: date,
-                      by_domain: dict, tracker: dict, store, profile) -> dict:
+                      by_domain: dict, tracker: dict, store, profile, only: str | None = None) -> dict:
+    """One Smartlead account. ``only`` (an inbox or a domain) limits the run,
+    for trying a few inboxes before the rest."""
     from smartlead.inbox_setup import plan_changes
     from smartlead.notify import redact
     out: dict = {"set_up": [], "would": [], "waiting": [], "problems": [], "complete": []}
     accounts = await sl.list_email_accounts()
     tags = {t["name"]: t["id"] for t in await sl.list_tags()}
+    email_of = lambda a: str(a.get("from_email", "")).lower()          # noqa: E731
+    dom_of = lambda a: email_of(a).split("@")[-1]                       # noqa: E731
+    fresh = lambda a: (_created(a) or date.min) >= since                # noqa: E731
     per_domain: dict[str, int] = {}
+    fresh_on: dict[str, list[dict]] = {}
     for a in accounts:
-        dom = str(a.get("from_email", "")).split("@")[-1].lower()
-        per_domain[dom] = per_domain.get(dom, 0) + 1
+        per_domain[dom_of(a)] = per_domain.get(dom_of(a), 0) + 1
+        if fresh(a):
+            fresh_on.setdefault(dom_of(a), []).append(a)
     melior_id = (profile("Melior") or {}).get("smartlead_client_id")
-    new = [a for a in accounts
-           if (_created(a) or date.min) >= since and not _has_tag(a, st.SETUP_TAG)
-           and not store.done(str(a["from_email"]).lower())]
+    new = [a for a in accounts if fresh(a) and not _has_tag(a, st.SETUP_TAG) and not store.done(email_of(a))]
+    if only:
+        new = [a for a in new if only.lower() in (email_of(a), dom_of(a))]
+    no_setup_tag = bool(new) and st.SETUP_TAG not in tags
+    if no_setup_tag:
+        out["problems"].append(f"Smartlead has no tag `{st.SETUP_TAG}` in {account_name}: create it in Smartlead "
+                               "(Email Accounts, tags), nothing was set up")
+        if approve:
+            return out
     seen_waiting: set = set()
-    ok_by_tags: dict[tuple, list[int]] = {}
-    attempted: dict[str, list[bool]] = {}
+    touched: set = set()
+    written_ok: list[dict] = []
     for a in sorted(new, key=lambda x: x.get("id") or 0):
-        email = str(a["from_email"]).lower()
-        dom = email.split("@")[-1]
+        email, dom = email_of(a), dom_of(a)
         d = by_domain.get(dom)
         if d:
-            found = sum(per_domain.get(x, 0) for x in d["domains"])
+            found = sum(len(fresh_on.get(x, [])) for x in d["domains"])     # this delivery's inboxes only
             if found < d["expected"]:
                 if d["id"] not in seen_waiting:
                     seen_waiting.add(d["id"])
@@ -141,40 +164,66 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
         vendor = _vendor(d, tracker.get(dom))
         written = {**plan_changes(a, profile(client), email=email, set_signature=True).fields,
                    **st.account_fields(kind, vendor)}
+        w = a.get("warmup_details") or {}
+        before = {"message_per_day": a.get("message_per_day"),
+                  "warmup_per_day": w.get("max_email_per_day") or w.get("warmup_max_count"),
+                  "reply_rate": w.get("reply_rate"), "tracking": a.get("custom_tracking_domain")}
         row = {"email": email, "client": client, "kind": kind, "vendor": vendor, "domain": dom,
                "ready_on": st.ready_date(a, kind)}
         if not approve:
             out["would"].append(row)
             continue
-        back = a
+        if d:
+            touched.add(d["id"])
+        rec = dict(kind=kind, vendor=vendor, client=client, account=account_name, written=written, before=before)
         try:
             await sl.update_email_account(str(a["id"]), written)
             await sl.set_warmup(str(a["id"]), **st.warmup_args(kind))
             back = await sl.get_email_account(str(a["id"]))
-            miss = st.readback_mismatches(back, kind, vendor, written)
-            row["ready_on"] = st.ready_date(back, kind)
-        except Exception as exc:  # noqa: BLE001 - one inbox failing must not stop the rest
-            miss = [f"Smartlead error: {redact(str(exc))[:160]}"]
-        store.record(email, ok=not miss, kind=kind, vendor=vendor, client=client, account=account_name,
-                     written=written, mismatches=miss, warmup_started=str(st.warmup_started(back) or ""))
-        if d:
-            attempted.setdefault(d["id"], []).append(not miss)
+        except Exception as exc:  # noqa: BLE001 - an outage: report, retry next run, no try used
+            err = f"Smartlead error: {redact(str(exc))[:160]}"
+            store.record(email, ok=False, count_try=False, mismatches=[err], **rec)
+            out["problems"].append(f"`{email}`: {err} (will retry)")
+            continue
+        miss = st.readback_mismatches(back, kind, vendor, written)
+        row["ready_on"] = st.ready_date(back, kind)
+        rec["warmup_started"] = str(st.warmup_started(back) or "")
         if miss:
+            store.record(email, ok=False, mismatches=miss, **rec)
             out["problems"].append(f"`{email}`: {'; '.join(miss)} (try {store.tries(email)} of {MAX_TRIES})")
             continue
-        out["set_up"].append(row)
         names = (st.SETUP_TAG, CLIENT_TAG.get(client), VENDOR_TAG.get((vendor, kind)))
-        ok_by_tags.setdefault(tuple(sorted(tags[n] for n in names if n and n in tags)), []).append(int(a["id"]))
-    for tag_ids, ids in ok_by_tags.items():
+        written_ok.append({"id": int(a["id"]), "row": row, "rec": rec,
+                           "tag_ids": tuple(sorted(tags[n] for n in names if n and n in tags))})
+    # Tags last; an inbox counts as done only once its tags are on.
+    untagged: set = set()
+    groups: dict[tuple, list[int]] = {}
+    for x in written_ok:
+        groups.setdefault(x["tag_ids"], []).append(x["id"])
+    for tag_ids, ids in groups.items():
         for i in range(0, len(ids), TAG_BATCH):
-            if tag_ids:
-                await sl.assign_tags(ids[i:i + TAG_BATCH], list(tag_ids))
-    for name in {VENDOR_TAG.get((r["vendor"], r["kind"])) for r in out["set_up"]} | {st.SETUP_TAG}:
-        if name and name not in tags:
+            batch = ids[i:i + TAG_BATCH]
+            try:
+                await sl.assign_tags(batch, list(tag_ids))
+            except Exception as exc:  # noqa: BLE001
+                untagged.update(batch)
+                out["problems"].append(f"tags not added on {len(batch)} inbox(es) in {account_name} "
+                                       f"({redact(str(exc))[:120]}); they will be retried")
+    for x in written_ok:
+        if x["id"] in untagged:
+            store.record(x["row"]["email"], ok=False, count_try=False, mismatches=["tags not added"], **x["rec"])
+            continue
+        store.record(x["row"]["email"], ok=True, mismatches=[], **x["rec"])
+        out["set_up"].append(x["row"])
+    for name in sorted({VENDOR_TAG.get((r["vendor"], r["kind"])) for r in out["set_up"]}
+                       | {CLIENT_TAG.get(r["client"]) for r in out["set_up"]} - {None}):
+        if name not in tags:
             out["problems"].append(f"Smartlead has no tag `{name}` in {account_name}: create it so new inboxes get it")
-    for did, results in attempted.items():
+    # An order is complete when every one of its new inboxes is done, whichever run did it.
+    for did in sorted(touched):
         d = next(v for v in by_domain.values() if v["id"] == did)
-        if len(results) >= d["expected"] and all(results):
+        boxes = [a for dom in d["domains"] for a in fresh_on.get(dom, [])]
+        if len(boxes) >= d["expected"] and all(_has_tag(a, st.SETUP_TAG) or store.done(email_of(a)) for a in boxes):
             out["complete"].append(did)
     return out
 

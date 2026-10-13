@@ -1,5 +1,6 @@
 """Inbox intake: new inboxes set up once, proven by read-back (spec 2026-10-13). No network."""
 import asyncio
+import copy
 from datetime import date
 
 from smartlead import inbox_intake as ii
@@ -22,7 +23,7 @@ def acct(i, email, *, created="2026-10-13T10:00:00Z", type_="GMAIL", tags=(), cl
 class FakeSL:
     """Applies writes to its accounts, so read-back sees them; `ignore` drops a field."""
     def __init__(self, accounts, ignore=(), fail=()):
-        self.accounts = {a["id"]: a for a in accounts}
+        self.accounts = {a["id"]: copy.deepcopy(a) for a in accounts}   # never mutate the shared fixtures
         self.ignore, self.fail, self.tagged, self.writes = set(ignore), set(fail), [], []
 
     async def list_email_accounts(self): return list(self.accounts.values())
@@ -177,3 +178,104 @@ def test_readiness_lines_group_by_domain():
     r = ii.readiness_lines(boxes, date(2026, 10, 27))
     assert r["ready_today"] == ["2 Google inboxes on warmmeetings.com"]
     assert r["low"] == ["1 Google inbox on low.com: warmup reputation 80% (needs 90%)"]
+
+
+# ── final-review fixes ─────────────────────────────────────────────────────
+
+NO_SETUP_TAG = [t for t in TAGS if t["name"] != "Bot-Setup"]
+
+
+class FakeSLNoTag(FakeSL):
+    async def list_tags(self): return NO_SETUP_TAG
+
+
+def test_missing_setup_tag_blocks_writes_but_preview_still_lists():      # review 1
+    sl = FakeSLNoTag(THREE)
+    out, store = run(sl)
+    assert not sl.writes and not out["set_up"] and not store.done("a1@warmmeetings.com")
+    assert any("no tag `Bot-Setup`" in p and "nothing was set up" in p for p in out["problems"])
+    prev, _ = run(FakeSLNoTag(THREE), approve=False)
+    assert len(prev["would"]) == 3 and any("no tag `Bot-Setup`" in p for p in prev["problems"])
+
+
+def test_missing_tag_is_quiet_when_nothing_is_new():                     # review 1 / executor finding
+    old = acct(7, "old@x.com", created="2026-09-01T00:00:00Z")
+    out, _ = run(FakeSLNoTag([old]), plans=(), account="BETTRDATA")
+    assert out["problems"] == []
+
+
+class FakeSLTagFails(FakeSL):
+    async def assign_tags(self, ids, tag_ids): raise RuntimeError("429 on tag-mapping")
+
+
+def test_tag_failure_leaves_inboxes_pending_and_retried():              # review 2
+    store = ii.IntakeStore(FakeCol())
+    out, _ = run(FakeSLTagFails(THREE), store=store)
+    assert not out["set_up"] and not store.done("a1@warmmeetings.com") and out["complete"] == []
+    assert any("tags not added" in p for p in out["problems"])
+    sl = FakeSL(THREE)
+    out, _ = run(sl, store=store)
+    assert len(out["set_up"]) == 3 and sl.tagged and out["complete"] == ["13845d"]
+
+
+def test_order_completes_across_runs():                                  # review 3
+    store = ii.IntakeStore(FakeCol())
+    out, _ = run(FakeSL(THREE, fail={2}), store=store)
+    assert out["complete"] == []
+    out, _ = run(FakeSL(THREE), store=store)
+    assert [r["email"] for r in out["set_up"]] == ["a2@warmmeetings.com"] and out["complete"] == ["13845d"]
+
+
+def test_old_inboxes_on_an_owned_domain_do_not_open_the_gate():          # review 5
+    old = [acct(i, f"old{i}@warmmeetings.com", created="2026-09-01T00:00:00Z") for i in (7, 8)]
+    sl = FakeSL(old + THREE[:1])
+    out, _ = run(sl)
+    assert not sl.writes and out["waiting"][0].startswith("⏳ 1 of 3 inboxes")
+
+
+def test_only_limits_the_run_to_one_domain_or_inbox():                  # review 6
+    other = {**PLAN, "plan_id": "x1", "domains": ["other.com"], "mailboxes": 1}
+    sl = FakeSL(THREE + [acct(4, "b@other.com")])
+    store = ii.IntakeStore(FakeCol())
+    out = asyncio.run(ii.run_account(sl, "PRECISE_LEADS", approve=True, since=SINCE, today=TODAY,
+                                     by_domain=ii.deliveries([PLAN, other], []), tracker={}, store=store,
+                                     profile=lambda c: PROF, only="b@other.com"))
+    assert [r["email"] for r in out["set_up"]] == ["b@other.com"] and {i for i, _ in sl.writes} == {4}
+
+
+def test_before_values_are_recorded():                                   # review 10 (spec: before/after)
+    col = FakeCol()
+    run(FakeSL(THREE), store=ii.IntakeStore(col))
+    assert col.docs["a1@warmmeetings.com"]["before"] == {"message_per_day": 10, "warmup_per_day": 30,
+                                                         "reply_rate": 65, "tracking": None}
+
+
+def test_smartlead_outages_do_not_use_up_tries():                         # review 11
+    store = ii.IntakeStore(FakeCol())
+    one = {**PLAN, "mailboxes": 1}
+    for _ in range(4):
+        out, _ = run(FakeSL([acct(1, "a1@warmmeetings.com")], fail={1}), store=store, plans=(one,))
+        assert not any("stuck" in p for p in out["problems"])
+    out, _ = run(FakeSL([acct(1, "a1@warmmeetings.com")]), store=store, plans=(one,))
+    assert len(out["set_up"]) == 1
+
+
+def test_channel_post_only_for_new_news():                                # review 4
+    from inbox_intake_cli import should_post
+    res = {"A": {"set_up": [], "problems": ["p1"]}}
+    assert should_post(res, previous=[]) is True
+    assert should_post(res, previous=["p1"]) is False
+    assert should_post({"A": {"set_up": [{"email": "x"}], "problems": ["p1"]}}, previous=["p1"]) is True
+    col = FakeCol()
+    s = ii.IntakeStore(col)
+    s.save_posted_problems(["p1", "p2"])
+    assert s.posted_problems() == ["p1", "p2"]
+
+
+def test_old_readiness_preview_is_off_when_intake_runs(monkeypatch):     # review 3 (digest)
+    import scaledmail_cli as smc
+    monkeypatch.delenv("INBOX_READY_ENABLED", raising=False)
+    monkeypatch.setenv("INBOX_INTAKE_ENABLED", "true")
+    assert smc._new_inboxes_handled() is True
+    monkeypatch.setenv("INBOX_INTAKE_ENABLED", "false")
+    assert smc._new_inboxes_handled() is False

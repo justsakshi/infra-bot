@@ -4,6 +4,7 @@
     python inbox_intake_cli.py                    # preview: writes nothing
     python inbox_intake_cli.py --apply --post     # write, read back, post (the cron, INBOX_INTAKE_ENABLED=true)
     python inbox_intake_cli.py --since 2026-10-12 --json
+    python inbox_intake_cli.py --apply --only warmmeetings.com   # try a few inboxes first
 """
 from __future__ import annotations
 
@@ -72,12 +73,20 @@ def intake_message(results: dict[str, dict], today: date) -> tuple[list[str], li
     return head, parts
 
 
+def should_post(results: dict[str, dict], previous: list[str]) -> bool:
+    """Post when something was set up or a problem is new; standing problems
+    stay in the 09:40 digest instead of every 2 hours. Pure."""
+    problems = {p for r in results.values() for p in r.get("problems") or []}
+    return any(r.get("set_up") for r in results.values()) or bool(problems - set(previous))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Set new Smartlead inboxes up once")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--post", action="store_true")
     ap.add_argument("--since", default=os.getenv("INTAKE_SINCE", "2026-10-12"))
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--only", default=None, help="one inbox or one domain")
     args = ap.parse_args()
 
     from smartlead.accounts import discover_accounts
@@ -115,7 +124,7 @@ def main() -> int:
                 async with SmartleadClient(acc.api_key, account_name=acc.name) as sl:
                     results[acc.name] = await run_account(
                         sl, acc.name, approve=args.apply, since=since, today=today, by_domain=by_domain,
-                        tracker=tracker, store=store, profile=lambda c: profile_for(c)[1])
+                        tracker=tracker, store=store, profile=lambda c: profile_for(c)[1], only=args.only)
             except Exception as exc:  # noqa: BLE001 - say so, keep the other account
                 results[acc.name] = {"set_up": [], "would": [], "waiting": [], "complete": [],
                                      "problems": [f"{acc.name}: could not read Smartlead ({redact(str(exc))[:120]})"]}
@@ -129,13 +138,14 @@ def main() -> int:
                 plan_store.log(pid, "ready", by="inbox_intake")
 
     head, parts = intake_message(results, today)
-    changed = any(r["set_up"] or r["problems"] for r in results.values())
     posted = False
-    if args.post and changed:
+    if args.post and should_post(results, store.posted_problems()):
         from smartlead.notify import post_with_thread
         channel = (os.getenv("SCALEDMAIL_NOTIFY_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL") or "").strip()
         token = (os.getenv("SLACK_BOT_TOKEN") or "").strip()
         posted = bool(channel and token and post_with_thread(token, channel, head, parts))
+        if posted:
+            store.save_posted_problems([p for r in results.values() for p in r["problems"]])
     out = {"headline": head, "thread": parts, "posted": posted,
            "counts": {k: sum(len(r[k]) for r in results.values()) for k in ("set_up", "would", "waiting", "problems")}}
     print(json.dumps(out, default=str) if args.json else "\n".join(head + [""] + parts))

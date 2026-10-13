@@ -183,6 +183,12 @@ def post_lines(title: str, lines: list[str]) -> bool:
     return post_with_thread(token, channel, head, parts) is not None
 
 
+def _new_inboxes_handled() -> bool:
+    """True when a job already sets new inboxes up: the old readiness job or
+    inbox intake (spec 2026-10-13). Then the digest skips the old preview."""
+    return any(os.getenv(v, "").lower() == "true" for v in ("INBOX_READY_ENABLED", "INBOX_INTAKE_ENABLED"))
+
+
 def digest_ready_lines(enabled: bool) -> list[str]:
     """Readiness for the digest: never applied here (the 2-hourly job applies it
     and posts; two writers at once would log 'ready' twice). Off -> what would happen."""
@@ -195,7 +201,7 @@ def digest(sm) -> dict:
     snap = fleet.snapshot(sm, tracker=_tracker())
     ren = fleet.renewals(snap, domain_days=14, billing_days=3)
     watch = setup_lines(snap)
-    ready = digest_ready_lines(os.getenv("INBOX_READY_ENABLED", "").lower() == "true")
+    ready = digest_ready_lines(_new_inboxes_handled())
     stuck = [d for d in snap["domains"] if d["status"] != "Active" and d["domain"] not in watch["covered"]]
     unassigned = [d["domain"] for d in snap["domains"] if not d["client"]]
     rep = fleet.report_summary(sm.reporting())
