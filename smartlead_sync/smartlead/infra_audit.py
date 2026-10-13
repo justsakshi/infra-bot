@@ -20,7 +20,6 @@ from datetime import datetime
 MAX_MAILBOXES_PER_DOMAIN = {"GMAIL": 3, "SMTP": 4}     # SMTP: ScaledMail sells 4 per domain
 MAX_SENDS_PER_DOMAIN = 100                             # per day, Google + SMTP domains
 MAX_PER_MAILBOX = {"GMAIL": 25, "OUTLOOK": 10, "SMTP": 15}   # config.CAMPAIGN_CAP_*
-MIN_WARMUP_DAYS = 21
 # Domains of one client on one name-server set. 2026-10-08: Precise Leads had
 # 13 and Melior 10 on single Cloudflare accounts (ScaledMail domains) — the
 # exact footprint blacklists started hitting in 2026.
@@ -127,7 +126,9 @@ def check_main_domain(domain: str, client: str, main_domain: str) -> list[dict]:
 
 def check_mailboxes(accounts: list[dict], client_of_email: dict[str, str],
                     active: dict[str, list[str]], now: datetime) -> list[dict]:
-    """Per-domain caps, per-mailbox caps, warmup age/volume, signature."""
+    """Per-domain caps, per-mailbox caps, warmup age/volume, signature, drift
+    from the inbox standard (inboxes set up by intake)."""
+    from smartlead import inbox_standard as std
     out = []
     by_domain: dict[str, list[dict]] = defaultdict(list)
     for a in accounts:
@@ -158,10 +159,18 @@ def check_mailboxes(accounts: list[dict], client_of_email: dict[str, str],
                                f"Set the daily limit to {cap} or less in Smartlead."))
         w = a.get("warmup_details") or {}
         age = _days_since(w.get("warmup_created_at") or a.get("created_at"), now)
-        if in_use and age is not None and age < MIN_WARMUP_DAYS:
+        stype = std.inbox_kind(a, len(by_domain[email.split("@")[-1]]))
+        need = std.standard_for(stype)["ready_after_days"]
+        if in_use and age is not None and age < need:
             out.append(finding("young_inbox_in_campaign", "P0", client, email,
                                f"warmed {age:.0f} days, already in {', '.join(active[email][:2])}",
-                               f"Take it out of the campaign until day {MIN_WARMUP_DAYS}."))
+                               f"Take it out of the campaign until day {need}."))
+        names = [str(t.get("tag_name") or t.get("name") or "") for t in a.get("tags") or []]
+        if std.SETUP_TAG in names:
+            off = std.drift(a, stype, "scaledmail" if any("ScaledMail" in n for n in names) else "zapmail")
+            if off:
+                out.append(finding("setup_drift", "P2", client, email, "; ".join(off),
+                                   "Check whether this was changed on purpose; if not, set it back in Smartlead."))
         if in_use and str(w.get("status") or "").upper() != "ACTIVE":
             out.append(finding("warmup_off", "P0", client, email, "warmup is OFF on an inbox that is sending",
                                "Turn warmup back on (team rule: warmup always on)."))
@@ -223,7 +232,8 @@ NAMES = {
     "dns_mx": "No MX record", "dns_dmarc_policy": "DMARC p=none", "ns_cluster": "Name-server footprint",
     "website": "Website / redirect", "main_domain": "Sending from the main domain",
     "mailboxes_per_domain": "Too many mailboxes on a domain", "sends_per_domain": "Domain over 100/day",
-    "sends_per_mailbox": "Mailbox over its cap", "young_inbox_in_campaign": "Inbox under 21 days in a campaign",
+    "sends_per_mailbox": "Mailbox over its cap", "young_inbox_in_campaign": "Inbox in a campaign before its warmup days",
+    "setup_drift": "Set-up inbox no longer matches its standard",
     "warmup_off": "Warmup off while sending", "warmup_below_cold": "Warmup below cold volume",
     "signature_missing": "No signature", "sender_name": "No real sender name",
     "provider_mix": "One provider only", "esp_matching": "ESP matching off", "ip_blacklist": "Sending IP blacklisted",

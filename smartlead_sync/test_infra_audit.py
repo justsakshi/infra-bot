@@ -99,3 +99,31 @@ def test_digest_billing_lines_flag_failed_payment():
             {"bills_on": "2026-11-08", "mailboxes": 21, "provider": "GOOGLE", "kind": "inboxes", "price": 68.25, "clients": []}]
     lines = billing_lines(rows, today=date(2026, 10, 8))
     assert len(lines) == 2 and "payment failed" in lines[0] and "Outlook" in lines[0] and "Google" in lines[1]
+
+
+def test_young_google_inbox_counts_from_its_own_days():
+    from datetime import datetime, timezone
+    from smartlead import infra_audit as ia
+    now = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    g = {"from_email": "a@g.com", "type": "GMAIL", "message_per_day": 15, "tags": [],
+         "warmup_details": {"status": "ACTIVE", "max_email_per_day": 25, "warmup_created_at": "2026-10-13T10:00:00Z"}}
+    o = {**g, "from_email": "b@o.com", "type": "OUTLOOK", "message_per_day": 10,
+         "warmup_details": {**g["warmup_details"], "max_email_per_day": 20}}
+    found = ia.check_mailboxes([g, o], {"a@g.com": "Melior", "b@o.com": "Melior"},
+                               {"a@g.com": ["Exec"], "b@o.com": ["Exec"]}, now)
+    young = [f for f in found if f["check"] == "young_inbox_in_campaign"]
+    assert [f["subject"] for f in young] == ["b@o.com"]           # Google ready at 14 days, Outlook not until 21
+
+
+def test_setup_drift_only_for_set_up_inboxes():
+    from datetime import datetime, timezone
+    from smartlead import infra_audit as ia
+    now = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    base = {"type": "GMAIL", "message_per_day": 20, "custom_tracking_domain": None,
+            "warmup_details": {"status": "ACTIVE", "max_email_per_day": 25, "reply_rate": 30,
+                               "warmup_created_at": "2026-09-01T00:00:00Z"}}
+    done = {**base, "from_email": "a@x.com", "tags": [{"tag_name": "Bot-Setup"}]}
+    other = {**base, "from_email": "b@x.com", "tags": []}
+    found = ia.check_mailboxes([done, other], {"a@x.com": "Melior", "b@x.com": "Melior"}, {}, now)
+    drift = [f for f in found if f["check"] == "setup_drift"]
+    assert [f["subject"] for f in drift] == ["a@x.com"] and "daily limit 20, want 15" in drift[0]["detail"]
