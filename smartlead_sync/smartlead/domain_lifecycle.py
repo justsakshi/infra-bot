@@ -84,8 +84,10 @@ async def domain_provider(domain: str, *, client: str | None) -> str | None:
     domain = domain.strip().lower()
     for provider in PROVIDERS:
         async with open_client(client, provider=provider) as z:
-            if await _domain_row(z, domain) is not None:
-                return provider
+            row = await _domain_row(z, domain)
+            if row is not None:
+                # The row's own field: Zapmail ignores the header on lists (2026-10-13).
+                return str(row.get("serviceProvider") or provider).upper()
     return None
 
 

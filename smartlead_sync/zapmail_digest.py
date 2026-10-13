@@ -81,7 +81,8 @@ def format_digest(
         recharge = "auto-recharge on" if s.get("auto_recharge") else "auto-recharge OFF"
         credits = s.get("placement_credits")
         act = s.get("active_mailboxes") or {}
-        boxes = (f"{act.get('GOOGLE', '?')} Google + {act.get('MICROSOFT', '?')} Outlook mailboxes"
+        boxes = (f"{s.get('active_mailboxes_total')} mailboxes" if s.get("active_mailboxes_total") is not None
+                 else f"{act.get('GOOGLE', '?')} Google + {act.get('MICROSOFT', '?')} Outlook mailboxes"
                  if act else f"{s.get('assigned_mailboxes')} mailboxes")
         zap.append(f"• *{name}* — wallet {_money(wallet)} ({recharge}) · {boxes}"
                    + (f" · {credits} placement credits" if credits is not None else ""))

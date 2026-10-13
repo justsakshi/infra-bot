@@ -105,10 +105,14 @@ function formatStatus(s) {
     const wal = wallet !== null && wallet !== undefined ? ' ' + money(wallet) + recharge : '';
     const dom = a.domains || {};
     const act = a.active_mailboxes || {};
-    const boxes = a.active_mailboxes
-      ? ' · Google ' + (dom.GOOGLE ?? '?') + ' domains / ' + (act.GOOGLE ?? '?') + ' mailboxes'
-        + ' · Outlook ' + (dom.MICROSOFT ?? '?') + ' domains / ' + (act.MICROSOFT ?? '?') + ' mailboxes'
-      : (a.assigned_mailboxes !== undefined ? ' · ' + a.assigned_mailboxes + ' mailboxes' : '');
+    // Zapmail gives one mailbox total (no per-provider split since 2026-10-13).
+    const boxes = (a.active_mailboxes_total !== undefined && a.active_mailboxes_total !== null)
+      ? ' · Google ' + (dom.GOOGLE ?? '?') + ' domains · Outlook ' + (dom.MICROSOFT ?? '?') + ' domains · '
+        + a.active_mailboxes_total + ' mailboxes'
+      : Object.keys(act).length
+        ? ' · Google ' + (dom.GOOGLE ?? '?') + ' domains / ' + (act.GOOGLE ?? '?') + ' mailboxes'
+          + ' · Outlook ' + (dom.MICROSOFT ?? '?') + ' domains / ' + (act.MICROSOFT ?? '?') + ' mailboxes'
+        : (a.assigned_mailboxes !== undefined ? ' · ' + a.assigned_mailboxes + ' mailboxes' : '');
     const plan = a.active_plan ? ' · ' + a.active_plan : '';
     const credits = (a.placement_credits !== null && a.placement_credits !== undefined)
       ? ' · ' + a.placement_credits + ' placement credits' : '';
@@ -122,7 +126,9 @@ function formatStatus(s) {
     const d = a.domains || {};
     const m = a.active_mailboxes || {};
     doms += (Number(d.GOOGLE) || 0) + (Number(d.MICROSOFT) || 0);
-    boxes += a.active_mailboxes ? (Number(m.GOOGLE) || 0) + (Number(m.MICROSOFT) || 0) : (Number(a.assigned_mailboxes) || 0);
+    boxes += (a.active_mailboxes_total !== undefined && a.active_mailboxes_total !== null)
+      ? Number(a.active_mailboxes_total) || 0
+      : Object.keys(m).length ? (Number(m.GOOGLE) || 0) + (Number(m.MICROSOFT) || 0) : (Number(a.assigned_mailboxes) || 0);
   });
   const n = Object.keys(s).length;
   return '*Zapmail · ' + doms + ' domains · ' + boxes + ' mailboxes* (' + up + ' of ' + n + ' account' + (n === 1 ? '' : 's') + ' answered)'

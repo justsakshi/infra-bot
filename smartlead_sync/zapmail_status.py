@@ -112,8 +112,9 @@ async def main() -> int:
             recharge = "on" if s.get("auto_recharge") else "OFF"
             print(f"  {name:14} wallet=${s.get('wallet_balance')} (auto-recharge {recharge})"
                   f"  domains G{dom.get('GOOGLE')}/M{dom.get('MICROSOFT')}"
-                  f"  active mailboxes G{act.get('GOOGLE')}/M{act.get('MICROSOFT')}"
-                  f"  placement credits {s.get('placement_credits')}")
+                  + (f"  active mailboxes {s.get('active_mailboxes_total')}" if s.get("active_mailboxes_total") is not None
+                     else f"  active mailboxes G{act.get('GOOGLE')}/M{act.get('MICROSOFT')}")
+                  + f"  placement credits {s.get('placement_credits')}")
 
     if args.renewals:
         from smartlead.zapmail_fleet import renewals_asof

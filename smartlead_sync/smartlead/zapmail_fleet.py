@@ -61,14 +61,23 @@ async def fleet_status() -> dict:
                     credits = await z.placement_credits()
                 except ZapmailError:
                     credits = None
-            domains: dict[str, int | None] = {}
-            active: dict[str, int | None] = {}
-            for provider in PROVIDERS:
-                async with _client(acc, provider) as z:
-                    d = ((await z.list_domains(page=1, limit=1)) or {}).get("data") or {}
-                    m = ((await z.list_mailboxes(page=1, limit=1)) or {}).get("data") or {}
-                domains[provider] = d.get("totalSearchedCount")
-                active[provider] = m.get("totalActiveMailboxes")
+            # Live 2026-10-13: Zapmail ignores the provider header on list
+            # calls (both answered 213), so count by each row's serviceProvider.
+            # Mailboxes: one total; Zapmail has no per-provider split there.
+            domains: dict[str, int | None] = {p: 0 for p in PROVIDERS}
+            async with _client(acc, "GOOGLE") as z:
+                page = 1
+                while True:
+                    d = ((await z.list_domains(page=page, limit=100)) or {}).get("data") or {}
+                    rows = d.get("domains") or []
+                    for r in rows:
+                        p = str(r.get("serviceProvider") or "GOOGLE").upper()
+                        domains[p] = (domains.get(p) or 0) + 1
+                    if len(rows) < 100 or page >= 50:
+                        break
+                    page += 1
+                m = ((await z.list_mailboxes(page=1, limit=1)) or {}).get("data") or {}
+            active_total = m.get("totalActiveMailboxes")
         except ZapmailError as exc:
             entry["error"] = str(exc)[:200]
             out[acc.name] = entry
@@ -86,7 +95,8 @@ async def fleet_status() -> dict:
             "purchased_mailboxes": ud.get("purchasedMailboxes"),
             "assigned_mailboxes": ud.get("assignedMailboxes"),
             "domains": domains,
-            "active_mailboxes": active,
+            "active_mailboxes": {},          # no per-provider split (see above)
+            "active_mailboxes_total": active_total,
             "placement_credits": ((credits or {}).get("data") or {}).get(
                 "totalAvailableCredits") if isinstance(credits, dict) else None,
         })
@@ -278,6 +288,7 @@ async def locate_domain(domain: str) -> list[dict]:
     domain = domain.strip().lower()
     hits: list[dict] = []
     for acc in discover_zapmail_accounts():
+        seen: set = set()
         for provider in PROVIDERS:
             try:
                 async with _client(acc, provider) as z:
@@ -302,9 +313,13 @@ async def locate_domain(domain: str) -> list[dict]:
                              "error": str(exc)[:200]})
                 continue
             for d in rows:
+                key = d.get("id") or d.get("domain")
+                if key in seen:          # the same row comes back for both providers
+                    continue
+                seen.add(key)
                 hits.append({
                     "account": acc.name,
-                    "provider": provider,
+                    "provider": str(d.get("serviceProvider") or provider).upper(),
                     "domain": domain,
                     "domain_id": d.get("id"),
                     "status": d.get("status"),

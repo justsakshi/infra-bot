@@ -63,7 +63,9 @@ function homeBlocks(baseDir) {
   blocks.push(section('*Check*'));
   blocks.push({ type: 'actions', block_id: 'u_home_check', elements: [
     btn('Renewals & billing', 'u_nav_renewals', null, 'primary'), btn('Before the bill', 'u_nav_review'),
-    btn('Fleet & cost', 'u_nav_status'), btn('Look up a domain', 'u_lookup_open'),
+    btn('Fleet & cost', 'u_nav_status'), btn('Look up a domain', 'u_lookup_open')] });
+  // Second row: Slack folds a row of more than 5 buttons into "+ N more".
+  blocks.push({ type: 'actions', block_id: 'u_home_check_2', elements: [
     btn('Kill warnings', 'u_nav_kill'), btn('Infra audit', 'dh_audit'), btn("Today's digest", 'u_nav_digest')] });
   blocks.push(section('*Tracker*'));
   blocks.push({ type: 'actions', block_id: 'u_home_tracker', elements: [
