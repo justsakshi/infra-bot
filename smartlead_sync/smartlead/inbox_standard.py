@@ -89,7 +89,8 @@ def readback_mismatches(account: dict, kind: str, vendor: str, written: dict) ->
 
 
 def warmup_started(account: dict) -> date | None:
-    iso = (account.get("warmup_details") or {}).get("warmup_created_at")
+    w = account.get("warmup_details") or {}
+    iso = w.get("warmup_created_at") or w.get("created_at")     # list read / single-inbox read
     return date.fromisoformat(str(iso)[:10]) if iso else None
 
 

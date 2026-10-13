@@ -88,3 +88,9 @@ def test_set_warmup_sends_the_standard(monkeypatch):
                        "daily_rampup": 5, "is_rampup_enabled": True, "auto_adjust_warmup": True,
                        "send_warmups_only_on_weekdays": True}
     assert sent[1]["is_rampup_enabled"] is False and "daily_rampup" not in sent[1]
+
+
+def test_warmup_start_from_the_single_inbox_read():
+    # GET /email-accounts/{id} names it warmup_details.created_at; the list read says warmup_created_at (live 2026-10-13)
+    one = acct(warmup_details={"status": "ACTIVE", "created_at": "2026-10-13T10:49:25.235Z", "warmup_reputation": 100})
+    assert st.warmup_started(one) == date(2026, 10, 13) and st.ready_date(one, "google") == date(2026, 10, 27)
