@@ -77,9 +77,10 @@ sit in Precise Leads under client 12256):
    ("✅ Set up 50 Outlook inboxes for Precise Leads: limit 5, warmup 5, reply
    30%, signature, tags"), details in the thread.
 
-Gate: `INBOX_INTAKE_ENABLED=true` writes; otherwise every run is a preview that
-posts "Would set up …". The first live run is the catch-up of today's 73,
-started by hand after Manveen reads its preview.
+Gate: the cron runs intake only with `INBOX_INTAKE_ENABLED=true`; until then
+the old ScaledMail readiness job keeps running. A preview (writes nothing) is
+run by hand: `python inbox_intake_cli.py`. The first live run is the catch-up
+of today's 73, started by hand after Manveen reads its preview.
 
 ## Ready to send: tracked from the day warmup starts
 
