@@ -1,6 +1,6 @@
 # Inbox intake: set every new Smartlead inbox up once, then only watch
 
-Date: 2026-10-13 · Status: draft for Manveen's review
+Date: 2026-10-13 · Status: approved by Manveen 2026-10-13 (option 1); ready-to-send tracking added on his ask
 
 ## Why
 
@@ -80,6 +80,33 @@ sit in Precise Leads under client 12256):
 Gate: `INBOX_INTAKE_ENABLED=true` writes; otherwise every run is a preview that
 posts "Would set up …". The first live run is the catch-up of today's 73,
 started by hand after Manveen reads its preview.
+
+## Ready to send: tracked from the day warmup starts
+
+Each inbox's warmup start is Smartlead's own `warmup_created_at` (for today's
+ScaledMail inboxes: 13 Oct, when ScaledMail switched warmup on); intake also
+records it in the ledger. An inbox is **ready to use** when both hold:
+
+| Type | Warmup before use | And |
+|---|---|---|
+| Google | 14 days | Smartlead warmup reputation 90%+ |
+| Outlook (either density) | 21 days | same |
+| SMTP | 21 days | same |
+
+Google 14 and Outlook 21 are Manveen's; SMTP 21 is a cautious default (no
+source gives an SMTP number; Smartlead's guide only says SMTP reaches full
+volume after 30 days). The reputation check stops a date alone from clearing
+an inbox that is still landing in spam. The days live in the same standard
+file (`ready_after_days`), so they can be changed without code.
+
+What the team sees:
+- the intake post says each domain's ready date ("warmmeetings.com, Google:
+  ready from 27 Oct");
+- the 09:40 digest gets a line on the day inboxes become ready ("Ready to use
+  today: 3 Google inboxes on warmmeetings.com"), and lists inboxes past their
+  date but still under 90% reputation;
+- the infra audit's "young inbox in a campaign" check uses each type's days
+  instead of a flat 21.
 
 ## After intake: watch only
 
