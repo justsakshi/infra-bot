@@ -177,3 +177,30 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
         if len(results) >= d["expected"] and all(results):
             out["complete"].append(did)
     return out
+
+
+def readiness_lines(accounts: list[dict], today: date) -> dict:
+    """Set-up inboxes that reach their ready date today, and ones past it but
+    under 90% warmup reputation, grouped by domain."""
+    per_domain: dict[str, int] = {}
+    for a in accounts:
+        dom = str(a.get("from_email", "")).split("@")[-1].lower()
+        per_domain[dom] = per_domain.get(dom, 0) + 1
+    ready: dict[tuple, int] = {}
+    low: dict[tuple, list] = {}
+    for a in accounts:
+        if not _has_tag(a, st.SETUP_TAG):
+            continue
+        dom = str(a["from_email"]).split("@")[-1].lower()
+        kind = st.inbox_kind(a, per_domain[dom])
+        state = st.readiness(a, kind, today)
+        key = (dom, st.standard_for(kind)["label"])
+        if state == "ready" and st.ready_date(a, kind) == today:
+            ready[key] = ready.get(key, 0) + 1
+        elif state == "low_reputation":
+            low.setdefault(key, []).append((a.get("warmup_details") or {}).get("warmup_reputation"))
+    def n(k, label):
+        return f"{k} {label} {'inbox' if k == 1 else 'inboxes'}"
+    return {"ready_today": [f"{n(k, label)} on {dom}" for (dom, label), k in sorted(ready.items())],
+            "low": [f"{n(len(r), label)} on {dom}: warmup reputation {r[0]} (needs {st.READY_REPUTATION}%)"
+                    for (dom, label), r in sorted(low.items())]}

@@ -166,3 +166,14 @@ def test_intake_message_headline_and_ready_dates():
     assert "Smartlead does not show ramp, auto-adjust or weekdays-only, so those are set but not re-read." in body
     preview = intake_message({"PRECISE_LEADS": {**res["PRECISE_LEADS"], "set_up": [], "would": res["PRECISE_LEADS"]["set_up"]}}, TODAY)[0]
     assert preview[0].startswith("👀 Would set up 3 new inboxes")
+
+
+def test_readiness_lines_group_by_domain():
+    def a(e, t="GMAIL", rep="100%", start="2026-10-13T10:00:00Z"):
+        return {"from_email": e, "type": t, "tags": [{"tag_name": "Bot-Setup"}],
+                "warmup_details": {"warmup_created_at": start, "warmup_reputation": rep}}
+    boxes = [a("x1@warmmeetings.com"), a("x2@warmmeetings.com"), a("y@low.com", rep="80%"),
+             a("z@notyet.com", t="OUTLOOK"), {**a("n@untracked.com"), "tags": []}]
+    r = ii.readiness_lines(boxes, date(2026, 10, 27))
+    assert r["ready_today"] == ["2 Google inboxes on warmmeetings.com"]
+    assert r["low"] == ["1 Google inbox on low.com: warmup reputation 80% (needs 90%)"]
