@@ -83,6 +83,27 @@ def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> 
 _THREAD_CHUNK = 40  # lines per thread reply — stays well inside Slack's msg limit
 
 
+def post_with_thread(token: str, channel: str, headline_lines: list[str],
+                     thread_parts: list[str]) -> str | None:
+    """Headline in the channel, details in its thread (spec 2026-10-13).
+
+    The parent is the headline (a few short lines); each thread part is a
+    reply, split at _THREAD_CHUNK lines. Slack folds the replies under
+    "N replies", which works as the "show details" button. Returns the parent
+    ts; nothing else is posted if the parent fails."""
+    ts = _post(token, channel, "\n".join(l for l in headline_lines if l))
+    if not ts:
+        return None
+    for part in thread_parts:
+        lines = str(part or "").strip("\n").split("\n")
+        if not "".join(lines).strip():
+            continue
+        for i in range(0, len(lines), _THREAD_CHUNK):
+            if not _post(token, channel, "\n".join(lines[i:i + _THREAD_CHUNK]), thread_ts=ts):
+                print("  [Notify] a thread reply failed; the headline stays.")
+    return ts
+
+
 def post_digest(text: str, full_lists: dict[str, list[str]] | None = None) -> bool:
     """Post the digest; if full_lists given, post the COMPLETE per-client lists
     as thread replies so '…and N more' is always expandable in-channel."""
