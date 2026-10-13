@@ -11,10 +11,9 @@ What it can change:
   * **Signature** - rendered from the client's template in inbox_profiles.json.
   * **Smartlead client** - Melior's inboxes live in the Precise Leads account,
     filed under client 12256.
-  * **Warmup, for a NEW inbox only** - the team standard (docs/STANDARD_SETUP_
-    TABLE.md): always on, 40/day ramping +5 from 5, reply rate 25%, no
-    auto-adjust. After that the daily warmup planner owns warmup, so existing
-    inboxes are never touched here.
+  * **Warmup, for a NEW inbox only** - the team standard by inbox type
+    (inbox_standard.json, spec 2026-10-13 inbox intake). Existing inboxes are
+    never touched here.
 
 Every call is a plan first (``plan_changes``: pure, shows old -> new) and only
 writes with ``approve=True``. Nothing here spends money.
@@ -30,7 +29,6 @@ import string
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from smartlead import config
 
 PROFILES_PATH = Path(os.getenv(
     "INBOX_PROFILES_FILE",
@@ -38,15 +36,6 @@ PROFILES_PATH = Path(os.getenv(
 
 PLACEHOLDERS = frozenset({"first_name", "last_name", "full_name", "title",
                           "company", "website", "email", "phone"})
-
-# The team standard for a brand-new inbox (STANDARD_SETUP_TABLE.md, state NEW).
-NEW_INBOX_WARMUP = {
-    "enabled": True,
-    "total_per_day": config.WARMUP_NEW_PER_DAY,
-    "daily_rampup": 5,
-    "reply_rate": config.WARMUP_REPLY_RATE,
-    "auto_adjust": False,
-}
 
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z' .-]{0,39}$")
 
@@ -199,7 +188,8 @@ def plan_changes(
     ch.fields = want
     ch.before = {k: account.get(k) for k in want}
     if new_inbox:
-        ch.warmup = dict(NEW_INBOX_WARMUP)
+        from smartlead.inbox_standard import inbox_kind, warmup_args
+        ch.warmup = warmup_args(inbox_kind(account, 1))   # Zapmail: 3 per domain, never a shared tenant
     if ch.zapmail_rename and "from_name" not in want and \
             full == (account.get("from_name") or ""):
         ch.zapmail_rename = None   # already has this name everywhere we can see
@@ -260,9 +250,7 @@ async def apply_changes(client: str, changes: list[InboxChange], *, approve: boo
                     await sl.update_email_account(str(ch.account_id), ch.fields)
                     res["done"] += sorted(ch.fields)
                 if ch.warmup:
-                    w = ch.warmup
-                    await sl.set_warmup(str(ch.account_id), w["enabled"], w["total_per_day"],
-                                        w["daily_rampup"], w["reply_rate"], w["auto_adjust"])
+                    await sl.set_warmup(str(ch.account_id), **ch.warmup)
                     res["done"].append("warmup")
             except Exception as exc:  # noqa: BLE001 - report per inbox, keep going
                 res.update(ok=False, error=str(exc)[:200])

@@ -62,9 +62,11 @@ def test_nothing_to_do_is_empty():
 
 def test_new_inbox_gets_the_team_standard_warmup_only_when_asked():
     assert ix.plan_changes(ACC, PROF, email="ann@gomelior.com").warmup is None
-    w = ix.plan_changes(ACC, PROF, email="ann@gomelior.com", new_inbox=True).warmup
-    assert w == {"enabled": True, "total_per_day": 40, "daily_rampup": 5,
-                 "reply_rate": 25, "auto_adjust": False}
+    w = ix.plan_changes({**ACC, "type": "GMAIL"}, PROF, email="ann@gomelior.com", new_inbox=True).warmup
+    assert w == {"enabled": True, "total_per_day": 25, "daily_rampup": 5, "reply_rate": 30,
+                 "auto_adjust": True, "weekdays_only": True}
+    o = ix.plan_changes({**ACC, "type": "OUTLOOK"}, PROF, email="ann@gomelior.com", new_inbox=True).warmup
+    assert o["total_per_day"] == 20 and o["reply_rate"] == 30
 
 
 @pytest.mark.parametrize("bad", ["", "4nn", "Robert'); DROP", "x" * 41])
@@ -100,8 +102,8 @@ class FakeSmartlead:
         FakeSmartlead.calls.append(("update", account_id, fields))
         return {"ok": True}
 
-    async def set_warmup(self, account_id, enabled, total, rampup, reply, auto):
-        FakeSmartlead.calls.append(("warmup", account_id, total, rampup, reply, auto))
+    async def set_warmup(self, account_id, enabled, total_per_day, daily_rampup, reply_rate, auto_adjust, weekdays_only):
+        FakeSmartlead.calls.append(("warmup", account_id, total_per_day, daily_rampup, reply_rate, auto_adjust))
         return {"ok": True}
 
 
@@ -150,7 +152,7 @@ def test_apply_writes_smartlead_then_mirrors_the_name_in_zapmail(fakes):
     res = asyncio.run(ix.apply_changes("Melior", changes, approve=True))
     assert res[0]["ok"] and set(res[0]["done"]) >= {"from_name", "client_id", "warmup", "zapmail"}
     assert ("update", "7", {"from_name": "Anna Reyes", "client_id": 12256}) in FakeSmartlead.calls
-    assert ("warmup", "7", 40, 5, 25, False) in FakeSmartlead.calls
+    assert ("warmup", "7", 20, 5, 30, True) in FakeSmartlead.calls      # no type in the fixture: SMTP standard
     assert FakeZapmail.renamed == [{"mailboxId": "mb-1", "username": "ann",
                                     "firstName": "Anna", "lastName": "Reyes"}]
 
