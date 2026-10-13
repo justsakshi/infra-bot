@@ -38,47 +38,45 @@ def _reviews():
     return [z, s, c]
 
 
-def test_review_headline_is_short_and_has_no_addresses():
-    head, thread = rr.format_review(_reviews(), 7)
-    assert len(head) <= 4
-    assert head[0].startswith("⚠️ Bills in the next 7 days: $35.00 across 3 bills")
-    assert "saves $" in head[0] and "/mo" in head[0]
+def test_review_headline_says_what_to_drop():
+    head, parts = rr.format_review(_reviews(), 7)
+    assert head == ["⚠️ Bills in the next 7 days ($35.00, 3 bills): drop 5 kill-list inboxes before they renew, "
+                    "saves $16.00/mo"]
     assert not any(EMAIL.search(l) for l in head)
-    assert any("Zapmail" in l and "ScaledMail" in l for l in head[1:])
 
 
-def test_review_thread_has_every_inbox_and_one_part_per_bill():
-    rv = _reviews()
-    head, thread = rr.format_review(rv, 7)
-    blob = "\n".join(thread)
-    for r in rv:
-        for row in r["rows"]:
-            assert row["email"] in blob
-    for r in rv:   # one reply per bill, opening with date · provider · what
-        assert sum(p.startswith(f"*{r['bills_on']} · {r['provider']} · {r['label']}*") for p in thread) == 1
-    assert "BD Ingest" in blob          # a retire inbox still in a live campaign is flagged
-    assert "Hi Zapmail team" in blob and "Hi ScaledMail team" in blob
+def test_review_drop_lines_per_bill_by_domain():
+    head, parts = rr.format_review(_reviews(), 7)
+    drop = parts[0].split("\n")
+    assert drop[0] == "*Drop before the bill*"
+    assert drop[1] == ("• Bill on 15 Oct · Zapmail · 5 Outlook inboxes · $15.00 (Bettrdata): drop dataingestx.com "
+                       "(3 inboxes), saves $9.00/mo · ⚠️ amy@dataingestx.com is still in BD Ingest")
+    assert drop[2] == ("• Bill on 17 Oct · ScaledMail · 4 × Google Inboxes · $14.00 (Precise Leads): drop plbad.com "
+                       "(2 inboxes), saves $7.00/mo")
 
 
-def test_review_boilerplate_once_in_the_last_reply():
-    head, thread = rr.format_review(_reviews(), 7)
-    assert sum(p.count(EXPLAIN) for p in thread) == 1 and EXPLAIN in thread[-1]
-    assert sum(p.count("ScaledMail bills per order") for p in thread) == 1
-    assert not any(EXPLAIN in l for l in head)
+def test_review_checks_and_clean_bills_are_short():
+    head, parts = rr.format_review(_reviews(), 7)
+    check = next(p for p in parts if p.startswith("*Check before paying*")).split("\n")
+    assert any(l.startswith("• `eve@bettrhq.com` (bill 15 Oct): ") and "55" in l for l in check)
+    assert "• Bill on 17 Oct (Precise Leads): 1 inbox has no recent placement test" in check
+    clean = next(p for p in parts if p.startswith("*Nothing to drop*"))
+    assert clean == "*Nothing to drop*\n• Bill on 19 Oct · Zapmail · 2 Google inboxes · $6.00 (Precise Leads)"
 
 
-def test_support_messages_are_whole_code_blocks():
-    head, thread = rr.format_review(_reviews(), 7)
-    msgs = [p for p in thread if "```" in p]
+def test_review_how_to_and_support_messages_last():
+    head, parts = rr.format_review(_reviews(), 7)
+    msgs = [p for p in parts if p.startswith("_Message for")]
     assert len(msgs) == 2 and all(p.count("```") == 2 for p in msgs)
-    assert all(len(p.split("\n")) <= 40 for p in msgs)
+    assert sum(p.count(EXPLAIN) for p in parts) == 1 and EXPLAIN in parts[-1]
+    assert "/domains" in parts[-1]
 
 
-def test_review_nothing_to_retire_is_green():
-    clean = [r for r in _reviews() if r["label"] == "2 Google inboxes"]
-    head, thread = rr.format_review(clean, 7)
-    assert head[0] == "✅ Bills in the next 7 days: $6.00 across 1 bill, nothing to retire"
-    assert "jo@clean.com" in "\n".join(thread)
+def test_review_nothing_to_drop_is_green():
+    clean = [r for r in _reviews() if r["counts"]["RETIRE"] == 0 and r["counts"]["CHECK"] == 0]
+    head, parts = rr.format_review(clean, 7)
+    assert head == ["✅ Bills in the next 7 days ($6.00, 1 bill): nothing on the kill list"]
+    assert parts[0].startswith("*Nothing to drop*")
 
 
 def test_review_empty():
@@ -134,7 +132,8 @@ def test_poster_run_splits_headline_and_thread_and_posts_both(monkeypatch):
     res = cli.run(7)
     assert len(res["headline"]) <= 4 and "could not be read" in res["headline"][-1]
     assert "Zapmail: 500" in "\n".join(res["thread"]) and "removes the inboxes" in res["thread"][-1]
-    assert res["text"].startswith(res["headline"][0]) and "a@x.com" in res["text"]
+    assert "thread" not in res["text"]
+    assert res["text"].startswith(res["headline"][0]) and "Bill on 15 Oct · ScaledMail · 2 × Google" in res["text"]
     sent = []
     monkeypatch.setattr(cli, "run", lambda days: res)
     monkeypatch.setattr(notify, "post_with_thread", lambda *a: sent.append(a) or "1.1")
@@ -142,4 +141,53 @@ def test_poster_run_splits_headline_and_thread_and_posts_both(monkeypatch):
     monkeypatch.setenv("RENEWAL_REVIEW_CHANNEL", "C1")
     monkeypatch.setattr(sys, "argv", ["renewal_review.py", "--post"])
     assert cli.main() == 0 and res["posted"] is True
-    assert sent[0][2] == res["headline"] and sent[0][3] == res["thread"]
+    assert sent[0][2] == [res["text"]] and sent[0][3] == []          # one message, no thread
+
+
+def test_unused_and_setting_up_are_not_called_kill_list():
+    facts = {"k1@dead.com": _facts(pct=45.0), "k2@dead.com": _facts(pct=45.0)}      # kill list (under 50%)
+    b = rr.review_bill({"provider": "ScaledMail", "label": "7 × Google", "bills_on": "2026-11-12", "price": 31.5,
+                        "clients": ["Precise Leads"], "order_id": "rec9",
+                        "inboxes": ["k1@dead.com", "k2@dead.com", "u1@gone.com", "u2@gone.com",
+                                    "s1@new.com", "s2@new.com", "s3@new.com"],
+                        "setting_up": ["s1@new.com", "s2@new.com", "s3@new.com"]}, facts, T)
+    head, parts = rr.format_review([b], 7)
+    assert head == ["⚠️ Bills in the next 7 days ($31.50, 1 bill): drop 2 kill-list inboxes, "
+                    "2 paid-for inboxes not in Smartlead, saves up to $18.00/mo"]
+    drop = parts[0]
+    assert "drop dead.com (2 inboxes), saves $9.00/mo" in drop and "3 inboxes still being set up, left alone" in drop
+    assert "gone.com" not in drop and "new.com" not in "\n".join(parts)
+    unused = next(p for p in parts if p.startswith("*Paying for inboxes not in Smartlead*"))
+    assert "gone.com (2 inboxes)" in unused and "saves $9.00/mo" in unused
+
+
+def test_no_recent_test_is_one_line_per_bill():
+    facts = {f"n{i}@m.com": _facts(tested_on="2026-09-01") for i in range(5)}
+    facts["r@m.com"] = _facts(reputation="55%")
+    b = rr.review_bill({"provider": "ScaledMail", "label": "6 × Google", "bills_on": "2026-11-06", "price": 21.0,
+                        "clients": ["Melior"], "inboxes": list(facts)}, facts, T)
+    head, parts = rr.format_review([b], 7)
+    check = next(p for p in parts if p.startswith("*Check before paying*")).split("\n")
+    assert "• Bill on 6 Nov (Melior): 5 inboxes have no recent placement test" in check
+    assert any(l.startswith("• `r@m.com` (bill 6 Nov): warmup reputation 55") for l in check)
+    assert len(check) == 3
+
+
+def test_scaledmail_bills_mark_mailboxes_still_being_set_up(monkeypatch):
+    import renewal_review as cli
+    import smartlead.scaledmail as sm_mod
+    import smartlead.scaledmail_fleet as fleet
+
+    class FakeSM:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def mailboxes(self, domain_id):
+            return [{"email": "A@new.com", "status": "In Progress"}, {"email": "b@new.com", "status": "Active"}]
+
+    monkeypatch.setattr(sm_mod, "configured", lambda: True)
+    monkeypatch.setattr(sm_mod, "ScaledMailClient", FakeSM)
+    monkeypatch.setattr(fleet, "snapshot", lambda sm: {
+        "orders": [{"id": "rec9", "billing_day": "2026-10-15", "description": "2 × Google", "amount": 7, "clients": ["Precise Leads"]}],
+        "domains": [{"order_id": "rec9", "domain_id": "d1"}]})
+    bills = cli.scaledmail_bills(30, [])
+    assert bills[0]["inboxes"] == ["a@new.com", "b@new.com"] and bills[0]["setting_up"] == ["a@new.com"]

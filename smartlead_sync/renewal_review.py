@@ -167,13 +167,17 @@ def scaledmail_bills(days: int, errors: list[str]) -> list[dict]:
             due = [o for o in snap["orders"] if o["billing_day"] and o["billing_day"] <= horizon]
             out = []
             for o in due:
-                inboxes = []
+                inboxes, setting_up = [], []
                 for d in snap["domains"]:
                     if d["order_id"] == o["id"] and d.get("domain_id"):
-                        inboxes += [m.get("email", "").lower() for m in sm.mailboxes(d["domain_id"])]
+                        for m in sm.mailboxes(d["domain_id"]):
+                            email = m.get("email", "").lower()
+                            inboxes.append(email)
+                            if str(m.get("status") or "").lower() not in ("active", ""):
+                                setting_up.append(email)      # "In Progress": not uploaded to Smartlead yet
                 out.append({"provider": "ScaledMail", "label": o["description"].replace("*", "×"),
                             "bills_on": o["billing_day"], "price": o["amount"], "inboxes": inboxes,
-                            "clients": o["clients"], "order_id": o["id"]})
+                            "setting_up": setting_up, "clients": o["clients"], "order_id": o["id"]})
             return out
     except Exception as exc:  # noqa: BLE001
         errors.append(f"ScaledMail: {str(exc)[:150]}")
@@ -195,7 +199,7 @@ def run(days: int) -> dict:
     headline, thread = rr.format_review(reviews, days)
     if errors:
         # A half-read review can call good inboxes CHECK: say so up front, details in the thread.
-        headline.append(":warning: Some sources could not be read, so some verdicts are CHECK (details in the thread)")
+        headline.append(":warning: Some sources could not be read, so some verdicts are CHECK (details below)")
         thread.insert(len(thread) - 1, ":warning: could not read: " + "; ".join(errors))
     text = "\n".join(headline) + ("\n\n" + "\n\n".join(thread) if thread else "")
     return {"days": days, "reviews": reviews, "errors": errors, "headline": headline, "thread": thread,
@@ -250,7 +254,7 @@ def main() -> int:
         from smartlead.notify import post_with_thread
         token = os.getenv("SLACK_BOT_TOKEN", "")
         channel = os.getenv("RENEWAL_REVIEW_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "")
-        res["posted"] = bool(token and channel and post_with_thread(token, channel, res["headline"], res["thread"]))
+        res["posted"] = bool(token and channel and post_with_thread(token, channel, [res["text"]], []))   # one message
     print(json.dumps(res, default=str) if args.json else res["text"])
     return 0
 
