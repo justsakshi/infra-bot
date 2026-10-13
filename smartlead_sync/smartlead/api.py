@@ -109,6 +109,18 @@ class SmartleadClient:
     async def get_warmup_stats(self, account_id: str) -> list[dict] | dict:
         return await self._get(f"/email-accounts/{account_id}/warmup-stats")
 
+    async def list_tags(self) -> list[dict]:
+        """Email-account tags: [{id, name, color}] (GET /email-accounts/tags)."""
+        return await self._get("/email-accounts/tags") or []
+
+    async def assign_tags(self, account_ids: list, tag_ids: list) -> dict:
+        """Add tags to up to 25 inboxes (POST /email-accounts/tag-mapping, Smartlead docs)."""
+        if not account_ids or len(account_ids) > 25 or not tag_ids:
+            raise ValueError("assign_tags: 1-25 inbox ids and at least one tag id")
+        return await self._request_json("POST", "/email-accounts/tag-mapping",
+                                        {"email_account_ids": [int(i) for i in account_ids],
+                                         "tag_ids": [int(t) for t in tag_ids]})
+
     async def update_email_account(self, account_id: str, fields: dict) -> dict:
         """Partial-update an email account (POST /email-accounts/{id}).
         Documented fields incl. max_email_per_day — the SAME daily cap shared by

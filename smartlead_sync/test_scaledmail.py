@@ -501,7 +501,7 @@ def test_setup_watch_reports_waiting_late_and_live():
     text = "\n".join(w["lines"])
     assert w["newly_live"] == ["p2"]
     assert "b.com, c.com" in text and "28 inboxes" in text and "o2" in text and "Smartlead" in text
-    assert 'inbox_setup.py --client "Precise Leads" --domain b.com --signature' in text
+    assert "scaledmail_cli.py ready --apply" in text
     assert "a.com" in text and "business day 2" in text
     assert "Late" in text and "d.com" in text
     assert "e.com" not in text

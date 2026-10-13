@@ -30,6 +30,7 @@ SPEND (charges the card; --approve + SCALEDMAIL_ALLOW_SPEND=true):
     python scaledmail_cli.py place <plan_id> --approve
     python scaledmail_cli.py reconcile <plan_id>         # after a timeout
     python scaledmail_cli.py setup                       # placed orders: setting up / late / LIVE
+    python scaledmail_cli.py ready [--apply]             # arrived in Smartlead -> signature, client, tags
     python scaledmail_cli.py mark-failed <plan_id>       # only after checking the ScaledMail UI (--note "why")
 """
 from __future__ import annotations
@@ -97,6 +98,35 @@ def setup_lines(snap: dict) -> dict:
                 "newly_live": [], "covered": set()}
 
 
+def ready_lines(apply: bool) -> dict:
+    """New ScaledMail inboxes in Smartlead -> signature, client, tags (inbox_ready).
+    Writes only with apply=True; the schedule passes it when INBOX_READY_ENABLED=true."""
+    import asyncio
+    from smartlead.api import SmartleadClient
+    from smartlead.inbox_ready import run_ready
+    from smartlead.inbox_setup import profile_for, smartlead_key_for
+    from smartlead.scaledmail_orders import PlanStore
+
+    def sl_for(client):
+        name, key = smartlead_key_for(profile_for(client)[1])
+        return SmartleadClient(key, account_name=name)
+    try:
+        return asyncio.run(run_ready(PlanStore(), approve=apply, sl_for=sl_for,
+                                     profile=lambda c: profile_for(c)[1]))
+    except Exception as exc:  # noqa: BLE001 - the digest still posts
+        return {"lines": [f"Inbox readiness not checked: {str(exc)[:120]}"], "ready": []}
+
+
+def post_lines(title: str, lines: list[str]) -> bool:
+    """Post to SCALEDMAIL_NOTIFY_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL); False when not set up."""
+    from smartlead.notify import _post
+    channel = (os.getenv("SCALEDMAIL_NOTIFY_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL") or "").strip()
+    token = (os.getenv("SLACK_BOT_TOKEN") or os.getenv("DOMAINS_SLACK_BOT_TOKEN") or "").strip()
+    if not channel or not token:
+        return False
+    return _post(token, channel, title + "\n" + "\n".join("• " + l for l in lines)) is not None
+
+
 def digest(sm) -> dict:
     snap = fleet.snapshot(sm, tracker=_tracker())
     ren = fleet.renewals(snap, domain_days=14, billing_days=3)
@@ -104,7 +134,7 @@ def digest(sm) -> dict:
     stuck = [d for d in snap["domains"] if d["status"] != "Active" and d["domain"] not in watch["covered"]]
     unassigned = [d["domain"] for d in snap["domains"] if not d["client"]]
     rep = fleet.report_summary(sm.reporting())
-    lines = list(watch["lines"])
+    lines = list(watch["lines"]) + ready_lines(os.getenv("INBOX_READY_ENABLED", "").lower() == "true")["lines"]
     if ren["billing"]:
         lines.append("Orders billing in 3 days: " + "; ".join(
             f"{o['description'].replace('*', '×')} ${o['amount']:.2f} on {o['billing_day']} ({', '.join(o['clients'])})"
@@ -141,6 +171,11 @@ def run(args) -> dict:
             return {k: snap[k] for k in ("orders", "monthly_total", "active_orders", "by_provider",
                                          "by_client", "today")} | {"inventory": snap["inventory"],
                                                                    "domain_count": len(snap["domains"])}
+        if c == "ready":
+            out = ready_lines(bool(args.apply))
+            if args.post and out["ready"]:
+                out["posted"] = post_lines("*Inboxes ready in Smartlead*", out["lines"])
+            return out
         if c == "setup":
             w = setup_lines(fleet.snapshot(sm, tracker=_tracker()))
             return {"lines": w["lines"], "newly_live": w["newly_live"]}
@@ -280,6 +315,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--user")
     p = sub.add_parser("reconcile"); p.add_argument("plan_id")
     sub.add_parser("setup", help="where placed orders are in ScaledMail's 2-3 day setup")
+    p = sub.add_parser("ready", help="new inboxes in Smartlead: signature, client, tags (dry run unless --apply)")
+    p.add_argument("--apply", action="store_true")
+    p.add_argument("--post", action="store_true", help="post to SCALEDMAIL_NOTIFY_CHANNEL when something became ready")
     p = sub.add_parser("mark-failed"); p.add_argument("plan_id")
     p.add_argument("--note", help="why it was not ordered (e.g. refunded to credits); kept in history")
     p = sub.add_parser("drop"); p.add_argument("plan_id")

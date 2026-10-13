@@ -1496,6 +1496,17 @@ async function start() {
     });
     // (The ScaledMail digest is part of the 9:40 "Domains & inboxes daily".)
 
+    // ScaledMail inboxes that reached Smartlead -> signature, client, tags
+    // (smartlead/inbox_ready.py). Every 2 hours, only when
+    // INBOX_READY_ENABLED=true; posts only when something became ready.
+    cron.schedule('15 */2 * * *', () => {
+      if (process.env.INBOX_READY_ENABLED !== 'true') return;
+      console.log(`[CRON] Inbox readiness firing at ${new Date().toISOString()}`);
+      runScaledMail('inbox-ready', ['--json', 'ready', '--apply', '--post']);
+    }, {
+      timezone: 'Asia/Kolkata'
+    });
+
     // GoDaddy -> tracker at 9:37 AM IST: domains the bot bought on GoDaddy get a
     // row (client from the purchase ledger), and every GoDaddy domain's expiry
     // follows GoDaddy. Writes only with GODADDY_ASSET_SYNC_ENABLED=true; skips

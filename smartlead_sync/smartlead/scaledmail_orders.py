@@ -423,9 +423,8 @@ def setup_watch(snap: dict, plans: list[dict], *, today: date) -> dict:
             n = sum(int(d.get("mailboxes") or 0) for d in rows)
             lines.append(f"LIVE: {', '.join(names)} ({n} inboxes, order {oid}). Send ScaledMail support: "
                          f"\"Order {oid} is active. Could you upload its {n} inboxes to our Smartlead "
-                         f"account? Thanks.\" Once they are in Smartlead, add signatures (dry run first): "
-                         + "; ".join(f"`inbox_setup.py --client \"{plan.get('client', '')}\" --domain {d} --signature`"
-                                     for d in names))
+                         f"account? Thanks.\" Once they are in Smartlead the bot adds the signature and tags "
+                         "(INBOX_READY_ENABLED; or run `scaledmail_cli.py ready --apply`).")
             continue
         days = business_days(placed, today)
         waiting = ", ".join(f"{d['domain']} ({d['status'] or 'not listed'})" for d in rows) or ", ".join(names)
