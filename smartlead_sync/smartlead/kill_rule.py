@@ -78,18 +78,18 @@ def judge(email: str, tests: list[dict], domain_verdict: tuple[bool, str] | None
     (t1, g1) = ct[0]
     if g1 < DEAD_BELOW and t1["seeds"] >= DEAD_MIN_SEEDS and fresh:
         return {"email": email, "verdict": KILL, "rule": "b",
-                "why": f"{g1:.0f}% inbox on {t1['seeds']} seeds ({t1['date']}) — clearly dead"}
+                "why": f"only {g1:.0f}% of {t1['seeds']} test emails reached the inbox ({t1['date']})"}
     if len(ct) >= 2:
         (t2, g2) = ct[1]
         if g1 < GOOD_AT and g2 < GOOD_AT and _days(t1["date"], t2["date"]) >= MIN_DAYS_BETWEEN and fresh:
             return {"email": email, "verdict": KILL, "rule": "a",
-                    "why": f"two strikes: {g2:.0f}% ({t2['date']}) then {g1:.0f}% ({t1['date']})"}
+                    "why": f"failed 2 tests: {g2:.0f}% ({t2['date']}), then {g1:.0f}% ({t1['date']})"}
     if not fresh:
         return {"email": email, "verdict": NO_DATA, "rule": "",
                 "why": f"last counting test {t1['date']} ({g1:.0f}%) is older than {FRESH_DAYS} days"}
     if g1 < GOOD_AT:
         return {"email": email, "verdict": WATCH, "rule": "",
-                "why": f"one strike: {g1:.0f}% on {t1['seeds']} seeds ({t1['date']}) — retest before killing"}
+                "why": f"failed 1 test: {g1:.0f}% of {t1['seeds']} test emails reached the inbox ({t1['date']})"}
     return {"email": email, "verdict": GOOD, "rule": "", "why": f"{g1:.0f}% inbox ({t1['date']})"}
 
 
@@ -108,8 +108,8 @@ def domain_verdicts(tests_by_email: dict[str, list[dict]], today: date) -> dict[
         struck = sum(1 for _, g in rows if g < GOOD_AT)
         pooled = 100.0 * inbox / seeds if seeds else 100.0
         dead = seeds >= DOMAIN_MIN_SEEDS and pooled < GOOD_AT and struck * 2 >= len(rows)
-        out[dom] = (dead, f"domain {dom}: {pooled:.0f}% inbox pooled over {seeds} seeds, "
-                          f"{struck}/{len(rows)} mailboxes struck")
+        out[dom] = (dead, f"whole domain: {pooled:.0f}% of {seeds} test emails reached the inbox "
+                          f"(needs {GOOD_AT:.0f}%), {struck} of {len(rows)} inboxes failed")
     return out
 
 

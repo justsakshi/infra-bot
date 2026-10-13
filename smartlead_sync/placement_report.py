@@ -79,17 +79,44 @@ def accounts_by_email(key):
         off += 100
 
 
-def active_attachments(key):
-    """{inbox email: [active campaign names]}."""
+def _sent_lately(key, cid, days, today):
+    """Did the campaign send anything in the last ``days`` days? Unreadable
+    counts as yes, so a possibly live campaign is never hidden."""
+    from datetime import timedelta
+    try:
+        r = _get(f"{SL}/campaigns/{cid}/analytics-by-date", key,
+                 start_date=(today - timedelta(days=days)).isoformat(), end_date=today.isoformat())
+        return int(r.get("sent_count") or 0) > 0
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def attachments(key, sending_days=None, today=None):
+    """{inbox email: {campaigns: [switched-on campaigns with leads left],
+    sending: [those that sent in the last ``sending_days`` days]}}. Live
+    2026-10-13: ACTIVE campaigns with leads mid-sequence had sent nothing for
+    two weeks, so "switched on" alone does not mean "sending"."""
+    from datetime import date
+    today = today or date.today()
     out = {}
     for c in _get(f"{SL}/campaigns", key):
         if str(c.get("status", "")).upper() != "ACTIVE":
             continue
         if not active_campaign(_get(f"{SL}/campaigns/{c['id']}/analytics", key)):
             continue
+        name = c["name"][:40]
+        sending = sending_days is not None and _sent_lately(key, c["id"], sending_days, today)
         for a in _get(f"{SL}/campaigns/{c['id']}/email-accounts", key) or []:
-            out.setdefault(a["from_email"].lower(), []).append(c["name"][:40])
+            row = out.setdefault(a["from_email"].lower(), {"campaigns": [], "sending": []})
+            row["campaigns"].append(name)
+            if sending:
+                row["sending"].append(name)
     return out
+
+
+def active_attachments(key):
+    """{inbox email: [active campaign names]}."""
+    return {e: v["campaigns"] for e, v in attachments(key).items()}
 
 
 def pick_tests(key, since, ids):

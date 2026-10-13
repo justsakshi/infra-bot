@@ -71,7 +71,7 @@ def test_todays_precise_leads_case():
 def test_kill_report_groups_by_client_and_warns_live_campaigns():
     import kill_report as kp
     tests = [{"date": "2026-10-05", "seeds": 20, "spam": 12, "by": {}}]          # 40%: clearly dead
-    facts = {"a@x.com": {"client": "Melior", "tests": tests, "campaigns": ["Exec search"]},
+    facts = {"a@x.com": {"client": "Melior", "tests": tests, "campaigns": ["Exec search"], "sending": ["Exec search"]},
              "b@y.com": {"client": "Melior", "tests": [{"date": "2026-10-05", "seeds": 20, "spam": 6, "by": {}}]},
              "c@z.com": {"client": "Belardi Wong", "tests": tests}}                 # past client: left out
     res = kp.build(facts, T, {"a@x.com": "Scaledmail"})
@@ -79,6 +79,6 @@ def test_kill_report_groups_by_client_and_warns_live_campaigns():
     head, thread = kp.format_report(res, [], T)
     txt = "\n".join(thread)
     assert head[0].startswith("\U0001f6a8 Kill warnings")
-    assert "warning only" in txt and "`a@x.com` (Scaledmail)" in txt and "still in Exec search" in txt
+    assert "Warning only" in txt and "`a@x.com` (Scaledmail)" in txt and "still sending in: Exec search" in txt
     assert "c@z.com" not in txt
     assert any("Could not read Smartlead X: 429" in h for h in kp.format_report(res, ["Smartlead X: 429"], T)[0])

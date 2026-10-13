@@ -47,7 +47,7 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
         return "RETIRE", "not in any Smartlead account (paid for, never used)"
     k = kill or {"verdict": kr.NO_DATA, "why": "no placement test"}
     if k["verdict"] == kr.KILL:
-        return "RETIRE", "should kill — " + k["why"]
+        return "RETIRE", k["why"]
     if not f.get("connected", True):
         return "CHECK", "Smartlead connection broken"
     rep = _rep(f.get("reputation"))

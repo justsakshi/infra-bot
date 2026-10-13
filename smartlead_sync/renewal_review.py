@@ -73,7 +73,7 @@ def seed_provider(domain: str) -> str:
 
 def smartlead_facts(errors: list[str]) -> dict[str, dict]:
     """{email: {in_smartlead, connected, reputation, pct, tested_on, campaigns}}."""
-    from placement_report import active_attachments
+    from placement_report import attachments
     facts: dict[str, dict] = {}
     for acc in discover_accounts():
         if acc.name.upper() in PAST:
@@ -90,13 +90,14 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                         "client": client_label(acc.name, a.get("client_id")),
                         "connected": bool(a.get("is_smtp_success") and a.get("is_imap_success")),
                         "reputation": w.get("warmup_reputation"), "pct": None, "tested_on": None,
-                        "tests": [], "campaigns": []}
+                        "tests": [], "campaigns": [], "sending": []}
                 if len(page) < 100:
                     break
                 off += 100
-            for email, camps in active_attachments(key).items():
+            for email, at in attachments(key, sending_days=7).items():
                 if email in facts:
-                    facts[email]["campaigns"] = camps
+                    facts[email]["campaigns"] = at["campaigns"]
+                    facts[email]["sending"] = at["sending"]
             r = httpx.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": key},
                            json={"limit": 50}, headers=UA, timeout=60)
             tests = sorted((t for t in r.json() if t.get("status") == "COMPLETED"),

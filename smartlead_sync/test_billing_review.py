@@ -95,7 +95,7 @@ def test_review_bill_counts_and_savings():
     assert r["counts"] == {"KEEP": 1, "RETIRE": 3, "CHECK": 0}
     assert r["retire_saves_monthly"] == 9.75
     assert "saves $9.75/mo" in rr.format_review([r], 3)[0][0]
-    assert all(row["why"].startswith("should kill") for row in r["rows"] if row["verdict"] == "RETIRE")
+    assert all(row["why"].startswith("whole domain:") for row in r["rows"] if row["verdict"] == "RETIRE")
 
 
 def test_failed_payment_carries_the_invoice_link():
@@ -117,7 +117,8 @@ def test_support_message_names_bad_domains_and_keeps_good_ones():
     r = rr.review_bill({"provider": "ScaledMail", "label": "39 × Google Inboxes", "bills_on": "2026-10-08", "price": 10.5,
                         "clients": ["Precise Leads"], "order_id": "rec3", "inboxes": list(facts)}, facts, T)
     m = r["support_message"]
-    assert "bad.com (2 inboxes)" in m and "45% inbox" in m and "not charge us" in m
+    assert "bad.com (2 inboxes)" in m and "45% of 40 test emails reached the inbox" in m and "not charge us" in m
+    assert "should kill" not in m
     assert "keep the rest" in m and "good.com" in m and "rec3" in m
     clean = rr.review_bill({"provider": "ScaledMail", "label": "L", "bills_on": "2026-10-08", "price": 3.5,
                             "inboxes": ["c@good.com"]}, facts, T)
