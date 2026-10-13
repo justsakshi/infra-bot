@@ -294,11 +294,26 @@ async function runSuggest(clientKey, respond, baseDir, { inPlace = false } = {})
     await say({ text: 'Domain suggestions for ' + (p.label || clientKey), blocks: suggestionBlocks(r) }, true);
   } catch (err) {
     console.error('[domain-suggest] failed:', err);
-    await say({
-      text: ':x: ' + (err.message === 'timed out'
-        ? 'Suggestions for ' + (p.label || clientKey) + ' took over 10 minutes and were stopped (usually Zapmail’s search limit — 100 searches per 30 min). Try again in 30 minutes.'
-        : err.message) }, true);
+    await say({ text: ':x: ' + suggestErrorText(p.label || clientKey, err) }, true);
   }
+}
+
+/** Clock time (IST, the team's zone) `minutes` from `now`, as HH:MM. */
+function clockIn(minutes, now) {
+  const t = new Date((now ? now.getTime() : Date.now()) + minutes * 60 * 1000);
+  return t.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+/** What went wrong with suggestions, in one sentence, plus what to do next. */
+function suggestErrorText(label, err, now) {
+  const msg = String((err && err.message) || err || '');
+  if (msg === 'timed out') {
+    return 'Suggestions took over 10 minutes and were stopped. Usually Zapmail’s search limit (100 searches per 30 min). '
+      + 'Try again after ' + clockIn(30, now) + ' IST.';
+  }
+  const plain = require('./slack_text').plainError(msg);
+  return 'Suggestions for ' + label + ' failed: ' + plain.replace(/\.?\s*$/, '.')
+    + (/try again|ask an admin/i.test(plain) ? '' : ' Try again in a few minutes; if it fails again, tell an admin.');
 }
 
 function registerDomainSuggestFlow(app, baseDir) {
@@ -371,6 +386,7 @@ function registerDomainSuggestFlow(app, baseDir) {
 module.exports = {
   registerDomainSuggestFlow,
   runSuggest,
+  suggestErrorText,
   resolveClientKey,
   clientPickerBlocks,
   suggestionBlocks,

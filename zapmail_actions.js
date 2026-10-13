@@ -245,8 +245,8 @@ function renewalBlocks(result) {
   const errors = (result && result.renewal_errors) || [];
   const current = rows.filter(r => r.client).sort((a, b) => (a.expire_on || '').localeCompare(b.expire_on || ''));
   const past = rows.filter(r => !r.client);
-  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: '*Renewals — next 2 months*' + NL
-    + current.length + ' current-client domain(s) · ' + past.length + ' past-client domain(s) left to lapse'
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: '*Domain renewals — next 2 months: '
+    + current.length + ' current-client domain' + (current.length === 1 ? '' : 's') + '*'
     + (errors.length ? NL + errors.map(e => ':warning: could not check ' + e).join(NL) : '') } }];
   for (const r of current.slice(0, 20)) {
     blocks.push({
@@ -269,7 +269,9 @@ function renewalBlocks(result) {
   }
   if (current.length > 20) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '…and ' + (current.length - 20) + ' more.' }] });
   if (past.length) {
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Past clients (no action): ' + past.slice(0, 30).map(r => r.domain).join(', ') + (past.length > 30 ? ', …' : '') }] });
+    // One count line; the names sit behind Show (domains_unified: u_show_past).
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: past.length + ' past-client domain' + (past.length === 1 ? '' : 's') + ' left to lapse (no action).' },
+      accessory: { type: 'button', action_id: 'u_show_past', text: { type: 'plain_text', text: 'Show' }, value: 'zm' } });
   }
   return blocks;
 }

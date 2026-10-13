@@ -94,7 +94,7 @@ function commandFor(sub, args) {
 
 function homeBlocks() {
   return [
-    section('*ScaledMail* — Google, Outlook and SMTP mailboxes (monthly orders). Views are read-only; changes are approver-only and ask first.'),
+    section('*ScaledMail* — Google, Outlook and SMTP mailboxes (monthly orders).'),
     { type: 'actions', block_id: 'sm_home_1', elements: [
       btn('Fleet & cost', 'sm_nav_status', 'status'),
       btn('Renewals & billing', 'sm_nav_renewals', 'renewals'),
@@ -117,29 +117,70 @@ function homeBlocks() {
   ];
 }
 
+/** Fleet: a headline and one line per provider; the order list sits behind *Show orders*. */
 function statusBlocks(r) {
   const orders = (r.orders || []).filter(o => o.status === 'Active');
-  let t = '*ScaledMail — ' + money(r.monthly_total) + '/month* · ' + (r.active_orders || 0) + ' active order(s) · '
-    + (r.domain_count || 0) + ' domains' + NL;
+  const n = orders.length || r.active_orders || 0;
+  let t = '*' + money(r.monthly_total).replace(/\.00$/, '') + '/mo · ' + n + ' order' + (n === 1 ? '' : 's') + ' · '
+    + (r.domain_count || 0) + ' domains*';
   const bp = r.by_provider || {};
-  t += Object.keys(bp).map(p => PNAME[p] + ' ' + bp[p].domains + ' domains / ' + bp[p].mailboxes + ' mailboxes'
-    + (bp[p].in_progress ? ' (' + bp[p].in_progress + ' being set up)' : '')).join(' · ') + NL;
+  Object.keys(bp).forEach(p => {
+    t += NL + PNAME[p] + ' ' + bp[p].domains + ' domains / ' + bp[p].mailboxes + ' mailboxes'
+      + (bp[p].in_progress ? ' (' + bp[p].in_progress + ' being set up)' : '');
+  });
   const bc = r.by_client || {};
-  t += 'By client: ' + Object.keys(bc).map(c => (c === 'unassigned' ? ':warning: unassigned' : c) + ' ' + bc[c].mailboxes).join(' · ') + NL + NL;
+  if (Object.keys(bc).length) {
+    t += NL + 'By client: ' + Object.keys(bc).map(c => (c === 'unassigned' ? ':warning: unassigned' : c) + ' ' + bc[c].mailboxes).join(' · ');
+  }
+  const blocks = [section(t)];
+  if (orders.length || (r.inventory || []).length) {
+    blocks.push({ type: 'actions', elements: [btn('Show orders (' + orders.length + ')', 'u_show_orders', 'sm')] });
+  }
+  return blocks;
+}
+
+/** *Show orders*: every active order, unused domains, and the prices sentence (said here only). */
+function ordersListBlocks(r) {
+  if (!r || r.error) return [section(':x: ' + plain(r && r.error))];
+  const orders = (r.orders || []).filter(o => o.status === 'Active');
+  let t = '*ScaledMail orders* — ' + money(r.monthly_total) + '/mo' + NL;
   t += orders.map(o => '• ' + desc(o.description) + ' — ' + money(o.amount) + '/mo · ' + o.mailboxes + ' mailboxes · '
-    + (o.clients || []).join(', ') + ' · bills ' + (o.billing_day || '?')).join(NL);
+    + ((o.clients || []).join(', ') || '—') + ' · bills ' + (o.billing_day || '?')).join(NL) || '_no active orders_';
   if ((r.inventory || []).length) {
     t += NL + NL + 'Unused registered domains: ' + r.inventory.map(i => '`' + i.domain + '`').join(', ');
   }
   return [section(t), context('Prices: Google $3.50/mailbox, Outlook $50/domain of 25, SMTP $3.75/domain of 4. Mailboxes bill monthly on the order date.')];
 }
 
+/** A domain whose client is set but no longer a current client. */
+function pastClientDomain(x) { return Boolean(x.client) && !CLIENTS.includes(x.client); }
+
 function renewalsBlocks(r) {
-  const b = (r.billing || []).map(o => '• *' + o.billing_day + '* — ' + desc(o.description) + ' ' + money(o.amount) + ' · ' + (o.clients || []).join(', '));
-  const d = (r.domains || []).map(x => '• *' + x.renewal_at + '* — `' + x.domain + '` ' + money(x.price) + ' · ' + (x.client || (x.provider === 'unused' ? 'unused' : 'unassigned')));
-  return [section('*Order billing — next ' + (r.billing_days || 14) + ' days*' + NL + (b.join(NL) || '_none_')
-    + NL + NL + '*Domain renewals — next ' + (r.domain_days || 60) + ' days*' + NL + (d.join(NL) || '_none_')),
-    context('To stop paying for an order, an approver uses *Cancel order* on it (Orders) — every mailbox in that order stops.')];
+  const bills = r.billing || [];
+  const total = bills.reduce((a, o) => a + (Number(o.amount) || 0), 0);
+  const b = bills.map(o => '• *' + o.billing_day + '* — ' + desc(o.description) + ' ' + money(o.amount) + ' · ' + (o.clients || []).join(', '));
+  const doms = r.domains || [];
+  const past = doms.filter(pastClientDomain);
+  const d = doms.filter(x => !pastClientDomain(x)).map(x => '• *' + x.renewal_at + '* — `' + x.domain + '` ' + money(x.price) + ' · '
+    + (x.client || (x.provider === 'unused' ? 'unused' : 'unassigned')));
+  const blocks = [section('*' + (bills.length ? money(total) + ' bills in the next ' + (r.billing_days || 14) + ' days* (' + bills.length + ' order' + (bills.length === 1 ? '' : 's') + ')'
+    : 'No ScaledMail order bills in the next ' + (r.billing_days || 14) + ' days*')
+    + (b.length ? NL + b.join(NL) : '')
+    + NL + NL + '*Domain renewals — next ' + (r.domain_days || 60) + ' days*' + NL + (d.join(NL) || '_none_'))];
+  if (past.length) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: past.length + ' past-client domain' + (past.length === 1 ? '' : 's') + ' renew in this window (no action).' },
+      accessory: btn('Show', 'u_show_past', 'sm') });
+  }
+  if (bills.length) blocks.push(context('To stop paying for an order: *Cancel order* on it (Orders). Every mailbox in that order stops.'));
+  return blocks;
+}
+
+/** *Show* past-client domains on ScaledMail. */
+function pastRenewalsBlocks(r) {
+  if (!r || r.error) return [section(':x: ' + plain(r && r.error))];
+  const past = (r.domains || []).filter(pastClientDomain);
+  return [section('*ScaledMail past-client domains renewing* (' + past.length + ', no action)' + NL
+    + (past.map(x => '• ' + x.renewal_at + ' — `' + x.domain + '` · ' + x.client).join(NL) || '_none_'))];
 }
 
 function orderMenu(o) {
@@ -242,12 +283,19 @@ function placeButton(planId, monthly, domains, client) {
       + ' for domains, for ' + client + '. Availability is re-checked first. The server must allow spending.', 'Place order'));
 }
 
-function plansBlocks(r) {
-  if (r.error) return [section(':x: ' + plain(r.error))];
-  const plans = (r.plans || []).slice(0, 20);
-  if (!plans.length) return [section('*Purchase plans* — none. Use *Order mailboxes* to stage one.')];
-  const icon = { planned: ':memo:', placed: ':white_check_mark:', failed: ':x:', unknown: ':warning:', in_progress: ':hourglass:', payment_pending: ':credit_card:' };
-  const blocks = [section('*ScaledMail purchase plans*')];
+const LIVE_PLAN = ['planned', 'in_progress', 'placed', 'unknown', 'payment_pending'];
+const OLD_PLAN_DAYS = 7;
+
+/** Dropped / failed plans staged more than 7 days ago (no date = still shown). */
+function oldPlan(p, now) {
+  if (LIVE_PLAN.includes(p.status)) return false;
+  const t = Date.parse(p.staged_at || '');
+  return Number.isFinite(t) && (now || Date.now()) - t > OLD_PLAN_DAYS * 864e5;
+}
+
+function planBlocks(plans) {
+  const icon = { planned: ':memo:', placed: ':white_check_mark:', failed: ':x:', unknown: ':warning:', in_progress: ':hourglass:', payment_pending: ':credit_card:', dropped: ':wastebasket:' };
+  const blocks = [];
   for (const p of plans) {
     const s = section((icon[p.status] || '•') + ' `' + p.plan_id + '` ' + p.status + ' · ' + p.client + ' · ' + PNAME[p.provider] + ' · '
       + p.mailboxes + ' mailboxes · ' + money(p.monthly_usd) + '/mo · ' + (p.domains || []).join(', ')
@@ -260,6 +308,28 @@ function plansBlocks(r) {
     blocks.push(s);
   }
   return blocks;
+}
+
+/** Purchase plans: live and placed ones; dropped/failed older than 7 days behind *Show old plans*. */
+function plansBlocks(r, now) {
+  if (r.error) return [section(':x: ' + plain(r.error))];
+  const all = r.plans || [];
+  if (!all.length) return [section('*Purchase plans* — none. Use *Order mailboxes* to stage one.')];
+  const old = all.filter(p => oldPlan(p, now));
+  const shown = all.filter(p => !oldPlan(p, now)).slice(0, 20);
+  const blocks = [section('*ScaledMail purchase plans*' + (shown.length ? '' : ' — nothing open.')), ...planBlocks(shown)];
+  if (old.length) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: old.length + ' old plan' + (old.length === 1 ? '' : 's') + ' (dropped or failed over ' + OLD_PLAN_DAYS + ' days ago).' },
+      accessory: btn('Show old plans', 'u_show_old_plans', 'sm') });
+  }
+  return blocks;
+}
+
+/** *Show old plans*. */
+function oldPlansBlocks(r, now) {
+  if (!r || r.error) return [section(':x: ' + plain(r && r.error))];
+  const old = (r.plans || []).filter(p => oldPlan(p, now)).slice(0, 40);
+  return [section('*Old ScaledMail plans* (' + old.length + ', dropped or failed over ' + OLD_PLAN_DAYS + ' days ago)'), ...planBlocks(old)];
 }
 
 function syncBlocks(r) {
@@ -640,5 +710,6 @@ function registerScaledMailCommand(app, baseDir, opts = {}) {
 module.exports = {
   registerScaledMailCommand, handleScaledMailText, commandFor, render, homeBlocks, statusBlocks,
   renewalsBlocks, ordersBlocks, domainBlocks, quoteText, findBlocks, stagedBlocks, plansBlocks,
+  ordersListBlocks, pastRenewalsBlocks, oldPlansBlocks,
   syncBlocks, reportsText, prewarmedText, orderModal, quoteModal, approvers, isApprover, HELP, say
 };

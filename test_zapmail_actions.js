@@ -113,7 +113,9 @@ test('renewals: buttons only for current clients, past clients listed', () => {
   const menus = blocks.filter(b => b.accessory && b.accessory.action_id === 'zm_renewal_menu');
   assert.strictEqual(menus.length, 1);
   assert.deepStrictEqual(menus[0].accessory.options.map(o => o.value.split('|')[0]), ['renew', 'autorenew', 'lookup']);
-  assert.match(JSON.stringify(blocks), /Past clients \(no action\): kombinatorfunds\.com/);
+  assert.ok(!/kombinatorfunds/.test(JSON.stringify(blocks)), 'past-client names behind Show');
+  assert.match(JSON.stringify(blocks), /1 past-client domain left to lapse/);
+  assert.ok(blocks.some(b => b.accessory && b.accessory.action_id === 'u_show_past'));
 });
 
 test('checkPayload rejects forged button values', () => {

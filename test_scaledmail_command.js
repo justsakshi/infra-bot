@@ -43,7 +43,8 @@ const status = { monthly_total: 491.5, active_orders: 4, domain_count: 28,
   orders: [{ id: 'recLP7iFrjZ27pq94', description: '3 × ScaledMail - MS', amount: 150, status: 'Active', billing_day: '2026-11-07', domains: 3, mailboxes: 75, clients: ['unassigned'] }],
   inventory: [{ domain: 'preciseleadshq.com', renewal_at: '2027-07-08' }] };
 const st = sm.render('status', status).blocks[0].text.text;
-ok(/\$491\.50\/month/.test(st) && /unassigned/.test(st) && /preciseleadshq\.com/.test(st), 'status shows cost, unassigned, inventory');
+ok(/\$491\.50\/mo · 1 order · 28 domains/.test(st) && /unassigned/.test(st), 'status headline shows cost and unassigned');
+ok(/preciseleadshq\.com/.test(JSON.stringify(sm.ordersListBlocks(status))), 'unused domains behind Show orders');
 
 const dom = { domain: 'agencyforumco.com', found: true, order: { id: 'recLP7iFrjZ27pq94' }, row: {
   domain: 'agencyforumco.com', provider: 'outlook', status: 'In Progress', mailboxes: 25, client: null,

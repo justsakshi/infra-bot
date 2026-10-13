@@ -114,7 +114,19 @@ function formatStatus(s) {
       ? ' · ' + a.placement_credits + ' placement credits' : '';
     return '• *' + name + '* — wallet' + wal + plan + boxes + credits;
   });
-  return '*Zapmail fleet status* (read-only)' + NL + lines.join('\n');
+  // Headline: totals over the accounts that answered, then one line per account.
+  let doms = 0, boxes = 0, up = 0;
+  Object.values(s).forEach(a => {
+    if (!a.ok) return;
+    up++;
+    const d = a.domains || {};
+    const m = a.active_mailboxes || {};
+    doms += (Number(d.GOOGLE) || 0) + (Number(d.MICROSOFT) || 0);
+    boxes += a.active_mailboxes ? (Number(m.GOOGLE) || 0) + (Number(m.MICROSOFT) || 0) : (Number(a.assigned_mailboxes) || 0);
+  });
+  const n = Object.keys(s).length;
+  return '*Zapmail · ' + doms + ' domains · ' + boxes + ' mailboxes* (' + up + ' of ' + n + ' account' + (n === 1 ? '' : 's') + ' answered)'
+    + NL + lines.join('\n');
 }
 
 function formatRenewals(rows, errors) {
@@ -201,13 +213,17 @@ function formatBatches(r) {
   if (!rows.length) return '*Domain purchase plan* — empty. Stage one with `/domains buy …`.';
   const today = new Date().toISOString().slice(0, 10);
   const icon = { planned: ':calendar:', failed: ':x:', purchased: ':white_check_mark:', unknown: ':warning:', in_progress: ':hourglass:', partial: ':warning:' };
-  const lines = rows.map(b => {
+  // Bought batches are history: one count line instead of every domain again.
+  const open = rows.filter(b => b.status !== 'purchased');
+  const bought = rows.length - open.length;
+  const lines = open.map(b => {
     const due = (b.status === 'planned' || b.status === 'failed') && (b.earliest_date || '') <= today ? ' · *due*' : '';
     return (icon[b.status] || '•') + ' `' + b.batch_id + '` ' + (b.earliest_date || '?') + ' · ' + (b.client || 'primary')
       + ' · ' + (b.domains || []).join(', ') + ' · ' + b.status + due;
   });
-  return '*Domain purchase plan*' + NL + lines.join(NL)
-    + NL + NL + '_Buying: the *Buy now* button below (approved buyers only), or `zapmail_buy.py --execute <batch_id> --approve`._';
+  return '*Zapmail domain purchases* — ' + open.length + ' open' + (bought ? ' · ' + bought + ' bought' : '')
+    + (lines.length ? NL + lines.join(NL) : '')
+    + (open.some(b => b.status === 'planned' || b.status === 'failed') ? NL + '_Due batches have a *Buy now* button below (approved buyers only)._' : '');
 }
 
 /** Register the /zapmail command on an existing Bolt app (the /domains app). */

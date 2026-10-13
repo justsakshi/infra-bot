@@ -48,30 +48,29 @@ function btn(text, action_id, value, style) {
 }
 function money(v) { const n = Number(v); return Number.isFinite(n) ? '$' + (Number.isInteger(n) ? n : n.toFixed(2)) : '$?'; }
 
-/** The one menu. */
+/** The one menu: Buy · Check · Tracker, and one line of help. */
 function homeBlocks(baseDir) {
-  const blocks = [section('*Domains & inboxes* — Zapmail and ScaledMail together. Views are read-only; changes are approver-only and always ask first.')];
+  const blocks = [section('*Domains & inboxes* — Zapmail and ScaledMail together.')];
+  blocks.push(section('*Buy* — name ideas for a client (2-4 min, both providers’ prices), or order mailboxes'));
   try {
     const flow = require('./domain_suggest_command');
     const picker = flow.clientPickerBlocks(flow.loadProfiles(baseDir || __dirname)).filter(b => b.type === 'actions');
-    if (picker.length) {
-      blocks.push(section('*Suggest sending domains* (2-4 min, both providers’ prices):'));
-      picker.slice(0, 2).forEach(b => blocks.push(b));
-    }
-  } catch (e) { /* profiles missing: the Suggest button below still opens the picker */ }
-  blocks.push({ type: 'actions', block_id: 'u_home_1', elements: [
-    btn('Fleet & cost', 'u_nav_status'), btn('Renewals & billing', 'u_nav_renewals', null, 'primary'),
-    btn('Look up a domain', 'u_lookup_open'), btn('Purchases', 'u_nav_purchases'), btn("Today's digest", 'u_nav_digest')] });
-  blocks.push({ type: 'actions', block_id: 'u_home_2', elements: [
+    picker.slice(0, 2).forEach(b => blocks.push(b));
+  } catch (e) { /* profiles missing: Order mailboxes below still works */ }
+  blocks.push({ type: 'actions', block_id: 'u_home_buy', elements: [
     btn('Order mailboxes', 'sm_order_open', '{}'), btn('Price a volume', 'sm_quote_open'),
-    btn('Pre-warmed', 'u_nav_prewarmed'), btn('Tracker sync', 'u_nav_sync'), btn('Infra audit', 'dh_audit'),
-    btn('Kill warnings', 'u_nav_kill')] });
+    btn('Pre-warmed', 'u_nav_prewarmed'), btn('Purchases', 'u_nav_purchases')] });
+  blocks.push(section('*Check*'));
+  blocks.push({ type: 'actions', block_id: 'u_home_check', elements: [
+    btn('Renewals & billing', 'u_nav_renewals', null, 'primary'), btn('Before the bill', 'u_nav_review'),
+    btn('Fleet & cost', 'u_nav_status'), btn('Look up a domain', 'u_lookup_open'),
+    btn('Kill warnings', 'u_nav_kill'), btn('Infra audit', 'dh_audit'), btn("Today's digest", 'u_nav_digest')] });
   blocks.push(section('*Tracker*'));
-  blocks.push({ type: 'actions', block_id: 'u_home_3', elements: [
+  blocks.push({ type: 'actions', block_id: 'u_home_tracker', elements: [
     btn('Expiring today', 'infra_expiring_0'), btn('Next 7 days', 'infra_expiring_7'),
-    btn('Add asset', 'infra_add_open'), btn('Renew asset', 'infra_renew_open'), btn('List all', 'infra_list')] });
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text:
-    'Type: `status` · `renewals` · `domain x.com` · `suggest bettrdata` · `infra expiring 7` — after `/domains`, or straight into a DM with this app.' }] });
+    btn('Add asset', 'infra_add_open'), btn('Renew asset', 'infra_renew_open'), btn('List all', 'infra_list'),
+    btn('Tracker sync', 'u_nav_sync')] });
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Type `/domains help` for the typed commands.' }] });
   return blocks;
 }
 
@@ -106,70 +105,112 @@ function planFor(sub, args) {
   }
 }
 
-/** renewal_review.py → per bill KEEP / RETIRE / CHECK, with one-click retire (Zapmail). */
+const REVIEW_KEY_MAX = 80;
+/** A short key that finds the same bill again when *Show inboxes* re-runs the review. */
+function billKey(rv) { return String(rv.bills_on || '') + '|' + String(rv.provider || '') + '|' + String(rv.label || '').slice(0, REVIEW_KEY_MAX); }
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+
+/** renewal_review.py → one line per bill (counts + saving) with *Show inboxes*. */
 function reviewBlocks(r) {
-  if (!r || r.error) return [section(':x: ' + ((r && r.error) || 'no result'))];
-  const blocks = [];
+  if (!r || r.error) return [section(':x: Could not run the review: ' + require('./slack_text').plainError(r && r.error) + ' Try again in a few minutes.')];
   const reviews = r.reviews || [];
+  const days = r.days || 14;
   const save = reviews.reduce((a, x) => a + (x.retire_saves_monthly || 0), 0);
-  blocks.push(section('*Before the bill: which inboxes to keep* — next ' + (r.days || 14) + ' days · retiring the flagged ones saves *'
-    + money(save) + '/month*' + NL + '_RETIRE = under 80% inbox in its latest test, on a spam domain, or not in Smartlead at all. CHECK = no recent test, broken connection or low warmup reputation._'));
-  for (const rv of reviews.slice(0, 12)) {
+  const total = reviews.reduce((a, x) => a + (Number(x.price) || 0), 0);
+  const blocks = [section(reviews.length
+    ? '*Before the bill — ' + plural(reviews.length, 'bill') + ' in the next ' + days + ' days, ' + money(total)
+      + '*' + NL + 'Retiring the flagged inboxes saves *' + money(save) + '/month*.'
+    : '*Before the bill* — nothing bills in the next ' + days + ' days.')];
+  reviews.slice(0, 20).forEach((rv, i) => {
     const c = rv.counts || {};
-    const bad = (rv.rows || []).filter(x => x.verdict === 'RETIRE');
-    const chk = (rv.rows || []).filter(x => x.verdict === 'CHECK');
-    let t = '*' + rv.bills_on + ' · ' + rv.provider + ' · ' + rv.label + '* — ' + money(rv.price) + ' · ' + (c.KEEP || 0) + ' keep · *'
-      + (c.RETIRE || 0) + ' retire* · ' + (c.CHECK || 0) + ' check' + (rv.note ? NL + '_' + rv.note + '_' : '');
-    t += bad.slice(0, 12).map(x => NL + ':x: `' + x.email + '` — ' + x.why + ((x.campaigns || []).length ? ' :warning: in a live campaign' : '')).join('');
-    t += chk.slice(0, 5).map(x => NL + ':grey_question: `' + x.email + '` — ' + x.why).join('');
-    blocks.push(section(t));
-    if (rv.support_message) {
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*Message for ' + rv.provider + ' support* — copy & send:' }] });
-      blocks.push(section('```' + rv.support_message.slice(0, 2800) + '```'));
-    }
-    if (bad.length && rv.provider === 'Zapmail') {
-      const byClient = {};
-      bad.forEach(x => { if (x.client) (byClient[x.client] = byClient[x.client] || []).push(x.email); });
-      const elements = Object.entries(byClient).slice(0, 4).map(([client, emails]) => ({
-        type: 'button', action_id: 'u_retire_' + client.toLowerCase().replace(/[^a-z]/g, ''), style: 'danger',
-        text: { type: 'plain_text', text: ('Retire ' + emails.length + ' (' + client + ')').slice(0, 75) },
-        value: JSON.stringify({ client, emails: emails.slice(0, 40) }).slice(0, 1990),
-        confirm: { title: { type: 'plain_text', text: 'Retire at this bill?' },
-          text: { type: 'plain_text', text: ('Zapmail removes ' + emails.length + ' inbox(es) at their next bill and stops charging for them. The domains stay; undo is possible before the bill. ' + emails.join(', ')).slice(0, 295) },
-          confirm: { type: 'plain_text', text: 'Retire' }, deny: { type: 'plain_text', text: 'Cancel' } } }));
-      if (elements.length) blocks.push({ type: 'actions', elements });
-    } else if (bad.length && rv.provider === 'ScaledMail') {
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'ScaledMail cannot drop single inboxes: per domain use *Look up a domain → Replace domain*, or cancel the whole order.' }] });
-    }
-  }
+    blocks.push({ type: 'section',
+      text: { type: 'mrkdwn', text: ('*' + rv.bills_on + ' · ' + rv.provider + ' · ' + rv.label + '* — ' + money(rv.price) + NL
+        + (c.KEEP || 0) + ' keep · ' + ((c.RETIRE || 0) ? '*' + c.RETIRE + ' retire*' : '0 retire') + ' · ' + (c.CHECK || 0) + ' check'
+        + (rv.retire_saves_monthly ? ' · saves ' + money(rv.retire_saves_monthly) + '/mo' : '')).slice(0, 2900) },
+      accessory: btn('Show inboxes', 'u_show_bill', JSON.stringify({ d: days, i, k: billKey(rv) }).slice(0, 1990)) });
+  });
   (r.errors || []).forEach(e => blocks.push(section(':warning: ' + e)));
   return blocks.slice(0, MAX_BLOCKS);
 }
 
-/** Zapmail inbox subscriptions billing soon (zapmail_status.py --billing). */
+/** *Show inboxes* for one bill: retire / check lists, the definition (once), support message, retire buttons. */
+function billBlocks(rv) {
+  const c = rv.counts || {};
+  const rows = rv.rows || [];
+  const bad = rows.filter(x => x.verdict === 'RETIRE');
+  const chk = rows.filter(x => x.verdict === 'CHECK');
+  let t = '*' + rv.bills_on + ' · ' + rv.provider + ' · ' + rv.label + '* — ' + money(rv.price) + ' · ' + (c.KEEP || 0) + ' keep · *'
+    + (c.RETIRE || 0) + ' retire* · ' + (c.CHECK || 0) + ' check' + (rv.note ? NL + '_' + rv.note + '_' : '');
+  t += bad.slice(0, 30).map(x => NL + ':x: `' + x.email + '` — ' + x.why + ((x.campaigns || []).length ? ' :warning: in a live campaign' : '')).join('');
+  if (bad.length > 30) t += NL + '…and ' + (bad.length - 30) + ' more to retire';
+  t += chk.slice(0, 15).map(x => NL + ':grey_question: `' + x.email + '` — ' + x.why).join('');
+  if (chk.length > 15) t += NL + '…and ' + (chk.length - 15) + ' more to check';
+  const blocks = [section(t),
+    { type: 'context', elements: [{ type: 'mrkdwn', text: 'RETIRE = under 80% inbox in its latest test, on a spam domain, or not in Smartlead at all. CHECK = no recent test, broken connection or low warmup reputation.' }] }];
+  if (rv.support_message) {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*Message for ' + rv.provider + ' support* — copy & send:' }] });
+    blocks.push(section('```' + rv.support_message.slice(0, 2800) + '```'));
+  }
+  if (bad.length && rv.provider === 'Zapmail') {
+    const byClient = {};
+    bad.forEach(x => { if (x.client) (byClient[x.client] = byClient[x.client] || []).push(x.email); });
+    const elements = Object.entries(byClient).slice(0, 4).map(([client, emails]) => ({
+      type: 'button', action_id: 'u_retire_' + client.toLowerCase().replace(/[^a-z]/g, ''), style: 'danger',
+      text: { type: 'plain_text', text: ('Retire ' + emails.length + ' (' + client + ')').slice(0, 75) },
+      value: JSON.stringify({ client, emails: emails.slice(0, 40) }).slice(0, 1990),
+      confirm: { title: { type: 'plain_text', text: 'Retire at this bill?' },
+        text: { type: 'plain_text', text: ('Zapmail removes ' + emails.length + ' inbox(es) at their next bill and stops charging for them. The domains stay; undo is possible before the bill. ' + emails.join(', ')).slice(0, 295) },
+        confirm: { type: 'plain_text', text: 'Retire' }, deny: { type: 'plain_text', text: 'Cancel' } } }));
+    if (elements.length) blocks.push({ type: 'actions', elements });
+  } else if (bad.length && rv.provider === 'ScaledMail') {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'ScaledMail cannot drop single inboxes: per domain use *Look up a domain → Replace domain*, or cancel the whole order.' }] });
+  }
+  return blocks;
+}
+
+/** Zapmail inbox subscriptions billing soon (zapmail_status.py --billing): headline sum, one line per bill. */
 function billingBlocks(r) {
   const rows = (r && r.billing) || [];
-  const horizon = new Date(Date.now() + (r.days || 14) * 864e5).toISOString().slice(0, 10);
+  const days = (r && r.days) || 14;
+  const horizon = new Date(Date.now() + days * 864e5).toISOString().slice(0, 10);
   const soon = rows.filter(x => x.bills_on && x.bills_on <= horizon);
-  const blocks = [{ type: 'actions', elements: [btn('Review inboxes before their bill', 'u_nav_review', null, 'primary')] },
-    section('*Inbox subscriptions billing in the next ' + (r.days || 14) + ' days* — inboxes are seats in these; '
-    + 'the card is charged on the date and every inbox in it renews. To stop paying for some inboxes, look up their domain → *Retire inboxes* (removed at the next bill).')];
-  (r.billing_errors || []).forEach(e => blocks.push(section(':warning: could not check ' + e)));
-  if (!soon.length) blocks.push(section('_nothing billing soon_'));
+  const total = soon.reduce((a, x) => a + (Number(x.price) || 0), 0);
+  const failed = soon.filter(x => x.payment_failure).length;
+  const blocks = [section(soon.length
+    ? '*' + money(total) + ' bills in the next ' + days + ' days* (' + plural(soon.length, 'inbox subscription') + ')'
+      + (failed ? NL + ':x: ' + plural(failed, 'payment') + ' failed, see below.' : '')
+    : '*Nothing bills in the next ' + days + ' days* on Zapmail inbox subscriptions.')];
+  ((r && r.billing_errors) || []).forEach(e => blocks.push(section(':warning: could not check ' + e)));
   for (const x of soon.slice(0, 20)) {
+    const doms = (x.domains || []).filter(d => DOMAIN_RE.test(d));
     const s = section('*' + x.bills_on + '* — ' + money(x.price) + ' · ' + (x.mailboxes || '?') + ' ' + (x.provider === 'MICROSOFT' ? 'Outlook' : 'Google')
       + ' ' + x.kind + ' · ' + x.account + (x.clients && x.clients.length ? ' · ' + x.clients.join(', ') : '')
+      + (doms.length ? ' · ' + (doms.length === 1 ? '`' + doms[0] + '`' : doms.length + ' domains') : '')
       + (x.payment_failure ? ' · :x: ' + x.payment_failure : '')
-      + (x.invoice_url ? ' · <' + x.invoice_url + '|' + (x.payment_failure ? 'Pay / see invoice' : 'Invoice') + '>' : '')
-      + (x.domains && x.domains.length ? NL + x.domains.map(d => '`' + d + '`').join(', ') : ''));
-    const doms = (x.domains || []).filter(d => DOMAIN_RE.test(d)).slice(0, 10);
+      + (x.invoice_url ? ' · <' + x.invoice_url + '|' + (x.payment_failure ? 'Pay / see invoice' : 'Invoice') + '>' : ''));
     if (doms.length) {
       s.accessory = { type: 'overflow', action_id: 'u_lookup_menu',
-        options: doms.map(d => ({ text: { type: 'plain_text', text: ('Look up ' + d).slice(0, 75) }, value: d })) };
+        options: doms.slice(0, 10).map(d => ({ text: { type: 'plain_text', text: ('Look up ' + d).slice(0, 75) }, value: d })) };
     }
     blocks.push(s);
   }
+  if (soon.length) {
+    blocks.push({ type: 'actions', elements: [btn('Review inboxes before their bill', 'u_nav_review', null, 'primary')] });
+  }
   return blocks;
+}
+
+/** *Show* past-client domains left to lapse on Zapmail (zapmail_status.py --renewals). */
+function pastZapmailBlocks(r) {
+  if (!r || r.error) return [section(':x: Could not load renewals: ' + require('./slack_text').plainError(r && r.error) + ' Try again in a few minutes.')];
+  const past = ((r.renewals) || []).filter(x => !x.client).sort((a, b) => (a.expire_on || '').localeCompare(b.expire_on || ''));
+  let t = '*Zapmail past-client domains left to lapse* (' + past.length + ', no action)';
+  const lines = past.map(x => '• `' + x.domain + '` — ' + (x.expire_on || '?') + (x.account ? ' · ' + x.account : ''));
+  const blocks = [];
+  for (let i = 0; i < lines.length; i += 40) {
+    blocks.push(section((i ? '' : t + NL) + lines.slice(i, i + 40).join(NL)));
+  }
+  return blocks.length ? blocks.slice(0, 20) : [section(t + NL + '_none_')];
 }
 
 /** Run every provider call of a view in parallel and merge into one message. */
@@ -180,15 +221,12 @@ async function runView(sub, args, baseDir) {
   const results = await Promise.all(plan.map(p => p.cli
     ? runPy(p.cli, baseDir, (sub === 'sync' || sub === 'audit' ? 6 : 3) * 60 * 1000).then(r => ({ p, r }), err => ({ p, err }))
     : Promise.resolve({ p, err: new Error('bad request') })));
-  const title = { status: 'Fleet & cost', fleet: 'Fleet & cost', renewals: 'Renewals & billing', billing: 'Renewals & billing',
-    domain: 'Domain ' + (args[0] || ''), lookup: 'Domain ' + (args[0] || ''), purchases: 'Purchases', prewarmed: 'Pre-warmed',
-    sync: 'Tracker sync', digest: "Today's digest", 'cross-check': 'Tracker vs Zapmail', quote: 'Quote', find: 'Domain ideas',
-    audit: 'Infra audit', review: 'Renewal review', kill: 'Kill warnings' }[sub] || sub;
+  const heading = title(sub, args);
   const blocks = [];
   let shown = 0;
   for (const { p, r, err } of results) {
     if ((sub === 'domain' || sub === 'lookup') && r && !err && notFound(p.provider, r)) continue;
-    const part = err ? { text: ':x: ' + require('./slack_text').plainError(err.message) } : p.render(r);
+    const part = err ? { text: failText(p.provider, err.message) } : p.render(r);
     const partBlocks = (part.blocks && part.blocks.length ? part.blocks : textBlocks(part.text)).slice(0, 22);
     if (results.length > 1) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*' + p.provider + '*' }] });
     blocks.push(...partBlocks, { type: 'divider' });
@@ -198,7 +236,21 @@ async function runView(sub, args, baseDir) {
     return { text: '`' + args[0] + '` is not on Zapmail or ScaledMail.', blocks: [section('`' + args[0] + '` is not on Zapmail or ScaledMail (checked both).')] };
   }
   if (blocks.length && blocks[blocks.length - 1].type === 'divider') blocks.pop();
-  return { text: title, blocks: blocks.slice(0, MAX_BLOCKS) };
+  return { text: heading, blocks: blocks.slice(0, MAX_BLOCKS) };
+}
+
+function title(sub, args) {
+  const a = args || [];
+  return { status: 'Fleet & cost', fleet: 'Fleet & cost', renewals: 'Renewals & billing', billing: 'Renewals & billing',
+    domain: 'Domain ' + (a[0] || ''), lookup: 'Domain ' + (a[0] || ''), purchases: 'Purchases', prewarmed: 'Pre-warmed',
+    sync: 'Tracker sync', digest: "Today's digest", 'cross-check': 'Tracker vs Zapmail', quote: 'Quote', find: 'Domain ideas',
+    audit: 'Infra audit', review: 'Before the bill', kill: 'Kill warnings' }[sub] || sub;
+}
+
+/** One sentence: what could not be loaded, why, and what to do. */
+function failText(what, raw) {
+  const plain = require('./slack_text').plainError(raw).replace(/\.?\s*$/, '.');
+  return ':x: Could not load ' + what + '. ' + plain + (/try again|ask an admin/i.test(plain) ? '' : ' Try again in a few minutes.');
 }
 
 function notFound(provider, r) {
@@ -219,7 +271,7 @@ async function runUnified(sub, args, baseDir, respond, { inPlace = false } = {})
     return say(out);
   } catch (err) {
     console.error('[domains] unified view failed:', err);
-    return say({ text: ':x: ' + require('./slack_text').plainError(err.message) });
+    return say({ text: failText(title(sub), err.message) });
   }
 }
 
@@ -248,6 +300,47 @@ function registerUnified(app, baseDir) {
     await ack();
     return runUnified(String(action.action_id).replace(/^u_nav_/, ''), [], baseDir, respond, { inPlace: true });
   });
+  // "Show …" buttons: re-run the CLI the screen used and replace it in place,
+  // with ← Back to that screen.
+  const show = (actionId, cli, render, back) => app.action(actionId, async ({ ack, action, respond }) => {
+    await ack();
+    const { replace } = require('./slack_reply');
+    const val = String((action && action.value) || '');
+    const args = cli(val);
+    if (!args) return;
+    let out;
+    try {
+      const r = await require('./domain_suggest_command').runPy(args, baseDir, 3 * 60 * 1000);
+      out = render(r, val);
+    } catch (err) {
+      console.error('[domains] ' + actionId + ' failed:', err);
+      out = { text: back.label, blocks: [section(failText(back.label.toLowerCase(), err.message))] };
+    }
+    return replace(respond, out, back);
+  });
+  const smCli = sub => require('./scaledmail_command').commandFor(sub, []);
+  show('u_show_orders', () => smCli('status'),
+    r => ({ text: 'ScaledMail orders', blocks: require('./scaledmail_command').ordersListBlocks(r) }),
+    { label: 'Fleet & cost', action_id: 'u_nav_status' });
+  show('u_show_past', v => (v === 'sm' ? smCli('renewals') : require('./zapmail_command').commandFor('renewals', '')),
+    (r, v) => ({ text: 'Past-client domains', blocks: v === 'sm' ? require('./scaledmail_command').pastRenewalsBlocks(r) : pastZapmailBlocks(r) }),
+    { label: 'Renewals', action_id: 'u_nav_renewals' });
+  show('u_show_old_plans', () => smCli('plans'),
+    r => ({ text: 'Old purchase plans', blocks: require('./scaledmail_command').oldPlansBlocks(r) }),
+    { label: 'Purchases', action_id: 'u_nav_purchases' });
+  show('u_show_bill', v => {
+    let p = {};
+    try { p = JSON.parse(v); } catch (e) { return null; }
+    return ['renewal_review.py', '--days', String(Math.min(60, Math.max(1, parseInt(p.d, 10) || 14))), '--json'];
+  }, (r, v) => {
+    const p = JSON.parse(v);
+    if (!r || r.error) return { text: 'Before the bill', blocks: reviewBlocks(r) };
+    const reviews = r.reviews || [];
+    const rv = reviews.find(x => billKey(x) === p.k) || null;
+    return rv ? { text: 'Inboxes on this bill', blocks: billBlocks(rv) }
+      : { text: 'Before the bill', blocks: [section('That bill is no longer in the next ' + (r.days || p.d) + ' days (it may have been paid). Go back for the current list.')] };
+  }, { label: 'Before the bill', action_id: 'u_nav_review' });
+
   // One-click retire of flagged Zapmail inboxes (approver-only; removed at the next bill).
   app.action(/^u_retire_[a-z]+$/, async ({ ack, body, action, respond }) => {
     await ack();
@@ -287,4 +380,5 @@ function registerUnified(app, baseDir) {
   });
 }
 
-module.exports = { homeBlocks, planFor, runView, runUnified, routeText, registerUnified, billingBlocks, reviewBlocks, HELP, SUBS };
+module.exports = { homeBlocks, planFor, runView, runUnified, routeText, registerUnified, billingBlocks, reviewBlocks, billBlocks,
+  pastZapmailBlocks, failText, HELP, SUBS };
