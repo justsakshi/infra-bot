@@ -1500,6 +1500,19 @@ async function start() {
     // (smartlead/inbox_ready.py). Every 2 hours, only when
     // INBOX_READY_ENABLED=true; posts only when something became ready.
     cron.schedule('15 */2 * * *', () => {
+      // Inbox intake (spec 2026-10-13): every new inbox -> the team's standard,
+      // once, proven by read-back. Until INBOX_INTAKE_ENABLED=true, the old
+      // ScaledMail readiness job (signature, client, tags) keeps running.
+      if (process.env.INBOX_INTAKE_ENABLED === 'true') {
+        console.log(`[CRON] Inbox intake firing at ${new Date().toISOString()}`);
+        const proc = spawn('python', ['inbox_intake_cli.py', '--apply', '--post', '--json'], {
+          cwd: path.join(__dirname, 'smartlead_sync'), env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+        });
+        proc.stdout.on('data', d => process.stdout.write(`[inbox-intake] ${d}`));
+        proc.stderr.on('data', d => process.stderr.write(`[inbox-intake] ${d}`));
+        proc.on('close', code => console.log(`[inbox-intake] finished with code ${code}`));
+        return;
+      }
       if (process.env.INBOX_READY_ENABLED !== 'true') return;
       console.log(`[CRON] Inbox readiness firing at ${new Date().toISOString()}`);
       runScaledMail('inbox-ready', ['--json', 'ready', '--apply', '--post']);

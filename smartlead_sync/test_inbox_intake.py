@@ -147,3 +147,22 @@ def test_dense_outlook_gets_five_and_five():
     assert len(out["set_up"]) == 25 and sl.accounts[1]["message_per_day"] == 5
     assert sl.accounts[1]["warmup_details"]["max_email_per_day"] == 5 and out["set_up"][0]["kind"] == "outlook_dense"
     assert [len(ids) for ids, _ in sl.tagged] == [25]
+
+
+def test_intake_message_headline_and_ready_dates():
+    from inbox_intake_cli import intake_message
+    res = {"PRECISE_LEADS": {
+        "set_up": [{"email": f"a{i}@warmmeetings.com", "client": "Precise Leads", "kind": "google", "vendor": "scaledmail",
+                    "domain": "warmmeetings.com", "ready_on": date(2026, 10, 27)} for i in range(3)],
+        "would": [], "waiting": ["⏳ 2 of 21 inboxes in Smartlead for ScaledMail order 2cb59b (x.com), waiting for the rest"],
+        "problems": ["`x@mystery.com`: no client known for mystery.com (no order, job or tracker row), not set up"],
+        "complete": ["13845d"]}}
+    head, parts = intake_message(res, TODAY)
+    assert head[0] == "⚠️ Set up 3 new inboxes in Smartlead, 1 needs a look"
+    assert head[1] == "Precise Leads 3 · ready to use from 27 Oct"
+    body = "\n".join(parts)
+    assert "warmmeetings.com · Google · 3 inboxes · limit 15, warmup 25/day, reply 30%, weekdays only · ready from 27 Oct" in body
+    assert "⏳ 2 of 21" in body and "mystery.com" in body
+    assert "Smartlead does not show ramp, auto-adjust or weekdays-only, so those are set but not re-read." in body
+    preview = intake_message({"PRECISE_LEADS": {**res["PRECISE_LEADS"], "set_up": [], "would": res["PRECISE_LEADS"]["set_up"]}}, TODAY)[0]
+    assert preview[0].startswith("👀 Would set up 3 new inboxes")
