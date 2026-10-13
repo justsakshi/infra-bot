@@ -62,3 +62,29 @@ def test_ready_dates_and_reputation():
     low = acct(warmup_details={**a["warmup_details"], "warmup_reputation": 82})
     assert st.readiness(low, "google", date(2026, 10, 27)) == "low_reputation"
     assert st.readiness(acct(warmup_details={}), "google", date(2026, 10, 27)) == "unknown"
+
+
+def test_set_warmup_sends_the_standard(monkeypatch):
+    import asyncio
+    from smartlead.api import SmartleadClient
+
+    sent = []
+
+    class Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"ok": True}
+
+    class FakeHttp:
+        async def post(self, url, params, json):
+            sent.append(json)
+            return Resp()
+
+    c = SmartleadClient("k", account_name="X")
+    c._client = FakeHttp()
+    asyncio.run(c.set_warmup("1", **st.warmup_args("google")))
+    asyncio.run(c.set_warmup("2", **st.warmup_args("outlook_dense")))
+    assert sent[0] == {"warmup_enabled": "true", "total_warmup_per_day": 25, "reply_rate_percentage": 30,
+                       "daily_rampup": 5, "is_rampup_enabled": True, "auto_adjust_warmup": True,
+                       "send_warmups_only_on_weekdays": True}
+    assert sent[1]["is_rampup_enabled"] is False and "daily_rampup" not in sent[1]

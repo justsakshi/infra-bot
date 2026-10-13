@@ -149,12 +149,14 @@ class SmartleadClient:
 
     async def set_warmup(self, account_id: str, enabled: bool,
                          total_per_day: int = 40, daily_rampup: int = 5,
-                         reply_rate: int = 20, auto_adjust: bool | None = None) -> dict:
+                         reply_rate: int = 20, auto_adjust: bool | None = None,
+                         weekdays_only: bool | None = None) -> dict:
         """Enable/disable warmup on an inbox (POST /email-accounts/{id}/warmup).
 
         auto_adjust=True turns on Smartlead's smart-adjusting algorithm
-        (auto-lowers warmup while the inbox sends in a live campaign); None
-        leaves the account's current setting untouched."""
+        (auto-lowers warmup while the inbox sends in a live campaign);
+        weekdays_only sets send_warmups_only_on_weekdays. None leaves the
+        account's current setting untouched."""
         assert self._client, "Use `async with SmartleadClient(...)` as a context manager."
         if enabled:
             body = {
@@ -172,6 +174,8 @@ class SmartleadClient:
                 body["is_rampup_enabled"] = False
             if auto_adjust is not None:
                 body["auto_adjust_warmup"] = bool(auto_adjust)
+            if weekdays_only is not None:
+                body["send_warmups_only_on_weekdays"] = bool(weekdays_only)
         else:
             body = {"warmup_enabled": "false"}
         url = f"{BASE_URL}/email-accounts/{account_id}/warmup"
