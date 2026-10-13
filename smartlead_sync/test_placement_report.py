@@ -39,6 +39,7 @@ ok(counts(rep["inboxes"])["watch"] == 2, "counts by status")
 head, parts = format_slack("X", rep, ["t1"], "2026-10-12")
 txt = "\n".join(parts)
 ok(head == ["\U0001f6a8 X, 12 Oct: 2 of 2 mailboxes in spam (2 domains in spam)",
+            "1 still in live campaigns",
             "Outlook\u2192Google 100% spam \u00b7 Google\u2192Google 50%"],
    f"headline: icon, client, date, result, got {head}")
 ok("Outlook \u2192 Google: 1 of 1 in spam (100%)" in txt, "thread shows where the test emails landed")

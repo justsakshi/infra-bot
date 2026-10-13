@@ -55,8 +55,10 @@ def test_all_clear_headline_is_one_line():
 
 def test_spam_headline_counts_and_routes_over_5_percent():
     head, _ = format_slack("Bettrdata", bettrdata(), ["t"], "2026-10-13")
-    assert head[0] == "⚠️ Bettrdata, 13 Oct: 11 of 71 mailboxes in spam (3 domains in spam)"
-    assert head[1] == "Google→Google 16% spam · Outlook→Google 14%"
+    # spam mailboxes still in live campaigns: act today (same rule as kill warnings)
+    assert head[0] == "\U0001f6a8 Bettrdata, 13 Oct: 11 of 71 mailboxes in spam (3 domains in spam)"
+    assert head[1] == "3 still in live campaigns"
+    assert head[2] == "Google→Google 16% spam · Outlook→Google 14%"
     assert len(head) <= 4
     assert not any(EMAIL.search(l) for l in head), "no mailbox address in the channel message"
 
@@ -87,12 +89,14 @@ def test_rule_text_said_once():
     assert "\n".join(parts).count("half or more") == 1
 
 
-def test_half_or_more_in_spam_is_red():
+def test_spam_but_none_in_a_live_campaign_is_a_warning():
     rep = bettrdata()
+    for i in rep["inboxes"].values():
+        i["campaigns"] = []
     for i in list(rep["inboxes"].values())[:40]:
         i.update(status="bad", pct=10.0)
     head, _ = format_slack("Bettrdata", rep, ["t"], "2026-10-13")
-    assert head[0].startswith("\U0001f6a8 Bettrdata, 13 Oct:")
+    assert head[0].startswith("⚠️ Bettrdata, 13 Oct:") and "live campaigns" not in "\n".join(head)
 
 
 def test_no_route_line_when_all_routes_under_5_percent():
@@ -100,4 +104,4 @@ def test_no_route_line_when_all_routes_under_5_percent():
     rep["pairs"][("Google", "Google")]["spam"] = 5
     rep["pairs"][("Outlook", "Google")]["spam"] = 2
     head, _ = format_slack("Bettrdata", rep, ["t"], "2026-10-13")
-    assert len(head) == 1
+    assert not any("\u2192" in l for l in head), "no route line"

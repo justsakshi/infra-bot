@@ -118,6 +118,17 @@ def test_failed_payment_and_read_errors_are_warnings():
     assert "card declined" in "\n".join(thread) and "ScaledMail could not be read" in "\n".join(thread)
 
 
+def test_scaledmail_placement_flags_and_stuck_setup_are_warnings():
+    """Review 2026-10-13: the headline said ✅ while the thread listed flagged domains."""
+    sm = {"lines": ["Placement week 2026-10-05: x.com 40%", "Still being set up: y.com (New Order)"],
+          "billing": [], "unassigned": [], "setting_up": 0, "late": 0, "live": 0, "ready": 0,
+          "flagged": 1, "stuck": 1}
+    head, _, _ = format_digest({"PRECISE_LEADS": {**STATUS["PRECISE_LEADS"]}}, [], [], today=TODAY,
+                               ledger_ok=True, scaledmail=sm)
+    h = "\n".join(head)
+    assert head[0].startswith("⚠️") and "placement" in h and "stuck" in h
+
+
 # ── Inboxes ready in Smartlead ───────────────────────────────────────────────
 
 READY = ["✅ Ready: 20 SMTP inboxes (5 domains, plan p1) - signature/client on 20, tags PL + SMTP.",
@@ -154,3 +165,22 @@ def test_post_lines_posts_headline_and_thread(monkeypatch):
     assert scaledmail_cli.post_lines("*Inboxes ready in Smartlead*", READY[:1]) is True
     assert sent[0] == ("✅ 20 SMTP inboxes ready in Smartlead (Precise Leads)", None)
     assert sent[1][1] == "1.1" and "plan p1" in sent[1][0]
+
+
+def test_ready_headline_says_the_inbox_kind_in_plain_words():
+    import scaledmail_cli as cli
+    head, _ = cli.ready_message(["✅ Ready: 20 ScaledMail-SMTP inboxes (5 domains, plan p1) - signature/client on 20.",
+                                 "✅ Ready: 50 ScaledMail-Microsoft inboxes (2 domains, plan p2) - signature/client on 50."])
+    h = "\n".join(head)
+    assert "ScaledMail-" not in h and "70" in h
+    head, _ = cli.ready_message(["✅ Ready: 20 ScaledMail-SMTP inboxes (5 domains, plan p1) - x."])
+    assert "20 SMTP inboxes" in head[0]
+
+
+def test_the_digest_never_applies_readiness_itself(monkeypatch):
+    """The 2-hourly job applies it; the 9:40 digest only shows what would happen."""
+    import scaledmail_cli as cli
+    calls = []
+    monkeypatch.setattr(cli, "ready_lines", lambda apply: calls.append(apply) or {"lines": ["x"], "ready": []})
+    assert cli.digest_ready_lines(enabled=True) == [] and calls == []
+    assert cli.digest_ready_lines(enabled=False) == ["x"] and calls == [False]

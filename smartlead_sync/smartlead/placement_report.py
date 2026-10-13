@@ -208,9 +208,13 @@ def format_slack(client: str, report: dict, test_names: list[str],
         noun = "mailbox lands" if measured == 1 else f"{measured} mailboxes land"
         head = [f"\u2705 {who}: {'the' if measured == 1 else 'all'} {noun} in the inbox"]
     else:
-        icon = "\U0001f6a8" if len(flagged) * 2 >= measured else "\u26a0\ufe0f"
+        # Act today only when a spam mailbox is still sending (same rule as kill warnings).
+        live = sum(1 for i in flagged if i.get("campaigns"))
+        icon = "\U0001f6a8" if live else "\u26a0\ufe0f"
         doms = f" ({len(spam_domains)} domain{'s' if len(spam_domains) != 1 else ''} in spam)" if spam_domains else ""
         head = [f"{icon} {who}: {len(flagged)} of {measured} mailboxes in spam{doms}"]
+        if live:
+            head.append(f"{live} still in live campaigns")
 
     routes, hot = [], []
     for sp, rp in PAIR_ORDER:

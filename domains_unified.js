@@ -96,11 +96,11 @@ function planFor(sub, args) {
     case 'quote': return [s('quote', a)];
     case 'find': return [s('find', a)];
     case 'kill': return [{ provider: 'Kill warnings', sub: 'kill', cli: ['kill_report.py', '--json'],
-      render: r => ({ text: 'Kill warnings', blocks: require('./domains_home').auditBlocks(r.text || (':x: ' + (r.error || 'no result'))) }) }];
+      render: r => ({ text: 'Kill warnings', blocks: require('./domains_home').reportBlocks(r) }) }];
     case 'review': return [{ provider: 'Renewal review', sub: 'review', cli: ['renewal_review.py', '--days', String(parseInt(a[0], 10) || 14), '--json'],
       render: r => ({ text: 'Renewal review', blocks: reviewBlocks(r) }) }];
     case 'audit': return [{ provider: 'Infra audit', sub: 'audit', cli: ['infra_audit.py', '--json'],
-      render: r => ({ text: 'Infra audit', blocks: require('./domains_home').auditBlocks(r.text) }) }];
+      render: r => ({ text: 'Infra audit', blocks: require('./domains_home').reportBlocks(r) }) }];
     default: return null;
   }
 }

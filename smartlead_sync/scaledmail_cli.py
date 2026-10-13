@@ -140,7 +140,9 @@ def ready_message(lines: list[str], plans: dict | None = None) -> tuple[list[str
         if not m:
             other.append("• " + line)
             continue
-        n, kind, pid = int(m.group(1)), m.group(2), m.group(4)
+        n, pid = int(m.group(1)), m.group(4)
+        # Plain words in the headline: "SMTP", "Outlook", not the Smartlead tag name.
+        kind = m.group(2).replace("ScaledMail-", "").replace("Microsoft", "Outlook")
         plan = plans.get(pid) or {}
         total += n
         if kind not in kinds:
@@ -181,13 +183,19 @@ def post_lines(title: str, lines: list[str]) -> bool:
     return post_with_thread(token, channel, head, parts) is not None
 
 
+def digest_ready_lines(enabled: bool) -> list[str]:
+    """Readiness for the digest: never applied here (the 2-hourly job applies it
+    and posts; two writers at once would log 'ready' twice). Off -> what would happen."""
+    return [] if enabled else ready_lines(False)["lines"]
+
+
 def digest(sm) -> dict:
     """ScaledMail's part of the 09:40 "Domains & inboxes daily": the full lines
     (thread) plus the counts and sums the headline needs."""
     snap = fleet.snapshot(sm, tracker=_tracker())
     ren = fleet.renewals(snap, domain_days=14, billing_days=3)
     watch = setup_lines(snap)
-    ready = ready_lines(os.getenv("INBOX_READY_ENABLED", "").lower() == "true")["lines"]
+    ready = digest_ready_lines(os.getenv("INBOX_READY_ENABLED", "").lower() == "true")
     stuck = [d for d in snap["domains"] if d["status"] != "Active" and d["domain"] not in watch["covered"]]
     unassigned = [d["domain"] for d in snap["domains"] if not d["client"]]
     rep = fleet.report_summary(sm.reporting())
@@ -213,6 +221,7 @@ def digest(sm) -> dict:
             "late": sum(1 for l in w if l.startswith("Late")),
             "live": sum(1 for l in w if l.startswith("LIVE")),
             "ready": sum(1 for l in ready if _READY_RE.match(l)),
+            "flagged": len(rep.get("flagged") or []), "stuck": len(stuck),
             "text": ("*ScaledMail today*\n" + "\n".join("• " + l for l in lines)) if lines else ""}
 
 

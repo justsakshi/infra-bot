@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import requests
 
@@ -83,6 +84,9 @@ def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> 
 _THREAD_CHUNK = 40  # lines per thread reply — stays well inside Slack's msg limit
 
 
+_REPLY_PAUSE_S = 1.1  # Slack allows about one post per second per channel
+
+
 def post_with_thread(token: str, channel: str, headline_lines: list[str],
                      thread_parts: list[str]) -> str | None:
     """Headline in the channel, details in its thread (spec 2026-10-13).
@@ -99,8 +103,12 @@ def post_with_thread(token: str, channel: str, headline_lines: list[str],
         if not "".join(lines).strip():
             continue
         for i in range(0, len(lines), _THREAD_CHUNK):
-            if not _post(token, channel, "\n".join(lines[i:i + _THREAD_CHUNK]), thread_ts=ts):
-                print("  [Notify] a thread reply failed; the headline stays.")
+            chunk = "\n".join(lines[i:i + _THREAD_CHUNK])
+            time.sleep(_REPLY_PAUSE_S)
+            if not _post(token, channel, chunk, thread_ts=ts):
+                time.sleep(max(_REPLY_PAUSE_S * 2, 0))        # rate limit: wait, try once more
+                if not _post(token, channel, chunk, thread_ts=ts):
+                    print("  [Notify] a thread reply failed twice; the headline stays.")
     return ts
 
 

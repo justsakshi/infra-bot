@@ -4,6 +4,7 @@ from smartlead import notify
 
 def _fake(monkeypatch, fail_parent=False, fail_reply=False):
     sent = []
+    monkeypatch.setattr(notify, "_REPLY_PAUSE_S", 0)
 
     def fake(token, channel, text, thread_ts=None):
         sent.append((text, thread_ts))
@@ -37,7 +38,22 @@ def test_parent_failure_posts_nothing_else(monkeypatch):
 def test_reply_failure_keeps_the_parent(monkeypatch):
     sent = _fake(monkeypatch, fail_reply=True)
     assert notify.post_with_thread("t", "C1", ["h"], ["a", "b"]) == "111.1"
-    assert len(sent) == 3
+    assert len(sent) == 5                     # each failed reply is tried twice
+
+
+def test_a_rate_limited_reply_is_retried_once(monkeypatch):
+    monkeypatch.setattr(notify, "_REPLY_PAUSE_S", 0)
+    sent, calls = [], {"n": 0}
+
+    def fake(token, channel, text, thread_ts=None):
+        sent.append((text, thread_ts))
+        if thread_ts is None:
+            return "111.1"
+        calls["n"] += 1
+        return None if calls["n"] == 1 else "222.2"      # first reply attempt fails
+    monkeypatch.setattr(notify, "_post", fake)
+    notify.post_with_thread("t", "C1", ["h"], ["only"])
+    assert [s[0] for s in sent] == ["h", "only", "only"]
 
 
 def test_empty_parts_are_skipped(monkeypatch):

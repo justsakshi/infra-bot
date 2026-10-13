@@ -178,6 +178,10 @@ def format_digest(
             look.append(f"{_plural(sm['live'], 'live order')} to send to support")
         if sm.get("unassigned"):
             look.append(f"{_plural(len(sm['unassigned']), 'domain')} with no client")
+        if sm.get("flagged"):
+            look.append(f"{_plural(sm['flagged'], 'domain')} under 80% in ScaledMail's placement test")
+        if sm.get("stuck"):
+            look.append(f"{_plural(sm['stuck'], 'ScaledMail domain')} stuck in setup")
     if errors:
         look.append(f"{_plural(len(errors), 'report')} could not be read")
 

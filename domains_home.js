@@ -32,6 +32,35 @@ function auditBlocks(text) {
   return blocks.slice(0, 45);
 }
 
+/** A report (kill_report / infra_audit --json) as a screen: the headline,
+ *  then one block per thread section, cut only at line breaks, within `max`
+ *  blocks (the rest is in the channel thread). Old text-only results still render. */
+function reportBlocks(r, max = 21) {
+  const section = t => ({ type: 'section', text: { type: 'mrkdwn', text: t } });
+  if (!r || r.error) return [section(':x: ' + ((r && r.error) || 'no result'))];
+  if (!Array.isArray(r.headline)) return auditBlocks(r.text || '').slice(0, max);
+  const out = [section(r.headline.filter(Boolean).join('\n').slice(0, 2900)), { type: 'divider' }];
+  const chunks = [];
+  for (const part of r.thread || []) {
+    let cur = '';
+    for (const line of String(part || '').split('\n')) {
+      const piece = line.slice(0, 2900);
+      if (cur && cur.length + 1 + piece.length > 2900) { chunks.push(cur); cur = ''; }
+      cur = cur ? cur + '\n' + piece : piece;
+    }
+    if (cur.trim()) chunks.push(cur);
+  }
+  const room = max - out.length;
+  const fits = chunks.length <= room ? chunks : chunks.slice(0, room - 1);
+  out.push(...fits.map(section));
+  if (fits.length < chunks.length) {
+    const n = chunks.length - fits.length;
+    out.push({ type: 'context', elements: [{ type: 'mrkdwn',
+      text: n + ' more section' + (n === 1 ? '' : 's') + ' not shown here; the full list is in the channel thread.' }] });
+  }
+  return out;
+}
+
 /** A `respond` that posts into the DM (and its thread, in the agent tab). */
 function dmResponder(client, channel, threadTs) {
   return (payload) => {
@@ -74,7 +103,7 @@ function registerDomainsHome(app, baseDir, { infra, botToken } = {}) {
     try {
       const r = await require('./domain_suggest_command').runPy(['infra_audit.py', '--json'], baseDir, 6 * 60 * 1000);
       if (r.error) throw new Error(r.error);
-      await replace(respond, { text: 'Infra audit', blocks: auditBlocks(r.text) });
+      await replace(respond, { text: 'Infra audit', blocks: reportBlocks(r, 45) });
     } catch (err) {
       await replace(respond, { text: ':x: Audit failed: ' + require('./slack_text').plainError(err.message) });
     }
@@ -105,4 +134,4 @@ function registerDomainsHome(app, baseDir, { infra, botToken } = {}) {
   });
 }
 
-module.exports = { homeBlocks, registerDomainsHome, dmResponder, cleanText, auditBlocks };
+module.exports = { homeBlocks, registerDomainsHome, dmResponder, cleanText, auditBlocks, reportBlocks };
