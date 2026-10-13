@@ -46,6 +46,7 @@ def collect(errors: list[str]) -> list[dict]:
                               f"{r['kind']} ({r['account']})",
                      "bills_on": r["bills_on"], "status": r["status"], "payment_failure": r.get("payment_failure"),
                      "inboxes": r["mailboxes"], "clients": r.get("clients") or [],
+                     "price": r.get("price"), "domains": r.get("domains") or [],
                      "invoice_url": r.get("invoice_url") or ""})
     try:
         from smartlead.scaledmail import ScaledMailClient, configured
@@ -58,7 +59,8 @@ def collect(errors: list[str]) -> list[dict]:
                     continue
                 rows.append({"provider": "ScaledMail", "id": o["id"], "label": o["description"].replace("*", "×"),
                              "bills_on": o["billing_day"], "status": o["status"], "payment_failure": None,
-                             "inboxes": o["mailboxes"], "clients": o["clients"],
+                             "inboxes": o["mailboxes"], "clients": o["clients"], "price": o.get("amount"),
+                             "domains": sorted(d["domain"] for d in snap["domains"] if d.get("order_id") == o["id"]),
                              "invoice_url": "https://app.scaledmail.com"})
     except Exception as exc:  # noqa: BLE001
         errors.append(f"ScaledMail: {str(exc)[:150]}")
@@ -71,11 +73,30 @@ def _col():
     return db["billing_watch"] if db is not None else None
 
 
+def _history_col():
+    from smartlead.zapmail_asset_sync import _db
+    db = _db()
+    return db["bill_history"] if db is not None else None
+
+
+def history_for(domain: str, limit: int = 5) -> dict:
+    col = _history_col()
+    if col is None:
+        return {"domain": domain, "lines": [], "error": "bill history unavailable (Mongo)"}
+    recs = list(col.find({"domains": domain}, {"_id": 0}).sort("at", -1).limit(limit))
+    return {"domain": domain, "lines": bw.history_lines(recs)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Did every inbox bill renew? (read-only)")
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--history", metavar="DOMAIN", help="this domain's past bills (renewals, failures), newest first")
     args = ap.parse_args()
+    if args.history:
+        out = history_for(args.history.strip().lower())
+        print(json.dumps(out) if args.json else "\n".join(out["lines"]) or "No bill history yet.")
+        return 0
     errors: list[str] = []
     rows = collect(errors)
     col = _col()
@@ -103,6 +124,10 @@ def main() -> int:
                 new_state[k] = p
         if col is not None:
             col.update_one({"_id": STATE_ID}, {"$set": {"rows": new_state, "at": today.isoformat()}}, upsert=True)
+        records = bw.history_records(events, rows, today)
+        hist = _history_col() if records else None
+        if hist is not None:
+            hist.insert_many(records)
         if text and (any(e["event"] in bw.ALERT for e in events) or errors):
             from smartlead.notify import post_with_thread
             token = os.getenv("SLACK_BOT_TOKEN", "")

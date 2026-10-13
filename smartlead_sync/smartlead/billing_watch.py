@@ -106,6 +106,41 @@ def format_events(events: list[dict], today: date | None = None) -> tuple[list[s
     return head, (["\n".join(advice)] if advice else [])
 
 
+def history_records(events: list[dict], now: list[dict], today: date) -> list[dict]:
+    """Every event as a permanent record (Mongo ``bill_history``): which bill,
+    how much, the next bill date, its domains. The saved state above keeps only
+    the latest picture; this is the memory of what renewed and when. Pure."""
+    by_key = {key_of(r): r for r in now}
+    out = []
+    for e in events:
+        r = by_key.get(e["key"]) or {}
+        out.append({"at": today.isoformat(), "key": e["key"], "provider": e["provider"],
+                    "id": r.get("id") or e["key"].split(":", 1)[-1], "event": e["event"], "label": e["label"],
+                    "price": r.get("price"), "next_bill": r.get("bills_on") or e.get("bills_on"),
+                    "domains": list(r.get("domains") or []), "inboxes": r.get("inboxes") or e.get("inboxes"),
+                    "clients": list(e.get("clients") or []), "detail": e.get("detail", "")})
+    return out
+
+
+_WHAT = {"renewed": "renewed", "bill_day": "billed", "not_renewed": "not renewed", "new": "new subscription / order",
+         "gone": "cancelled or removed"}
+
+
+def history_lines(records: list[dict]) -> list[str]:
+    """One line per record, newest first: '8 Oct · renewed · Zapmail · 21 Google
+    inboxes · $68.25 · next bill 8 Nov'. Pure."""
+    def day(iso):
+        d = date.fromisoformat(str(iso)[:10])
+        return f"{d.day} {d:%b}"
+    lines = []
+    for r in sorted(records, key=lambda x: x["at"], reverse=True):
+        what = _WHAT.get(r["event"]) or r.get("detail") or r["event"]
+        price = f" · ${float(r['price']):,.2f}" if r.get("price") is not None else ""
+        nxt = f" · next bill {day(r['next_bill'])}" if r["event"] == "renewed" and r.get("next_bill") else ""
+        lines.append(f"{day(r['at'])} · {what} · {r['provider']} · {r['label']}{price}{nxt}")
+    return lines
+
+
 def remember(prev: dict[str, dict], now: list[dict], events: list[dict], today: date) -> dict[str, dict]:
     """New saved state: today's rows + which alerts were already sent."""
     out = {}

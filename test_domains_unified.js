@@ -16,6 +16,9 @@ flow.runPy = async (args) => {
       order_status: 'Active', order_id: 'rec0FpQhXI7AdldYc', billing_day: '2026-11-06', renewal_at: '2027-07-06', renewal_price: 15.12,
       redirect: 'getmelior.com', masking: false, mailbox_rows: [] } };
   if (a.includes('scaledmail_cli.py --json domain')) return { domain: 'x.com', found: false, inventory: null };
+  if (a.includes('billing_watch.py --history meliorbuild.com')) return { domain: 'meliorbuild.com',
+    lines: ['8 Oct · renewed · ScaledMail · 30 × Google Inboxes · $105.00 · next bill 6 Nov'] };
+  if (a.includes('billing_watch.py --history')) return { domain: 'x', lines: [] };
   if (a.includes('--billing')) return { days: 14, billing_errors: [], billing: [
     { bills_on: new Date().toISOString().slice(0, 10), price: 48.75, mailboxes: 15, provider: 'MICROSOFT', kind: 'inboxes',
       account: 'PRECISE_LEADS', clients: ['Bettrdata'], payment_failure: 'No payment method on file', domains: ['askbettrdata.com'] },
@@ -43,7 +46,10 @@ const u = require('./domains_unified');
 
   calls.length = 0;
   const d = await u.runView('domain', ['meliorbuild.com'], __dirname);
-  ok(calls.length === 2, 'domain look-up asks both providers');
+  ok(calls.length === 3 && calls.some(c => c.includes('billing_watch.py --history meliorbuild.com')),
+    'domain look-up asks both providers and the bill history');
+  ok(/Bill history[\s\S]*8 Oct · renewed · ScaledMail · 30 × Google Inboxes · \$105\.00 · next bill 6 Nov/.test(JSON.stringify(d.blocks)),
+    'renewals of this domain are shown');
   ok(!/\*Zapmail\*/.test(JSON.stringify(d.blocks)) && /meliorbuild/.test(JSON.stringify(d.blocks)), 'shows only where it lives');
   const none = await u.runView('domain', ['nothere.com'], __dirname);
   ok(/not on Zapmail or ScaledMail/.test(none.text), 'neither → one clear line');

@@ -89,7 +89,10 @@ function planFor(sub, args) {
       return [{ provider: 'Zapmail inbox billing', sub: 'billing', cli: ['zapmail_status.py', '--billing', '--days', '14', '--json'],
         render: r => ({ text: 'Zapmail billing', blocks: billingBlocks(r) }) }, z('renewals'), s('renewals')];
     case 'domain': case 'lookup':
-      return DOMAIN_RE.test(a[0] || '') ? [z('domain', a[0]), s('domain', [a[0]])] : null;
+      return DOMAIN_RE.test(a[0] || '') ? [z('domain', a[0]), s('domain', [a[0]]), {
+        // Renewals / failed payments the billing watch has recorded for this domain.
+        provider: 'Bill history', sub: 'history', cli: ['billing_watch.py', '--history', a[0], '--json'],
+        render: r => ({ text: 'Bill history', blocks: [section('*Bill history*' + NL + (r.lines || []).join(NL))] }) }] : null;
     case 'purchases': return [z('batches'), s('plans')];
     case 'prewarmed': return [z('prewarmed'), s('prewarmed')];
     case 'sync': return [z('sync'), s('sync')];
@@ -258,6 +261,7 @@ function failText(what, raw) {
 function notFound(provider, r) {
   if (provider === 'Zapmail') return !(r.hits || []).some(h => !h.error);
   if (provider === 'ScaledMail') return !r.found && !r.inventory;
+  if (provider === 'Bill history') return !(r.lines || []).length;
   return false;
 }
 
