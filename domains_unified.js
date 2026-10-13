@@ -262,12 +262,13 @@ function notFound(provider, r) {
 }
 
 async function runUnified(sub, args, baseDir, respond, { inPlace = false } = {}) {
-  // From a menu button the view replaces the menu (⌂ Home to go back); typed
-  // commands add a message.
-  const { replace, add } = require('./slack_reply');
-  const say = p => (inPlace ? replace(respond, p) : add(respond, p));
-  if (!planFor(sub, args)) return say({ text: HELP });
-  await say({ text: ':hourglass: Checking Zapmail and ScaledMail…' });
+  // From a menu button the view replaces the menu (⌂ Home to go back); a typed
+  // command posts "Checking…" and the result takes its place.
+  const { replace, add, swap } = require('./slack_reply');
+  const first = p => (inPlace ? replace(respond, p) : add(respond, p));
+  const say = p => (inPlace ? replace(respond, p) : swap(respond, p));
+  if (!planFor(sub, args)) return first({ text: HELP });
+  await first({ text: ':hourglass: Checking Zapmail and ScaledMail…' });
   try {
     const out = await runView(sub, args, baseDir);
     return say(out);
@@ -295,8 +296,9 @@ function lookupModal(channel) {
 
 function registerUnified(app, baseDir) {
   const say = async (client, channel, user, payload) => {
-    if (channel) { try { return await client.chat.postEphemeral({ channel, user, ...payload }); } catch (e) { /* DM */ } }
-    return client.chat.postMessage({ channel: user, ...payload });
+    const p = require('./slack_reply').withClose(payload);
+    if (channel) { try { return await client.chat.postEphemeral({ channel, user, ...p }); } catch (e) { /* DM */ } }
+    return client.chat.postMessage({ channel: user, ...p });
   };
   app.action(/^u_nav_[a-z-]+$/, async ({ ack, action, respond }) => {
     await ack();

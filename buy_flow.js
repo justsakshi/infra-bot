@@ -323,7 +323,8 @@ function registerBuyFlow(app, baseDir, deps = {}) {
     // message so Place / Approve can replace just that card. If the link has
     // expired, everything is posted the old way.
     let viaUrl = /^https:\/\/hooks\.slack\.com\//.test(meta.ru || '');
-    const send = async (payload, replaceOriginal) => {
+    const send = async (reply, replaceOriginal) => {
+      const payload = require('./slack_reply').withClose(reply);
       if (viaUrl) {
         try {
           await post(meta.ru, { response_type: 'ephemeral', replace_original: replaceOriginal, ...payload });

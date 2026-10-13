@@ -472,10 +472,11 @@ function swapModal(channel, p) {
 /* --------------------------------------------------------------- handlers */
 
 async function say(client, channel, user, payload) {
+  const p = require('./slack_reply').withClose(payload);
   if (channel) {
-    try { return await client.chat.postEphemeral({ channel, user, ...payload }); } catch (e) { /* DM instead */ }
+    try { return await client.chat.postEphemeral({ channel, user, ...p }); } catch (e) { /* DM instead */ }
   }
-  return client.chat.postMessage({ channel: user, ...payload });
+  return client.chat.postMessage({ channel: user, ...p });
 }
 
 function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
@@ -699,12 +700,15 @@ function registerScaledMailActions(app, baseDir, { onTrackerChanged } = {}) {
 }
 
 async function runSub(sub, args, baseDir, respond, { inPlace = false } = {}) {
-  // From a menu button the view replaces the menu; typed commands add a message.
-  const { replace, add } = require('./slack_reply');
-  const out = p => (inPlace ? replace(respond, p, { label: 'ScaledMail', action_id: 'sm_home' }) : add(respond, p));
+  // From a menu button the view replaces the menu; a typed command's result
+  // takes the place of its "Checking…" message.
+  const { replace, add, swap } = require('./slack_reply');
+  const back = { label: 'ScaledMail', action_id: 'sm_home' };
+  const first = p => (inPlace ? replace(respond, p, back) : add(respond, p));
+  const out = p => (inPlace ? replace(respond, p, back) : swap(respond, p));
   const cli = commandFor(sub, args);
-  if (!cli) return out({ text: HELP });
-  await out({ text: 'Checking ScaledMail (`' + sub + '`)…' });
+  if (!cli) return first({ text: HELP });
+  await first({ text: 'Checking ScaledMail (`' + sub + '`)…' });
   try {
     const r = await require('./domain_suggest_command').runPy(cli, baseDir, (sub === 'sync' ? 5 : 2) * 60 * 1000);
     return out(render(sub, r));

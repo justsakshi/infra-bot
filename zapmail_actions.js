@@ -393,7 +393,8 @@ function registerZapmailActions(app, baseDir, { onTrackerChanged } = {}) {
 
   // Form results: "Only visible to you" in the channel the form came from;
   // a DM (also private) when that is not possible (no channel, bot not in it).
-  async function say(client, channel, user, payload) {
+  async function say(client, channel, user, reply) {
+    const payload = require('./slack_reply').withClose(reply);
     if (channel) {
       try {
         return await client.chat.postEphemeral({ channel, user, ...payload });

@@ -48,6 +48,11 @@ const u = require('./domains_unified');
   const none = await u.runView('domain', ['nothere.com'], __dirname);
   ok(/not on Zapmail or ScaledMail/.test(none.text), 'neither → one clear line');
 
+  const typed = [];
+  await u.runUnified('renewals', [], __dirname, async m => typed.push(m));
+  ok(typed.length === 2 && typed[0].replace_original === false && typed[1].replace_original === true
+    && JSON.stringify(typed[1]).includes('nav_close'), 'typed view: the result replaces "Checking…", with Close');
+
   const badQuote = JSON.stringify(await u.runView('quote', ['30000', 'yahoo'], __dirname));
   ok(/quote 30000 google,outlook 70,30 low/.test(badQuote) && !/Try again/.test(badQuote), 'unreadable quote shows how to type it');
 

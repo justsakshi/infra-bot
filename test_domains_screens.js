@@ -118,7 +118,7 @@ function navOf(msg) {
     assert.strictEqual((t.match(/ScaledMail - MS/g) || []).length, 8, 'every active order listed');
     assert.strictEqual((t.match(/Prices:/g) || []).length, 1, 'prices said once');
     assert.ok(/preciseleadshq\.com/.test(t), 'unused domains in the list');
-    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_status']);
+    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_status', 'nav_close']);
   });
   await test('zapmail status: headline totals then one line per account', () => {
     const t = zc.formatStatus({ PRECISE_LEADS: { ok: true, wallet_balance: 20, auto_recharge: true, domains: { GOOGLE: 10, MICROSOFT: 2 },
@@ -145,7 +145,7 @@ function navOf(msg) {
     const t = all(last.blocks);
     assert.ok(/pastclient0\.com/.test(t) && /pastclient33\.com/.test(t), 'full list');
     assert.ok(!/gomelior/.test(t), 'only past clients');
-    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_renewals']);
+    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_renewals', 'nav_close']);
   });
   await test('billing: headline says what bills in 14 days', () => {
     const b = u.billingBlocks({ days: 14, billing_errors: [], billing: [
@@ -181,7 +181,7 @@ function navOf(msg) {
     assert.deepStrictEqual(buttons(last.blocks).filter(e => /^u_retire_/.test(e.action_id)).map(e => e.action_id).sort(),
       ['u_retire_bettrdata', 'u_retire_melior']);
     assert.ok(/please remove/.test(t), 'support message');
-    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_review']);
+    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_review', 'nav_close']);
     assert.ok(calls.some(c => /renewal_review\.py --days 14/.test(c)), 're-ran the review');
   });
   await test('ScaledMail bill detail explains per-domain replace', () => {
@@ -205,7 +205,7 @@ function navOf(msg) {
     const last = out[out.length - 1];
     const t = all(last.blocks);
     assert.ok(t.includes('dddddd') && t.includes('eeeeee') && !t.includes('aaaaaa'));
-    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_purchases']);
+    assert.deepStrictEqual(navOf(last), ['nav_home', 'u_nav_purchases', 'nav_close']);
   });
 
   // ── Errors ──

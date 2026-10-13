@@ -572,13 +572,14 @@ async function handleDomainsText(text, ctx, baseDir) {
     // never executes a buy from here — that path needs the CLI + the spend
     // kill-switch, so a Slack slip can't turn into a wallet charge.
     if (opts.mode === 'buy') {
+      const { swap } = require('./slack_reply');
       await respond({ response_type: 'ephemeral', text: 'Staging purchase (read-only)…' });
       try {
         const result = await runDomainGenerator(opts, baseDir, user);
-        await respond({ response_type: 'ephemeral', text: formatBuyResult(result) });
+        await swap(respond, { text: formatBuyResult(result) });
       } catch (err) {
         console.error('[domains] buy stage failed:', err);
-        await respond({ response_type: 'ephemeral', text: ':x: ' + err.message });
+        await swap(respond, { text: ':x: ' + err.message });
       }
       return;
     }
@@ -631,20 +632,22 @@ async function startDomainsApp(baseDir, opts = {}) {
   const domainsApp = new App({ token, appToken, socketMode: true });
   // Before any handler: only DOMAINS_ALLOWED_USERS + ZAPMAIL_APPROVERS get in.
   domainsApp.use(require('./domains_access').accessMiddleware);
+  // Handlers register on `ui`: every reply through `respond` gets ✕ Close.
+  const ui = require('./slack_reply').withCloseButtons(domainsApp);
   // The /infra tracker features (add / renew / list / expiring / CSV) on this
   // app too, so the team can do everything from one bot.
   const infra = opts.infraDeps
-    ? require('./infra_slack').registerInfraHandlers(domainsApp, opts.infraDeps, { botToken: token })
+    ? require('./infra_slack').registerInfraHandlers(ui, opts.infraDeps, { botToken: token })
     : null;
-  registerDomainsCommand(domainsApp, baseDir, { infra });
-  registerZapmailCommand(domainsApp, baseDir, opts);
-  require('./scaledmail_command').registerScaledMailCommand(domainsApp, baseDir, opts);
-  suggestFlow.registerDomainSuggestFlow(domainsApp, baseDir);
-  require('./buy_flow').registerBuyFlow(domainsApp, baseDir);
-  require('./slack_reply').registerNav(domainsApp, baseDir);
-  require('./domains_unified').registerUnified(domainsApp, baseDir);
+  registerDomainsCommand(ui, baseDir, { infra });
+  registerZapmailCommand(ui, baseDir, opts);
+  require('./scaledmail_command').registerScaledMailCommand(ui, baseDir, opts);
+  suggestFlow.registerDomainSuggestFlow(ui, baseDir);
+  require('./buy_flow').registerBuyFlow(ui, baseDir);
+  require('./slack_reply').registerNav(ui, baseDir);
+  require('./domains_unified').registerUnified(ui, baseDir);
   // DMs and the app's Messages ("agent") tab: talk to it like the slash command.
-  require('./domains_home').registerDomainsHome(domainsApp, baseDir, { infra, botToken: token });
+  require('./domains_home').registerDomainsHome(ui, baseDir, { infra, botToken: token });
 
   // Same socket-mode race the main app guards against: a forced disconnect
   // during a deploy overlap must be logged, not thrown as an unhandled

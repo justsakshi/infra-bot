@@ -256,12 +256,15 @@ function render(sub, result) {
 }
 
 async function runSub(sub, arg, baseDir, respond, { inPlace = false } = {}) {
-  // From a menu button the view replaces the menu; typed commands add a message.
-  const { replace, add } = require('./slack_reply');
-  const out = p => (inPlace ? replace(respond, p, { label: 'Zapmail', action_id: 'dh_zapmail' }) : add(respond, p));
+  // From a menu button the view replaces the menu; a typed command's result
+  // takes the place of its "Checking…" message.
+  const { replace, add, swap } = require('./slack_reply');
+  const back = { label: 'Zapmail', action_id: 'dh_zapmail' };
+  const first = p => (inPlace ? replace(respond, p, back) : add(respond, p));
+  const out = p => (inPlace ? replace(respond, p, back) : swap(respond, p));
   const args = commandFor(sub, arg);
   if (!args) return respond({ response_type: 'ephemeral', text: ZAPMAIL_HELP });
-  await out({ text: 'Checking Zapmail (`' + sub + '`)…' });
+  await first({ text: 'Checking Zapmail (`' + sub + '`)…' });
   try {
     const result = await runZapmailScript(args, baseDir);
     return out(render(sub, result));
