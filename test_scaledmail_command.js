@@ -94,6 +94,7 @@ const q = sm.quoteText({ request: { volume: 30000, tier: 'low' }, quote: { month
   providerBreakdown: [{ provider: 'google', percentage: 70, requiredDomains: 24, requiredMailboxes: 48, totalPrice: 168 },
     { provider: 'outlook', percentage: 30, requiredDomains: 3, requiredMailboxes: 75, totalPrice: 150 }] } });
 ok(/\$318\.00\/month/.test(q) && /≈15\/day/.test(q) && /≈4\/day/.test(q) && /Nothing was ordered/.test(q), 'quote text with per-mailbox rate');
+ok(/First month: \$318\.00 mailboxes \+ ~\$418\.50 domains \(27 × ~\$15\.50 first year\) = ~\$736\.50, then \$318\.00\/month/.test(q), q);
 
 ok(/switched off/.test(sm.render('status', { error: 'create_custom_order charges the card and SCALEDMAIL_ALLOW_SPEND is not \'true\'.' }).text),
   'errors become plain sentences');

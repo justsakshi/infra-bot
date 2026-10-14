@@ -273,6 +273,18 @@ function prewarmedText(r) {
     + NL + '_Buying pre-warmed is CLI-only for now (it charges the card)._';
 }
 
+// What ScaledMail charged per .com in the 12 Oct orders (first year); a quote has no names, so this is an estimate.
+const DOMAIN_FIRST_YEAR = 15.5;
+
+/** First month = the mailboxes' monthly price + every domain's first year. */
+function firstMonthText(q) {
+  const n = Number(q.totalDomains) || 0;
+  const domains = n * DOMAIN_FIRST_YEAR;
+  return '*First month: ' + money(q.totalPrice) + ' mailboxes + ~' + money(domains) + ' domains (' + n + ' × ~'
+    + money(DOMAIN_FIRST_YEAR) + ' first year) = ~' + money(Number(q.totalPrice || 0) + domains) + ', then '
+    + money(q.totalPrice) + '/month*';
+}
+
 function quoteText(r) {
   if (r.error) return ':x: ' + plain(r.error);
   const q = r.quote || {}; const rq = r.request || {};
@@ -280,7 +292,8 @@ function quoteText(r) {
     + p.requiredMailboxes + ' mailboxes, ' + money(p.totalPrice) + '/mo (≈' + Math.round((q.dailyVolume || 0) * p.percentage / 100 / Math.max(1, p.requiredMailboxes)) + '/day per mailbox)');
   return '*Quote — ' + (q.monthlyVolume || rq.volume) + ' emails/month (' + (q.dailyVolume || '?') + '/day), ' + rq.tier + ' sending*' + NL
     + rows.join(NL) + NL + '*Total ' + money(q.totalPrice) + '/month* · ' + q.totalDomains + ' domains · ' + q.totalMailboxes + ' mailboxes'
-    + NL + '_Domain registration (~$15.50 first year, ~$17 renewal per .com) is extra. Nothing was ordered._';
+    + NL + firstMonthText(q)
+    + NL + '_Domain prices are for .com (~$' + DOMAIN_FIRST_YEAR.toFixed(2) + ' first year, ~$17 renewal); other endings cost more. Nothing was ordered._';
 }
 
 function findBlocks(r) {
