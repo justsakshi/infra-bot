@@ -27,7 +27,7 @@ def test_standard_values_match_the_spec():
     assert (g["max_email_per_day"], g["total_warmup_per_day"], g["daily_rampup"], g["reply_rate"], g["ready_after_days"]) == (15, 25, 5, 30, 14)
     assert (o["max_email_per_day"], o["total_warmup_per_day"], o["daily_rampup"], o["reply_rate"], o["ready_after_days"]) == (10, 20, 5, 30, 21)
     assert (d["max_email_per_day"], d["total_warmup_per_day"], d["daily_rampup"], d["reply_rate"], d["ready_after_days"]) == (5, 5, 0, 30, 21)
-    assert (s["max_email_per_day"], s["total_warmup_per_day"], s["daily_rampup"], s["reply_rate"], s["ready_after_days"]) == (7, 20, 5, 30, 21)
+    assert (s["max_email_per_day"], s["total_warmup_per_day"], s["daily_rampup"], s["reply_rate"], s["ready_after_days"]) == (7, 20, 5, 30, 14)  # standup 14 Oct: SMTP 2 weeks, like Google
     assert all(st.standard_for(k)["weekdays_only"] and st.standard_for(k)["auto_adjust"] for k in ("google", "smtp"))
 
 
@@ -56,7 +56,7 @@ def test_drift_ignores_signature_and_client():
 def test_ready_dates_and_reputation():
     a = acct()
     assert st.warmup_started(a) == date(2026, 10, 13)
-    assert st.ready_date(a, "google") == date(2026, 10, 27) and st.ready_date(a, "smtp") == date(2026, 11, 3)
+    assert st.ready_date(a, "google") == date(2026, 10, 27) and st.ready_date(a, "smtp") == date(2026, 10, 27)
     assert st.readiness(a, "google", date(2026, 10, 26)) == "warming"
     assert st.readiness(a, "google", date(2026, 10, 27)) == "ready"
     low = acct(warmup_details={**a["warmup_details"], "warmup_reputation": 82})

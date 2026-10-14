@@ -16,15 +16,15 @@ WHERE = {"gohivecloud.co": "Bettrdata"}          # client from the Smartlead acc
 def test_split_by_client_and_kind():
     infer = lambda d, a: "Bettrdata" if "bettrdata" in d else None
     out = sp.split(ZAP, SM, WHERE, infer)
-    assert out == {"Bettrdata": {"branded": 3, "prewarmed": 3}, "Melior": {"branded": 3, "prewarmed": 0},
-                   "Precise Leads": {"branded": 3, "prewarmed": 0}, "no client": {"branded": 0, "prewarmed": 2}}
+    assert out == {"Bettrdata": {"branded": 3, "prewarmed": 3, "domains": 2}, "Melior": {"branded": 3, "prewarmed": 0, "domains": 1},
+                   "Precise Leads": {"branded": 3, "prewarmed": 0, "domains": 1}, "no client": {"branded": 0, "prewarmed": 2, "domains": 1}}
 
 
 def test_split_line():
-    line = sp.split_line({"Bettrdata": {"branded": 45, "prewarmed": 27}, "Melior": {"branded": 155, "prewarmed": 0},
-                          "Precise Leads": {"branded": 133, "prewarmed": 0}, "no client": {"branded": 0, "prewarmed": 2}})
-    assert line == ("By client: Melior 155 branded · Precise Leads 133 branded · "
-                    "Bettrdata 45 branded + 27 pre-warmed · no client 2 pre-warmed")
+    line = sp.split_line({"Bettrdata": {"branded": 45, "prewarmed": 27, "domains": 24}, "Melior": {"branded": 155, "prewarmed": 0, "domains": 15},
+                          "Precise Leads": {"branded": 133, "prewarmed": 0, "domains": 28}, "no client": {"branded": 0, "prewarmed": 2, "domains": 1}})
+    assert line == ("By client: Melior 155 branded on 15 domains · Precise Leads 133 branded on 28 domains · "
+                    "Bettrdata 45 branded + 27 pre-warmed on 24 domains · no client 2 pre-warmed on 1 domain")
 
 
 def test_client_of_smartlead_inbox():

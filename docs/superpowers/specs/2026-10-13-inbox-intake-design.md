@@ -92,11 +92,10 @@ records it in the ledger. An inbox is **ready to use** when both hold:
 |---|---|---|
 | Google | 14 days | Smartlead warmup reputation 90%+ |
 | Outlook (either density) | 21 days | same |
-| SMTP | 21 days | same |
+| SMTP | 14 days | same |
 
-Google 14 and Outlook 21 are Manveen's; SMTP 21 is a cautious default (no
-source gives an SMTP number; Smartlead's guide only says SMTP reaches full
-volume after 30 days). The reputation check stops a date alone from clearing
+Google 14 and Outlook 21 are Manveen's; SMTP 14 from Avinash (standup
+2026-10-14: "at least two weeks, similar to Google"). The reputation check stops a date alone from clearing
 an inbox that is still landing in spam. The days live in the same standard
 file (`ready_after_days`), so they can be changed without code.
 

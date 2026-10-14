@@ -26,7 +26,7 @@ def split(zap_rows: list[tuple[str, dict]], sm_domains: list[dict], where: dict[
     """{client: {branded, prewarmed}} from Zapmail (account, domain row) pairs,
     ScaledMail domains ({domain, client, mailboxes}) and domain -> client by
     Smartlead account. ``infer(domain, account)`` = zapmail_clients.infer_client. Pure."""
-    out: dict[str, dict] = defaultdict(lambda: {"branded": 0, "prewarmed": 0})
+    out: dict[str, dict] = defaultdict(lambda: {"branded": 0, "prewarmed": 0, "domains": 0})
     for account, r in zap_rows:
         n = int(r.get("assignedMailboxesCount") or 0)
         if not n:
@@ -34,19 +34,23 @@ def split(zap_rows: list[tuple[str, dict]], sm_domains: list[dict], where: dict[
         dom = str(r.get("domain") or "").lower()
         client = infer(dom, account) or where.get(dom) or NO_CLIENT
         out[client]["prewarmed" if r.get("isWarmedUp") else "branded"] += n
+        out[client]["domains"] += 1
     for d in sm_domains:
         n = int(d.get("mailboxes") or 0)
         if n:
             out[d.get("client") or NO_CLIENT]["branded"] += n
+            out[d.get("client") or NO_CLIENT]["domains"] += 1
     return dict(out)
 
 
 def split_line(counts: dict) -> str:
-    """'By client: Melior 155 branded · Bettrdata 45 branded + 27 pre-warmed · …', biggest first, 'no client' last."""
+    """'By client: Melior 155 branded on 15 domains · Bettrdata 45 branded + 27 pre-warmed on 24 domains · …',
+    biggest first, 'no client' last. Domains = ones with inboxes."""
     def part(client, c):
         bits = ([f"{c['branded']} branded"] if c["branded"] else []) + \
                ([f"{c['prewarmed']} pre-warmed"] if c["prewarmed"] else [])
-        return f"{client} {' + '.join(bits)}"
+        doms = c.get("domains") or 0
+        return f"{client} {' + '.join(bits)}" + (f" on {doms} domain{'s' if doms != 1 else ''}" if doms else "")
     order = sorted(counts.items(), key=lambda kv: (kv[0] == NO_CLIENT, -(kv[1]["branded"] + kv[1]["prewarmed"]), kv[0]))
     return "By client: " + " · ".join(part(cl, c) for cl, c in order if c["branded"] or c["prewarmed"])
 
