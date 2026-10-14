@@ -84,7 +84,11 @@ function planFor(sub, args) {
   const z = (zsub, arg) => ({ provider: 'Zapmail', sub: zsub, cli: zm.commandFor(zsub, arg || ''), render: r => zm.render(zsub, r) });
   const s = (ssub, sargs) => ({ provider: 'ScaledMail', sub: ssub, cli: sm.commandFor(ssub, sargs || []), render: r => sm.render(ssub, r) });
   switch (sub) {
-    case 'status': case 'fleet': return [z('status'), s('status')];
+    case 'status': case 'fleet': return [{
+      // Branded vs pre-warmed inboxes per client (smartlead/inbox_split.py).
+      provider: 'By client', sub: 'split', cli: ['inbox_split.py', '--json'],
+      render: r => ({ text: 'By client', blocks: [section((r.line || '_no inboxes found_')
+        + ((r.errors || []).length ? NL + ':warning: could not read ' + r.errors.join('; ') : ''))] }) }, z('status'), s('status')];
     case 'renewals': case 'billing':
       return [{ provider: 'Zapmail inbox billing', sub: 'billing', cli: ['zapmail_status.py', '--billing', '--days', '14', '--json'],
         render: r => ({ text: 'Zapmail billing', blocks: billingBlocks(r) }) }, z('renewals'), s('renewals')];

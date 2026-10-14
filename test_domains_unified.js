@@ -35,7 +35,11 @@ const u = require('./domains_unified');
   ok(u.routeText('renewals').sub === 'renewals' && u.routeText('domain a.com').args[0] === 'a.com', 'views route');
   ok(u.routeText('bettrdata.io data,ingest') === null && u.routeText('suggest melior') === null, 'name generation still goes to the generator');
   ok(u.planFor('domain', ['--approve']) === null, 'flag cannot pass as a domain');
-  ok(u.planFor('status').map(p => p.provider).join() === 'Zapmail,ScaledMail', 'status asks both providers');
+  ok(u.planFor('status').map(p => p.provider).join() === 'By client,Zapmail,ScaledMail', 'status: per-client split, then both providers');
+  const split = u.planFor('status')[0];
+  ok(split.cli.join(' ') === 'inbox_split.py --json'
+    && /By client: Melior 155 branded/.test(JSON.stringify(split.render({ line: 'By client: Melior 155 branded', errors: [] }).blocks)),
+    'branded vs pre-warmed per client on Fleet & cost');
   ok(u.planFor('renewals').length === 3, 'renewals = Zapmail inbox billing + Zapmail domains + ScaledMail');
 
   const r = await u.runView('renewals', [], __dirname);
