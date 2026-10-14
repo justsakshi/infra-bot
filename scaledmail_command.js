@@ -285,6 +285,43 @@ function firstMonthText(q) {
     + money(q.totalPrice) + '/month*';
 }
 
+// Zapmail next to ScaledMail in "Price a volume": the same split, Zapmail's price and inboxes per domain
+// (smartlead_sync/inbox_offer.json), the daily limit intake sets (inbox_standard.json), and Zapmail's
+// .com price checked live 2026-10-14 ($12.99 first year, $15.99 renewal).
+const ZAPMAIL_DOMAIN_FIRST_YEAR = 12.99;
+function zapmailQuoteText(q) {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = path.join(__dirname, 'smartlead_sync');
+  const offer = JSON.parse(fs.readFileSync(path.join(dir, 'inbox_offer.json'), 'utf8')).providers.zapmail.types;
+  const std = JSON.parse(fs.readFileSync(path.join(dir, 'inbox_standard.json'), 'utf8')).types;
+  const kinds = { google: { type: 'GOOGLE', std: 'google', name: 'Google' }, outlook: { type: 'MICROSOFT', std: 'outlook', name: 'Outlook' } };
+  const rows = [];
+  const t = { domains: 0, mailboxes: 0, usd: 0 };
+  let smtp = false;
+  for (const p of q.providerBreakdown || []) {
+    const k = kinds[p.provider];
+    if (!k) { smtp = smtp || p.provider === 'smtp'; continue; }
+    const o = offer.find(x => x.key === k.type);
+    const perDay = std[k.std].max_email_per_day;
+    const mailboxes = Math.ceil((Number(q.dailyVolume) || 0) * p.percentage / 100 / perDay);
+    const domains = Math.ceil(mailboxes / o.per_domain);
+    const usd = Math.round(mailboxes * o.price * 100) / 100;
+    t.domains += domains; t.mailboxes += mailboxes; t.usd += usd;
+    rows.push('• ' + k.name + ' ' + p.percentage + '% — ' + domains + ' domains, ' + mailboxes + ' mailboxes, ' + money(usd)
+      + '/mo (' + perDay + '/day per mailbox)');
+  }
+  const out = ['*Zapmail*'];
+  if (rows.length) {
+    const dom = Math.round(t.domains * ZAPMAIL_DOMAIN_FIRST_YEAR * 100) / 100;
+    out.push(...rows, '*Zapmail total ' + money(t.usd) + '/month* · ' + t.domains + ' domains · ' + t.mailboxes + ' mailboxes',
+      '*First month: ' + money(t.usd) + ' mailboxes + ~' + money(dom) + ' domains (' + t.domains + ' × ~' + money(ZAPMAIL_DOMAIN_FIRST_YEAR)
+      + ' first year) = ~' + money(t.usd + dom) + ', then ' + money(t.usd) + '/month*');
+  }
+  if (smtp) out.push('_Zapmail does not sell SMTP inboxes' + (rows.length ? '; the SMTP share is ScaledMail only._' : '._'));
+  return out.join(NL);
+}
+
 function quoteText(r) {
   if (r.error) return ':x: ' + plain(r.error);
   const q = r.quote || {}; const rq = r.request || {};
@@ -293,7 +330,9 @@ function quoteText(r) {
   return '*Quote — ' + (q.monthlyVolume || rq.volume) + ' emails/month (' + (q.dailyVolume || '?') + '/day), ' + rq.tier + ' sending*' + NL
     + rows.join(NL) + NL + '*Total ' + money(q.totalPrice) + '/month* · ' + q.totalDomains + ' domains · ' + q.totalMailboxes + ' mailboxes'
     + NL + firstMonthText(q)
-    + NL + '_Domain prices are for .com (~$' + DOMAIN_FIRST_YEAR.toFixed(2) + ' first year, ~$17 renewal); other endings cost more. Nothing was ordered._';
+    + NL + NL + zapmailQuoteText(q)
+    + NL + '_Domain prices are for .com (ScaledMail ~$' + DOMAIN_FIRST_YEAR.toFixed(2) + ' first year, ~$17 renewal; Zapmail ~$'
+    + ZAPMAIL_DOMAIN_FIRST_YEAR.toFixed(2) + ', $15.99 renewal); other endings cost more. Nothing was ordered._';
 }
 
 function findBlocks(r) {
