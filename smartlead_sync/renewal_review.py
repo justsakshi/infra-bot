@@ -17,6 +17,7 @@ import json
 import os
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 if sys.platform == "win32":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -55,6 +56,38 @@ def _get(url, key, **params):
 
 
 _SEED_MX: dict[str, str] = {}
+# SmartDelivery's seed inboxes are the same every week: their providers are
+# kept between runs (2026-10-14: ~100 lookups took 16 s on every run).
+SEED_MX_FILE = Path(os.getenv("SEED_MX_FILE") or Path(__file__).resolve().parent / ".cache" / "seed_mx.json")
+REPORT_WORKERS = 5      # SmartDelivery reports read side by side (one at a time took 65 s for 20)
+
+
+def _load_seed_mx() -> None:
+    if not _SEED_MX and SEED_MX_FILE.exists():
+        try:
+            _SEED_MX.update(json.loads(SEED_MX_FILE.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001 - a bad cache only costs lookups
+            pass
+
+
+def _save_seed_mx() -> None:
+    try:
+        SEED_MX_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SEED_MX_FILE.write_text(json.dumps(_SEED_MX, sort_keys=True), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _resolve_seed_domains(domains: set[str]) -> None:
+    """Look up every seed domain not known yet, side by side, then save."""
+    from concurrent.futures import ThreadPoolExecutor
+    _load_seed_mx()
+    new = sorted(d for d in domains if d and d not in _SEED_MX)
+    if not new:
+        return
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        list(pool.map(seed_provider, new))
+    _save_seed_mx()
 
 
 def seed_provider(domain: str) -> str:
@@ -104,8 +137,15 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                            key=lambda t: t["created_at"], reverse=True)[:TESTS_PER_ACCOUNT]
             # Every test, newest first: the kill rule needs history (two strikes)
             # and each seed's receiving provider (graded on the worse one).
-            for t in tests:
-                for e in _get(f"{SMARTDELIVERY_BASE_URL}/spam-test/report/{t['spam_test_id']}/sender-account-wise", key):
+            # Reports are fetched side by side; order is kept (pool.map).
+            from concurrent.futures import ThreadPoolExecutor
+            url = SMARTDELIVERY_BASE_URL + "/spam-test/report/{}/sender-account-wise"
+            with ThreadPoolExecutor(max_workers=REPORT_WORKERS) as pool:
+                reports = list(pool.map(lambda t: _get(url.format(t["spam_test_id"]), key), tests))
+            _resolve_seed_domains({str(d.get("email", "")).split("@")[-1].lower()
+                                   for rep in reports for e in rep for d in e.get("details") or []})
+            for t, rep in zip(tests, reports):
+                for e in rep:
                     em = e["email"].lower()
                     if em not in facts:
                         continue
@@ -155,7 +195,10 @@ def zapmail_bills(days: int, errors: list[str]) -> list[dict]:
     return out
 
 
-def scaledmail_bills(days: int, errors: list[str]) -> list[dict]:
+def scaledmail_bills(days: int, errors: list[str], with_inboxes: bool = True) -> list[dict]:
+    """ScaledMail orders billing within ``days``, with their domains. The inbox
+    lists cost one call per domain (ScaledMail rate-limits at 5/s); callers
+    that only need domain -> bill (kill warnings) pass with_inboxes=False."""
     try:
         from smartlead.scaledmail import ScaledMailClient, configured
         if not configured():
@@ -168,8 +211,10 @@ def scaledmail_bills(days: int, errors: list[str]) -> list[dict]:
             out = []
             for o in due:
                 inboxes, setting_up = [], []
+                doms = sorted(str(d.get("domain") or "").lower() for d in snap["domains"]
+                              if d["order_id"] == o["id"] and d.get("domain"))
                 for d in snap["domains"]:
-                    if d["order_id"] == o["id"] and d.get("domain_id"):
+                    if with_inboxes and d["order_id"] == o["id"] and d.get("domain_id"):
                         for m in sm.mailboxes(d["domain_id"]):
                             email = m.get("email", "").lower()
                             inboxes.append(email)
@@ -177,7 +222,8 @@ def scaledmail_bills(days: int, errors: list[str]) -> list[dict]:
                                 setting_up.append(email)      # "In Progress": not uploaded to Smartlead yet
                 out.append({"provider": "ScaledMail", "label": o["description"].replace("*", "×"),
                             "bills_on": o["billing_day"], "price": o["amount"], "inboxes": inboxes,
-                            "setting_up": setting_up, "clients": o["clients"], "order_id": o["id"]})
+                            "setting_up": setting_up, "clients": o["clients"], "order_id": o["id"],
+                            "domains": doms})
             return out
     except Exception as exc:  # noqa: BLE001
         errors.append(f"ScaledMail: {str(exc)[:150]}")

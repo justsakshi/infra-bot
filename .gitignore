@@ -37,3 +37,6 @@ smartlead_sync/darlean_debug_out.txt
 docs/BOUNCE_POSTMORTEM_*.md
 rollback_snapshot_*.json
 change_log_headroom_cap_correction.json
+
+# seed-provider cache (renewal_review.py)
+smartlead_sync/.cache/

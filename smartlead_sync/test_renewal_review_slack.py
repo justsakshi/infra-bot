@@ -191,3 +191,22 @@ def test_scaledmail_bills_mark_mailboxes_still_being_set_up(monkeypatch):
         "domains": [{"order_id": "rec9", "domain_id": "d1"}]})
     bills = cli.scaledmail_bills(30, [])
     assert bills[0]["inboxes"] == ["a@new.com", "b@new.com"] and bills[0]["setting_up"] == ["a@new.com"]
+
+
+def test_scaledmail_bills_without_inbox_lists_make_no_mailbox_calls(monkeypatch):
+    import renewal_review as cli
+    import smartlead.scaledmail as sm_mod
+    import smartlead.scaledmail_fleet as fleet
+
+    class NoMailboxes:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def mailboxes(self, domain_id): raise AssertionError("no per-domain calls")
+
+    monkeypatch.setattr(sm_mod, "configured", lambda: True)
+    monkeypatch.setattr(sm_mod, "ScaledMailClient", NoMailboxes)
+    monkeypatch.setattr(fleet, "snapshot", lambda sm: {
+        "orders": [{"id": "rec9", "billing_day": "2026-10-15", "description": "2 × Google", "amount": 7, "clients": ["Precise Leads"]}],
+        "domains": [{"order_id": "rec9", "domain_id": "d1", "domain": "new.com"}]})
+    bills = cli.scaledmail_bills(30, [], with_inboxes=False)
+    assert bills[0]["domains"] == ["new.com"] and bills[0]["inboxes"] == []

@@ -145,3 +145,16 @@ def test_bill_dates_by_domain_takes_the_earliest():
              {"bills_on": "2026-10-14", "provider": "Zapmail", "label": "12 Outlook pre-warmed", "price": 84, "inboxes": []}]
     out = kp.bill_dates(bills)
     assert out == {"one.com": {"bills_on": "2026-10-27", "provider": "Zapmail", "label": "3 Google", "price": 9}}
+
+
+def test_bill_dates_from_order_domains_without_inbox_lists():
+    bills = [{"bills_on": "2026-11-12", "provider": "ScaledMail", "label": "21 × Google", "price": 73.5,
+              "inboxes": [], "domains": ["exactclients.com", "SolidClients.com"]}]
+    assert kp.bill_dates(bills) == {d: {"bills_on": "2026-11-12", "provider": "ScaledMail", "label": "21 × Google", "price": 73.5}
+                                    for d in ("exactclients.com", "solidclients.com")}
+
+
+def test_bill_read_errors_are_not_called_missing_inboxes():
+    head, parts = kp.format_report(_build(), [], TODAY, BILLS, bill_errors=["ScaledMail: 429"])
+    assert "Bill dates may be missing (could not read ScaledMail: 429)" in head
+    assert not any("inboxes there are missing" in h for h in head)

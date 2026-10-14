@@ -96,17 +96,25 @@ def attachments(key, sending_days=None, today=None):
     sending: [those that sent in the last ``sending_days`` days]}}. Live
     2026-10-13: ACTIVE campaigns with leads mid-sequence had sent nothing for
     two weeks, so "switched on" alone does not mean "sending"."""
+    from concurrent.futures import ThreadPoolExecutor
     from datetime import date
     today = today or date.today()
-    out = {}
-    for c in _get(f"{SL}/campaigns", key):
-        if str(c.get("status", "")).upper() != "ACTIVE":
-            continue
+
+    def one(c):        # per switched-on campaign: still has leads? sent lately? its inboxes
         if not active_campaign(_get(f"{SL}/campaigns/{c['id']}/analytics", key)):
-            continue
-        name = c["name"][:40]
+            return None
         sending = sending_days is not None and _sent_lately(key, c["id"], sending_days, today)
-        for a in _get(f"{SL}/campaigns/{c['id']}/email-accounts", key) or []:
+        return c["name"][:40], sending, _get(f"{SL}/campaigns/{c['id']}/email-accounts", key) or []
+
+    active = [c for c in _get(f"{SL}/campaigns", key) if str(c.get("status", "")).upper() == "ACTIVE"]
+    with ThreadPoolExecutor(max_workers=5) as pool:          # side by side; map keeps the campaign order
+        results = list(pool.map(one, active))
+    out = {}
+    for res in results:
+        if res is None:
+            continue
+        name, sending, inboxes = res
+        for a in inboxes:
             row = out.setdefault(a["from_email"].lower(), {"campaigns": [], "sending": []})
             row["campaigns"].append(name)
             if sending:

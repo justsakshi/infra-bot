@@ -104,8 +104,8 @@ def bill_dates(bills: list[dict]) -> dict[str, dict]:
     their domains get no bill. Pure."""
     out: dict[str, dict] = {}
     for b in bills:
-        for email in b.get("inboxes") or []:
-            dom = email.lower().split("@")[-1]
+        doms = {e.lower().split("@")[-1] for e in b.get("inboxes") or []} | {d.lower() for d in b.get("domains") or []}
+        for dom in doms:
             if dom not in out or b["bills_on"] < out[dom]["bills_on"]:
                 out[dom] = {k: b.get(k) for k in ("bills_on", "provider", "label", "price")}
     return out
@@ -119,7 +119,7 @@ def _bill(dom: str, bills: dict | None) -> str:
 
 
 def format_report(res: dict, errors: list[str], today: date,
-                  bills: dict | None = None) -> tuple[list[str], list[str]]:
+                  bills: dict | None = None, bill_errors: list[str] | None = None) -> tuple[list[str], list[str]]:
     """(headline_lines, parts): one message, action first. ``bills`` =
     bill_dates(...) or None when bills were not read."""
     c = res["counts"]
@@ -149,6 +149,8 @@ def format_report(res: dict, errors: list[str], today: date,
                         "retire or replace them at their next bill.")
     if errors:
         head.append(f"Could not read {'; '.join(errors)}; inboxes there are missing from this list")
+    if bill_errors:
+        head.append(f"Bill dates may be missing (could not read {'; '.join(bill_errors)})")
 
     parts: list[str] = []
     look = []
@@ -201,7 +203,7 @@ def _bills(errors: list[str]) -> dict | None:
     try:
         from renewal_review import scaledmail_bills, zapmail_bills
         n = len(errors)
-        bills = zapmail_bills(35, errors) + scaledmail_bills(35, errors)
+        bills = zapmail_bills(35, errors) + scaledmail_bills(35, errors, with_inboxes=False)
         return bill_dates(bills) if bills or len(errors) == n else None
     except Exception as exc:  # noqa: BLE001 - the warnings still post, without bill dates
         errors.append(f"bills ({type(exc).__name__})")
@@ -219,7 +221,8 @@ def main() -> int:
     try:
         facts = smartlead_facts(errors)
         res = build(facts, today, _platform_of())
-        head, thread = format_report(res, errors, today, _bills(errors))
+        bill_errors: list[str] = []
+        head, thread = format_report(res, errors, today, _bills(bill_errors), bill_errors)
     except Exception as exc:  # noqa: BLE001 - say so in Slack too
         res = {"error": f"{type(exc).__name__}: {exc}"}
         head = [f"🚨 Kill warnings, {_day(today)}: the check failed ({type(exc).__name__}: {exc}). "
