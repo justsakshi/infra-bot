@@ -183,3 +183,26 @@ def test_prewarmed_slots_per_provider(monkeypatch):
     monkeypatch.setattr(zf, "_client", lambda acc, provider: FakePre())
     acc = asyncio.run(zf.prewarmed_overview())["accounts"]["PRECISE_LEADS"]
     assert acc["GOOGLE"]["slots"] == 15 and acc["MICROSOFT"]["slots"] == 12
+
+
+class FakePaid(FakeSubs):
+    """Shaped like 14 Oct: active + cancelled inbox plans, both pre-warmed plans, one unpaid."""
+    async def _request(self, method, path, json=None, **kw):
+        if path == "/v2/subscriptions":
+            mk = lambda i, st, start, price, fail=None: {"subscriptionId": i, "subscriptionStatus": st, "price": price,
+                                                         "periodStart": start + "T00:00:00Z", "paymentFailureMessage": fail}
+            return {"data": [mk("a", "ACTIVE", "2026-10-08", 68.25), mk("b", "CANCELLED", "2026-09-24", 9.75),
+                             mk("c", "ACTIVE", "2026-09-01", 19.5),                       # started before the window
+                             mk("d", "PAST_DUE", "2026-10-03", 19.5, "card declined")]}  # billed, not paid
+        return await super()._request(method, path, json=json, **kw)
+
+    async def prewarmed_subscriptions(self):
+        return {"data": {"subscriptions": [dict(p, periodStart="2026-09-18T00:00:00Z") for p in PRE]}}
+
+
+def test_paid_in_the_last_30_days(monkeypatch):
+    monkeypatch.setattr(zf, "discover_zapmail_accounts", lambda: [ACC])
+    monkeypatch.setattr(zf, "_client", lambda acc, provider: FakePaid())
+    out = asyncio.run(zf.paid_recently(days=30, today="2026-10-14"))
+    assert out == {"days": 30, "paid": 68.25 + 9.75 + 105 + 84, "plans": 4,
+                   "cancelled_since": 9.75, "unpaid": 19.5, "unpaid_plans": 1}

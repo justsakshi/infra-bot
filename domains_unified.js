@@ -185,6 +185,13 @@ function billingBlocks(r) {
     ? '*' + money(total) + ' bills in the next ' + days + ' days* (' + plural(soon.length, 'inbox subscription') + ')'
       + (failed ? NL + ':x: ' + plural(failed, 'payment') + ' failed, see below.' : '')
     : '*Nothing bills in the next ' + days + ' days* on Zapmail inbox subscriptions.')];
+  const paid = r && r.paid;
+  if (paid && paid.plans) {
+    // Zapmail has no invoice history: plans whose current period started in the last 30 days were billed then.
+    blocks.push(section('Zapmail paid in the last ' + paid.days + ' days: *' + money(paid.paid) + '* (already paid, '
+      + plural(paid.plans, 'plan') + ')' + (paid.cancelled_since ? ' · ' + money(paid.cancelled_since) + ' of it on plans cancelled since' : '')
+      + (paid.unpaid ? NL + ':x: ' + money(paid.unpaid) + ' billed but not paid (' + plural(paid.unpaid_plans, 'plan') + ')' : '')));
+  }
   ((r && r.billing_errors) || []).forEach(e => blocks.push(section(':warning: could not check ' + e)));
   for (const x of soon.slice(0, 20)) {
     const doms = (x.domains || []).filter(d => DOMAIN_RE.test(d));

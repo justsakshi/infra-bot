@@ -19,7 +19,8 @@ flow.runPy = async (args) => {
   if (a.includes('billing_watch.py --history meliorbuild.com')) return { domain: 'meliorbuild.com',
     lines: ['8 Oct · renewed · ScaledMail · 30 × Google Inboxes · $105.00 · next bill 6 Nov'] };
   if (a.includes('billing_watch.py --history')) return { domain: 'x', lines: [] };
-  if (a.includes('--billing')) return { days: 14, billing_errors: [], billing: [
+  if (a.includes('--billing')) return { days: 14, billing_errors: [],
+    paid: { days: 30, paid: 398.25, plans: 10, cancelled_since: 58.5, unpaid: 0, unpaid_plans: 0 }, billing: [
     { bills_on: new Date().toISOString().slice(0, 10), price: 48.75, mailboxes: 15, provider: 'MICROSOFT', kind: 'inboxes',
       account: 'PRECISE_LEADS', clients: ['Bettrdata'], payment_failure: 'No payment method on file', domains: ['askbettrdata.com'] },
     { bills_on: '2099-01-01', price: 9, mailboxes: 3, provider: 'GOOGLE', kind: 'inboxes', account: 'X', clients: [], domains: [] }] };
@@ -43,6 +44,8 @@ const u = require('./domains_unified');
   ok(!/2099-01-01/.test(txt), 'only the next 14 days');
   ok(/Zapmail inbox billing/.test(txt) && /ScaledMail/.test(txt), 'one message, both providers');
   ok(r.blocks.length <= 49, 'within Slack block limit');
+  ok(/Zapmail paid in the last 30 days: \*\$398\.25\* \(already paid, 10 plans\) · \$58\.50 of it on plans cancelled since/.test(txt),
+    'last-30-day Zapmail total, marked already paid');
 
   calls.length = 0;
   const d = await u.runView('domain', ['meliorbuild.com'], __dirname);

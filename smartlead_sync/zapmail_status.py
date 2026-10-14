@@ -41,12 +41,14 @@ async def main() -> int:
     args = ap.parse_args()
 
     if args.billing:
-        from smartlead.zapmail_fleet import subscriptions_billing
+        from smartlead.zapmail_fleet import paid_recently, subscriptions_billing
         errors: list[str] = []
         rows = await subscriptions_billing(args.days, errors)
+        paid = await paid_recently(30, errors)
         if args.json:
-            print(json.dumps({"billing": rows, "billing_errors": errors, "days": args.days}))
+            print(json.dumps({"billing": rows, "billing_errors": errors, "days": args.days, "paid": paid}))
             return 0
+        print(f"  Paid in the last 30 days: ${paid['paid']:.2f} ({paid['plans']} plans, already paid)")
         for r in rows:
             print(f"  {r['bills_on']}  {r['account']:14} {r['provider']:9} {r['kind']:10} "
                   f"{r['mailboxes'] or '?':>3} inboxes  ${r['price']}  {', '.join(r['domains'][:6])}")

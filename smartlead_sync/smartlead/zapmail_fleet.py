@@ -406,6 +406,51 @@ async def _mailboxes_on(z: ZapmailClient, domain: str) -> list[dict]:
     return out
 
 
+async def paid_recently(days: int = 30, errors: list[str] | None = None, today: str | None = None) -> dict:
+    """What Zapmail billed in the last ``days`` days. READ-ONLY.
+
+    Zapmail's API has no invoice history (``/v2/payment/invoices`` only gives
+    one subscription's latest invoice link), so each subscription's current
+    ``periodStart`` is the day it was last billed. Counts inbox and pre-warmed
+    plans, cancelled ones too (paid for this period, then cancelled); one-off
+    domain buys and wallet top-ups are not in the API. A plan with a payment
+    failure counts as unpaid."""
+    from datetime import date, timedelta
+    today_d = date.fromisoformat(today) if today else date.today()
+    since = (today_d - timedelta(days=days)).isoformat()
+    out = {"days": days, "paid": 0.0, "plans": 0, "cancelled_since": 0.0, "unpaid": 0.0, "unpaid_plans": 0}
+    for acc in discover_zapmail_accounts():
+        try:
+            async with _client(acc, "GOOGLE") as z:      # both lists ignore the provider header
+                addons = ((await z._request("GET", "/v2/subscriptions")) or {}).get("data") or []
+                pre = (((await z.prewarmed_subscriptions()) or {}).get("data") or {}).get("subscriptions") or []
+        except ZapmailError as exc:
+            if errors is not None:
+                errors.append(f"{acc.name}: {str(exc)[:160]}")
+            continue
+        seen: set = set()
+        for sub in addons + pre:
+            if sub.get("subscriptionId") in seen:
+                continue
+            seen.add(sub.get("subscriptionId"))
+            start = _iso_to_date(sub.get("periodStart"))
+            if not start or not (since <= start <= today_d.isoformat()):
+                continue
+            price = float(sub.get("price") or 0)
+            status = str(sub.get("subscriptionStatus") or "").upper()
+            if sub.get("paymentFailureMessage") or status in ("PAST_DUE", "UNPAID", "INCOMPLETE"):
+                out["unpaid"] += price
+                out["unpaid_plans"] += 1
+                continue
+            out["paid"] += price
+            out["plans"] += 1
+            if status == "CANCELLED":
+                out["cancelled_since"] += price
+    for k in ("paid", "cancelled_since", "unpaid"):
+        out[k] = round(out[k], 2)
+    return out
+
+
 async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                                 today: str | None = None, all_inboxes: bool = False) -> list[dict]:
     """Every Zapmail subscription (inbox add-ons + pre-warmed), both providers,
