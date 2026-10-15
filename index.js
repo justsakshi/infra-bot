@@ -1585,6 +1585,12 @@ async function start() {
     // 20+ seeds, or a dead domain) and which to watch. Warning only.
     cron.schedule('30 13 * * 2', () => runBilling('kill-report', ['kill_report.py', '--post']), { timezone: 'Asia/Kolkata' });
 
+    // Fleet watch (spec 2026-10-15): daily record of every inbox, new problems
+    // with what to do (10:30 IST, #test-channel), scorecard Mondays 10:50.
+    // Never writes to Smartlead.
+    cron.schedule('30 10 * * *', () => runBilling('fleet-watch', ['fleet_watch.py', '--post']), { timezone: 'Asia/Kolkata' });
+    cron.schedule('50 10 * * 1', () => runBilling('fleet-scorecard', ['fleet_watch.py', '--scorecard', '--post']), { timezone: 'Asia/Kolkata' });
+
     // Every current-client inbox on its client's deliverability test campaigns
     // (paused only), daily 06:00 IST, so any inbox can go into the Monday test.
     cron.schedule('0 6 * * *', () => runBilling('dt-senders', ['dt_senders.py', '--apply']), { timezone: 'Asia/Kolkata' });
