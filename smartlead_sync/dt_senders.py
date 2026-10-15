@@ -14,8 +14,8 @@ addresses only through Smart Delivery, never to leads. Each add is read back.
 
     python dt_senders.py            # dry run: what would be attached
     python dt_senders.py --gaps     # also: which scheduled tests miss inboxes (read-only)
-    python dt_senders.py --apply    # attach; runs daily 06:00 IST, and DMs Manveen which scheduled
-                                    #   tests to create or add inboxes to (only when that list changes)
+    python dt_senders.py --apply    # attach; runs daily 06:00 IST, and DMs Manveen only about the
+                                    #   inboxes it added (and campaigns it created) that run
 """
 from __future__ import annotations
 
@@ -193,6 +193,8 @@ async def apply(sl, p: dict, batch: int = BATCH) -> dict:
                 landed.add(i)
             else:
                 out["missing"].append(f"{i} not on campaign {cid} after the add")
+    moved = {i for rem in (p.get("removes") or {}).values() for i in rem}
+    out["new_ids"] = sorted(landed - moved)
     for cid, rem in (p.get("removes") or {}).items():
         go = [i for i in rem if i in landed]
         for k in range(0, len(go), batch):
@@ -232,6 +234,28 @@ def gap_text(gaps: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def new_inbox_text(gaps: list[dict], added: set[str], created: list[str]) -> str:
+    """The DM after a daily run: only inboxes added today that no scheduled test
+    includes, and campaigns created today. Empty = nothing to tell. Pure."""
+    lines = []
+    for g in gaps:
+        if g["campaign"] in created:
+            lines.append(f"{g['campaign']} (new campaign): create a weekly test with all {_n(g['count'])} on it.")
+            continue
+        fresh = [e for e in g["add"] if e in added]
+        if not fresh:
+            continue
+        if g["test"] is None:
+            lines.append(f"{g['campaign']}: no scheduled test yet. Create a weekly test with all {_n(g['count'])} on it.")
+        else:
+            word = "new inbox" if len(fresh) == 1 else "new inboxes"
+            lines.append(f"{g['campaign']}: add {len(fresh)} {word} to the scheduled test \"{g['test']}\": "
+                         + ", ".join(fresh))
+    if not lines:
+        return ""
+    return "New inboxes for the placement tests (the bot cannot edit scheduled tests in Smart Delivery):\n" + "\n".join(lines)
+
+
 async def _scheduled_tests(key: str) -> list[dict]:
     """Active scheduled (recurring) tests with their senders. Read-only, no credit."""
     import httpx
@@ -252,9 +276,6 @@ async def _scheduled_tests(key: str) -> list[dict]:
             out.append({"id": t["spam_test_id"], "name": t.get("test_name"), "campaign_id": d.get("campaign_id") or 0,
                         "senders": {str(x.get("email") or x.get("from_email") or "").lower() for x in s}})
         return out
-
-
-GAPS_KEY = "__dt_test_gaps__"
 
 
 def _dm(text: str) -> bool:
@@ -326,9 +347,12 @@ def main() -> int:
                 res.update(await apply(c, p))
             if args.apply or args.gaps:
                 emails = {int(a["id"]): str(a.get("from_email") or "").lower() for a in await c.list_email_accounts()}
+                camps_now = await _campaigns(c, acc.name)
                 dts = [{"id": x["id"], "name": x["name"], "emails": {emails[i] for i in x["attached"] if i in emails}}
-                       for x in await _campaigns(c, acc.name) if x["role"] == "dt"]
+                       for x in camps_now if x["role"] == "dt"]
+                dt_ids = {i for x in camps_now if x["role"] == "dt" for i in x["attached"]}
                 res["gaps"] = test_gaps(dts, await _scheduled_tests(acc.api_key))
+                res["new_on_dt"] = sorted(emails[i] for i in res.get("new_ids") or [] if i in dt_ids and i in emails)
             return res
 
     for acc in discover_accounts():
@@ -338,15 +362,15 @@ def main() -> int:
             out[acc.name] = asyncio.run(one(acc))
         except Exception as exc:  # noqa: BLE001 - say so, keep the other account
             out[acc.name] = {"error": redact(str(exc))[:200]}
-    gaps = [g for r in out.values() if isinstance(r, dict) for g in r.get("gaps") or []]
     if args.apply:
-        # DM only when the list changes, so a standing gap is not repeated every morning.
-        from smartlead.inbox_intake import IntakeStore
-        store = IntakeStore()
-        text = gap_text(gaps) if gaps else ""
-        last = store._doc(GAPS_KEY).get("text") or ""
-        if text != last and (not text or _dm(text)):
-            store.col.update_one({"email": GAPS_KEY}, {"$set": {"text": text}}, upsert=True)
+        # DM only about inboxes added and campaigns created by THIS run (Manveen, 15 Oct: tell me
+        # about new inboxes; a standing gap is not repeated). `--gaps` prints the full list on demand.
+        gaps = [g for r in out.values() if isinstance(r, dict) for g in r.get("gaps") or []]
+        added = {e for r in out.values() if isinstance(r, dict) for e in r.get("new_on_dt") or []}
+        created = [n for r in out.values() if isinstance(r, dict) for n in r.get("created") or []]
+        text = new_inbox_text(gaps, added, created)
+        if text:
+            out["dm_sent"] = _dm(text)
     print(json.dumps(out, indent=1, default=sorted))
     return 0
 

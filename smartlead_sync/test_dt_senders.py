@@ -166,3 +166,15 @@ def test_apply_drops_with_read_back():
     sl = FakeSL({101: {1000, 1002}})
     r = run_apply(sl, {"adds": {}, "drops": {101: [1002]}})
     assert sl.attached == {101: {1000}} and r["dropped"] == 1
+
+
+def test_dm_names_only_the_inboxes_added_today_and_new_campaigns():
+    # Manveen 15 Oct: "why am I getting this again and again" - tell him about NEW inboxes only.
+    gaps = [{"campaign": "DT PL #1", "test": "PL spam test 1", "add": ["old@x.com", "new@x.com"], "count": 50},
+            {"campaign": "DT PL #3", "test": None, "add": ["n2@y.com"], "count": 25},
+            {"campaign": "DT Melior #1", "test": "Melior spam test 1", "add": ["stale@m.com"], "count": 50}]
+    t = ts.new_inbox_text(gaps, added={"new@x.com", "n2@y.com"}, created=["DT PL #3"])
+    assert "DT PL #1: add 1 new inbox to the scheduled test \"PL spam test 1\": new@x.com" in t
+    assert "DT PL #3 (new campaign): create a weekly test with all 25 inboxes on it." in t
+    assert "old@x.com" not in t and "Melior" not in t
+    assert ts.new_inbox_text(gaps, added=set(), created=[]) == ""

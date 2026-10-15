@@ -22,6 +22,11 @@ def _clean_key(key: str | None) -> str | None:
     return s
 
 
+# Past clients: their Smartlead accounts are never read, whatever keys are set
+# (Belardi Wong dropped 2026-10-15 by Manveen; Darlean and Mythic earlier).
+PAST_CLIENT_ACCOUNTS = {"belardi wong", "darlean", "mythic"}
+
+
 def discover_accounts() -> list[AccountConfig]:
     """Return a list of :class:`AccountConfig` found in the environment."""
     accounts: list[AccountConfig] = []
@@ -46,7 +51,7 @@ def discover_accounts() -> list[AccountConfig]:
     # Past clients' accounts every job should leave alone (they only burn the
     # shared Smartlead rate limit: 429s all through the 2026-10-08 dry runs).
     # e.g. SMARTLEAD_IGNORE_ACCOUNTS="Belardi Wong,DARLEAN,MYTHIC". Unset = all.
-    ignore = {x.strip().lower().replace("_", " ")
-              for x in os.getenv("SMARTLEAD_IGNORE_ACCOUNTS", "").split(",") if x.strip()}
+    ignore = PAST_CLIENT_ACCOUNTS | {x.strip().lower().replace("_", " ")
+                                     for x in os.getenv("SMARTLEAD_IGNORE_ACCOUNTS", "").split(",") if x.strip()}
     return [a for a in accounts if a.name.lower().replace("_", " ") not in ignore]
 

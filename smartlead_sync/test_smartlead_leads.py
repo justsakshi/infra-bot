@@ -8,7 +8,7 @@ from smartlead.api import SmartleadClient
 def ok(c, m): print(f"  {'PASS' if c else 'FAIL'}: {m}"); assert c, m
 
 async def main():
-    acc = next(a for a in discover_accounts() if a.name == "DARLEAN")
+    acc = next(a for a in discover_accounts() if a.name.upper() == "PRECISE_LEADS")   # Darlean is a past client
     async with SmartleadClient(acc.api_key, acc.name) as c:
         cid = str((await c.list_campaigns())[0]["id"])
         leads = await c.get_campaign_leads(cid)
