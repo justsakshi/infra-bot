@@ -25,7 +25,7 @@ def test_kind_from_type_host_and_density():
 def test_standard_values_match_the_spec():
     g, o, d, s = (st.standard_for(k) for k in ("google", "outlook", "outlook_dense", "smtp"))
     assert (g["max_email_per_day"], g["total_warmup_per_day"], g["daily_rampup"], g["reply_rate"], g["ready_after_days"]) == (15, 25, 5, 30, 14)
-    assert (o["max_email_per_day"], o["total_warmup_per_day"], o["daily_rampup"], o["reply_rate"], o["ready_after_days"]) == (10, 20, 5, 30, 21)
+    assert (o["max_email_per_day"], o["total_warmup_per_day"], o["daily_rampup"], o["reply_rate"], o["ready_after_days"]) == (5, 20, 5, 30, 21)  # ScaledMail rule, 15 Oct
     assert (d["max_email_per_day"], d["total_warmup_per_day"], d["daily_rampup"], d["reply_rate"], d["ready_after_days"]) == (5, 5, 0, 30, 21)
     assert (s["max_email_per_day"], s["total_warmup_per_day"], s["daily_rampup"], s["reply_rate"], s["ready_after_days"]) == (7, 20, 5, 30, 21)  # Smartlead support 15 Oct: ~3 weeks (weekdays-only warmup)
     assert all(st.standard_for(k)["weekdays_only"] and st.standard_for(k)["auto_adjust"] for k in ("google", "smtp"))
@@ -108,3 +108,11 @@ def test_minimum_gap_is_part_of_the_standard():
 def test_smtp_ready_after_three_weeks_per_smartlead_support():
     # Smartlead support 15 Oct: SMTP 14-30 days; weekdays-only warmup, so "closer to 3 weeks".
     assert st.standard_for("smtp")["ready_after_days"] == 21
+
+
+def test_weekly_volume_steps_follow_scaledmail():
+    # 15 Oct (ScaledMail support, adopted by Manveen): Google 15 +2/week max 20; Outlook 5 +1/week max 8;
+    # ScaledMail Outlook (25 per domain) fixed at 5; SMTP held at 7 until ScaledMail answers.
+    steps = {k: (st.standard_for(k)["max_email_per_day"], st.standard_for(k)["weekly_step"], st.standard_for(k)["max_daily"])
+             for k in ("google", "outlook", "outlook_dense", "smtp")}
+    assert steps == {"google": (15, 2, 20), "outlook": (5, 1, 8), "outlook_dense": (5, 0, 5), "smtp": (7, 0, 7)}

@@ -137,9 +137,9 @@ sm.registerScaledMailCommand({ command: () => {}, action: (id, fn) => { actions[
       { provider: 'google', percentage: 70, requiredDomains: 24, requiredMailboxes: 48, totalPrice: 168 },
       { provider: 'outlook', percentage: 30, requiredDomains: 3, requiredMailboxes: 75, totalPrice: 150 }] } });
   ok(/\*Zapmail\*/.test(q) && /• Google 70% — 16 domains, 47 mailboxes, \$152\.75\/mo \(15\/day per mailbox\)/.test(q), q);
-  ok(/• Outlook 30% — 10 domains, 30 mailboxes, \$97\.50\/mo \(10\/day per mailbox\)/.test(q), q);
-  ok(/Zapmail total \$250\.25\/month\* · 26 domains · 77 mailboxes/.test(q), q);
-  ok(/First month: \$250\.25 mailboxes \+ ~\$337\.74 domains \(26 × ~\$12\.99 first year\) = ~\$587\.99/.test(q), q);
+  ok(/• Outlook 30% — 20 domains, 60 mailboxes, \$195\.00\/mo \(5\/day per mailbox\)/.test(q), q);   // Outlook starts at 5 (ScaledMail rule, 15 Oct)
+  ok(/Zapmail total \$347\.75\/month\* · 36 domains · 107 mailboxes/.test(q), q);
+  ok(/First month: \$347\.75 mailboxes \+ ~\$467\.64 domains \(36 × ~\$12\.99 first year\) = ~\$815\.39/.test(q), q);
   const smtp = sm.quoteText({ request: { volume: 30000, tier: 'low' }, quote: { monthlyVolume: 30000, dailyVolume: 1000, totalPrice: 250,
     totalDomains: 30, totalMailboxes: 120, providerBreakdown: [{ provider: 'smtp', percentage: 100, requiredDomains: 30, requiredMailboxes: 120, totalPrice: 250 }] } });
   ok(/Zapmail does not sell SMTP inboxes/.test(smtp), smtp);
