@@ -14,7 +14,7 @@ from pathlib import Path
 STANDARD_PATH = Path(os.getenv(
     "INBOX_STANDARD_FILE", Path(__file__).resolve().parent.parent / "inbox_standard.json"))
 SETUP_TAG = "Bot-Setup"
-READY_REPUTATION = 90
+READY_REPUTATION = 90          # default; each type's "good_reputation" wins (SMTP 70, ScaledMail 15 Oct)
 DENSE_OUTLOOK_AT = 10          # Outlook inboxes on one domain from which it counts as a shared tenant
 
 
@@ -59,15 +59,17 @@ def _int(v) -> int | None:
         return None
 
 
-def drift(account: dict, kind: str, vendor: str) -> list[str]:
-    """What no longer matches the type's standard (limit, warmup, reply rate, tracking)."""
+def drift(account: dict, kind: str, vendor: str, want_limit: int | None = None) -> list[str]:
+    """What no longer matches the type's standard (limit, warmup, reply rate, tracking).
+    ``want_limit``: the limit approved in a weekly volume review, when there is one."""
     s = standard_for(kind)
+    want = s["max_email_per_day"] if want_limit is None else int(want_limit)
     w = account.get("warmup_details") or {}
     out = []
     if str(w.get("status") or "").upper() != "ACTIVE":
         return ["warmup off"]
-    if _int(account.get("message_per_day")) != s["max_email_per_day"]:
-        out.append(f"daily limit {account.get('message_per_day')}, want {s['max_email_per_day']}")
+    if _int(account.get("message_per_day")) != want:
+        out.append(f"daily limit {account.get('message_per_day')}, want {want}")
     wmax = _int(w.get("max_email_per_day") or w.get("warmup_max_count"))
     if wmax != s["total_warmup_per_day"]:
         out.append(f"warmup {wmax}/day, want {s['total_warmup_per_day']}")
@@ -122,4 +124,15 @@ def readiness(account: dict, kind: str, today: date) -> str:
     if today < when:
         return "warming"
     rep = _int((account.get("warmup_details") or {}).get("warmup_reputation"))
-    return "ready" if rep is not None and rep >= READY_REPUTATION else "low_reputation"
+    return "ready" if rep is not None and rep >= good_reputation(kind) else "low_reputation"
+
+
+def good_reputation(kind: str) -> int:
+    return int(standard_for(kind).get("good_reputation", READY_REPUTATION))
+
+
+def needs_ip_rotation(kind: str, rep) -> bool:
+    """SMTP below its floor (50%): ScaledMail rotates the order's IP on request."""
+    floor = standard_for(kind).get("rotate_ip_below")
+    r = _int(rep)
+    return floor is not None and r is not None and r < floor

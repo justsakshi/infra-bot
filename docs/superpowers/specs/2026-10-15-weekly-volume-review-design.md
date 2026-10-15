@@ -1,6 +1,6 @@
 # Weekly volume review: raise or lower each inbox's daily limit, one click to apply
 
-Date: 2026-10-15 · Status: draft for Manveen's review
+Date: 2026-10-15 · Status: built 15 Oct (Manveen: "sure go ahead"); live behind VOLUME_REVIEW_ENABLED=true
 
 ## Why
 
@@ -18,13 +18,18 @@ From `smartlead_sync/inbox_standard.json`:
 | Google | 15 | +2 | 20 |
 | Outlook, 3 per domain (Zapmail) | 5 | +1 | 10 |
 | Outlook, 25 per domain (ScaledMail) | 5 | +1 | 8 |
-| SMTP | 7 | none yet | 7 (until ScaledMail answers) |
+| SMTP (ScaledMail) | 7 | +1 | 10 per inbox (ScaledMail, 15 Oct) |
 
 Signals per inbox, from Smartlead support:
 
 - **placement**: its last two counting placement tests (kill rule) both passed (80%+), a week or more apart;
 - **bounces**: under 2% over the last 14 days;
-- **warmup reputation**: 90% or more.
+- **warmup reputation**: 90% or more; SMTP 70% or more (ScaledMail 15 Oct:
+  SMTP reputation runs lower than Google/Microsoft; under 50% they rotate the
+  order's IP on request, so the review lists those domains).
+
+Warmup is never switched off, also while sending (ScaledMail, all providers);
+the drift check already reports "warmup off".
 
 Decision per inbox, once a week:
 

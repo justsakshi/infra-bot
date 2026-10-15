@@ -17,6 +17,7 @@ from smartlead import inbox_standard as st
 COLLECTION = "inbox_intake"
 MAX_TRIES = 3
 POSTED_KEY = "__posted_problems__"   # ledger doc: problems already posted to the channel
+REVIEW_KEY = "__volume_review__:"    # ledger doc per weekly volume review (its rows and who applied what)
 TAG_BATCH = 25
 CURRENT_ACCOUNTS = ("PRECISE_LEADS", "BETTRDATA")
 CLIENT_TAG = {"Precise Leads": "PreciseLeads", "Melior": "Melior", "Bettrdata": "BettrData"}
@@ -81,6 +82,29 @@ class IntakeStore:
 
     def mark_announced(self, key: str) -> None:
         self.col.update_one({"email": "__announced__:" + key}, {"$set": {"at": _now()}}, upsert=True)
+
+    # Weekly volume review: each inbox's approved daily limit, and the reviews.
+    def approved_limits(self) -> dict[str, tuple[int, str]]:
+        """{email: (approved limit, approved on)}; drift compares against these."""
+        return {d["email"]: (int(d["approved_limit"]), str(d.get("approved_on") or ""))
+                for d in self.col.find({"approved_limit": {"$exists": True}}, {"_id": 0})}
+
+    def approve_limit(self, email: str, limit: int, *, by: str, action: str, on: date) -> None:
+        self.col.update_one({"email": email}, {
+            "$set": {"approved_limit": int(limit), "approved_on": on.isoformat(), "updated_at": _now()},
+            "$push": {"history": {"at": _now(), "ok": True, "approved_limit": int(limit), "by": by, "action": action}}},
+            upsert=True)
+
+    def save_review(self, review_id: str, rows: list[dict]) -> None:
+        self.col.update_one({"email": REVIEW_KEY + review_id},
+                            {"$set": {"rows": rows, "applied": {}, "created_at": _now()}}, upsert=True)
+
+    def review(self, review_id: str) -> dict:
+        return self._doc(REVIEW_KEY + review_id)
+
+    def mark_applied(self, review_id: str, client: str, by: str, result: dict) -> None:
+        applied = {**(self.review(review_id).get("applied") or {}), client: {"by": by, "at": _now(), **result}}
+        self.col.update_one({"email": REVIEW_KEY + review_id}, {"$set": {"applied": applied}}, upsert=True)
 
     def posted_problems(self) -> list[str]:
         return list(self._doc(POSTED_KEY).get("problems") or [])
@@ -152,7 +176,8 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
         if fresh(a):
             fresh_on.setdefault(dom_of(a), []).append(a)
     melior_id = (profile("Melior") or {}).get("smartlead_client_id")
-    out["problems"] += _drift_sweep(accounts, per_domain)
+    approved = {e: lim for e, (lim, _) in store.approved_limits().items()}
+    out["problems"] += _drift_sweep(accounts, per_domain, approved)
     # Set-up domains that just became ready (or reached their date still warming), with whose they are.
     owners: dict[str, str] = {}
     for a in accounts:
@@ -281,7 +306,7 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
     return out
 
 
-def _drift_sweep(accounts: list[dict], per_domain: dict[str, int]) -> list[str]:
+def _drift_sweep(accounts: list[dict], per_domain: dict[str, int], approved: dict[str, int] | None = None) -> list[str]:
     """Inboxes intake set up whose settings no longer match the standard (or a
     setting that was never set, like the empty "Minimum time gap" on 15 Oct),
     one line per kind of problem. Read-only; posted only when new (CLI)."""
@@ -293,7 +318,7 @@ def _drift_sweep(accounts: list[dict], per_domain: dict[str, int]) -> list[str]:
         dom = email.split("@")[-1]
         names = [str(t.get("tag_name") or t.get("name") or "") for t in a.get("tags") or []]
         vendor = "scaledmail" if any(n.startswith("ScaledMail") for n in names) else "zapmail"
-        issues = st.drift(a, st.inbox_kind(a, per_domain.get(dom, 1)), vendor)
+        issues = st.drift(a, st.inbox_kind(a, per_domain.get(dom, 1)), vendor, want_limit=(approved or {}).get(email))
         if issues:
             groups.setdefault("; ".join(issues), []).append(email)
     lines = []
@@ -306,7 +331,7 @@ def _drift_sweep(accounts: list[dict], per_domain: dict[str, int]) -> list[str]:
 
 def ready_announcements(accounts: list[dict], today: date, store, clients: dict[str, str]) -> list[dict]:
     """Domains whose set-up inboxes have ALL reached their ready date: "ready"
-    when every one has 90%+ warmup reputation, else "low" (keep warming).
+    when every one has its type's healthy warmup reputation (90%+, SMTP 70%+), else "low" (keep warming).
     Each (state, domain) is announced once; a domain announced low can later
     be announced ready. Returns [{key, domain, state, line}]. Pure apart from
     reading the store."""
@@ -338,7 +363,7 @@ def ready_announcements(accounts: list[dict], today: date, store, clients: dict[
             line = (f"• {dom} · {n} {label} inbox{'es' if n != 1 else ''} · {client} · warmed {days} days"
                     f" · reputation {min(reps)}%")
         else:
-            line = f"• {dom} · {client} · warmup reputation {min(reps)}% (needs {st.READY_REPUTATION}%), keep warming"
+            line = f"• {dom} · {client} · warmup reputation {min(reps)}% (needs {st.good_reputation(kind)}%), keep warming"
         out.append({"key": key, "domain": dom, "state": state, "line": line})
     return sorted(out, key=lambda a: (a["state"] != "ready", a["domain"]))
 

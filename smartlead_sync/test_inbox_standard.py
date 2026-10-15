@@ -111,8 +111,19 @@ def test_smtp_ready_after_three_weeks_per_smartlead_support():
 
 
 def test_weekly_volume_steps_follow_scaledmail():
-    # 15 Oct (ScaledMail support, adopted by Manveen): Google 15 +2/week max 20; Outlook 5 +1/week max 8;
-    # ScaledMail Outlook (25 per domain) fixed at 5; SMTP held at 7 until ScaledMail answers.
+    # 15 Oct (ScaledMail support, adopted by Manveen): Google 15 +2/week max 20; Outlook 5 +1/week max 10;
+    # ScaledMail Outlook (25 per domain) 5 +1/week max 8; SMTP 7 +1/week max 10 per inbox (ScaledMail, 15 Oct).
     steps = {k: (st.standard_for(k)["max_email_per_day"], st.standard_for(k)["weekly_step"], st.standard_for(k)["max_daily"])
              for k in ("google", "outlook", "outlook_dense", "smtp")}
-    assert steps == {"google": (15, 2, 20), "outlook": (5, 1, 10), "outlook_dense": (5, 1, 8), "smtp": (7, 0, 7)}  # Manveen 15 Oct
+    assert steps == {"google": (15, 2, 20), "outlook": (5, 1, 10), "outlook_dense": (5, 1, 8), "smtp": (7, 1, 10)}
+
+
+def test_smtp_reputation_is_healthy_from_70_and_rotates_ip_under_50():
+    # ScaledMail 15 Oct: SMTP reputation runs lower than Google/Microsoft; fine above 70%,
+    # ask ScaledMail to rotate the order's IP below 50%.
+    assert st.good_reputation("smtp") == 70 and st.good_reputation("google") == 90
+    a = {"warmup_details": {"warmup_created_at": "2026-10-13T10:00:00Z", "warmup_reputation": "75%"}}
+    assert st.readiness(a, "smtp", date(2026, 11, 3)) == "ready"
+    assert st.readiness(a, "google", date(2026, 11, 3)) == "low_reputation"
+    assert st.needs_ip_rotation("smtp", "49%") and not st.needs_ip_rotation("smtp", "50%")
+    assert not st.needs_ip_rotation("google", "30%")

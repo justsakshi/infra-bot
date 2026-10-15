@@ -1,10 +1,10 @@
 {
-  "_doc": "Setup standard for a new Smartlead inbox. Spec: docs/superpowers/specs/2026-10-13-inbox-intake-design.md. daily_rampup 0 = ramp off (Smartlead accepts 5-20). max_email_per_day = campaign emails only (Smartlead support 15 Oct). weekly_step / max_daily = ScaledMail volume rule (15 Oct): Google 15 +2/week max 20, Outlook (3/domain) 5 +1/week max 10 and ScaledMail Outlook (25/domain) 5 +1/week max 8 (Manveen, 15 Oct); SMTP held at 7 until ScaledMail answers.",
+  "_doc": "Setup standard for a new Smartlead inbox. Spec: docs/superpowers/specs/2026-10-13-inbox-intake-design.md. daily_rampup 0 = ramp off (Smartlead accepts 5-20). max_email_per_day = campaign emails only (Smartlead support 15 Oct). weekly_step / max_daily = ScaledMail volume rule (15 Oct): Google 15 +2/week max 20, Outlook (3/domain) 5 +1/week max 10 and ScaledMail Outlook (25/domain) 5 +1/week max 8 (Manveen, 15 Oct); SMTP 7 +1/week max 10 per inbox (ScaledMail, 15 Oct). good_reputation = warmup reputation counted healthy (ScaledMail: SMTP runs lower, fine above 70%); rotate_ip_below = ask ScaledMail to rotate the order IP.",
   "types": {
-    "google":        {"label": "Google",                  "max_email_per_day": 15, "total_warmup_per_day": 25, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 14, "weekly_step": 2, "max_daily": 20},
-    "outlook":       {"label": "Outlook",                 "max_email_per_day": 5,  "total_warmup_per_day": 20, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 21, "weekly_step": 1, "max_daily": 10},
-    "outlook_dense": {"label": "Outlook (shared domain)", "max_email_per_day": 5,  "total_warmup_per_day": 5,  "daily_rampup": 0, "reply_rate": 30, "ready_after_days": 21, "weekly_step": 1, "max_daily": 8},
-    "smtp":          {"label": "SMTP",                    "max_email_per_day": 7,  "total_warmup_per_day": 20, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 21, "weekly_step": 0, "max_daily": 7}
+    "google":        {"label": "Google",                  "max_email_per_day": 15, "total_warmup_per_day": 25, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 14, "weekly_step": 2, "max_daily": 20, "good_reputation": 90},
+    "outlook":       {"label": "Outlook",                 "max_email_per_day": 5,  "total_warmup_per_day": 20, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 21, "weekly_step": 1, "max_daily": 10, "good_reputation": 90},
+    "outlook_dense": {"label": "Outlook (shared domain)", "max_email_per_day": 5,  "total_warmup_per_day": 5,  "daily_rampup": 0, "reply_rate": 30, "ready_after_days": 21, "weekly_step": 1, "max_daily": 8, "good_reputation": 90},
+    "smtp":          {"label": "SMTP",                    "max_email_per_day": 7,  "total_warmup_per_day": 20, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 21, "weekly_step": 1, "max_daily": 10, "good_reputation": 70, "rotate_ip_below": 50}
   },
   "every_type": {"weekdays_only": true, "auto_adjust": true, "time_to_wait_in_mins": 20},
   "no_tracking_vendors": ["scaledmail"]

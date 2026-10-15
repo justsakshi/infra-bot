@@ -59,7 +59,10 @@ class FakeCol:
         d = self.docs.setdefault(q["email"], {"email": q["email"], "tries": 0, "history": []})
         d.update(upd.get("$set", {}))
         for k, v in upd.get("$inc", {}).items(): d[k] = d.get(k, 0) + v
-        for k, v in upd.get("$push", {}).items(): d[k].append(v)
+        for k, v in upd.get("$push", {}).items(): d.setdefault(k, []).append(v)
+    def find(self, q, proj=None):
+        (k, cond), = q.items()
+        return [d for d in self.docs.values() if (k in d) == cond.get("$exists", True)]
 
 
 PLAN = {"plan_id": "13845d", "status": "placed", "client": "Precise Leads", "provider": "google",

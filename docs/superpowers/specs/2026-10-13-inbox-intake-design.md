@@ -92,7 +92,7 @@ records it in the ledger. An inbox is **ready to use** when both hold:
 |---|---|---|
 | Google | 14 days | Smartlead warmup reputation 90%+ |
 | Outlook (either density) | 21 days | same |
-| SMTP | 21 days | same |
+| SMTP | 21 days | warmup reputation 70%+ (ScaledMail 15 Oct: SMTP runs lower; under 50% ask them to rotate the IP) |
 
 Google 14 and Outlook 21 are Manveen's; SMTP 21 from Smartlead support (2026-10-15: "14-30 days; weekdays-only warmup, so closer to 3
 weeks"; Avinash had said 14 at standup).

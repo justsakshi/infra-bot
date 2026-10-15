@@ -629,6 +629,8 @@ const INFRA_DEPS = {
 require('./infra_slack').registerInfraHandlers(app, INFRA_DEPS, {
   command: '/infra', messages: true, botToken: process.env.SLACK_BOT_TOKEN
 });
+// Weekly volume review: Apply buttons on the Tuesday post (approvers only).
+require('./volume_slack').registerVolumeSlack(app, __dirname);
 
 /* -------------------- View Details Button Handlers -------------------- */
 app.action(/^view_details_/, async ({ ack, body, client }) => {
@@ -1584,6 +1586,14 @@ async function start() {
     // which inboxes SHOULD be killed by the team's rule (two strikes, <50% on
     // 20+ seeds, or a dead domain) and which to watch. Warning only.
     cron.schedule('30 13 * * 2', () => runBilling('kill-report', ['kill_report.py', '--post']), { timezone: 'Asia/Kolkata' });
+
+    // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: raise, hold
+    // or step back each set-up inbox's daily limit (spec 2026-10-15). Posts with
+    // Apply buttons; nothing changes until an approver presses one.
+    cron.schedule('45 13 * * 2', () => {
+      if (process.env.VOLUME_REVIEW_ENABLED !== 'true') return;
+      runBilling('volume-review', ['volume_review.py', '--post', '--json']);
+    }, { timezone: 'Asia/Kolkata' });
 
     // Per-domain reply-rate early warning at 1:00 PM IST daily (read-only).
     cron.schedule('0 13 * * *', () => {
