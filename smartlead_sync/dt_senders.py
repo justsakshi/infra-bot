@@ -3,8 +3,11 @@
 so any inbox can be picked for the Monday placement test (Manveen, 15 Oct:
 "add every inbox into those tests").
 
-Per client: the main test campaign (copy_sync.TARGETS) and the emptier of its
+Per client: the main test campaign (copy_sync.TARGETS) and one of its
 "DT <client> #n" campaigns, which the weekly copy sync keeps on current copy.
+DT campaigns hold at most 50 inboxes each (one scheduled test per campaign) and
+fill first-to-last; a new DT campaign is cloned from #1 when all are full, and
+existing full campaigns never change (Manveen, 15 Oct).
 Only PAUSED or DRAFTED campaigns are touched: a test campaign sends to seed
 addresses only through Smart Delivery, never to leads. Each add is read back.
 
@@ -33,14 +36,62 @@ except Exception:
 
 SAFE_STATUSES = {"PAUSED", "DRAFTED"}
 BATCH = 50
+DT_CAP = 50          # inboxes per DT campaign: one scheduled test each (Manveen, 15 Oct)
 
 
-def plan(inboxes: list[dict], campaigns: list[dict]) -> dict:
+def _dt_number(name: str) -> int:
+    try:
+        return int(str(name).rsplit("#", 1)[1].strip())
+    except (IndexError, ValueError):
+        return 0
+
+
+def _fill_first(dts: list[dict], members: set[int], cap: int) -> dict:
+    """Lay out one client's DT campaigns: earlier campaigns full (cap each)
+    before later ones hold anything; an inbox stays put unless it must move.
+    Returns {"adds": {campaign: [ids]}, "removes": {id: [ids]}, "create": [...]}."""
+    dts = sorted(dts, key=lambda c: _dt_number(c["name"]))
+    n_needed = max(len(dts), -(-len(members) // cap)) if members else len(dts)
+    slots = [{"key": c["id"], "have": set(c["attached"]) & members} for c in dts]
+    create = []
+    base = dts[-1]["name"].rsplit("#", 1)[0].strip() if dts else ""
+    for k in range(len(dts), n_needed):
+        name = f"{base} #{_dt_number(dts[-1]['name']) + (k - len(dts) + 1)}"
+        create.append({"name": name, "client": dts[0]["client"], "clone_of": dts[0]["id"]})
+        slots.append({"key": name, "have": set()})
+    targets, left = [], len(members)
+    for _ in slots:
+        targets.append(min(cap, left))
+        left -= targets[-1]
+    keep = [sorted(sl["have"])[:t] for sl, t in zip(slots, targets)]
+    kept = {i for ks in keep for i in ks}
+    pool = sorted(members - kept)
+    adds: dict = {}
+    removes: dict = {}
+    where = {i: sl["key"] for sl in slots for i in sl["have"]}
+    for sl, ks, t in zip(slots, keep, targets):
+        room = t - len(ks)
+        take, pool = pool[:room], pool[room:]
+        if take:
+            adds[sl["key"]] = take
+        for i in take:
+            if i in where:
+                removes.setdefault(where[i], []).append(i)
+    return {"adds": adds, "removes": {k: sorted(v) for k, v in removes.items()}, "create": create}
+
+
+def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP) -> dict:
     """inboxes = [{id, email, client}]; campaigns = [{id, name, client, role: main|dt,
-    status, attached: set of inbox ids}]. Returns {"adds": {campaign id: [inbox ids]},
-    "problems": [...]}. Pure."""
+    status, attached: set of inbox ids}]. Every current-client inbox goes on its
+    client's main test campaign, and on exactly one of its DT campaigns, filled
+    first-to-last at most ``cap`` each (Manveen 15 Oct: "a maximum of 50 ...
+    prioritize filling the 50 first"). Returns {"adds": {campaign id or new name:
+    [inbox ids]}, "removes": {campaign id: [inbox ids]}, "create": [{name, client,
+    clone_of}], "problems": [...]}. Pure."""
     from smartlead.inbox_intake import CURRENT_CLIENTS
-    adds: dict[int, list[int]] = {}
+    adds: dict = {}
+    removes: dict = {}
+    create: list = []
     problems: list[str] = []
     usable = []
     for c in campaigns:
@@ -48,40 +99,91 @@ def plan(inboxes: list[dict], campaigns: list[dict]) -> dict:
             usable.append({**c, "attached": set(c["attached"])})
         else:
             problems.append(f"test campaign '{c['name']}' is {c.get('status')}: no inboxes added to it")
-    clients_without = set()
-    for b in sorted(inboxes, key=lambda b: int(b["id"])):
-        if b["client"] not in CURRENT_CLIENTS:
+    ids_by_client: dict = {}
+    for b in inboxes:
+        if b["client"] in CURRENT_CLIENTS:
+            ids_by_client.setdefault(b["client"], set()).add(int(b["id"]))
+    for client, ids in sorted(ids_by_client.items()):
+        mine = [c for c in usable if c["client"] == client]
+        if not mine and not any(c["client"] == client for c in campaigns):
+            problems.append(f"{client}: no test campaign to add its inboxes to")
             continue
-        mine = [c for c in usable if c["client"] == b["client"]]
-        if not mine and not any(c["client"] == b["client"] for c in campaigns):
-            clients_without.add(b["client"])
-            continue
-        i = int(b["id"])
         for c in mine:
-            if c["role"] == "main" and i not in c["attached"]:
-                c["attached"].add(i)
-                adds.setdefault(int(c["id"]), []).append(i)
+            if c["role"] == "main":
+                missing = sorted(ids - c["attached"])
+                if missing:
+                    adds[int(c["id"])] = missing
         dts = [c for c in mine if c["role"] == "dt"]
-        if dts and not any(i in c["attached"] for c in dts):
-            c = min(dts, key=lambda c: (len(c["attached"]), int(c["id"])))
-            c["attached"].add(i)
-            adds.setdefault(int(c["id"]), []).append(i)
-    problems += [f"{c}: no test campaign to add its inboxes to" for c in sorted(clients_without)]
-    return {"adds": adds, "problems": problems}
+        if dts:
+            members = ids | {i for c in dts for i in c["attached"]}
+            lay = _fill_first(dts, members, cap)
+            adds.update(lay["adds"])
+            removes.update(lay["removes"])
+            create += lay["create"]
+    return {"adds": adds, "removes": removes, "create": create, "problems": problems}
 
 
-async def apply(sl, adds: dict[int, list[int]], batch: int = BATCH) -> dict:
-    added, missing = 0, []
-    for cid, ids in adds.items():
-        for k in range(0, len(ids), batch):
-            await sl.add_campaign_email_accounts(str(cid), ids[k:k + batch])
-        now = {int(a.get("id") or a.get("email_account_id") or 0) for a in await sl.get_campaign_email_accounts(str(cid))}
-        for i in ids:
+async def _clone(sl, src: int, name: str) -> int:
+    """A new DT campaign set up like ``src``: one step with its copy, the same
+    placeholder lead, settings and schedule; paused like the others, never started."""
+    seq = await sl._get(f"/campaigns/{src}/sequences")
+    steps = seq if isinstance(seq, list) else seq.get("sequences", [])
+    first = sorted(steps, key=lambda x: x.get("seq_number", 0))[0] if steps else {}
+    var = (first.get("seq_variants") or first.get("sequence_variants") or [first])[0] if first else {}
+    camp = await sl._get(f"/campaigns/{src}")
+    new_id = int((await sl.create_campaign(name))["id"])
+    await sl.save_campaign_sequences(str(new_id), var.get("subject", ""), var.get("email_body", ""))
+    leads = await sl.get_campaign_leads(str(src))
+    emails = [str((x.get("lead") or x).get("email")) for x in leads if (x.get("lead") or x).get("email")]
+    if emails:   # the placeholder lead also sits in the other DT campaigns: allow that, or Smartlead skips it
+        await sl._request_json("POST", f"/campaigns/{new_id}/leads", {
+            "lead_list": [{"email": e} for e in emails],
+            "settings": {"ignore_global_block_list": True, "ignore_unsubscribe_list": True,
+                         "ignore_duplicate_leads_in_other_campaign": False}})
+    await sl.update_campaign_settings(str(new_id), {k: camp[k] for k in (
+        "track_settings", "stop_lead_settings", "send_as_plain_text", "follow_up_percentage") if k in camp})
+    cron = camp.get("scheduler_cron_value") or {}
+    if cron:
+        await sl.update_campaign_schedule(str(new_id), {
+            "timezone": cron.get("tz"), "days_of_the_week": cron.get("days"), "start_hour": cron.get("startHour"),
+            "end_hour": cron.get("endHour"), "min_time_btw_emails": camp.get("min_time_btwn_emails"),
+            "max_new_leads_per_day": camp.get("max_leads_per_day")})
+    await sl.set_campaign_status(str(new_id), "PAUSED")      # like the other DT campaigns; never START
+    return new_id
+
+
+async def _on(sl, cid) -> set[int]:
+    return {int(a.get("id") or a.get("email_account_id") or 0) for a in await sl.get_campaign_email_accounts(str(cid))}
+
+
+async def apply(sl, p: dict, batch: int = BATCH) -> dict:
+    """Create new DT campaigns, add inboxes (read back), then remove each moved
+    inbox from its old campaign only once the add is confirmed (read back)."""
+    out = {"created": [], "added": 0, "removed": 0, "missing": []}
+    ids = {}
+    for c in p.get("create") or []:
+        ids[c["name"]] = await _clone(sl, int(c["clone_of"]), c["name"])
+        out["created"].append(c["name"])
+    landed: set[int] = set()
+    for key, add in (p.get("adds") or {}).items():
+        cid = ids.get(key, key)
+        for k in range(0, len(add), batch):
+            await sl.add_campaign_email_accounts(str(cid), add[k:k + batch])
+        now = await _on(sl, cid)
+        for i in add:
             if i in now:
-                added += 1
+                out["added"] += 1
+                landed.add(i)
             else:
-                missing.append(f"{i} not on campaign {cid} after the add")
-    return {"added": added, "missing": missing}
+                out["missing"].append(f"{i} not on campaign {cid} after the add")
+    for cid, rem in (p.get("removes") or {}).items():
+        go = [i for i in rem if i in landed]
+        for k in range(0, len(go), batch):
+            await sl.remove_campaign_email_accounts(str(cid), go[k:k + batch])
+        still = await _on(sl, cid) if go else set()
+        out["removed"] += sum(i not in still for i in go)
+        out["missing"] += [f"{i} still on campaign {cid} after the move" for i in go if i in still]
+    return out
 
 
 async def _campaigns(c, account: str) -> list[dict]:
@@ -124,9 +226,11 @@ def main() -> int:
             camps = await _campaigns(c, acc.name)
             p = plan(boxes, camps)
             names = {x["id"]: x["name"] for x in camps}
-            res = {"would_add": {names[k]: len(v) for k, v in p["adds"].items()}, "problems": p["problems"]}
-            if args.apply and p["adds"]:
-                res.update(await apply(c, p["adds"]))
+            res = {"would_add": {names.get(k, k): len(v) for k, v in p["adds"].items()},
+                   "would_remove": {names.get(k, k): len(v) for k, v in p["removes"].items()},
+                   "would_create": [x["name"] for x in p["create"]], "problems": p["problems"]}
+            if args.apply and (p["adds"] or p["removes"] or p["create"]):
+                res.update(await apply(c, p))
             return res
 
     for acc in discover_accounts():
