@@ -102,7 +102,7 @@ def scaledmail_tracker(tracker: dict, problems: list[str]) -> dict:
         return tracker
 
 
-READY_CHANNEL = "C0ACLJZ7JHE"   # #testing-4866 (Manveen, 15 Oct); INBOX_READY_CHANNEL overrides
+READY_CHANNEL = "C0AV3HTPP0S"   # #test-channel (Manveen, 15 Oct; #testing-4866 is archived); INBOX_READY_CHANNEL overrides
 
 
 def ready_message(announcements: list[dict]) -> str:

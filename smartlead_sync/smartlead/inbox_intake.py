@@ -17,7 +17,8 @@ from smartlead import inbox_standard as st
 COLLECTION = "inbox_intake"
 MAX_TRIES = 3
 POSTED_KEY = "__posted_problems__"   # ledger doc: problems already posted to the channel
-REVIEW_KEY = "__volume_review__:"    # ledger doc per weekly volume review (its rows and who applied what)
+REVIEW_KEY = "__volume_review__:"    # ledger doc per weekly volume review (its decisions and inputs)
+PILOT_KEY = "__volume_pilot__"       # ledger doc: domains the volume review may change
 TAG_BATCH = 25
 CURRENT_ACCOUNTS = ("PRECISE_LEADS", "BETTRDATA")
 CLIENT_TAG = {"Precise Leads": "PreciseLeads", "Melior": "Melior", "Bettrdata": "BettrData"}
@@ -96,15 +97,17 @@ class IntakeStore:
             upsert=True)
 
     def save_review(self, review_id: str, rows: list[dict]) -> None:
-        self.col.update_one({"email": REVIEW_KEY + review_id},
-                            {"$set": {"rows": rows, "applied": {}, "created_at": _now()}}, upsert=True)
+        """Each week's decisions with their inputs: the record the rule is graded on."""
+        self.col.update_one({"email": REVIEW_KEY + review_id}, {"$set": {"rows": rows, "created_at": _now()}},
+                            upsert=True)
 
-    def review(self, review_id: str) -> dict:
-        return self._doc(REVIEW_KEY + review_id)
+    def pilot_domains(self) -> set[str]:
+        """Domains whose limits the weekly review changes ("*" = every judged domain)."""
+        return set(self._doc(PILOT_KEY).get("domains") or [])
 
-    def mark_applied(self, review_id: str, client: str, by: str, result: dict) -> None:
-        applied = {**(self.review(review_id).get("applied") or {}), client: {"by": by, "at": _now(), **result}}
-        self.col.update_one({"email": REVIEW_KEY + review_id}, {"$set": {"applied": applied}}, upsert=True)
+    def set_pilot(self, domains: set[str], by: str = "") -> None:
+        self.col.update_one({"email": PILOT_KEY}, {"$set": {"domains": sorted({d.strip().lower() for d in domains}),
+                                                            "by": by, "at": _now()}}, upsert=True)
 
     def posted_problems(self) -> list[str]:
         return list(self._doc(POSTED_KEY).get("problems") or [])

@@ -1,4 +1,4 @@
-"""Volume review: approved limits in the ledger, drift against them, Apply (spec 2026-10-15). No network."""
+"""Volume review: approved limits, the pilot list, drift against approved limits, and writes. No network."""
 import asyncio
 from datetime import date
 
@@ -6,7 +6,7 @@ from smartlead import inbox_intake as ii
 from smartlead import volume_rule as vr
 from test_inbox_intake import FakeCol, FakeSL, acct, run
 
-TODAY = date(2026, 11, 3)
+TODAY = date(2026, 10, 21)
 DONE = {"tags": [(9, "Bot-Setup"), (153335, "ScaledMail-Google")]}
 
 
@@ -23,56 +23,43 @@ def test_an_approved_raise_is_not_drift_but_a_hand_change_is():
     store.approve_limit("a2@d1.com", 17, by="U1", action=vr.RAISE, on=TODAY)
     out, _ = run(FakeSL([setup_box(1, "a1@d1.com", 17), setup_box(2, "a2@d1.com", 18)]), store=store, plans=())
     assert out["problems"] == ["Changed since setup on 1 inbox (a2@d1.com): daily limit 18, want 17"]
-    assert store.approved_limits() == {"a1@d1.com": (17, "2026-11-03"), "a2@d1.com": (17, "2026-11-03")}
+    assert store.approved_limits() == {"a1@d1.com": (17, "2026-10-21"), "a2@d1.com": (17, "2026-10-21")}
 
 
-ROWS = [{"client": "Precise Leads", "account": "PRECISE_LEADS", "id": 1, "email": "a1@d1.com", "kind": "google",
-         "action": vr.RAISE, "from": 15, "to": 17, "why": ""},
-        {"client": "Precise Leads", "account": "PRECISE_LEADS", "id": 2, "email": "a2@d1.com", "kind": "google",
-         "action": vr.HOLD, "from": 15, "to": 15, "why": "x"},
-        {"client": "Melior", "account": "PRECISE_LEADS", "id": 3, "email": "a3@d2.com", "kind": "google",
-         "action": vr.STEP_BACK, "from": 17, "to": 15, "why": "y"}]
-
-
-def apply(sl, store, client="Precise Leads", today=TODAY):
-    return asyncio.run(vr.apply_review({"PRECISE_LEADS": sl}, store, "2026-11-03", client, by="U1", today=today))
-
-
-def fresh_store():
+def test_pilot_list_is_stored_and_merged():
     store = ii.IntakeStore(FakeCol())
-    store.save_review("2026-11-03", ROWS)
-    return store
+    assert store.pilot_domains() == set()
+    store.set_pilot({"askmelior.com", "MeliorBuild.com"}, by="U1")
+    assert store.pilot_domains() == {"askmelior.com", "meliorbuild.com"}
 
 
-def test_apply_writes_only_that_clients_changes_reads_back_and_records():
-    sl, store = FakeSL([setup_box(1, "a1@d1.com"), setup_box(2, "a2@d1.com"), setup_box(3, "a3@d2.com", 17)]), fresh_store()
-    r = apply(sl, store)
-    assert sl.writes == [(1, {"max_email_per_day": 17})]
-    assert r["changed"] == ["a1@d1.com 15 -> 17"] and not r["failed"] and not r["skipped"]
-    assert store.approved_limits()["a1@d1.com"] == (17, "2026-11-03")
-    assert "a3@d2.com" not in store.approved_limits()
+ROW = {"domain": "d1.com", "client": "Melior", "account": "PRECISE_LEADS", "kind": "google", "action": vr.RAISE,
+       "from": [15, 15], "to": [17, 17], "why": "", "pilot": True,
+       "inboxes": [{"id": 1, "email": "a1@d1.com"}, {"id": 2, "email": "a2@d1.com"}]}
 
 
-def test_a_second_apply_and_a_stale_review_are_refused():
-    sl, store = FakeSL([setup_box(1, "a1@d1.com")]), fresh_store()
-    apply(sl, store)
-    assert "already applied" in apply(sl, store)["error"]
-    assert "older than 7 days" in apply(sl, fresh_store(), today=date(2026, 11, 11))["error"]
-    assert "no volume review" in asyncio.run(vr.apply_review({}, ii.IntakeStore(FakeCol()), "2026-11-03",
-                                                           "Melior", by="U1", today=TODAY))["error"].lower()
+def apply(sl, store=None):
+    store = store or ii.IntakeStore(FakeCol())
+    return asyncio.run(vr.apply_rows({"PRECISE_LEADS": sl}, store, [ROW], by="pilot", today=TODAY)), store
+
+
+def test_apply_writes_each_inbox_reads_back_and_records():
+    sl = FakeSL([setup_box(1, "a1@d1.com"), setup_box(2, "a2@d1.com"), setup_box(3, "other@d2.com")])
+    r, store = apply(sl)
+    assert sl.writes == [(1, {"max_email_per_day": 17}), (2, {"max_email_per_day": 17})]
+    assert r["d1.com"]["changed"] == ["a1@d1.com 15 -> 17", "a2@d1.com 15 -> 17"]
+    assert store.approved_limits()["a1@d1.com"] == (17, "2026-10-21")
 
 
 def test_a_limit_moved_since_the_review_is_skipped_not_written():
-    sl, store = FakeSL([setup_box(1, "a1@d1.com", 12)]), fresh_store()
-    r = apply(sl, store)
-    assert not sl.writes and r["skipped"] == ["a1@d1.com: now 12, not 15"]
+    sl = FakeSL([setup_box(1, "a1@d1.com", 12), setup_box(2, "a2@d1.com")])
+    r, _ = apply(sl)
+    assert sl.writes == [(2, {"max_email_per_day": 17})] and r["d1.com"]["skipped"] == ["a1@d1.com: now 12, not 15"]
 
 
 def test_a_failed_write_or_readback_is_reported_and_not_recorded():
-    sl, store = FakeSL([setup_box(1, "a1@d1.com")], ignore=("limit",)), fresh_store()
-    r = apply(sl, store)
-    assert r["failed"] == ["a1@d1.com: Smartlead shows 15 after the write"]
+    r, store = apply(FakeSL([setup_box(1, "a1@d1.com"), setup_box(2, "a2@d1.com")], ignore=("limit",)))
+    assert r["d1.com"]["failed"][0] == "a1@d1.com: Smartlead shows 15 after the write"
     assert "a1@d1.com" not in store.approved_limits()
-    sl, store = FakeSL([setup_box(1, "a1@d1.com")], fail=(1,)), fresh_store()
-    r = apply(sl, store)
-    assert r["failed"][0].startswith("a1@d1.com: ") and "SECRET" not in r["failed"][0]
+    r, _ = apply(FakeSL([setup_box(1, "a1@d1.com"), setup_box(2, "a2@d1.com")], fail=(1,)))
+    assert r["d1.com"]["failed"][0].startswith("a1@d1.com: ") and "SECRET" not in r["d1.com"]["failed"][0]

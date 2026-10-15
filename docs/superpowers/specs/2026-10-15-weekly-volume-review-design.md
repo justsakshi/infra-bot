@@ -1,6 +1,6 @@
 # Weekly volume review: raise or lower each inbox's daily limit, one click to apply
 
-Date: 2026-10-15 · Status: REPORT ONLY (Manveen 15 Oct: "right now I just want you to report … make sure that we are completely sure before turning that on"). The Tuesday post (VOLUME_REVIEW_ENABLED=true) says what the rule would do and changes nothing; each week's suggestions are saved so they can be checked against what happened. Apply needs VOLUME_REVIEW_APPLY=true, which stays off until the rule is reviewed against research and proven on a test group.
+Date: 2026-10-15 · Status: BUILT AS A PILOT (Manveen 15 Oct: "test it out on some, maybe even a small patch … then we'll roll it out for all"; "I really like the plan that was given to us by ScaledMail"). Judged per domain (research below); ScaledMail's weekly steps; only pilot domains (`volume_review.py --pilot-add`) are changed, every other domain is reported; each run's decisions and inputs are saved in the ledger. Rollout = `--pilot-add '*'`. The per-client Apply button of the first draft was removed. The rule as built is the module docstring of `smartlead/volume_rule.py`; sections below the research are the history of how it got there.
 
 ## Why
 
