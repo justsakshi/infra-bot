@@ -19,6 +19,7 @@ MAX_TRIES = 3
 POSTED_KEY = "__posted_problems__"   # ledger doc: problems already posted to the channel
 REVIEW_KEY = "__volume_review__:"    # ledger doc per weekly volume review (its decisions and inputs)
 PILOT_KEY = "__volume_pilot__"       # ledger doc: domains the volume review may change
+CONTROL_KEY = "__volume_control__"   # ledger doc: comparison domains, kept flat
 TAG_BATCH = 25
 CURRENT_ACCOUNTS = ("PRECISE_LEADS", "BETTRDATA")
 CLIENT_TAG = {"Precise Leads": "PreciseLeads", "Melior": "Melior", "Bettrdata": "BettrData"}
@@ -104,6 +105,14 @@ class IntakeStore:
     def pilot_domains(self) -> set[str]:
         """Domains whose limits the weekly review changes ("*" = every judged domain)."""
         return set(self._doc(PILOT_KEY).get("domains") or [])
+
+    def control_domains(self) -> set[str]:
+        """Comparison domains: judged and reported like the pilot, never changed."""
+        return set(self._doc(CONTROL_KEY).get("domains") or [])
+
+    def set_control(self, domains: set[str], by: str = "") -> None:
+        self.col.update_one({"email": CONTROL_KEY}, {"$set": {"domains": sorted({d.strip().lower() for d in domains}),
+                                                              "by": by, "at": _now()}}, upsert=True)
 
     def set_pilot(self, domains: set[str], by: str = "") -> None:
         self.col.update_one({"email": PILOT_KEY}, {"$set": {"domains": sorted({d.strip().lower() for d in domains}),

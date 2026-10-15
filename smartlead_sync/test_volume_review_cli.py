@@ -80,3 +80,9 @@ def test_kill_list_and_low_smtp_reputation():
     young = box(9, "s@smtp.com", type_="SMTP", host="mail.x.com", limit=7, rep="45%", warmup="2026-10-17T10:00:00Z")
     _, waiting = build([young], facts("s@smtp.com"))
     assert waiting["rotate_ip"] == []
+
+
+def test_comparison_domains_are_marked_and_not_in_the_pilot():
+    rows, _ = cli.build_rows({"PRECISE_LEADS": [box(i, e) for i, e in enumerate(THREE)]}, facts(*THREE), {}, {}, {}, {},
+                             TODAY, {"*"}, control={"pl.com"})
+    assert rows[0]["control"] and not rows[0]["pilot"]

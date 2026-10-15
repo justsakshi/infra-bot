@@ -63,3 +63,9 @@ def test_a_failed_write_or_readback_is_reported_and_not_recorded():
     assert "a1@d1.com" not in store.approved_limits()
     r, _ = apply(FakeSL([setup_box(1, "a1@d1.com"), setup_box(2, "a2@d1.com")], fail=(1,)))
     assert r["d1.com"]["failed"][0].startswith("a1@d1.com: ") and "SECRET" not in r["d1.com"]["failed"][0]
+
+
+def test_comparison_list_is_stored():
+    store = ii.IntakeStore(FakeCol())
+    store.set_control({"SolidClients.com"}, by="U1")
+    assert store.control_domains() == {"solidclients.com"}

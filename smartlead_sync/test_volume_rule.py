@@ -167,3 +167,19 @@ def test_ip_rotation_note():
 def test_dry_run_says_what_the_pilot_would_change():
     t = vr.review_text([row("askmelior.com", vr.RAISE, pilot=True)], {}, TODAY, applied={})
     assert "Pilot, would change (dry run): askmelior.com Google 15 -> 17 (3 inboxes)" in t
+
+
+def test_comparison_domains_are_shown_side_by_side_and_never_suggested():
+    ctrl = row("solidclients.com", vr.RAISE)
+    ctrl.update(control=True, signals={"placement": ["good", "3 of 3 inboxes passed (100% inbox)"],
+                                       "bounces": ["good", "bounced 0% of 300 sent"]})
+    t = vr.review_text([ctrl], {}, TODAY, applied={})
+    assert "Comparison, kept flat: solidclients.com Google 15 (3 of 3 inboxes passed (100% inbox); bounced 0% of 300 sent)" in t
+    assert "Suggested only" not in t
+
+
+def test_pilot_or_comparison_domain_without_a_placement_test_is_called_out():
+    r = row("askmelior.com", vr.HOLD, pilot=True, frm=(15,), to=(15,), why="only 0 of 3 inboxes tested")
+    r["signals"] = {"placement": ["wait", "only 0 of 3 inboxes tested"]}
+    t = vr.review_text([r], {}, TODAY, applied={})
+    assert "No placement test yet, add to Monday's test: askmelior.com" in t

@@ -183,10 +183,20 @@ def review_text(rows: list[dict], waiting: dict, today: date, *, applied: dict[s
     if dry:
         lines.append("Pilot, would change (dry run): " + "; ".join(
             ("" if r["action"] == RAISE else "step back ") + _move(r) for r in dry))
-    suggested = [r for r in rows if not r.get("pilot") and r["action"] in (RAISE, STEP_BACK)]
+    ctrl = [r for r in rows if r.get("control")]
+    if ctrl:
+        lines.append("Comparison, kept flat: " + "; ".join(
+            f"{r['domain']} {_label(r['kind'])} {'/'.join(map(str, sorted(set(r['from']))))} ("
+            + "; ".join(why for k, (_, why) in (r.get("signals") or {}).items() if k in ("placement", "bounces") and why)
+            + ")" for r in ctrl))
+    untested = [r["domain"] for r in rows if (r.get("pilot") or r.get("control"))
+                and ((r.get("signals") or {}).get("placement") or [None])[0] == WAIT]
+    if untested:
+        lines.append("No placement test yet, add to Monday's test: " + ", ".join(untested))
+    suggested = [r for r in rows if not r.get("pilot") and not r.get("control") and r["action"] in (RAISE, STEP_BACK)]
     if suggested:
         lines.append("Suggested only (not in the pilot): " + "; ".join(f"{r['action']} {_move(r)}" for r in suggested))
-    held = [r for r in rows if r["action"] == HOLD]
+    held = [r for r in rows if r["action"] == HOLD and not r.get("control")]
     for r in held[:15]:
         lines.append(f"Hold: {r['domain']} ({r['why']})")
     if len(held) > 15:

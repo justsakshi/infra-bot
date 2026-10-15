@@ -156,3 +156,19 @@ Revised rule (proposal):
   and its inputs saved; then compare it with what happened (would it have
   raised inboxes that later failed? how often did it flip?). Then a small test
   group with matched domains held flat as a control, step-backs before raises.
+
+## Pilot, set 15 Oct (Manveen: "test will be done on new emails google that we got for PL"; 6/5 split agreed)
+
+The 11 new Precise Leads Google domains (3 inboxes each, ready 27-28 Oct),
+split at random (seed 20261015; the three preciseleads* domains 2/1, the other
+eight 4/4):
+
+- Pilot (changed by the review): meetingsteam.com, pipelinecalendar.com,
+  preciseleadshub.com, preciseleadsteam.com, qualifiedrevenue.com, suremeetings.com
+- Comparison (kept at 15, shown side by side): exactclients.com,
+  pipelineclients.com, preciseleadshq.com, solidclients.com, warmmeetings.com
+
+Needs: all 11 in a live Precise Leads campaign from 27-28 Oct, and in the
+team's Monday placement test (the bot's own tester is off). First possible
+change Tue 4 Nov; 17 -> 19 -> 20 by 18 Nov if clean. Roll out (`--pilot-add '*'`)
+when the pilot domains hold up as well as the comparison ones.

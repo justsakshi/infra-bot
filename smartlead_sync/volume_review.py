@@ -13,6 +13,7 @@ Each run's decisions and inputs are saved, so the rule can be graded.
     python volume_review.py --pilot-add a.com,b.com --by U123   # their current limits become the approved start
     python volume_review.py --pilot-remove a.com
     python volume_review.py --pilot-add '*'          # roll out: every judged domain
+    python volume_review.py --control a.com,b.com    # comparison domains: judged, shown, never changed
 
 Runs Tuesday 13:45 IST (after Mon/Tue placement tests and Kill warnings) when
 VOLUME_REVIEW_ENABLED=true.
@@ -50,10 +51,11 @@ REPUTATION_WINDOW_DAYS = 7     # Smartlead: reputation is a 7-day window; early 
 
 
 def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, daily: dict, approved: dict,
-               verdicts: dict, today: date, pilot: set[str]) -> tuple[list[dict], dict]:
+               verdicts: dict, today: date, pilot: set[str], control: set[str] = frozenset()) -> tuple[list[dict], dict]:
     """One row per domain to decide on, and what was not reviewed (and why). Pure.
     health = {email: (sent, bounced)} over 14 days; daily = {email: [sends per day]};
-    approved = {email: (limit, approved on)}; pilot = domains the review may change ("*" = all)."""
+    approved = {email: (limit, approved on)}; pilot = domains the review may change ("*" = all);
+    control = comparison domains, judged and shown but never changed (they win over "*")."""
     from smartlead.report_sheet import client_label
     rows: list[dict] = []
     waiting: dict = {"warming": 0, "first_ready": None, "no_campaign": 0, "by_hand": [], "skipped": [], "rotate_ip": []}
@@ -107,7 +109,9 @@ def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, da
                                             Counter(limits).most_common(1)[0][0])}
             d = vr.decide(kind, limits, sig, last_change=last, today=today)
             client = (facts.get(emails[0]) or {}).get("client") or client_label(account, judged[0].get("client_id"))
-            rows.append({**d, "domain": dom, "client": client, "account": account, "pilot": "*" in pilot or managed,
+            is_control = dom in control
+            rows.append({**d, "domain": dom, "client": client, "account": account, "control": is_control,
+                         "pilot": not is_control and ("*" in pilot or managed),
                          "inboxes": [{"id": a["id"], "email": e} for a, e in zip(judged, emails)],
                          "signals": {k: list(v) for k, v in sig.items()}})
     waiting["rotate_ip"] = [f"{dom} ({rep}%)" for dom, rep in sorted(low_ip.items())]
@@ -167,7 +171,7 @@ def gather(today: date, store, errors: list[str]) -> tuple[list[dict], dict]:
         except Exception as exc:  # noqa: BLE001 - say so, keep the other account
             errors.append(f"Smartlead {name}: {redact(str(exc))[:150]}")
     return build_rows(per_account, facts, health, daily, store.approved_limits(), verdicts, today,
-                      store.pilot_domains())
+                      store.pilot_domains(), store.control_domains())
 
 
 async def _apply(rows: list[dict], store, today: date) -> dict:
@@ -218,11 +222,17 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--pilot-add", default=None)
     ap.add_argument("--pilot-remove", default=None)
+    ap.add_argument("--control", default=None, help="comparison domains, kept flat (replaces the list)")
     ap.add_argument("--by", default="")
     args = ap.parse_args()
     from smartlead.inbox_intake import IntakeStore
     today = date.today()
     store = IntakeStore()
+    if args.control is not None:
+        store.set_control({d.strip().lower() for d in args.control.split(",") if d.strip()}, by=args.by)
+        print(json.dumps({"control": sorted(store.control_domains())}))
+        if not (args.pilot_add or args.pilot_remove):
+            return 0
     if args.pilot_add or args.pilot_remove:
         if args.pilot_remove:
             store.set_pilot(store.pilot_domains() - {d.strip().lower() for d in args.pilot_remove.split(",")}, by=args.by)
