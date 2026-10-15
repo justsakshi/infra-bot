@@ -130,3 +130,25 @@ def test_new_campaigns_are_created_first_and_named_targets_resolved(monkeypatch)
                        "adds": {"DT Melior #3": [2]}, "removes": {101: [2]}})
     assert made == [(101, "DT Melior #3")] and sl.attached == {101: {1}, 900: {2}}
     assert r["created"] == ["DT Melior #3"]
+
+
+# Which scheduled tests need updating in Smart Delivery (the API cannot edit them) ----
+
+DTC = [{"id": 1, "name": "DT PL #1", "emails": {"a@x.com", "b@x.com"}},
+       {"id": 2, "name": "DT PL #2", "emails": {"c@y.com"}}]
+
+
+def test_campaign_fully_covered_by_its_scheduled_test_needs_nothing():
+    tests = [{"id": 9, "name": "PL 1", "campaign_id": 1, "senders": {"a@x.com", "b@x.com"}},
+             {"id": 8, "name": "PL 2", "campaign_id": 2, "senders": {"c@y.com"}}]
+    assert ts.test_gaps(DTC, tests) == []
+
+
+def test_missing_inboxes_and_campaigns_without_a_test_are_listed():
+    tests = [{"id": 9, "name": "PL 1", "campaign_id": 1, "senders": {"a@x.com"}}]
+    gaps = ts.test_gaps(DTC, tests)
+    assert gaps == [{"campaign": "DT PL #1", "test": "PL 1", "add": ["b@x.com"], "count": 2},
+                    {"campaign": "DT PL #2", "test": None, "add": ["c@y.com"], "count": 1}]
+    t = ts.gap_text(gaps)
+    assert "DT PL #1: add 1 inbox to the scheduled test \"PL 1\": b@x.com" in t
+    assert "DT PL #2: no scheduled test yet. Create a weekly test with all 1 inbox on it." in t

@@ -12,7 +12,9 @@ Only PAUSED or DRAFTED campaigns are touched: a test campaign sends to seed
 addresses only through Smart Delivery, never to leads. Each add is read back.
 
     python dt_senders.py            # dry run: what would be attached
-    python dt_senders.py --apply    # attach; runs daily 06:00 IST
+    python dt_senders.py --gaps     # also: which scheduled tests miss inboxes (read-only)
+    python dt_senders.py --apply    # attach; runs daily 06:00 IST, and DMs Manveen which scheduled
+                                    #   tests to create or add inboxes to (only when that list changes)
 """
 from __future__ import annotations
 
@@ -186,6 +188,76 @@ async def apply(sl, p: dict, batch: int = BATCH) -> dict:
     return out
 
 
+def test_gaps(dts: list[dict], tests: list[dict]) -> list[dict]:
+    """dts = [{id, name, emails}]; tests = scheduled tests [{id, name, campaign_id,
+    senders}]. Per DT campaign, the inboxes no scheduled test on it includes. Pure."""
+    out = []
+    for c in sorted(dts, key=lambda c: (c["name"].rsplit("#", 1)[0], _dt_number(c["name"]))):
+        mine = [t for t in tests if int(t["campaign_id"]) == int(c["id"])]
+        covered = set().union(*(t["senders"] for t in mine)) if mine else set()
+        missing = sorted(set(c["emails"]) - covered)
+        if missing:
+            out.append({"campaign": c["name"], "test": mine[0]["name"] if mine else None, "add": missing,
+                        "count": len(c["emails"])})
+    return out
+
+
+def _n(k: int) -> str:
+    return f"{k} inbox{'es' if k != 1 else ''}"
+
+
+def gap_text(gaps: list[dict]) -> str:
+    lines = ["Placement tests to update in Smart Delivery (the bot cannot edit scheduled tests):"]
+    for g in gaps:
+        if g["test"] is None:
+            lines.append(f"{g['campaign']}: no scheduled test yet. Create a weekly test with all {_n(g['count'])} on it.")
+        else:
+            shown = ", ".join(g["add"][:25]) + (f", and {len(g['add']) - 25} more" if len(g["add"]) > 25 else "")
+            lines.append(f"{g['campaign']}: add {_n(len(g['add']))} to the scheduled test \"{g['test']}\": {shown}")
+    return "\n".join(lines)
+
+
+async def _scheduled_tests(key: str) -> list[dict]:
+    """Active scheduled (recurring) tests with their senders. Read-only, no credit."""
+    import httpx
+    from smartlead.config import SMARTDELIVERY_BASE_URL
+    ua = {"User-Agent": "Mozilla/5.0"}
+    async with httpx.AsyncClient(timeout=60, headers=ua) as h:
+        rows = (await h.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": key},
+                             json={"limit": 100})).json()
+        out = []
+        for t in rows if isinstance(rows, list) else []:
+            if str(t.get("status")).upper() != "ACTIVE" or not t.get("every_days"):
+                continue
+            d = (await h.get(f"{SMARTDELIVERY_BASE_URL}/spam-test/{t['spam_test_id']}", params={"api_key": key})).json()
+            d = d.get("data", d) if isinstance(d, dict) else {}
+            s = (await h.get(f"{SMARTDELIVERY_BASE_URL}/spam-test/report/{t['spam_test_id']}/sender-accounts",
+                             params={"api_key": key})).json()
+            s = s if isinstance(s, list) else (s.get("data") or [])
+            out.append({"id": t["spam_test_id"], "name": t.get("test_name"), "campaign_id": d.get("campaign_id") or 0,
+                        "senders": {str(x.get("email") or x.get("from_email") or "").lower() for x in s}})
+        return out
+
+
+GAPS_KEY = "__dt_test_gaps__"
+
+
+def _dm(text: str) -> bool:
+    """Direct message to Manveen (Domain Suggester app, like intake's questions)."""
+    import requests
+    from smartlead.notify import redact
+    token = (os.getenv("DOMAINS_SLACK_BOT_TOKEN") or "").strip()
+    user = (os.getenv("INTAKE_ASK_USER") or "U09TQ9D7YNM").strip()
+    if not token:
+        return False
+    try:
+        r = requests.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {token}"},
+                          json={"channel": user, "text": redact(text)[:3900]}, timeout=15).json()
+        return bool(r.get("ok"))
+    except Exception:  # noqa: BLE001 - tried again next run (the text is not saved as sent)
+        return False
+
+
 async def _campaigns(c, account: str) -> list[dict]:
     from copy_sync import DT_SOURCE_CLIENT, TARGETS
     from smartlead.report_sheet import client_label
@@ -209,6 +281,7 @@ async def _campaigns(c, account: str) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Every inbox on its client's deliverability test campaigns")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--gaps", action="store_true", help="also list scheduled tests that miss inboxes (read-only)")
     args = ap.parse_args()
     from smartlead.accounts import discover_accounts
     from smartlead.api import SmartleadClient
@@ -231,6 +304,11 @@ def main() -> int:
                    "would_create": [x["name"] for x in p["create"]], "problems": p["problems"]}
             if args.apply and (p["adds"] or p["removes"] or p["create"]):
                 res.update(await apply(c, p))
+            if args.apply or args.gaps:
+                emails = {int(a["id"]): str(a.get("from_email") or "").lower() for a in await c.list_email_accounts()}
+                dts = [{"id": x["id"], "name": x["name"], "emails": {emails[i] for i in x["attached"] if i in emails}}
+                       for x in await _campaigns(c, acc.name) if x["role"] == "dt"]
+                res["gaps"] = test_gaps(dts, await _scheduled_tests(acc.api_key))
             return res
 
     for acc in discover_accounts():
@@ -240,7 +318,16 @@ def main() -> int:
             out[acc.name] = asyncio.run(one(acc))
         except Exception as exc:  # noqa: BLE001 - say so, keep the other account
             out[acc.name] = {"error": redact(str(exc))[:200]}
-    print(json.dumps(out, indent=1))
+    gaps = [g for r in out.values() if isinstance(r, dict) for g in r.get("gaps") or []]
+    if args.apply:
+        # DM only when the list changes, so a standing gap is not repeated every morning.
+        from smartlead.inbox_intake import IntakeStore
+        store = IntakeStore()
+        text = gap_text(gaps) if gaps else ""
+        last = store._doc(GAPS_KEY).get("text") or ""
+        if text != last and (not text or _dm(text)):
+            store.col.update_one({"email": GAPS_KEY}, {"$set": {"text": text}}, upsert=True)
+    print(json.dumps(out, indent=1, default=sorted))
     return 0
 
 
