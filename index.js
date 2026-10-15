@@ -1585,6 +1585,10 @@ async function start() {
     // 20+ seeds, or a dead domain) and which to watch. Warning only.
     cron.schedule('30 13 * * 2', () => runBilling('kill-report', ['kill_report.py', '--post']), { timezone: 'Asia/Kolkata' });
 
+    // Every current-client inbox on its client's deliverability test campaigns
+    // (paused only), daily 06:00 IST, so any inbox can go into the Monday test.
+    cron.schedule('0 6 * * *', () => runBilling('dt-senders', ['dt_senders.py', '--apply']), { timezone: 'Asia/Kolkata' });
+
     // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: raise, hold
     // or step back daily limits per domain (spec 2026-10-15). Changes only the
     // pilot domains (volume_review.py --pilot-add); every other domain is reported.
