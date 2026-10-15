@@ -9,15 +9,15 @@ Outlook 5, SMTP 7). Support from all three providers (15 Oct) says to raise it
 slowly while the inbox stays healthy and to step back when it slips. Nobody
 does this today, so limits stay at their starting value forever.
 
-## The rule (ScaledMail's, adopted 15 Oct)
+## The rule (ScaledMail's, adopted 15 Oct; Outlook maximums set by Manveen)
 
 From `smartlead_sync/inbox_standard.json`:
 
 | Type | Start | Weekly step | Maximum |
 |---|---|---|---|
 | Google | 15 | +2 | 20 |
-| Outlook, 3 per domain (Zapmail) | 5 | +1 | 8 |
-| Outlook, 25 per domain (ScaledMail) | 5 | none | 5 (fixed) |
+| Outlook, 3 per domain (Zapmail) | 5 | +1 | 10 |
+| Outlook, 25 per domain (ScaledMail) | 5 | +1 | 8 |
 | SMTP | 7 | none yet | 7 (until ScaledMail answers) |
 
 Signals per inbox, from Smartlead support:

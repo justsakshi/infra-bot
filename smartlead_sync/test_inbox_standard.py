@@ -115,4 +115,4 @@ def test_weekly_volume_steps_follow_scaledmail():
     # ScaledMail Outlook (25 per domain) fixed at 5; SMTP held at 7 until ScaledMail answers.
     steps = {k: (st.standard_for(k)["max_email_per_day"], st.standard_for(k)["weekly_step"], st.standard_for(k)["max_daily"])
              for k in ("google", "outlook", "outlook_dense", "smtp")}
-    assert steps == {"google": (15, 2, 20), "outlook": (5, 1, 8), "outlook_dense": (5, 0, 5), "smtp": (7, 0, 7)}
+    assert steps == {"google": (15, 2, 20), "outlook": (5, 1, 10), "outlook_dense": (5, 1, 8), "smtp": (7, 0, 7)}  # Manveen 15 Oct
