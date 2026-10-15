@@ -93,3 +93,66 @@ adding inboxes, and campaign assignment.
   the approved limit; a failed write is reported, not retried silently.
 - Drift: an approved raise is not drift; a manual change still is.
 - Live, before enabling: a dry run printed for this week's inboxes.
+
+## Research, 15 Oct, and the revised rule (PROPOSED, not built)
+
+Three research passes (mailbox providers' own docs, cold-email practitioners
+and tools, and Smartlead's API checked live, read-only). Full reports with
+sources: Obsidian vault `memory context/research/2026-10-15-inbox-volume/`.
+Source labels: OFFICIAL = Google/Microsoft/Yahoo docs; VENDOR = sells inboxes,
+warmup or sending; INDEPENDENT = no product.
+
+What changes the design:
+
+1. **Reputation lives on the domain (and on the IP for SMTP), not the inbox**
+   (Google, Yahoo: OFFICIAL). Decisions must be per domain, with a per-domain
+   daily cap. A ScaledMail 25-inbox Outlook domain at 5/day already sends 125;
+   at 8/day it is 200, above ScaledMail's own blog figure of 50-75 per domain
+   (VENDOR, conflicting with what they sell).
+2. **No tool found raises volume automatically because an inbox looks
+   healthy.** Vendor ramps run on a timer to a fixed cap; their health
+   automation only pauses or cuts. Smartlead's Insights asks a person to
+   approve every change.
+3. **At 5-20 sends a day, per-inbox signals are mostly noise.** A 20-seed test
+   at 16/20 fits a true placement anywhere from 58% to 92%. A healthy inbox
+   (0.8% bounces, our fleet's rate) trips "2% bounces" 12-33% of weeks.
+   Replies per inbox per week are 0-1. Pool by domain and over 2-4 weeks.
+4. **Warmup reputation is Smartlead's own warmup-network placement** (it
+   matched sent-minus-spam over the last 7 days on all 25 inboxes checked).
+   Google and Outlook sit at 98-100%, so it never moves; SMTP swings about
+   ±6-7 points from sampling alone. It should be an alarm, not a vote.
+   Validity's Heatwave blocklist (3 Sep 2026) lists domains warmed with
+   synthetic engagement; a listing is reportedly permanent.
+5. **Bounces have two causes.** "Address does not exist" is a list problem;
+   "blocked/refused" is a sender problem. Smartlead's
+   `/campaigns/{id}/mailbox-statistics` gives `sender_bounce_count` per inbox
+   and is current; the name-wise analytics run about 6 days behind.
+6. **Lower fast, raise slowly.** Gmail reputation lags behaviour by 3-4 weeks;
+   Google warns against sudden doubling (OFFICIAL). Outlook 5 -> 10 is a doubling.
+7. **Total volume matters, not only the campaign limit.** Smartlead support:
+   campaign + warmup under 25/day for Google, 10-15 for Outlook; warmup drops
+   to 7-9/day in a live campaign when auto-adjust is on. To verify on our
+   first ready inboxes (27 Oct) with `/email-accounts/{id}/warmup-stats`.
+8. **New Microsoft tenants are capped** on external recipients (10% of normal
+   under 31 days, 25% at 31-60, 500/day for trial tenants; rolling out
+   Sep-Nov 2026, OFFICIAL).
+
+Revised rule (proposal):
+
+- **Protect first (alerts, then later automatic):** any one of these pauses
+  sending on the domain: a blocklist or Heatwave listing; policy or
+  spam-block bounces; sender bounces 4%+ on 100+ sends; a placement test
+  under 50%; a Microsoft account restriction; two of its inboxes failing.
+- **Step back by domain:** cut the domain's inboxes by a third for a week
+  (Smartlead) up to half for two weeks (our playbook), not one small step.
+- **Raise only by domain, only for Google and Zapmail Outlook:** every inbox
+  on the domain clean, two placement tests both taken at the current limit,
+  100+ sends with sender bounces under 2%, reply rate not in the bottom of
+  same-provider domains, 2-week cooldown after a raise, 4 weeks after a step
+  back, and the domain stays under its daily cap. ScaledMail 25-per-domain
+  Outlook is never raised until ScaledMail confirms a per-domain ceiling and
+  the tenant model in writing.
+- **Proof before switching on:** 4-6 weeks report-only with every suggestion
+  and its inputs saved; then compare it with what happened (would it have
+  raised inboxes that later failed? how often did it flip?). Then a small test
+  group with matched domains held flat as a control, step-backs before raises.
