@@ -95,7 +95,7 @@ class FakeSL:
 
 
 def run_apply(sl, p, monkeypatch=None):
-    return asyncio.run(ts.apply(sl, {"create": [], "removes": {}, **p}, batch=50))
+    return asyncio.run(ts.apply(sl, {"create": [], "removes": {}, "drops": {}, **p}, batch=50))
 
 
 def test_apply_adds_in_batches_and_reads_back():
@@ -152,3 +152,17 @@ def test_missing_inboxes_and_campaigns_without_a_test_are_listed():
     t = ts.gap_text(gaps)
     assert "DT PL #1: add 1 inbox to the scheduled test \"PL 1\": b@x.com" in t
     assert "DT PL #2: no scheduled test yet. Create a weekly test with all 1 inbox on it." in t
+
+
+def test_inboxes_we_do_not_use_come_off_the_dt_campaigns():
+    # Manveen 15 Oct: only inboxes in the deliverability sheet are tracked; the rest are client retainers.
+    camps = dts("Melior", "DT Melior", [3])                       # 1000, 1001, 1002 attached
+    p = ts.plan(boxes([1000, 1001], "Melior"), camps, drop_others=True)
+    assert p["drops"] == {101: [1002]} and p["adds"] == {} and p["removes"] == {}
+    assert ts.plan(boxes([1000, 1001], "Melior"), camps)["drops"] == {}     # sheet unreadable: never drop
+
+
+def test_apply_drops_with_read_back():
+    sl = FakeSL({101: {1000, 1002}})
+    r = run_apply(sl, {"adds": {}, "drops": {101: [1002]}})
+    assert sl.attached == {101: {1000}} and r["dropped"] == 1

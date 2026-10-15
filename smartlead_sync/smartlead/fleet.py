@@ -147,9 +147,11 @@ def acted(kind: str, at_open: dict, now: dict) -> bool:
 
 
 def update_cases(open_cases: dict[str, dict], fired: list[dict], records: list[dict],
-                 today: date) -> tuple[list[dict], list[dict], list[dict]]:
+                 today: date, baseline: bool = False) -> tuple[list[dict], list[dict], list[dict]]:
     """(opened today, open after today, closed today). A case closes the day its
-    check stops firing; 'acted_on' is the first day what changed shows it was handled."""
+    check stops firing; 'acted_on' is the first day what changed shows it was handled.
+    ``baseline``: record what is already wrong without reporting it (Manveen, 15 Oct:
+    act on what happens from now on); baseline cases are never posted or scored."""
     keys = {c["key"] for c in fired}
     t = today.isoformat()
     opened, open_now, closed = [], [], []
@@ -165,8 +167,10 @@ def update_cases(open_cases: dict[str, dict], fired: list[dict], records: list[d
     for c in fired:
         if c["key"] in open_cases:
             continue
-        new = {**c, "opened_on": t, "acted_on": None, "closed_on": None, "at_open": observe(c, records, keys)}
-        opened.append(new)
+        new = {**c, "opened_on": t, "acted_on": None, "closed_on": None, "at_open": observe(c, records, keys),
+               "baseline": baseline}
+        if not baseline:
+            opened.append(new)
         open_now.append(new)
     return opened, open_now, closed
 
@@ -202,6 +206,7 @@ def scorecard_text(cases: list[dict], today: date, *, pilot: set[str], control: 
     """Per kind of problem: opened, acted on, and of the cases 14+ days old, how
     many cleared within 14 days when acted on vs not."""
     lines = [f"Fleet watch scorecard, {_day(today)}"]
+    cases = [c for c in cases if not c.get("baseline")]
     by_kind: dict[str, list[dict]] = defaultdict(list)
     for c in cases:
         by_kind[c["kind"]].append(c)

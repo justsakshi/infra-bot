@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fleet watch: a daily record of every inbox, problems with what to do, and a
+"""Fleet watch: a daily record of every inbox we use (domains in the deliverability
+sheet, smartlead/tracked.py), problems that START from now on with what to do, and a
 scorecard of whether the suggestions helped. Never writes to Smartlead.
 
 Spec: docs/superpowers/specs/2026-10-15-fleet-watch-design.md. Checks and
@@ -9,6 +10,7 @@ messages: smartlead/fleet.py.
     python fleet_watch.py --post          # save the day's record and cases, post new problems
                                           #   (FLEET_WATCH_CHANNEL, default #test-channel C0AV3HTPP0S)
     python fleet_watch.py --save          # save the day's record only
+    python fleet_watch.py --baseline      # record what is already wrong as known; never posted
     python fleet_watch.py --scorecard [--post]
 
 Daily 10:30 IST; scorecard Mondays 10:50 IST.
@@ -156,12 +158,17 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict]:
     from volume_review import HEALTH_DAYS, _clients, _health, _list
     facts = smartlead_facts(errors)
     verdicts = {e: v["verdict"] for e, v in kr.judge_all({e: f.get("tests") or [] for e, f in facts.items()}, today).items()}
+    from smartlead.tracked import only_tracked, tracked_domains
     approved = IntakeStore().approved_limits()
+    tracked = tracked_domains()               # inboxes we use (deliverability sheet); None = sheet unreadable
+    if tracked is None:
+        errors.append("deliverability sheet (judging every inbox today)")
     records, metrics = [], {}
     for name, acc in _clients().items():
         try:
-            accts = [a for a in asyncio.run(_list(acc))
-                     if not is_excluded_inbox({"email": a.get("from_email") or "", "tags": a.get("tags", [])})]
+            accts = only_tracked([a for a in asyncio.run(_list(acc))
+                                  if not is_excluded_inbox({"email": a.get("from_email") or "", "tags": a.get("tags", [])})],
+                                 tracked)
             health = _health(acc.api_key, today - timedelta(days=HEALTH_DAYS), today)
             metrics.update(_day_metrics(acc.api_key, today))
         except Exception as exc:  # noqa: BLE001 - say so, keep the other account
@@ -193,6 +200,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Fleet watch (read-only for Smartlead)")
     ap.add_argument("--post", action="store_true", help="save the day's record and cases, post new problems")
     ap.add_argument("--save", action="store_true", help="save the day's record only (no cases, no post)")
+    ap.add_argument("--baseline", action="store_true",
+                    help="save the record and today's problems as already known (never posted)")
     ap.add_argument("--scorecard", action="store_true")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
@@ -209,7 +218,7 @@ def main() -> int:
 
     errors: list[str] = []
     records, metrics = gather(today, errors)
-    store = FleetStore() if (args.post or args.save) else None
+    store = FleetStore() if (args.post or args.save or args.baseline) else None
     if store:
         store.save_state(records)
         store.save_metrics(metrics)
@@ -223,10 +232,10 @@ def main() -> int:
         history = {r["email"]: [r] for r in records}
         open_before = {}
     fired = fl.checks(records, history, _blocklisted(today), today)
-    opened, open_now, closed = fl.update_cases(open_before, fired, records, today)
+    opened, open_now, closed = fl.update_cases(open_before, fired, records, today, baseline=args.baseline)
     if store:
         store.save_cases(open_now + closed)
-    counts = Counter(c["kind"] for c in open_now if c not in opened)
+    counts = Counter(c["kind"] for c in open_now if c not in opened and not c.get("baseline"))
     text = fl.watch_text(opened, dict(counts), today)
     if errors:
         text += "\n:warning: Could not read: " + "; ".join(errors)

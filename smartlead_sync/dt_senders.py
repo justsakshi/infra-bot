@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Put every current-client inbox on its client's deliverability test campaigns,
+"""Put every inbox we use (domains in the deliverability sheet, smartlead/tracked.py)
+on its client's deliverability test campaigns,
 so any inbox can be picked for the Monday placement test (Manveen, 15 Oct:
 "add every inbox into those tests").
 
@@ -82,17 +83,19 @@ def _fill_first(dts: list[dict], members: set[int], cap: int) -> dict:
     return {"adds": adds, "removes": {k: sorted(v) for k, v in removes.items()}, "create": create}
 
 
-def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP) -> dict:
+def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_others: bool = False) -> dict:
     """inboxes = [{id, email, client}]; campaigns = [{id, name, client, role: main|dt,
     status, attached: set of inbox ids}]. Every current-client inbox goes on its
     client's main test campaign, and on exactly one of its DT campaigns, filled
     first-to-last at most ``cap`` each (Manveen 15 Oct: "a maximum of 50 ...
     prioritize filling the 50 first"). Returns {"adds": {campaign id or new name:
-    [inbox ids]}, "removes": {campaign id: [inbox ids]}, "create": [{name, client,
-    clone_of}], "problems": [...]}. Pure."""
+    [inbox ids]}, "removes": {campaign id: [inbox ids]} (moves), "drops": {campaign id:
+    [inbox ids]} (inboxes we do not use, only when ``drop_others``: the sheet was
+    read), "create": [{name, client, clone_of}], "problems": [...]}. Pure."""
     from smartlead.inbox_intake import CURRENT_CLIENTS
     adds: dict = {}
     removes: dict = {}
+    drops: dict = {}
     create: list = []
     problems: list[str] = []
     usable = []
@@ -116,13 +119,19 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP) -> dict:
                 if missing:
                     adds[int(c["id"])] = missing
         dts = [c for c in mine if c["role"] == "dt"]
+        if dts and drop_others:
+            for c in dts:
+                gone = sorted(c["attached"] - ids)
+                if gone:
+                    drops[int(c["id"])] = gone
+                    c["attached"] = c["attached"] & ids
         if dts:
-            members = ids | {i for c in dts for i in c["attached"]}
+            members = ids if drop_others else ids | {i for c in dts for i in c["attached"]}
             lay = _fill_first(dts, members, cap)
             adds.update(lay["adds"])
             removes.update(lay["removes"])
             create += lay["create"]
-    return {"adds": adds, "removes": removes, "create": create, "problems": problems}
+    return {"adds": adds, "removes": removes, "drops": drops, "create": create, "problems": problems}
 
 
 async def _clone(sl, src: int, name: str) -> int:
@@ -161,7 +170,13 @@ async def _on(sl, cid) -> set[int]:
 async def apply(sl, p: dict, batch: int = BATCH) -> dict:
     """Create new DT campaigns, add inboxes (read back), then remove each moved
     inbox from its old campaign only once the add is confirmed (read back)."""
-    out = {"created": [], "added": 0, "removed": 0, "missing": []}
+    out = {"created": [], "added": 0, "removed": 0, "dropped": 0, "missing": []}
+    for cid, gone in (p.get("drops") or {}).items():
+        for k in range(0, len(gone), batch):
+            await sl.remove_campaign_email_accounts(str(cid), gone[k:k + batch])
+        still = await _on(sl, cid)
+        out["dropped"] += sum(i not in still for i in gone)
+        out["missing"] += [f"{i} still on campaign {cid} after the drop" for i in gone if i in still]
     ids = {}
     for c in p.get("create") or []:
         ids[c["name"]] = await _clone(sl, int(c["clone_of"]), c["name"])
@@ -289,7 +304,11 @@ def main() -> int:
     from smartlead.inbox_intake import CURRENT_ACCOUNTS
     from smartlead.notify import redact
     from smartlead.report_sheet import client_label
+    from smartlead.tracked import only_tracked, tracked_domains
     out: dict = {}
+    tracked = tracked_domains()
+    if tracked is None:
+        print("  [dt-senders] deliverability sheet unreadable: keeping every inbox, dropping none", file=sys.stderr)
 
     async def one(acc):
         async with SmartleadClient(acc.api_key, acc.name) as c:
@@ -297,12 +316,13 @@ def main() -> int:
                      for a in await c.list_email_accounts()
                      if not is_excluded_inbox({"email": a.get("from_email") or "", "tags": a.get("tags", [])})]
             camps = await _campaigns(c, acc.name)
-            p = plan(boxes, camps)
+            p = plan(only_tracked(boxes, tracked), camps, drop_others=tracked is not None)
             names = {x["id"]: x["name"] for x in camps}
             res = {"would_add": {names.get(k, k): len(v) for k, v in p["adds"].items()},
                    "would_remove": {names.get(k, k): len(v) for k, v in p["removes"].items()},
+                   "would_drop": {names.get(k, k): len(v) for k, v in p["drops"].items()},
                    "would_create": [x["name"] for x in p["create"]], "problems": p["problems"]}
-            if args.apply and (p["adds"] or p["removes"] or p["create"]):
+            if args.apply and (p["adds"] or p["removes"] or p["drops"] or p["create"]):
                 res.update(await apply(c, p))
             if args.apply or args.gaps:
                 emails = {int(a["id"]): str(a.get("from_email") or "").lower() for a in await c.list_email_accounts()}

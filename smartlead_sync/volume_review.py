@@ -160,12 +160,14 @@ def gather(today: date, store, errors: list[str]) -> tuple[list[dict], dict]:
     from smartlead.notify import redact
     facts = smartlead_facts(errors)
     verdicts = {e: v["verdict"] for e, v in kr.judge_all({e: f.get("tests") or [] for e, f in facts.items()}, today).items()}
+    from smartlead.tracked import only_tracked, tracked_domains
+    tracked = tracked_domains()               # inboxes we use (deliverability sheet); None = keep all
     per_account: dict[str, list[dict]] = {}
     health: dict = {}
     daily: dict = {}
     for name, acc in _clients().items():
         try:
-            per_account[name] = asyncio.run(_list(acc))
+            per_account[name] = only_tracked(asyncio.run(_list(acc)), tracked)
             health.update(_health(acc.api_key, today - timedelta(days=HEALTH_DAYS), today))
             daily.update(_daily(acc.api_key, today))
         except Exception as exc:  # noqa: BLE001 - say so, keep the other account

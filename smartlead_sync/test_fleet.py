@@ -123,3 +123,14 @@ def test_scorecard_compares_acted_and_not_acted_after_14_days():
     assert "Warmup off: 2 opened, 1 acted on; cleared within 14 days: 1 of 1 acted on, 0 of 1 not" in t
     assert "Bounces 4%+: 1 opened, 0 acted on; too recent to judge (1)" in t
     assert "Pilot domains: 1 case (kill list 1). Comparison domains: 0 cases." in t
+
+
+def test_baseline_records_standing_problems_without_reporting_them():
+    # Manveen 15 Oct: "we act on the things that happen now", not on everything that was ever wrong.
+    fired = run([rec(warmup_on=False)])
+    opened, open_now, _ = fl.update_cases({}, fired, [rec(warmup_on=False)], TODAY, baseline=True)
+    assert opened == [] and open_now[0]["baseline"] is True
+    again, _, _ = fl.update_cases({c["key"]: c for c in open_now}, fired, [rec(warmup_on=False)], TODAY)
+    assert again == []                                     # still standing: never posted
+    t = fl.scorecard_text(open_now, TODAY, pilot=set(), control=set())
+    assert "Warmup off" not in t                           # the scorecard judges only problems that started later
