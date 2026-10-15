@@ -61,3 +61,10 @@ def test_apply_text():
                         "failed": []})
     assert "Precise Leads: changed the daily limit on 1 inbox" in t and "a@pl.com 15 -> 17" in t
     assert "Skipped (changed since the review)" in t
+
+
+def test_ip_rotation_waits_for_a_full_week_of_warmup():
+    # Smartlead support 15 Oct: reputation is a 7-day window; 50-69% in the first days is normal.
+    young = box(1, "s@smtp.com", type_="SMTP", host="mail.x.com", limit=7, rep="45%", warmup="2026-10-30T10:00:00Z")
+    _, waiting = build([young], facts("s@smtp.com"))
+    assert waiting["rotate_ip"] == []

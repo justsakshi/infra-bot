@@ -39,6 +39,7 @@ from smartlead import volume_rule as vr
 DEFAULT_CHANNEL = "C0AGVSUNEFP"
 HEALTH_URL = "https://server.smartlead.ai/api/v1/analytics/mailbox/name-wise-health-metrics"
 HEALTH_DAYS = 14
+REPUTATION_WINDOW_DAYS = 7     # Smartlead: reputation is a 7-day window; early numbers are noise
 
 
 def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, approved: dict,
@@ -64,7 +65,8 @@ def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, ap
             if reason == vr.NOT_OURS:
                 continue
             rep = (a.get("warmup_details") or {}).get("warmup_reputation")
-            if st.needs_ip_rotation(kind, rep):
+            started = st.warmup_started(a)
+            if st.needs_ip_rotation(kind, rep) and started and (today - started).days >= REPUTATION_WINDOW_DAYS:
                 low_ip[dom] = min(low_ip.get(dom, 101), st._int(rep))
             if reason:
                 if reason.startswith("warming"):
