@@ -58,7 +58,6 @@ def format_digest(
     zap_billing: list[dict] | tuple = (),
     scaledmail: dict | None = None,
     errors: list[str] | tuple = (),
-    readiness: dict | None = None,
 ) -> tuple[list[str], list[str], int]:
     """``(headline_lines, thread_parts, action_count)``. Pure - no I/O.
 
@@ -187,10 +186,6 @@ def format_digest(
     if errors:
         look.append(f"{_plural(len(errors), 'report')} could not be read")
 
-    rd = readiness or {}
-    if rd.get("low"):
-        look.append(f"{_plural(len(rd['low']), 'domain')} past their warmup days but under 90% reputation")
-
     # ── headline ──
     attention = bool(look)
     head = [f"{'⚠️' if attention else '✅'} Domains & inboxes, {today.day} {today:%b}"]
@@ -198,18 +193,12 @@ def format_digest(
         head.append(f"Bills in 3 days: {_money(sum(bills))} across {_plural(len(bills), 'bill')}")
     if setup_bits:
         head.append("ScaledMail orders: " + ", ".join(setup_bits))
-    if rd.get("ready_today"):
-        head.append("Ready to use today: " + "; ".join(rd["ready_today"])
-                    + " (run a placement test before adding them to campaigns)")
     head.append(("Needs a look: " + ", ".join(look)) if attention else "Nothing needs action today.")
 
     # ── thread ──
     parts = ["\n".join(zap)]
     if sm_part:
         parts.append(sm_part)
-    if rd.get("ready_today") or rd.get("low"):
-        parts.append("\n".join(["*Ready to send*"] + ["• " + x for x in rd.get("ready_today", [])]
-                               + ["• ⚠️ " + x for x in rd.get("low", [])]))
     if past:
         parts.append(f"_{_plural(len(past), 'past-client domain')} lapsing (left to expire, no action): "
                      + ", ".join(r["domain"] for r in past) + "_")
@@ -273,18 +262,6 @@ async def extra_sections(today: date) -> dict:
                 out["scaledmail"] = await asyncio.to_thread(sm_digest, sm)
     except Exception as exc:  # noqa: BLE001
         out["errors"].append(f"ScaledMail could not be read: {str(exc)[:120]}")
-    try:
-        from smartlead.accounts import discover_accounts
-        from smartlead.api import SmartleadClient
-        from smartlead.inbox_intake import CURRENT_ACCOUNTS, readiness_lines
-        boxes = []
-        for acc in discover_accounts():
-            if acc.name.upper() in CURRENT_ACCOUNTS:
-                async with SmartleadClient(acc.api_key, account_name=acc.name) as sl:
-                    boxes += await sl.list_email_accounts()
-        out["readiness"] = readiness_lines(boxes, today)
-    except Exception as exc:  # noqa: BLE001 - the digest still posts
-        out["errors"].append(f"Ready-to-send check could not run: {str(exc)[:80]}")
     return out
 
 

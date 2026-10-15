@@ -59,6 +59,15 @@ class IntakeStore:
         upd["$inc"] = {"tries": 1 if count_try else 0}
         self.col.update_one({"email": email}, upd, upsert=True)
 
+    def client_of(self, email: str) -> str | None:
+        return self._doc(email).get("client")
+
+    def announced(self, key: str) -> bool:
+        return bool(self._doc("__announced__:" + key))
+
+    def mark_announced(self, key: str) -> None:
+        self.col.update_one({"email": "__announced__:" + key}, {"$set": {"at": _now()}}, upsert=True)
+
     def posted_problems(self) -> list[str]:
         return list(self._doc(POSTED_KEY).get("problems") or [])
 
@@ -116,7 +125,7 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
     for trying a few inboxes before the rest."""
     from smartlead.inbox_setup import plan_changes
     from smartlead.notify import redact
-    out: dict = {"set_up": [], "would": [], "waiting": [], "problems": [], "complete": []}
+    out: dict = {"set_up": [], "would": [], "waiting": [], "problems": [], "complete": [], "ready": []}
     accounts = await sl.list_email_accounts()
     tags = {t["name"]: t["id"] for t in await sl.list_tags()}
     email_of = lambda a: str(a.get("from_email", "")).lower()          # noqa: E731
@@ -130,6 +139,14 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
             fresh_on.setdefault(dom_of(a), []).append(a)
     melior_id = (profile("Melior") or {}).get("smartlead_client_id")
     out["problems"] += _drift_sweep(accounts, per_domain)
+    # Set-up domains that just became ready (or reached their date still warming), with whose they are.
+    owners: dict[str, str] = {}
+    for a in accounts:
+        if _has_tag(a, st.SETUP_TAG):
+            dom = dom_of(a)
+            owners.setdefault(dom, store.client_of(email_of(a))
+                              or _client(a, account_name, by_domain.get(dom), tracker.get(dom), melior_id) or "")
+    out["ready"] = ready_announcements(accounts, today, store, owners)
     new = [a for a in accounts if fresh(a) and not _has_tag(a, st.SETUP_TAG) and not store.done(email_of(a))]
     if only:
         new = [a for a in new if only.lower() in (email_of(a), dom_of(a))]
@@ -265,28 +282,43 @@ def _drift_sweep(accounts: list[dict], per_domain: dict[str, int]) -> list[str]:
     return lines
 
 
-def readiness_lines(accounts: list[dict], today: date) -> dict:
-    """Set-up inboxes that reach their ready date today, and ones past it but
-    under 90% warmup reputation, grouped by domain."""
+def ready_announcements(accounts: list[dict], today: date, store, clients: dict[str, str]) -> list[dict]:
+    """Domains whose set-up inboxes have ALL reached their ready date: "ready"
+    when every one has 90%+ warmup reputation, else "low" (keep warming).
+    Each (state, domain) is announced once; a domain announced low can later
+    be announced ready. Returns [{key, domain, state, line}]. Pure apart from
+    reading the store."""
     per_domain: dict[str, int] = {}
     for a in accounts:
         dom = str(a.get("from_email", "")).split("@")[-1].lower()
         per_domain[dom] = per_domain.get(dom, 0) + 1
-    ready: dict[tuple, int] = {}
-    low: dict[tuple, list] = {}
+    by_dom: dict[str, list[dict]] = {}
     for a in accounts:
-        if not _has_tag(a, st.SETUP_TAG):
+        if _has_tag(a, st.SETUP_TAG):
+            by_dom.setdefault(str(a["from_email"]).split("@")[-1].lower(), []).append(a)
+    out = []
+    for dom, boxes in sorted(by_dom.items()):
+        kind = st.inbox_kind(boxes[0], per_domain[dom])
+        states = [st.readiness(a, kind, today) for a in boxes]
+        if any(s in ("warming", "unknown") for s in states):
             continue
-        dom = str(a["from_email"]).split("@")[-1].lower()
-        kind = st.inbox_kind(a, per_domain[dom])
-        state = st.readiness(a, kind, today)
-        key = (dom, st.standard_for(kind)["label"])
-        if state == "ready" and st.ready_date(a, kind) == today:
-            ready[key] = ready.get(key, 0) + 1
-        elif state == "low_reputation":
-            low.setdefault(key, []).append((a.get("warmup_details") or {}).get("warmup_reputation"))
-    def n(k, label):
-        return f"{k} {label} {'inbox' if k == 1 else 'inboxes'}"
-    return {"ready_today": [f"{n(k, label)} on {dom}" for (dom, label), k in sorted(ready.items())],
-            "low": [f"{n(len(r), label)} on {dom}: warmup reputation {r[0]} (needs {st.READY_REPUTATION}%)"
-                    for (dom, label), r in sorted(low.items())]}
+        state = "ready" if all(s == "ready" for s in states) else "low"
+        key = f"{state}:{dom}"
+        if store.announced(key):
+            continue
+        reps = [st._int((a.get("warmup_details") or {}).get("warmup_reputation")) for a in boxes]
+        reps = [r for r in reps if r is not None]
+        client = clients.get(dom) or NO_CLIENT_LABEL
+        if state == "ready":
+            days = (today - st.warmup_started(boxes[0])).days
+            label = st.standard_for(kind)["label"]
+            n = len(boxes)
+            line = (f"• {dom} · {n} {label} inbox{'es' if n != 1 else ''} · {client} · warmed {days} days"
+                    f" · reputation {min(reps)}%")
+        else:
+            line = f"• {dom} · {client} · warmup reputation {min(reps)}% (needs {st.READY_REPUTATION}%), keep warming"
+        out.append({"key": key, "domain": dom, "state": state, "line": line})
+    return sorted(out, key=lambda a: (a["state"] != "ready", a["domain"]))
+
+
+NO_CLIENT_LABEL = "client unknown"

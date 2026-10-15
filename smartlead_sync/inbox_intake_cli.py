@@ -102,6 +102,35 @@ def scaledmail_tracker(tracker: dict, problems: list[str]) -> dict:
         return tracker
 
 
+READY_CHANNEL = "C0ACLJZ7JHE"   # #testing-4866 (Manveen, 15 Oct); INBOX_READY_CHANNEL overrides
+
+
+def ready_message(announcements: list[dict]) -> str:
+    """One post: domains ready to send now, then any past their date but still warming. Pure."""
+    ready = [a["line"] for a in announcements if a["state"] == "ready"]
+    low = [a["line"] for a in announcements if a["state"] != "ready"]
+    parts = []
+    if ready:
+        n = len(ready)
+        parts.append("\n".join([f"✅ Ready to send now: {n} domain{'s' if n != 1 else ''}"] + ready
+                               + ["Run a Smart Delivery placement test before adding them to campaigns."]))
+    if low:
+        parts.append("\n".join(["⚠️ Reached the warmup date but not ready yet:"] + low))
+    return "\n\n".join(parts)
+
+
+def post_ready(announcements: list[dict], store, post) -> bool:
+    """Post the ready message with ``post(text)`` and mark each domain
+    announced only if it went out (a failed post is retried next run)."""
+    if not announcements:
+        return False
+    if not post(ready_message(announcements)):
+        return False
+    for a in announcements:
+        store.mark_announced(a["key"])
+    return True
+
+
 def should_post(results: dict[str, dict], previous: list[str]) -> bool:
     """Post when something was set up or a problem is new; standing problems
     stay in the 09:40 digest instead of every 2 hours. Pure."""
@@ -157,11 +186,11 @@ def main() -> int:
                         sl, acc.name, approve=args.apply, since=since, today=today, by_domain=by_domain,
                         tracker=tracker, store=store, profile=lambda c: profile_for(c)[1], only=args.only)
             except Exception as exc:  # noqa: BLE001 - say so, keep the other account
-                results[acc.name] = {"set_up": [], "would": [], "waiting": [], "complete": [],
+                results[acc.name] = {"set_up": [], "would": [], "waiting": [], "complete": [], "ready": [],
                                      "problems": [f"{acc.name}: could not read Smartlead ({redact(str(exc))[:120]})"]}
     asyncio.run(run_all())
     if read_problems:
-        results.setdefault("ScaledMail", {"set_up": [], "would": [], "waiting": [], "complete": [], "problems": []})
+        results.setdefault("ScaledMail", {"set_up": [], "would": [], "waiting": [], "complete": [], "problems": [], "ready": []})
         results["ScaledMail"]["problems"] += read_problems
 
     if args.apply and plan_store is not None:
@@ -180,7 +209,16 @@ def main() -> int:
         posted = bool(channel and token and post_with_thread(token, channel, head, parts))
         if posted:
             store.save_posted_problems([p for r in results.values() for p in r["problems"]])
-    out = {"headline": head, "thread": parts, "posted": posted,
+    announcements = [a for r in results.values() for a in r.get("ready") or []]
+    ready_posted = False
+    if args.apply and args.post:
+        from smartlead.notify import _post
+        token = (os.getenv("SLACK_BOT_TOKEN") or "").strip()
+        channel = (os.getenv("INBOX_READY_CHANNEL") or READY_CHANNEL).strip()
+        ready_posted = bool(token) and post_ready(announcements, store, lambda text: _post(token, channel, text))
+    elif announcements:
+        parts.append("*Would post to the test channel*\n" + ready_message(announcements))
+    out = {"headline": head, "thread": parts, "posted": posted, "ready": announcements, "ready_posted": ready_posted,
            "counts": {k: sum(len(r[k]) for r in results.values()) for k in ("set_up", "would", "waiting", "problems")}}
     print(json.dumps(out, default=str) if args.json else "\n".join(head + [""] + parts))
     return 0

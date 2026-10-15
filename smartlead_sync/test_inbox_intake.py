@@ -174,17 +174,6 @@ def test_intake_message_headline_and_ready_dates():
     assert preview[0].startswith("👀 Would set up 3 new inboxes")
 
 
-def test_readiness_lines_group_by_domain():
-    def a(e, t="GMAIL", rep="100%", start="2026-10-13T10:00:00Z"):
-        return {"from_email": e, "type": t, "tags": [{"tag_name": "Bot-Setup"}],
-                "warmup_details": {"warmup_created_at": start, "warmup_reputation": rep}}
-    boxes = [a("x1@warmmeetings.com"), a("x2@warmmeetings.com"), a("y@low.com", rep="80%"),
-             a("z@notyet.com", t="OUTLOOK"), {**a("n@untracked.com"), "tags": []}]
-    r = ii.readiness_lines(boxes, date(2026, 10, 27))
-    assert r["ready_today"] == ["2 Google inboxes on warmmeetings.com"]
-    assert r["low"] == ["1 Google inbox on low.com: warmup reputation 80% (needs 90%)"]
-
-
 # ── final-review fixes ─────────────────────────────────────────────────────
 
 NO_SETUP_TAG = [t for t in TAGS if t["name"] != "Bot-Setup"]
@@ -335,3 +324,61 @@ def test_scaledmail_read_failure_is_reported_not_silent(monkeypatch):
     assert out == {"a.com": {"client": "Melior"}}
     assert problems == ["ScaledMail could not be read (429 on /orders: Too many requests): inboxes on ScaledMail "
                         "domains the tracker doesn't know were not set up this run"]
+
+
+# ── ready to send: announced once per domain (15 Oct: "message on the test channel") ──
+
+def _ready_box(email, rep="100%", start="2026-10-01T10:00:00Z", type_="GMAIL"):
+    return {"from_email": email, "type": type_, "tags": [{"tag_name": "Bot-Setup"}], "client_id": None,
+            "warmup_details": {"warmup_created_at": start, "warmup_reputation": rep}}
+
+
+def test_ready_announcements_once_per_domain():
+    store = ii.IntakeStore(FakeCol())
+    boxes = [_ready_box(f"a{i}@ready.com") for i in range(3)] + [_ready_box("b@low.com", rep="85%"),
+             _ready_box("c@young.com", start="2026-10-10T10:00:00Z"), _ready_box("d@half.com"), _ready_box("e@half.com", rep="80%")]
+    clients = {"ready.com": "Precise Leads", "low.com": "Melior", "half.com": "Bettrdata"}
+    new = ii.ready_announcements(boxes, date(2026, 10, 16), store, clients)
+    assert new == [{"key": "ready:ready.com", "domain": "ready.com", "state": "ready", "line":
+                    "• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%"},
+                   {"key": "low:half.com", "domain": "half.com", "state": "low", "line":
+                    "• half.com · Bettrdata · warmup reputation 80% (needs 90%), keep warming"},
+                   {"key": "low:low.com", "domain": "low.com", "state": "low", "line":
+                    "• low.com · Melior · warmup reputation 85% (needs 90%), keep warming"}]
+    for a in new:
+        store.mark_announced(a["key"])
+    assert ii.ready_announcements(boxes, date(2026, 10, 17), store, clients) == []        # never twice
+    boxes[3]["warmup_details"]["warmup_reputation"] = "92%"                              # low.com recovers later
+    later = ii.ready_announcements(boxes, date(2026, 10, 20), store, clients)
+    assert [a["key"] for a in later] == ["ready:low.com"]
+
+
+def test_ready_message_text():
+    from inbox_intake_cli import ready_message
+    text = ready_message([{"state": "ready", "line": "• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%"},
+                          {"state": "low", "line": "• low.com · Melior · warmup reputation 85% (needs 90%), keep warming"}])
+    assert text == ("✅ Ready to send now: 1 domain\n• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%\n"
+                    "Run a Smart Delivery placement test before adding them to campaigns.\n\n"
+                    "⚠️ Reached the warmup date but not ready yet:\n• low.com · Melior · warmup reputation 85% (needs 90%), keep warming")
+
+
+def test_run_account_lists_newly_ready_domains_with_their_client():
+    store = ii.IntakeStore(FakeCol())
+    store.record("x@ready.com", ok=True, client="Precise Leads", kind="google")
+    box = _ready_box("x@ready.com", start="2026-09-20T10:00:00Z")      # ready by TODAY (13 Oct)
+    box.update({"id": 1, "created_at": "2026-10-01T00:00:00Z", "type": "GMAIL", "smtp_host": None, "message_per_day": 15,
+                "minTimeToWaitInMins": 20, "signature": "x", "client_id": None, "custom_tracking_domain": None})
+    box["warmup_details"].update({"status": "ACTIVE", "max_email_per_day": 25, "reply_rate": 30})
+    out, _ = run(FakeSL([box]), store=store, plans=())
+    assert [(a["key"], "Precise Leads" in a["line"]) for a in out["ready"]] == [("ready:ready.com", True)]
+
+
+def test_ready_post_marks_announced_only_when_it_went_out():
+    from inbox_intake_cli import post_ready
+    ann = [{"key": "ready:a.com", "domain": "a.com", "state": "ready", "line": "• a.com"}]
+    store = ii.IntakeStore(FakeCol())
+    assert post_ready(ann, store, lambda text: None) is False and not store.announced("ready:a.com")    # Slack failed: retry next run
+    sent = []
+    assert post_ready(ann, store, lambda text: sent.append(text) or "1.1") is True and store.announced("ready:a.com")
+    assert sent[0].startswith("✅ Ready to send now: 1 domain")
+    assert post_ready([], store, lambda text: 1 / 0) is False                                            # nothing new: no post

@@ -185,12 +185,3 @@ def test_the_digest_never_applies_readiness_itself(monkeypatch):
     assert cli.digest_ready_lines(enabled=True) == [] and calls == []
     assert cli.digest_ready_lines(enabled=False) == ["x"] and calls == [False]
 
-
-def test_ready_to_send_in_headline_and_thread():
-    head, parts, _ = format_digest(STATUS, RENEWALS, BATCHES, today=TODAY, ledger_ok=True,
-                                   readiness={"ready_today": ["2 Google inboxes on warmmeetings.com"],
-                                              "low": ["1 Google inbox on low.com: warmup reputation 80% (needs 90%)"]})
-    assert any(h.startswith("Ready to use today: 2 Google inboxes on warmmeetings.com") for h in head)
-    assert any(h.endswith("(run a placement test before adding them to campaigns)") for h in head)   # Smartlead support, 15 Oct
-    assert any(p.startswith("*Ready to send*") for p in parts)
-    assert "past their warmup days but under 90% reputation" in "\n".join(head)
