@@ -302,3 +302,19 @@ def test_drift_on_set_up_inboxes_is_reported_grouped():
     gap = [dict(good, id=i, from_email=f"g{i}@d2.com", minTimeToWaitInMins=None) for i in (2, 3)]
     out, _ = run(FakeSL([good] + gap), plans=())
     assert out["problems"] == ["Changed since setup on 2 inboxes (d2.com): minimum gap empty, want 20 min"]
+
+
+def test_scaledmail_order_client_fills_tracker_gaps():
+    # 15 Oct: ScaledMail swapped in preciseleadshq/-team/-hub on a Precise Leads order bought outside the bot;
+    # no tracker row, so intake said "no client known". ScaledMail's own order says whose they are.
+    from inbox_intake_cli import with_scaledmail_clients
+    tracker = {"known.com": {"client": "Melior", "provider": "Zapmail"}}
+    sm = [{"domain": "PreciseLeadsHQ.com", "client": "Precise Leads"}, {"domain": "known.com", "client": "Bettrdata"},
+          {"domain": "nobody.com", "client": None}]
+    out = with_scaledmail_clients(tracker, sm)
+    assert out["preciseleadshq.com"] == {"client": "Precise Leads", "provider": "Scaledmail"}
+    assert out["known.com"] == {"client": "Melior", "provider": "Zapmail"}          # the tracker wins
+    assert "nobody.com" not in out
+    sl = FakeSL([acct(5, "avinash@preciseleadshq.com")])
+    res, _ = run(sl, plans=(), tracker=out)
+    assert [(r["client"], r["vendor"]) for r in res["set_up"]] == [("Precise Leads", "scaledmail")]

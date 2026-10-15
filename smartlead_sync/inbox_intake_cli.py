@@ -73,6 +73,18 @@ def intake_message(results: dict[str, dict], today: date) -> tuple[list[str], li
     return head, parts
 
 
+def with_scaledmail_clients(tracker: dict, sm_domains: list[dict]) -> dict:
+    """The tracker's domain rows, plus ScaledMail's own order client for any
+    domain the tracker does not know (swapped domains, orders placed outside
+    the bot; 15 Oct). The tracker wins where both have it. Pure."""
+    out = dict(tracker)
+    for d in sm_domains:
+        dom = str(d.get("domain") or "").strip().lower()
+        if dom and d.get("client") and dom not in out:
+            out[dom] = {"client": d["client"], "provider": "Scaledmail"}
+    return out
+
+
 def should_post(results: dict[str, dict], previous: list[str]) -> bool:
     """Post when something was set up or a problem is new; standing problems
     stay in the 09:40 digest instead of every 2 hours. Pure."""
@@ -112,6 +124,14 @@ def main() -> int:
         tracker = {k: v for k, v in read_tracker().items() if "@" not in k}
     except Exception:  # noqa: BLE001
         tracker = {}
+    try:
+        from smartlead.scaledmail import ScaledMailClient, configured
+        if configured():
+            from smartlead.scaledmail_fleet import snapshot
+            with ScaledMailClient() as sm:
+                tracker = with_scaledmail_clients(tracker, snapshot(sm)["domains"])
+    except Exception:  # noqa: BLE001 - without it those inboxes are reported, not guessed
+        pass
     store = IntakeStore()
     by_domain = deliveries(plans, jobs)
     results: dict[str, dict] = {}
