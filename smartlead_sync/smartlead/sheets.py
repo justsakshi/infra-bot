@@ -166,6 +166,18 @@ def _is_test_campaign(name: str) -> bool:
     return bool(_TEST_CAMPAIGN.search(str(name or "").strip()))
 
 
+def _nearly_finished(row: dict) -> bool:
+    """A campaign with fewer leads left than inboxes cannot use even one send
+    per inbox a day, so it does not claim a share of them (15 Oct 2026: an
+    "Active" campaign with 2 of 780 leads left halved 37 Melior inboxes).
+    Unknown counts (no leads_remaining on the row) are left as sharing."""
+    left, boxes = row.get("leads_remaining"), row.get("total_inboxes")
+    try:
+        return left is not None and int(boxes or 0) > 0 and int(left) < int(boxes)
+    except (TypeError, ValueError):
+        return False
+
+
 def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
     """Return one row per (client, email), keeping the most-live campaign's row
     (ACTIVE beats paused/completed beats orphan), with active campaign count.
@@ -192,7 +204,8 @@ def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
             if rank > g["rank"]:
                 g["row"], g["rank"] = r, rank
         if (_campaign_row_rank(r) > 0 and _is_active_status(r.get("campaign_status", ""))
-                and not _is_test_campaign(r.get("campaign_name", ""))):
+                and not _is_test_campaign(r.get("campaign_name", ""))
+                and not _nearly_finished(r)):
             g["campaigns"] += 1
 
     deduped: list[dict] = []

@@ -53,3 +53,13 @@ def test_placement_test_campaigns_never_count():
             _row("Placement check", "ACTIVE"), _row("Contested markets", "ACTIVE")]
     [out] = _dedupe_inbox_rows(rows)
     assert out["campaigns"] == 2      # the real campaign + "Contested markets"
+
+
+def test_nearly_finished_campaigns_do_not_claim_a_share():
+    """15 Oct 2026: 'Accounting firm roundtable | Melior' was still Active with
+    2 of 780 leads left on 37 inboxes, and halved every one of them."""
+    live = {**_row("Revised", "ACTIVE"), "leads_remaining": 162, "total_inboxes": 26}
+    done = {**_row("Old", "ACTIVE"), "leads_remaining": 2, "total_inboxes": 37}
+    unknown = _row("No stats", "ACTIVE")
+    [out] = _dedupe_inbox_rows([live, done, unknown])
+    assert out["campaigns"] == 2       # Revised + the one we know nothing about
