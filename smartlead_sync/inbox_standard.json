@@ -4,8 +4,8 @@
     "google":        {"label": "Google",                  "max_email_per_day": 15, "total_warmup_per_day": 25, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 14},
     "outlook":       {"label": "Outlook",                 "max_email_per_day": 10, "total_warmup_per_day": 20, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 21},
     "outlook_dense": {"label": "Outlook (shared domain)", "max_email_per_day": 5,  "total_warmup_per_day": 5,  "daily_rampup": 0, "reply_rate": 30, "ready_after_days": 21},
-    "smtp":          {"label": "SMTP",                    "max_email_per_day": 7,  "total_warmup_per_day": 20, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 14}
+    "smtp":          {"label": "SMTP",                    "max_email_per_day": 7,  "total_warmup_per_day": 20, "daily_rampup": 5, "reply_rate": 30, "ready_after_days": 21}
   },
-  "every_type": {"weekdays_only": true, "auto_adjust": true},
+  "every_type": {"weekdays_only": true, "auto_adjust": true, "time_to_wait_in_mins": 20},
   "no_tracking_vendors": ["scaledmail"]
 }

@@ -14,7 +14,7 @@ TAGS = [{"id": 3212, "name": "PreciseLeads"}, {"id": 266037, "name": "Melior"}, 
 
 def acct(i, email, *, created="2026-10-13T10:00:00Z", type_="GMAIL", tags=(), client_id=None):
     return {"id": i, "from_email": email, "from_name": "Avinash Haridas", "type": type_, "smtp_host": None,
-            "created_at": created, "client_id": client_id, "signature": "", "message_per_day": 10,
+            "created_at": created, "client_id": client_id, "signature": "", "message_per_day": 10, "minTimeToWaitInMins": None,
             "custom_tracking_domain": None, "tags": [{"tag_id": t, "tag_name": n} for t, n in tags],
             "warmup_details": {"status": "ACTIVE", "max_email_per_day": 30, "reply_rate": 65,
                                "warmup_created_at": "2026-10-13T10:49:25Z", "warmup_reputation": "100%"}}
@@ -36,6 +36,8 @@ class FakeSL:
         a = self.accounts[int(i)]
         if "max_email_per_day" in fields and "limit" not in self.ignore:
             a["message_per_day"] = fields["max_email_per_day"]
+        if "time_to_wait_in_mins" in fields and "gap" not in self.ignore:
+            a["minTimeToWaitInMins"] = fields["time_to_wait_in_mins"]
         for k in ("signature", "client_id"):
             if k in fields:
                 a[k] = fields[k]
@@ -45,7 +47,8 @@ class FakeSL:
         w["max_email_per_day"] = total_per_day
         w["reply_rate"] = reply_rate if "reply" not in self.ignore else w["reply_rate"]
 
-    async def get_email_account(self, i): return self.accounts[int(i)]
+    async def get_email_account(self, i):   # the single read has no minTimeToWaitInMins (live 15 Oct)
+        return {k: v for k, v in self.accounts[int(i)].items() if k != "minTimeToWaitInMins"}
     async def assign_tags(self, ids, tag_ids): self.tagged.append((sorted(ids), sorted(tag_ids)))
 
 
@@ -98,7 +101,9 @@ def test_old_or_already_done_inboxes_are_never_written():           # Review Foc
     tagged = acct(8, "t@warmmeetings.com", tags=[(9, "Bot-Setup")])
     sl = FakeSL([old, tagged])
     out, _ = run(sl, plans=())
-    assert not sl.writes and not out["set_up"] and not out["problems"]
+    assert not sl.writes and not out["set_up"]
+    assert out["problems"] == ["Changed since setup on 1 inbox (t@warmmeetings.com): daily limit 10, want 15; "
+                               "warmup 30/day, want 25; reply rate 65%, want 30%; minimum gap empty, want 20 min"]
 
 
 def test_unknown_client_is_reported_not_guessed():                  # Review Focus 2
@@ -279,3 +284,21 @@ def test_old_readiness_preview_is_off_when_intake_runs(monkeypatch):     # revie
     assert smc._new_inboxes_handled() is True
     monkeypatch.setenv("INBOX_INTAKE_ENABLED", "false")
     assert smc._new_inboxes_handled() is False
+
+
+def test_gap_that_does_not_stick_keeps_the_inbox_pending():                # 15 Oct: gap was left empty
+    sl = FakeSL(THREE, ignore={"gap"})
+    out, store = run(sl)
+    assert not out["set_up"] and not sl.tagged and not store.done("a1@warmmeetings.com")
+    assert any("minimum gap empty, want 20 min" in p for p in out["problems"])
+    assert all(("time_to_wait_in_mins", 20) in w.items() for _, w in sl.writes)
+
+
+def test_drift_on_set_up_inboxes_is_reported_grouped():
+    done = {"tags": [(9, "Bot-Setup"), (153335, "ScaledMail-Google")]}
+    good = acct(1, "ok@d1.com", **done)
+    good.update({"message_per_day": 15, "minTimeToWaitInMins": 20})
+    good["warmup_details"].update({"max_email_per_day": 25, "reply_rate": 30})
+    gap = [dict(good, id=i, from_email=f"g{i}@d2.com", minTimeToWaitInMins=None) for i in (2, 3)]
+    out, _ = run(FakeSL([good] + gap), plans=())
+    assert out["problems"] == ["Changed since setup on 2 inboxes (d2.com): minimum gap empty, want 20 min"]

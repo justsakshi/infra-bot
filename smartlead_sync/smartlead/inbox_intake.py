@@ -129,6 +129,7 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
         if fresh(a):
             fresh_on.setdefault(dom_of(a), []).append(a)
     melior_id = (profile("Melior") or {}).get("smartlead_client_id")
+    out["problems"] += _drift_sweep(accounts, per_domain)
     new = [a for a in accounts if fresh(a) and not _has_tag(a, st.SETUP_TAG) and not store.done(email_of(a))]
     if only:
         new = [a for a in new if only.lower() in (email_of(a), dom_of(a))]
@@ -195,6 +196,19 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
         names = (st.SETUP_TAG, CLIENT_TAG.get(client), VENDOR_TAG.get((vendor, kind)))
         written_ok.append({"id": int(a["id"]), "row": row, "rec": rec,
                            "tag_ids": tuple(sorted(tags[n] for n in names if n and n in tags))})
+    # The single-inbox read has no "Minimum time gap": confirm it from one list read.
+    if written_ok:
+        listed = {email_of(a): a for a in await sl.list_email_accounts()}
+        kept = []
+        for x in written_ok:
+            email = x["row"]["email"]
+            gap = st.gap_problem(listed.get(email) or {"minTimeToWaitInMins": None}, x["rec"]["kind"])
+            if gap:
+                store.record(email, ok=False, mismatches=[gap], **x["rec"])
+                out["problems"].append(f"`{email}`: {gap} (try {store.tries(email)} of {MAX_TRIES})")
+            else:
+                kept.append(x)
+        written_ok = kept
     # Tags last; an inbox counts as done only once its tags are on.
     untagged: set = set()
     groups: dict[tuple, list[int]] = {}
@@ -226,6 +240,29 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
         if len(boxes) >= d["expected"] and all(_has_tag(a, st.SETUP_TAG) or store.done(email_of(a)) for a in boxes):
             out["complete"].append(did)
     return out
+
+
+def _drift_sweep(accounts: list[dict], per_domain: dict[str, int]) -> list[str]:
+    """Inboxes intake set up whose settings no longer match the standard (or a
+    setting that was never set, like the empty "Minimum time gap" on 15 Oct),
+    one line per kind of problem. Read-only; posted only when new (CLI)."""
+    groups: dict[str, list[str]] = {}
+    for a in accounts:
+        if not _has_tag(a, st.SETUP_TAG):
+            continue
+        email = str(a.get("from_email", "")).lower()
+        dom = email.split("@")[-1]
+        names = [str(t.get("tag_name") or t.get("name") or "") for t in a.get("tags") or []]
+        vendor = "scaledmail" if any(n.startswith("ScaledMail") for n in names) else "zapmail"
+        issues = st.drift(a, st.inbox_kind(a, per_domain.get(dom, 1)), vendor)
+        if issues:
+            groups.setdefault("; ".join(issues), []).append(email)
+    lines = []
+    for issue, emails in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        n = len(emails)
+        where = emails[0] if n == 1 else ", ".join(sorted({e.split("@")[-1] for e in emails}))
+        lines.append(f"Changed since setup on {n} inbox{'es' if n != 1 else ''} ({where}): {issue}")
+    return lines
 
 
 def readiness_lines(accounts: list[dict], today: date) -> dict:

@@ -39,7 +39,8 @@ def standard_for(kind: str) -> dict:
 
 
 def account_fields(kind: str, vendor: str) -> dict:
-    out = {"max_email_per_day": standard_for(kind)["max_email_per_day"]}
+    s = standard_for(kind)
+    out = {"max_email_per_day": s["max_email_per_day"], "time_to_wait_in_mins": s["time_to_wait_in_mins"]}
     if vendor in load().get("no_tracking_vendors", []):
         out["custom_tracking_url"] = ""
     return out
@@ -74,7 +75,22 @@ def drift(account: dict, kind: str, vendor: str) -> list[str]:
         out.append(f"reply rate {w.get('reply_rate')}%, want {s['reply_rate']}%")
     if vendor in load().get("no_tracking_vendors", []) and account.get("custom_tracking_domain"):
         out.append(f"tracking domain {account['custom_tracking_domain']}, want none")
+    gap = gap_problem(account, kind)
+    if gap:
+        out.append(gap)
     return out
+
+
+def gap_problem(account: dict, kind: str) -> str | None:
+    """'Minimum time gap' problem, or None. Only Smartlead's LIST read returns
+    the field (``minTimeToWaitInMins``); when it is absent there is nothing to judge."""
+    if "minTimeToWaitInMins" not in account:
+        return None
+    want = standard_for(kind)["time_to_wait_in_mins"]
+    got = _int(account.get("minTimeToWaitInMins"))
+    if got == want:
+        return None
+    return f"minimum gap empty, want {want} min" if got is None else f"minimum gap {got} min, want {want} min"
 
 
 def readback_mismatches(account: dict, kind: str, vendor: str, written: dict) -> list[str]:

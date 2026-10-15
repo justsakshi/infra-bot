@@ -199,7 +199,8 @@ def format_digest(
     if setup_bits:
         head.append("ScaledMail orders: " + ", ".join(setup_bits))
     if rd.get("ready_today"):
-        head.append("Ready to use today: " + "; ".join(rd["ready_today"]))
+        head.append("Ready to use today: " + "; ".join(rd["ready_today"])
+                    + " (run a placement test before adding them to campaigns)")
     head.append(("Needs a look: " + ", ".join(look)) if attention else "Nothing needs action today.")
 
     # ── thread ──

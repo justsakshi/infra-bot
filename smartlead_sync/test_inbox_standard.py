@@ -5,7 +5,7 @@ from smartlead import inbox_standard as st
 
 
 def acct(**kw):
-    a = {"id": 1, "from_email": "a@x.com", "type": "GMAIL", "smtp_host": None, "message_per_day": 15,
+    a = {"id": 1, "from_email": "a@x.com", "type": "GMAIL", "smtp_host": None, "message_per_day": 15, "minTimeToWaitInMins": 20,
          "custom_tracking_domain": None, "signature": "<div>A</div>", "client_id": None,
          "warmup_details": {"status": "ACTIVE", "max_email_per_day": 25, "reply_rate": 30,
                             "warmup_created_at": "2026-10-13T10:49:25.235Z", "warmup_reputation": "100%"}}
@@ -27,13 +27,13 @@ def test_standard_values_match_the_spec():
     assert (g["max_email_per_day"], g["total_warmup_per_day"], g["daily_rampup"], g["reply_rate"], g["ready_after_days"]) == (15, 25, 5, 30, 14)
     assert (o["max_email_per_day"], o["total_warmup_per_day"], o["daily_rampup"], o["reply_rate"], o["ready_after_days"]) == (10, 20, 5, 30, 21)
     assert (d["max_email_per_day"], d["total_warmup_per_day"], d["daily_rampup"], d["reply_rate"], d["ready_after_days"]) == (5, 5, 0, 30, 21)
-    assert (s["max_email_per_day"], s["total_warmup_per_day"], s["daily_rampup"], s["reply_rate"], s["ready_after_days"]) == (7, 20, 5, 30, 14)  # standup 14 Oct: SMTP 2 weeks, like Google
+    assert (s["max_email_per_day"], s["total_warmup_per_day"], s["daily_rampup"], s["reply_rate"], s["ready_after_days"]) == (7, 20, 5, 30, 21)  # Smartlead support 15 Oct: ~3 weeks (weekdays-only warmup)
     assert all(st.standard_for(k)["weekdays_only"] and st.standard_for(k)["auto_adjust"] for k in ("google", "smtp"))
 
 
 def test_account_fields_and_warmup_args():
-    assert st.account_fields("google", "scaledmail") == {"max_email_per_day": 15, "custom_tracking_url": ""}
-    assert st.account_fields("google", "zapmail") == {"max_email_per_day": 15}
+    assert st.account_fields("google", "scaledmail") == {"max_email_per_day": 15, "time_to_wait_in_mins": 20, "custom_tracking_url": ""}
+    assert st.account_fields("google", "zapmail") == {"max_email_per_day": 15, "time_to_wait_in_mins": 20}
     assert st.warmup_args("outlook_dense") == {"enabled": True, "total_per_day": 5, "daily_rampup": 0,
                                                "reply_rate": 30, "auto_adjust": True, "weekdays_only": True}
 
@@ -56,7 +56,7 @@ def test_drift_ignores_signature_and_client():
 def test_ready_dates_and_reputation():
     a = acct()
     assert st.warmup_started(a) == date(2026, 10, 13)
-    assert st.ready_date(a, "google") == date(2026, 10, 27) and st.ready_date(a, "smtp") == date(2026, 10, 27)
+    assert st.ready_date(a, "google") == date(2026, 10, 27) and st.ready_date(a, "smtp") == date(2026, 11, 3)
     assert st.readiness(a, "google", date(2026, 10, 26)) == "warming"
     assert st.readiness(a, "google", date(2026, 10, 27)) == "ready"
     low = acct(warmup_details={**a["warmup_details"], "warmup_reputation": 82})
@@ -94,3 +94,17 @@ def test_warmup_start_from_the_single_inbox_read():
     # GET /email-accounts/{id} names it warmup_details.created_at; the list read says warmup_created_at (live 2026-10-13)
     one = acct(warmup_details={"status": "ACTIVE", "created_at": "2026-10-13T10:49:25.235Z", "warmup_reputation": 100})
     assert st.warmup_started(one) == date(2026, 10, 13) and st.ready_date(one, "google") == date(2026, 10, 27)
+
+
+def test_minimum_gap_is_part_of_the_standard():
+    # 15 Oct: new inboxes came in with "Minimum time gap" empty; Smartlead support: at least 15 minutes.
+    assert all(st.standard_for(k)["time_to_wait_in_mins"] == 20 for k in ("google", "outlook", "outlook_dense", "smtp"))
+    assert st.account_fields("google", "zapmail") == {"max_email_per_day": 15, "time_to_wait_in_mins": 20}
+    assert st.drift(acct(minTimeToWaitInMins=None), "google", "zapmail") == ["minimum gap empty, want 20 min"]
+    assert st.drift(acct(minTimeToWaitInMins=10), "google", "zapmail") == ["minimum gap 10 min, want 20 min"]
+    assert st.drift(acct(minTimeToWaitInMins=20), "google", "zapmail") == []
+
+
+def test_smtp_ready_after_three_weeks_per_smartlead_support():
+    # Smartlead support 15 Oct: SMTP 14-30 days; weekdays-only warmup, so "closer to 3 weeks".
+    assert st.standard_for("smtp")["ready_after_days"] == 21
