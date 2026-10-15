@@ -3,10 +3,12 @@
 campaign limit. The rule is smartlead/volume_rule.py; spec
 docs/superpowers/specs/2026-10-15-weekly-volume-review-design.md.
 
-Nothing changes in Smartlead until an approver presses Apply in Slack.
+REPORT ONLY by default (Manveen, 15 Oct): the post says what the rule would do
+and changes nothing. Apply buttons and --apply-client work only with
+VOLUME_REVIEW_APPLY=true, and then only when an approver presses Apply.
 
     python volume_review.py                  # dry run: print this week's review
-    python volume_review.py --post           # save it and post it with Apply buttons
+    python volume_review.py --post           # save it (the shadow record) and post it
                                              #   (VOLUME_REVIEW_CHANNEL, else KILL_REPORT_CHANNEL, else C0AGVSUNEFP)
     python volume_review.py --apply-client "Precise Leads" --review 2026-11-03 --by U123 --json
 
@@ -93,6 +95,11 @@ def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, ap
     return rows, waiting
 
 
+def apply_enabled() -> bool:
+    """Report only until Manveen switches Apply on (15 Oct: "right now I just want you to report")."""
+    return os.getenv("VOLUME_REVIEW_APPLY", "").strip().lower() == "true"
+
+
 def apply_text(r: dict) -> str:
     if r.get("error"):
         return ":x: " + r["error"]
@@ -168,9 +175,14 @@ def main() -> int:
     ap.add_argument("--review", default=None, help="review id (its date, YYYY-MM-DD)")
     ap.add_argument("--by", default="")
     args = ap.parse_args()
-    from smartlead.inbox_intake import IntakeStore
     from smartlead.notify import redact
     today = date.today()
+    if args.apply_client and not apply_enabled():
+        r = {"error": "Applying volume changes is switched off (report only until the rule is proven; "
+                      "VOLUME_REVIEW_APPLY=true turns it on)."}
+        print(json.dumps({**r, "text": apply_text(r)}))
+        return 0
+    from smartlead.inbox_intake import IntakeStore
     try:
         store = IntakeStore()
     except Exception as exc:  # noqa: BLE001
@@ -201,11 +213,11 @@ def main() -> int:
     rows, waiting = gather(today, store, errors)
     if errors:
         waiting["skipped"] = waiting.get("skipped", []) + [f"could not read {e}" for e in errors]
-    text = vr.review_text(rows, waiting, today)
+    text = vr.review_text(rows, waiting, today, apply_enabled())
     out = {"review": today.isoformat(), "rows": len(rows), "text": text}
     if args.post:
         store.save_review(today.isoformat(), rows)
-        out["posted"] = _post(text, vr.review_blocks(rows, waiting, today, today.isoformat()))
+        out["posted"] = _post(text, vr.review_blocks(rows, waiting, today, today.isoformat(), apply_enabled()))
     print(json.dumps(out, default=str) if args.json else text)
     return 0
 

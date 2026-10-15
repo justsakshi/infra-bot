@@ -68,3 +68,11 @@ def test_ip_rotation_waits_for_a_full_week_of_warmup():
     young = box(1, "s@smtp.com", type_="SMTP", host="mail.x.com", limit=7, rep="45%", warmup="2026-10-30T10:00:00Z")
     _, waiting = build([young], facts("s@smtp.com"))
     assert waiting["rotate_ip"] == []
+
+
+def test_apply_is_refused_unless_switched_on(monkeypatch, capsys):
+    import sys
+    monkeypatch.delenv("VOLUME_REVIEW_APPLY", raising=False)
+    monkeypatch.setattr(sys, "argv", ["volume_review.py", "--apply-client", "Melior", "--review", "2026-11-03", "--json"])
+    assert cli.main() == 0
+    assert "switched off" in capsys.readouterr().out

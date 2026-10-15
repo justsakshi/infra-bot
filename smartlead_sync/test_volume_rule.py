@@ -124,7 +124,7 @@ def test_review_text_counts_per_client_and_explains_holds():
     rows += [row("Bettrdata", vr.STEP_BACK, kind="outlook", frm=6, to=5, email="b@bd.com"),
              row("Bettrdata", vr.HOLD, email="h@bd.com", frm=15, to=15, why="bounced 3% of 120 sent")]
     t = vr.review_text(rows, {"warming": 75, "first_ready": "2026-10-27"}, TODAY)
-    assert t.splitlines()[0] == "Volume review, 3 Nov: raise 3 inboxes, hold 1, step back 1"
+    assert t.splitlines()[0] == "Volume review, 3 Nov: would raise 3 inboxes, hold 1, step back 1"
     assert "Precise Leads: raise 3 (Google 15 -> 17)" in t
     assert "Bettrdata: step back 1 (bd.com Outlook 6 -> 5) · hold 1" in t
     assert "bounced 3% of 120 sent" in t
@@ -138,7 +138,7 @@ def test_review_text_with_nothing_to_change():
 
 def test_blocks_have_one_apply_button_per_client_with_changes():
     rows = [row("Precise Leads", vr.RAISE), row("Bettrdata", vr.HOLD, why="x")]
-    blocks = vr.review_blocks(rows, {}, TODAY, review_id="2026-11-03")
+    blocks = vr.review_blocks(rows, {}, TODAY, review_id="2026-11-03", can_apply=True)
     buttons = [e for b in blocks for e in (b.get("accessory"),) if e and e.get("type") == "button"]
     assert len(buttons) == 1
     assert buttons[0]["value"] == '{"r": "2026-11-03", "c": "Precise Leads"}'
@@ -156,3 +156,12 @@ def test_smtp_steps_by_one_to_ten_and_judges_reputation_from_70():
 def test_ip_rotation_note_for_low_smtp_reputation():
     t = vr.review_text([], {"rotate_ip": ["smtpdomain.com (45%)"]}, TODAY)
     assert "ask ScaledMail to rotate the IP: smtpdomain.com (45%)" in t
+
+
+def test_report_only_has_no_buttons_and_says_nothing_changes():
+    # Manveen 15 Oct: report only until the rule is proven; no Apply.
+    rows = [row("Precise Leads", vr.RAISE), row("Bettrdata", vr.HOLD, why="x")]
+    blocks = vr.review_blocks(rows, {}, TODAY, review_id="2026-11-03")
+    assert not any(b.get("accessory") for b in blocks)
+    t = vr.review_text(rows, {}, TODAY)
+    assert "Report only" in t and "would raise" in t.lower() and "Apply" not in t

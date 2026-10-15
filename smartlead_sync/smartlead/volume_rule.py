@@ -162,11 +162,15 @@ def client_lines(rows: list[dict]) -> list[tuple[str, str, int]]:
     return sorted(out, key=lambda x: -x[2])
 
 
-def _headline(rows: list[dict], today: date) -> str:
+REPORT_ONLY_NOTE = "Report only: no limit was changed. The bot only suggests until the rule is proven."
+
+
+def _headline(rows: list[dict], today: date, can_apply: bool = False) -> str:
     n = Counter(r["action"] for r in rows)
     if not (n[RAISE] or n[HOLD] or n[STEP_BACK]):
         return f"Volume review, {_day(today)}: nothing to change this week"
-    return (f"Volume review, {_day(today)}: raise {_plural(n[RAISE])}, hold {n[HOLD]}, "
+    would = "" if can_apply else "would "
+    return (f"Volume review, {_day(today)}: {would}raise {_plural(n[RAISE])}, hold {n[HOLD]}, "
             f"step back {n[STEP_BACK]}")
 
 
@@ -190,18 +194,24 @@ def _notes(rows: list[dict], waiting: dict) -> list[str]:
     return out
 
 
-def review_text(rows: list[dict], waiting: dict, today: date) -> str:
-    lines = [_headline(rows, today)] + [line for _, line, _ in client_lines(rows)] + _notes(rows, waiting)
-    if any(r["action"] in (RAISE, STEP_BACK) for r in rows):
-        lines.append("Nothing changes until someone presses Apply.")
+def _footer(rows: list[dict], can_apply: bool) -> list[str]:
+    if not any(r["action"] in (RAISE, STEP_BACK) for r in rows):
+        return []
+    return ["Nothing changes until someone presses Apply (approvers only)."] if can_apply else [REPORT_ONLY_NOTE]
+
+
+def review_text(rows: list[dict], waiting: dict, today: date, can_apply: bool = False) -> str:
+    lines = ([_headline(rows, today, can_apply)] + [line for _, line, _ in client_lines(rows)]
+             + _notes(rows, waiting) + _footer(rows, can_apply))
     return "\n".join(lines)
 
 
-def review_blocks(rows: list[dict], waiting: dict, today: date, review_id: str) -> list[dict]:
-    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{_headline(rows, today)}*"}}]
+def review_blocks(rows: list[dict], waiting: dict, today: date, review_id: str, can_apply: bool = False) -> list[dict]:
+    """Apply buttons only when ``can_apply`` (VOLUME_REVIEW_APPLY=true); else a report."""
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{_headline(rows, today, can_apply)}*"}}]
     for i, (client, line, changing) in enumerate(client_lines(rows)):
         b = {"type": "section", "text": {"type": "mrkdwn", "text": line}}
-        if changing:
+        if changing and can_apply:
             b["accessory"] = {
                 "type": "button", "action_id": f"volume_apply_{i}", "style": "primary",
                 "text": {"type": "plain_text", "text": f"Apply {client}"[:75]},
@@ -212,9 +222,7 @@ def review_blocks(rows: list[dict], waiting: dict, today: date, review_id: str) 
                             "confirm": {"type": "plain_text", "text": "Apply"},
                             "deny": {"type": "plain_text", "text": "Cancel"}}}
         blocks.append(b)
-    notes = _notes(rows, waiting)
-    if any(r["action"] in (RAISE, STEP_BACK) for r in rows):
-        notes.append("Nothing changes until someone presses Apply (approvers only).")
+    notes = _notes(rows, waiting) + _footer(rows, can_apply)
     if notes:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "\n".join(notes)[:2900]}]})
     return blocks
