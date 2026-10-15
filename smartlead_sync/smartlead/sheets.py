@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import os
 from datetime import datetime
 from typing import Any
@@ -155,6 +156,16 @@ def _campaign_row_rank(r: dict) -> int:
     return 1
 
 
+_TEST_CAMPAIGN = re.compile(r"^dt\s|\b(deliverability|placement)\b|\btest\b", re.I)
+
+
+def _is_test_campaign(name: str) -> bool:
+    """Seed / placement-test campaigns ("DT Melior #1", "Melior - Deliverability
+    Test"). They send a handful of seed emails a week, so they must not count
+    as a campaign sharing an inbox's daily volume."""
+    return bool(_TEST_CAMPAIGN.search(str(name or "").strip()))
+
+
 def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
     """Return one row per (client, email), keeping the most-live campaign's row
     (ACTIVE beats paused/completed beats orphan), with active campaign count.
@@ -165,7 +176,9 @@ def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
     campaign the inbox had ever been attached to, completed and drafted too,
     so an inbox reused across ten finished campaigns read as "in 10", and
     Campaign Desk's shared-inbox split (capacity / # Campaigns) would give it a
-    tenth of its real capacity."""
+    tenth of its real capacity. Placement-test campaigns don't count either
+    (15 Oct 2026: three paused Melior test campaigns made every Melior inbox
+    read "in 3-4", so the Desk released a third to a quarter of the real room)."""
     from smartlead.processing import _is_active_status
     groups: dict[tuple, dict] = {}
     for r in rows:
@@ -178,7 +191,8 @@ def _dedupe_inbox_rows(rows: list[dict]) -> list[dict]:
             rank = _campaign_row_rank(r)
             if rank > g["rank"]:
                 g["row"], g["rank"] = r, rank
-        if _campaign_row_rank(r) > 0 and _is_active_status(r.get("campaign_status", "")):
+        if (_campaign_row_rank(r) > 0 and _is_active_status(r.get("campaign_status", ""))
+                and not _is_test_campaign(r.get("campaign_name", ""))):
             g["campaigns"] += 1
 
     deduped: list[dict] = []

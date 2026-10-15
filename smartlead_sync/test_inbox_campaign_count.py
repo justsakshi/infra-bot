@@ -17,7 +17,7 @@ def test_counts_only_live_campaigns():
     rows = [
         _row("Q3 retail", "ACTIVE"),
         _row("Q2 agencies", "COMPLETED"),
-        _row("Q1 test", "PAUSED"),      # paused resumes onto the inbox: counts
+        _row("Q1 legal", "PAUSED"),     # paused resumes onto the inbox: counts
         _row("Draft", "DRAFTED"),
         _row("Old", "STOPPED"),
         _row("Q3 law firms", "ACTIVE"),
@@ -42,3 +42,14 @@ def test_status_case_insensitive_and_per_inbox():
             _row("C", "ACTIVE", email="b@x.com")]
     counts = {r["email"]: r["campaigns"] for r in _dedupe_inbox_rows(rows)}
     assert counts == {"a@x.com": 1, "b@x.com": 2}
+
+
+def test_placement_test_campaigns_never_count():
+    """15 Oct 2026: paused DT / deliverability-test campaigns made Melior inboxes
+    read "in 3-4" and the Desk split their volume by that."""
+    rows = [_row("Accounting firm roundtable | Melior - Revised", "ACTIVE"),
+            _row("Melior - Deliverability Test", "PAUSED"),
+            _row("DT Melior #1", "PAUSED"), _row("DT Melior #2", "ACTIVE"),
+            _row("Placement check", "ACTIVE"), _row("Contested markets", "ACTIVE")]
+    [out] = _dedupe_inbox_rows(rows)
+    assert out["campaigns"] == 2      # the real campaign + "Contested markets"
