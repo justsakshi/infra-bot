@@ -109,7 +109,7 @@ def test_old_or_already_done_inboxes_are_never_written():           # Review Foc
 def test_unknown_client_is_reported_not_guessed():                  # Review Focus 2
     sl = FakeSL([acct(5, "x@mystery.com")])
     out, _ = run(sl, plans=())
-    assert not sl.writes and any("mystery.com" in p and "no client" in p for p in out["problems"])
+    assert not sl.writes and [a["domain"] for a in out["ask"]] == ["mystery.com"]   # 15 Oct: asked, never guessed
 
 
 def test_melior_from_tracker_gets_melior_client():
@@ -382,3 +382,61 @@ def test_ready_post_marks_announced_only_when_it_went_out():
     assert post_ready(ann, store, lambda text: sent.append(text) or "1.1") is True and store.announced("ready:a.com")
     assert sent[0].startswith("✅ Ready to send now: 1 domain")
     assert post_ready([], store, lambda text: 1 / 0) is False                                            # nothing new: no post
+
+
+# ── "whose are these?" (15 Oct: ask Manveen when a Precise Leads-account domain has no known client) ──
+
+def test_unknown_domain_in_precise_leads_is_asked_once():
+    store = ii.IntakeStore(FakeCol())
+    boxes = [acct(i, f"u{i}@mystery.com") for i in (5, 6)]
+    out, _ = run(FakeSL(boxes), store=store, plans=())
+    assert out["ask"] == [{"domain": "mystery.com", "account": "PRECISE_LEADS", "inboxes": 2, "kind": "Google"}]
+    assert not any("mystery.com" in p for p in out["problems"])                 # asked, not complained about
+    store.mark_asked("mystery.com")
+    out, _ = run(FakeSL(boxes), store=store, plans=())
+    assert out["ask"] == [] and not out["set_up"]                               # waiting for the answer, quietly
+
+
+def test_answer_sets_the_domain_up_and_skip_leaves_it_alone():
+    store = ii.IntakeStore(FakeCol())
+    store.set_answer("mystery.com", "Melior", by="U1")
+    sl = FakeSL([acct(5, "u5@mystery.com")])
+    out, _ = run(sl, store=store, plans=())
+    assert [(r["client"], r["email"]) for r in out["set_up"]] == [("Melior", "u5@mystery.com")]
+    assert sl.accounts[5]["client_id"] == 12256
+    store.set_answer("gone.com", "skip", by="U1")
+    sl = FakeSL([acct(7, "x@gone.com")])
+    out, _ = run(sl, store=store, plans=())
+    assert not sl.writes and out["ask"] == [] and not out["problems"]
+
+
+def test_bettrdata_account_never_asks():
+    out, _ = run(FakeSL([acct(5, "u@mystery.com")]), plans=(), account="BETTRDATA")
+    assert out["ask"] == [] and [r["client"] for r in out["set_up"]] == ["Bettrdata"]
+
+
+def test_ask_message_has_three_buttons():
+    from inbox_intake_cli import ask_blocks
+    blocks = ask_blocks({"domain": "mystery.com", "account": "PRECISE_LEADS", "inboxes": 3, "kind": "Google"})
+    assert "3 new Google inboxes on *mystery.com*" in blocks[0]["text"]["text"]
+    assert [(b["action_id"], b["value"]) for b in blocks[1]["elements"]] == [
+        ("intake_client_pl", "mystery.com"), ("intake_client_melior", "mystery.com"), ("intake_client_skip", "mystery.com")]
+
+
+def test_asks_are_marked_only_when_the_dm_went_out():
+    from inbox_intake_cli import post_asks
+    store = ii.IntakeStore(FakeCol())
+    asks = [{"domain": "a.com", "account": "PRECISE_LEADS", "inboxes": 3, "kind": "Google"},
+            {"domain": "b.com", "account": "PRECISE_LEADS", "inboxes": 1, "kind": "Outlook"}]
+    assert post_asks(asks, store, lambda ask: ask["domain"] == "a.com") == 1
+    assert store.asked("a.com") and not store.asked("b.com")                  # b.com is asked again next run
+
+
+def test_answer_choice_is_saved_and_skip_sets_nothing_up():
+    from inbox_intake_cli import save_answer
+    store = ii.IntakeStore(FakeCol())
+    assert save_answer("Mystery.com", "melior", "U1", store) == "Melior" and store.answer("mystery.com") == "Melior"
+    assert save_answer("gone.com", "skip", "U1", store) == "skip" and store.answer("gone.com") == "skip"
+    import pytest
+    with pytest.raises(ValueError):
+        save_answer("x.com", "bettrdata", "U1", store)                        # only Precise Leads' account asks

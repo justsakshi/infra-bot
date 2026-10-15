@@ -131,6 +131,61 @@ def post_ready(announcements: list[dict], store, post) -> bool:
     return True
 
 
+ASK_USER = "U09TQ9D7YNM"   # Manveen; INTAKE_ASK_USER overrides
+
+
+def ask_blocks(ask: dict) -> list[dict]:
+    """The DM asking whose a new domain's inboxes are, with three buttons. Pure."""
+    acc = {"PRECISE_LEADS": "Precise Leads"}.get(ask["account"], ask["account"])
+    n = ask["inboxes"]
+    text = (f"{n} new {ask['kind']} inbox{'es' if n != 1 else ''} on *{ask['domain']}* in the {acc} Smartlead "
+            "account, and the bot doesn't know whose they are. Pick one to set them up (daily limit, warmup, "
+            "signature, tags); nothing changes until you do.")
+
+    def btn(label, key):
+        return {"type": "button", "action_id": f"intake_client_{key}", "value": ask["domain"],
+                "text": {"type": "plain_text", "text": label}}
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {"type": "actions", "elements": [btn("Precise Leads", "pl"), btn("Melior", "melior"),
+                                             btn("Not ours, skip", "skip")]}]
+
+
+CHOICES = {"pl": "Precise Leads", "melior": "Melior", "skip": "skip"}
+
+
+def save_answer(domain: str, choice: str, by: str, store) -> str:
+    """Record Manveen's answer for a domain ("pl", "melior" or "skip")."""
+    if choice not in CHOICES:
+        raise ValueError(f"choice must be one of {sorted(CHOICES)}")
+    store.set_answer(domain.strip().lower(), CHOICES[choice], by)
+    return CHOICES[choice]
+
+
+def post_asks(asks: list[dict], store, send) -> int:
+    """DM each ask with ``send(ask)``; mark a domain asked only if its DM went out."""
+    sent = 0
+    for ask in asks:
+        if send(ask):
+            store.mark_asked(ask["domain"])
+            sent += 1
+    return sent
+
+
+def _dm_ask(ask: dict) -> bool:
+    import requests
+    token = (os.getenv("DOMAINS_SLACK_BOT_TOKEN") or "").strip()
+    user = (os.getenv("INTAKE_ASK_USER") or ASK_USER).strip()
+    if not token:
+        return False
+    try:
+        r = requests.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {token}"},
+                          json={"channel": user, "text": f"Whose are the new inboxes on {ask['domain']}?",
+                                "blocks": ask_blocks(ask)}, timeout=15)
+        return bool(r.json().get("ok"))
+    except Exception:  # noqa: BLE001 - asked again next run
+        return False
+
+
 def should_post(results: dict[str, dict], previous: list[str]) -> bool:
     """Post when something was set up or a problem is new; standing problems
     stay in the 09:40 digest instead of every 2 hours. Pure."""
@@ -145,6 +200,9 @@ def main() -> int:
     ap.add_argument("--since", default=os.getenv("INTAKE_SINCE", "2026-10-12"))
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--only", default=None, help="one inbox or one domain")
+    ap.add_argument("--answer", nargs=2, metavar=("DOMAIN", "CHOICE"),
+                    help="Manveen's answer from Slack (pl | melior | skip): save it and set that domain up now")
+    ap.add_argument("--by", default="", help="who answered (Slack user id)")
     args = ap.parse_args()
 
     from smartlead.accounts import discover_accounts
@@ -173,6 +231,14 @@ def main() -> int:
     read_problems: list[str] = []
     tracker = scaledmail_tracker(tracker, read_problems)
     store = IntakeStore()
+    answered = None
+    if args.answer:
+        domain, choice = args.answer
+        answered = save_answer(domain, choice, args.by, store)
+        if answered == "skip":
+            print(json.dumps({"domain": domain.lower(), "client": "skip", "set_up": 0, "problems": []}))
+            return 0
+        args.apply, args.post, args.only = True, False, domain.strip().lower()
     by_domain = deliveries(plans, jobs)
     results: dict[str, dict] = {}
 
@@ -209,6 +275,18 @@ def main() -> int:
         posted = bool(channel and token and post_with_thread(token, channel, head, parts))
         if posted:
             store.save_posted_problems([p for r in results.values() for p in r["problems"]])
+    if answered:
+        rows = [r for res in results.values() for r in res["set_up"]]
+        ready = min((r["ready_on"] for r in rows if r["ready_on"]), default=None)
+        print(json.dumps({"domain": args.only, "client": answered, "set_up": len(rows),
+                          "ready_on": str(ready) if ready else None,
+                          "problems": [p for res in results.values() for p in res["problems"] if args.only in p]}))
+        return 0
+    asks = [a for r in results.values() for a in r.get("ask") or []]
+    if asks and args.apply and args.post:
+        post_asks(asks, store, _dm_ask)
+    elif asks:
+        parts.append("*Would ask Manveen whose these are*\n" + "\n".join(f"• {a['domain']} ({a['inboxes']} {a['kind']})" for a in asks))
     announcements = [a for r in results.values() for a in r.get("ready") or []]
     ready_posted = False
     if args.apply and args.post:

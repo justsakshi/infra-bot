@@ -646,6 +646,8 @@ async function startDomainsApp(baseDir, opts = {}) {
   require('./buy_flow').registerBuyFlow(ui, baseDir);
   require('./slack_reply').registerNav(ui, baseDir);
   require('./domains_unified').registerUnified(ui, baseDir);
+  // "Whose are these?" buttons from inbox intake (intake_slack.js).
+  require('./intake_slack').registerIntakeSlack(ui, baseDir);
   // DMs and the app's Messages ("agent") tab: talk to it like the slash command.
   require('./domains_home').registerDomainsHome(ui, baseDir, { infra, botToken: token });
 

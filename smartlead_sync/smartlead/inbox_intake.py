@@ -59,6 +59,20 @@ class IntakeStore:
         upd["$inc"] = {"tries": 1 if count_try else 0}
         self.col.update_one({"email": email}, upd, upsert=True)
 
+    # Manveen's answer to "whose are these?" for a domain: a client name or "skip".
+    def answer(self, domain: str) -> str | None:
+        return self._doc("__answer__:" + domain.lower()).get("client")
+
+    def set_answer(self, domain: str, client: str, by: str = "") -> None:
+        self.col.update_one({"email": "__answer__:" + domain.lower()},
+                            {"$set": {"client": client, "by": by, "at": _now()}}, upsert=True)
+
+    def asked(self, domain: str) -> bool:
+        return bool(self._doc("__asked__:" + domain.lower()))
+
+    def mark_asked(self, domain: str) -> None:
+        self.col.update_one({"email": "__asked__:" + domain.lower()}, {"$set": {"at": _now()}}, upsert=True)
+
     def client_of(self, email: str) -> str | None:
         return self._doc(email).get("client")
 
@@ -125,7 +139,7 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
     for trying a few inboxes before the rest."""
     from smartlead.inbox_setup import plan_changes
     from smartlead.notify import redact
-    out: dict = {"set_up": [], "would": [], "waiting": [], "problems": [], "complete": [], "ready": []}
+    out: dict = {"set_up": [], "would": [], "waiting": [], "problems": [], "complete": [], "ready": [], "ask": []}
     accounts = await sl.list_email_accounts()
     tags = {t["name"]: t["id"] for t in await sl.list_tags()}
     email_of = lambda a: str(a.get("from_email", "")).lower()          # noqa: E731
@@ -174,9 +188,17 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
         if store.tries(email) >= MAX_TRIES:
             out["problems"].append(f"`{email}`: stuck after {MAX_TRIES} tries, set it up by hand in Smartlead")
             continue
-        client = _client(a, account_name, d, tracker.get(dom), melior_id)
+        answer = store.answer(dom)
+        if answer == "skip":
+            continue                                   # Manveen said these are not ours
+        client = _client(a, account_name, d, tracker.get(dom), melior_id) or (
+            answer if answer in CURRENT_CLIENTS else None)
         if not client:
-            out["problems"].append(f"`{email}`: no client known for {dom} (no order, job or tracker row), not set up")
+            # Precise Leads' account holds Precise Leads and Melior: ask Manveen once per domain.
+            if not store.asked(dom) and dom not in {x["domain"] for x in out["ask"]}:
+                out["ask"].append({"domain": dom, "account": account_name, "kind": st.standard_for(
+                    st.inbox_kind(a, per_domain.get(dom, 1)))["label"],
+                    "inboxes": sum(1 for x in new if dom_of(x) == dom)})
             continue
         kind = st.inbox_kind(a, per_domain.get(dom, 1))
         vendor = _vendor(d, tracker.get(dom))
@@ -246,8 +268,8 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
             continue
         store.record(x["row"]["email"], ok=True, mismatches=[], **x["rec"])
         out["set_up"].append(x["row"])
-    for name in sorted({VENDOR_TAG.get((r["vendor"], r["kind"])) for r in out["set_up"]}
-                       | {CLIENT_TAG.get(r["client"]) for r in out["set_up"]} - {None}):
+    for name in sorted(({VENDOR_TAG.get((r["vendor"], r["kind"])) for r in out["set_up"]}
+                        | {CLIENT_TAG.get(r["client"]) for r in out["set_up"]}) - {None}):
         if name not in tags:
             out["problems"].append(f"Smartlead has no tag `{name}` in {account_name}: create it so new inboxes get it")
     # An order is complete when every one of its new inboxes is done, whichever run did it.
