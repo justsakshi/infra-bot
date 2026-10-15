@@ -318,3 +318,20 @@ def test_scaledmail_order_client_fills_tracker_gaps():
     sl = FakeSL([acct(5, "avinash@preciseleadshq.com")])
     res, _ = run(sl, plans=(), tracker=out)
     assert [(r["client"], r["vendor"]) for r in res["set_up"]] == [("Precise Leads", "scaledmail")]
+
+
+def test_scaledmail_read_failure_is_reported_not_silent(monkeypatch):
+    # 15 Oct: Render's runs left the 3 swapped domains alone with no message (ScaledMail read failed silently).
+    import inbox_intake_cli as cli
+    import smartlead.scaledmail as sm_mod
+
+    class Down:
+        def __enter__(self): raise RuntimeError("429 on /orders: Too many requests")
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(sm_mod, "configured", lambda: True)
+    monkeypatch.setattr(sm_mod, "ScaledMailClient", Down)
+    problems: list = []
+    out = cli.scaledmail_tracker({"a.com": {"client": "Melior"}}, problems)
+    assert out == {"a.com": {"client": "Melior"}}
+    assert problems == ["ScaledMail could not be read (429 on /orders: Too many requests): inboxes on ScaledMail "
+                        "domains the tracker doesn't know were not set up this run"]

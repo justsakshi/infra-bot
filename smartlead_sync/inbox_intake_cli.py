@@ -85,6 +85,23 @@ def with_scaledmail_clients(tracker: dict, sm_domains: list[dict]) -> dict:
     return out
 
 
+def scaledmail_tracker(tracker: dict, problems: list[str]) -> dict:
+    """``with_scaledmail_clients`` fed live; a failed ScaledMail read becomes a
+    problem line (posted once) instead of silently leaving domains unplaced."""
+    try:
+        from smartlead.scaledmail import ScaledMailClient, configured
+        if not configured():
+            return tracker
+        from smartlead.scaledmail_fleet import snapshot
+        with ScaledMailClient() as sm:
+            return with_scaledmail_clients(tracker, snapshot(sm)["domains"])
+    except Exception as exc:  # noqa: BLE001
+        from smartlead.notify import redact
+        problems.append(f"ScaledMail could not be read ({redact(str(exc))[:100]}): inboxes on ScaledMail "
+                        "domains the tracker doesn't know were not set up this run")
+        return tracker
+
+
 def should_post(results: dict[str, dict], previous: list[str]) -> bool:
     """Post when something was set up or a problem is new; standing problems
     stay in the 09:40 digest instead of every 2 hours. Pure."""
@@ -124,14 +141,8 @@ def main() -> int:
         tracker = {k: v for k, v in read_tracker().items() if "@" not in k}
     except Exception:  # noqa: BLE001
         tracker = {}
-    try:
-        from smartlead.scaledmail import ScaledMailClient, configured
-        if configured():
-            from smartlead.scaledmail_fleet import snapshot
-            with ScaledMailClient() as sm:
-                tracker = with_scaledmail_clients(tracker, snapshot(sm)["domains"])
-    except Exception:  # noqa: BLE001 - without it those inboxes are reported, not guessed
-        pass
+    read_problems: list[str] = []
+    tracker = scaledmail_tracker(tracker, read_problems)
     store = IntakeStore()
     by_domain = deliveries(plans, jobs)
     results: dict[str, dict] = {}
@@ -149,6 +160,9 @@ def main() -> int:
                 results[acc.name] = {"set_up": [], "would": [], "waiting": [], "complete": [],
                                      "problems": [f"{acc.name}: could not read Smartlead ({redact(str(exc))[:120]})"]}
     asyncio.run(run_all())
+    if read_problems:
+        results.setdefault("ScaledMail", {"set_up": [], "would": [], "waiting": [], "complete": [], "problems": []})
+        results["ScaledMail"]["problems"] += read_problems
 
     if args.apply and plan_store is not None:
         for pid in {p for r in results.values() for p in r["complete"]}:
