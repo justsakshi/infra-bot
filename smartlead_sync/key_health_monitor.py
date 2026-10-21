@@ -83,7 +83,8 @@ def _save(results: list[dict], checked_at: str) -> None:
 def _alert_parts(dead: list[dict], unreachable: list[dict]) -> tuple[list[str], list[str]]:
     """(headline_lines, thread_parts): who is broken in the channel, the advice in the thread."""
     icon = "🚨" if dead else "⚠️"
-    head = [f"{icon} Smartlead API key alert, {len(dead) + len(unreachable)} account(s)"]
+    n = len(dead) + len(unreachable)
+    head = [f"{icon} Smartlead API key alert: {n} account{'s' if n != 1 else ''}"]
     if dead:
         head.append("Key rejected: " + ", ".join(f"*{r['client']}* (`…{r.get('key_tail', '')}`)" for r in dead))
     if unreachable:

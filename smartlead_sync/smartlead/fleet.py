@@ -179,7 +179,7 @@ def update_cases(open_cases: dict[str, dict], fired: list[dict], records: list[d
 
 def watch_text(new: list[dict], open_count: dict[str, int], today: date, suggestions_only: bool = True) -> str:
     n = len(new)
-    head = f"Fleet watch, {_day(today)}: {n} new problem{'s' if n != 1 else ''}"
+    head = f"⚠️ Fleet watch, {_day(today)}: {n} new problem{'s' if n != 1 else ''}"
     lines = [head + (" (suggestions only, nothing was changed)" if suggestions_only else "")]
     groups: dict[str, list[dict]] = defaultdict(list)
     for c in new:
@@ -193,6 +193,7 @@ def watch_text(new: list[dict], open_count: dict[str, int], today: date, suggest
         lines.append(f"{action} ({label}): {shown}")
     total = sum(open_count.values())
     if total:
+        lines.append("")
         lines.append(f"Still open: {total} (" + ", ".join(
             f"{KINDS[k][0]} {v}" for k, v in open_count.items() if v and k in KINDS) + ")")
     return "\n".join(lines)

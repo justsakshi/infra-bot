@@ -34,7 +34,8 @@ const HELP = [
   'Or just DM the Domain Suggester app (“hi”).'
 ].join(NL);
 
-function section(text) { return { type: 'section', text: { type: 'mrkdwn', text: String(text).slice(0, 2900) } }; }
+function section(text) { return { type: 'section', text: { type: 'mrkdwn', text: String(text).slice(0, 2900).trimEnd() } }; }
+const day = d => require('./slack_text').day(d);
 function textBlocks(text) {
   const out = [];
   const t = String(text || '');
@@ -127,13 +128,13 @@ function reviewBlocks(r) {
   const save = reviews.reduce((a, x) => a + (x.retire_saves_monthly || 0), 0);
   const total = reviews.reduce((a, x) => a + (Number(x.price) || 0), 0);
   const blocks = [section(reviews.length
-    ? '*Before the bill — ' + plural(reviews.length, 'bill') + ' in the next ' + days + ' days, ' + money(total)
+    ? '*Before the bill: ' + plural(reviews.length, 'bill') + ' in the next ' + days + ' days, ' + money(total)
       + '*' + NL + 'Retiring the flagged inboxes saves *' + money(save) + '/month*.'
-    : '*Before the bill* — nothing bills in the next ' + days + ' days.')];
+    : '*Before the bill:* nothing bills in the next ' + days + ' days.')];
   reviews.slice(0, 20).forEach((rv, i) => {
     const c = rv.counts || {};
     blocks.push({ type: 'section',
-      text: { type: 'mrkdwn', text: ('*' + rv.bills_on + ' · ' + rv.provider + ' · ' + rv.label + '* — ' + money(rv.price) + NL
+      text: { type: 'mrkdwn', text: ('*' + day(rv.bills_on) + ' · ' + rv.provider + ' · ' + rv.label + '* · ' + money(rv.price) + NL
         + (c.KEEP || 0) + ' keep · ' + ((c.RETIRE || 0) ? '*' + c.RETIRE + ' retire*' : '0 retire') + ' · ' + (c.CHECK || 0) + ' check'
         + (rv.retire_saves_monthly ? ' · saves ' + money(rv.retire_saves_monthly) + '/mo' : '')).slice(0, 2900) },
       accessory: btn('Show inboxes', 'u_show_bill', JSON.stringify({ d: days, i, k: billKey(rv) }).slice(0, 1990)) });
@@ -148,16 +149,16 @@ function billBlocks(rv) {
   const rows = rv.rows || [];
   const bad = rows.filter(x => x.verdict === 'RETIRE');
   const chk = rows.filter(x => x.verdict === 'CHECK');
-  let t = '*' + rv.bills_on + ' · ' + rv.provider + ' · ' + rv.label + '* — ' + money(rv.price) + ' · ' + (c.KEEP || 0) + ' keep · *'
+  let t = '*' + day(rv.bills_on) + ' · ' + rv.provider + ' · ' + rv.label + '* · ' + money(rv.price) + ' · ' + (c.KEEP || 0) + ' keep · *'
     + (c.RETIRE || 0) + ' retire* · ' + (c.CHECK || 0) + ' check' + (rv.note ? NL + '_' + rv.note + '_' : '');
-  t += bad.slice(0, 30).map(x => NL + ':x: `' + x.email + '` — ' + x.why + ((x.campaigns || []).length ? ' :warning: in a live campaign' : '')).join('');
+  t += bad.slice(0, 30).map(x => NL + ':x: `' + x.email + '` · ' + x.why + ((x.campaigns || []).length ? ' :warning: in a live campaign' : '')).join('');
   if (bad.length > 30) t += NL + '…and ' + (bad.length - 30) + ' more to retire';
-  t += chk.slice(0, 15).map(x => NL + ':grey_question: `' + x.email + '` — ' + x.why).join('');
+  t += chk.slice(0, 15).map(x => NL + ':grey_question: `' + x.email + '` · ' + x.why).join('');
   if (chk.length > 15) t += NL + '…and ' + (chk.length - 15) + ' more to check';
   const blocks = [section(t),
     { type: 'context', elements: [{ type: 'mrkdwn', text: 'RETIRE = under 80% inbox in its latest test, on a spam domain, or not in Smartlead at all. CHECK = no recent test, broken connection or low warmup reputation.' }] }];
   if (rv.support_message) {
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*Message for ' + rv.provider + ' support* — copy & send:' }] });
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*Message for ' + rv.provider + ' support* (copy and send):' }] });
     blocks.push(section('```' + rv.support_message.slice(0, 2800) + '```'));
   }
   if (bad.length && rv.provider === 'Zapmail') {
@@ -199,7 +200,7 @@ function billingBlocks(r) {
   ((r && r.billing_errors) || []).forEach(e => blocks.push(section(':warning: could not check ' + e)));
   for (const x of soon.slice(0, 20)) {
     const doms = (x.domains || []).filter(d => DOMAIN_RE.test(d));
-    const s = section('*' + x.bills_on + '* — ' + money(x.price) + ' · ' + (x.mailboxes || '?') + ' ' + (x.provider === 'MICROSOFT' ? 'Outlook' : 'Google')
+    const s = section('*' + day(x.bills_on) + '* · ' + money(x.price) + ' · ' + (x.mailboxes ? x.mailboxes + ' ' : '') + (x.provider === 'MICROSOFT' ? 'Outlook' : 'Google')
       + ' ' + x.kind + ' · ' + x.account + (x.clients && x.clients.length ? ' · ' + x.clients.join(', ') : '')
       + (doms.length ? ' · ' + (doms.length === 1 ? '`' + doms[0] + '`' : doms.length + ' domains') : '')
       + (x.payment_failure ? ' · :x: ' + x.payment_failure : '')
@@ -221,7 +222,7 @@ function pastZapmailBlocks(r) {
   if (!r || r.error) return [section(':x: Could not load renewals: ' + require('./slack_text').plainError(r && r.error) + ' Try again in a few minutes.')];
   const past = ((r.renewals) || []).filter(x => !x.client).sort((a, b) => (a.expire_on || '').localeCompare(b.expire_on || ''));
   let t = '*Zapmail past-client domains left to lapse* (' + past.length + ', no action)';
-  const lines = past.map(x => '• `' + x.domain + '` — ' + (x.expire_on || '?') + (x.account ? ' · ' + x.account : ''));
+  const lines = past.map(x => '• `' + x.domain + '`' + (x.expire_on ? ' · ' + day(x.expire_on) : '') + (x.account ? ' · ' + x.account : ''));
   const blocks = [];
   for (let i = 0; i < lines.length; i += 40) {
     blocks.push(section((i ? '' : t + NL) + lines.slice(i, i + 40).join(NL)));

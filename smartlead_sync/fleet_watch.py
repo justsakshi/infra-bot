@@ -184,12 +184,12 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict]:
 
 def _post(text: str) -> bool:
     import requests
-    from smartlead.notify import redact
+    from smartlead.notify import redact, tidy
     token = os.getenv("SLACK_BOT_TOKEN", "").strip()
     if not token:
         return False
     r = requests.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {token}"},
-                      json={"channel": os.getenv("FLEET_WATCH_CHANNEL") or CHANNEL, "text": redact(text)[:3900]},
+                      json={"channel": os.getenv("FLEET_WATCH_CHANNEL") or CHANNEL, "text": redact(tidy(text))[:3900]},
                       timeout=20).json()
     if not r.get("ok"):
         print(f"  [fleet-watch] post failed: {r.get('error')}", file=sys.stderr)

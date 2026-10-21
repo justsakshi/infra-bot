@@ -253,7 +253,8 @@ def new_inbox_text(gaps: list[dict], added: set[str], created: list[str]) -> str
                          + ", ".join(fresh))
     if not lines:
         return ""
-    return "New inboxes for the placement tests (the bot cannot edit scheduled tests in Smart Delivery):\n" + "\n".join(lines)
+    return ("🧪 *New inboxes for the placement tests*\n\n" + "\n".join("• " + l for l in lines)
+            + "\n\n_The bot cannot edit scheduled tests in Smart Delivery, so these are for you to add._")
 
 
 async def _scheduled_tests(key: str) -> list[dict]:

@@ -70,7 +70,7 @@ def test_every_spam_mailbox_is_in_the_thread_with_its_action():
     for i in rep["inboxes"].values():
         if i["status"] == "bad":
             todo = f"remove from {i['campaigns'][0]}" if i["campaigns"] else "not in a live campaign"
-            assert re.search(re.escape(i["email"]) + r" — " + re.escape(todo), thread), i["email"]
+            assert re.search(re.escape(i["email"]) + r" · " + re.escape(todo), thread), i["email"]
     assert "box0@ok0.com" not in thread, "inbox mailboxes are not listed"
 
 

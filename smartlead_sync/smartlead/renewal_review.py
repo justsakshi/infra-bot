@@ -195,7 +195,7 @@ def support_message(review: dict) -> str:
     ref = review.get("order_id") or review.get("subscription_id") or ""
     lines = [f"Hi {review['provider']} team,", "",
              f"Our {review['label']} ({', '.join(review.get('clients') or []) or 'our account'}"
-             + (f", ref {ref}" if ref else "") + f") renews on {review['bills_on']}.",
+             + (f", ref {ref}" if ref else "") + f") renews on {_day(review['bills_on'])} {review['bills_on'][:4]}.",
              f"{len(bad)} of its inboxes are not delivering — our inbox-placement tests put them in spam:", ""]
     for dom in sorted(by_dom):
         whys = sorted({r["why"] for r in by_dom[dom]})

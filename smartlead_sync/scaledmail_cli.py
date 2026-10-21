@@ -161,10 +161,10 @@ def ready_message(lines: list[str], plans: dict | None = None) -> tuple[list[str
         head = ["⏳ Inboxes on the way to Smartlead"]
     mismatch = sum(1 for l in per_order if "⚠️" in l)
     if mismatch:
-        head.append(f"Sender name differs from the order on {mismatch} order(s), see the thread")
+        head.append(f"Sender name differs from the order on {mismatch} order{'s' if mismatch != 1 else ''}, see the thread")
     waiting = sum(1 for l in other if l.startswith("• ⏳"))
     if waiting:
-        head.append(f"{waiting} more order(s) still waiting for inboxes")
+        head.append(f"{waiting} more order{'s' if waiting != 1 else ''} still waiting for inboxes")
     parts = ["\n".join(per_order + other)] if per_order or other else []
     return head, parts
 
@@ -205,20 +205,23 @@ def digest(sm) -> dict:
     stuck = [d for d in snap["domains"] if d["status"] != "Active" and d["domain"] not in watch["covered"]]
     unassigned = [d["domain"] for d in snap["domains"] if not d["client"]]
     rep = fleet.report_summary(sm.reporting())
+    from smartlead.notify import day
     lines = list(watch["lines"]) + ready
     if ren["billing"]:
         lines.append("Orders billing in 3 days: " + "; ".join(
-            f"{o['description'].replace('*', '×')} ${o['amount']:.2f} on {o['billing_day']} ({', '.join(o['clients'])})"
+            f"{o['description'].replace('*', '×')} ${o['amount']:.2f} on {day(o['billing_day'])}"
+            + (f" ({', '.join(o['clients'])})" if o['clients'] else "")
             for o in ren["billing"]))
     if ren["domains"]:
         lines.append("Domains renewing in 14 days: " + ", ".join(
-            f"{d['domain']} {d['renewal_at']}" for d in ren["domains"]))
+            f"{d['domain']} ({day(d['renewal_at'])})" for d in ren["domains"]))
     if stuck:
         lines.append("Still being set up: " + ", ".join(f"{d['domain']} ({d['status']})" for d in stuck))
     if unassigned:
-        lines.append(f"No client on {len(unassigned)} domain(s) — set the order tag: " + ", ".join(unassigned))
+        k = len(unassigned)
+        lines.append(f"No client on {k} domain{'s' if k != 1 else ''}, set the order tag: " + ", ".join(unassigned))
     if rep.get("flagged"):
-        lines.append(f"Placement week {rep['weekof']}: " + ", ".join(
+        lines.append(f"Placement, week of {day(rep['weekof'])}: " + ", ".join(
             f"{r['domain']} {r['score']}%" for r in rep["flagged"]))
     w = watch["lines"]
     return {"lines": lines, "monthly_total": snap["monthly_total"],

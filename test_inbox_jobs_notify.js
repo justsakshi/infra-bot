@@ -4,7 +4,7 @@ const { jobUpdateText } = require('./inbox_jobs_notify');
 
 let n = 0;
 const base = { job_id: 'abc123', client: 'Melior', domains: ['gomelior.com'], progress: 'Inbox slots ✓ · Create inboxes …' };
-assert.ok(/white_check_mark.*Melior.*gomelior\.com.*is done/.test(jobUpdateText({ ...base, status: 'done' }))); n++;
+assert.ok(/white_check_mark: \*Inbox setup for Melior is done\*\n\n.*gomelior\.com/.test(jobUpdateText({ ...base, status: 'done' }))); n++;
 const w = jobUpdateText({ ...base, status: 'waiting', detail: 'bought 2 slot(s); pay: https://invoice' });
 assert.ok(/hourglass/.test(w) && /pay: https:\/\/invoice/.test(w) && /`abc123`/.test(w)); n++;
 const chk = jobUpdateText({ ...base, status: 'needs_check', detail: 'purchase b1 is unknown' });

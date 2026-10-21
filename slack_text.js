@@ -54,4 +54,32 @@ function plainError(raw) {
   return httpSentence(msg) || msg || 'Something went wrong (no details).';
 }
 
-module.exports = { plainError, redact };
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * A provider date ("2026-11-08", "2026-11-08T08:26:00Z") as people write it:
+ * "8 Nov", with the year only when it is not this year ("6 Jul 2027").
+ * Anything that is not an ISO date passes through unchanged; empty → ''.
+ */
+function day(iso, now = new Date()) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || '').trim());
+  if (!m) return String(iso || '').trim();
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (mo < 1 || mo > 12) return String(iso).trim();
+  return d + ' ' + MONTHS[mo - 1] + (y !== now.getFullYear() ? ' ' + y : '');
+}
+
+/**
+ * '⚠️ Kill warnings, 13 Oct' -> '⚠️ *Kill warnings, 13 Oct*': the title in bold
+ * after its emoji (same rule as notify.title in Python). A line that already
+ * has bold, or starts a list, quote, code or link, is left as it is.
+ */
+function boldTitle(line) {
+  const s = String(line || '');
+  if (!s.trim() || /^\s*[>•`<]/.test(s)) return s;
+  const m = /^((?:(?::[\w+-]+:)|[^\x00-\x7F\p{L}\p{N}\s])+\s+)?(.*\S)\s*$/su.exec(s);
+  if (!m || m[2].includes('*')) return s;
+  return (m[1] || '') + '*' + m[2] + '*';
+}
+
+module.exports = { plainError, redact, day, boldTitle };

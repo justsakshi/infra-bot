@@ -39,7 +39,10 @@ function reportBlocks(r, max = 21) {
   const section = t => ({ type: 'section', text: { type: 'mrkdwn', text: t } });
   if (!r || r.error) return [section(':x: ' + ((r && r.error) || 'no result'))];
   if (!Array.isArray(r.headline)) return auditBlocks(r.text || '').slice(0, max);
-  const out = [section(r.headline.filter(Boolean).join('\n').slice(0, 2900)), { type: 'divider' }];
+  // Title line, a blank line, then the facts (same layout as the channel post).
+  const [title, ...facts] = r.headline.filter(Boolean);
+  const head = [require('./slack_text').boldTitle(title), facts.join('\n')];
+  const out = [section(head.filter(Boolean).join('\n\n').slice(0, 2900)), { type: 'divider' }];
   const chunks = [];
   for (const part of r.thread || []) {
     let cur = '';

@@ -168,13 +168,16 @@ function statusBlocks(r) {
   return blocks;
 }
 
+const day = d => require('./slack_text').day(d);
+const price = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? '' : ' ' + money(v));
+
 /** *Show orders*: every active order, unused domains, and the prices sentence (said here only). */
 function ordersListBlocks(r) {
   if (!r || r.error) return [section(':x: ' + plain(r && r.error))];
   const orders = (r.orders || []).filter(o => o.status === 'Active');
-  let t = '*ScaledMail orders* — ' + money(r.monthly_total) + '/mo' + NL;
-  t += orders.map(o => '• ' + desc(o.description) + ' — ' + money(o.amount) + '/mo · ' + o.mailboxes + ' mailboxes · '
-    + ((o.clients || []).join(', ') || '—') + ' · bills ' + (o.billing_day || '?')).join(NL) || '_no active orders_';
+  let t = '*ScaledMail orders* · ' + money(r.monthly_total) + '/mo' + NL;
+  t += orders.map(o => '• ' + desc(o.description) + ' · ' + money(o.amount) + '/mo · ' + o.mailboxes + ' mailboxes'
+    + ((o.clients || []).length ? ' · ' + o.clients.join(', ') : '') + (o.billing_day ? ' · bills ' + day(o.billing_day) : '')).join(NL) || '_no active orders_';
   if ((r.inventory || []).length) {
     t += NL + NL + 'Unused registered domains: ' + r.inventory.map(i => '`' + i.domain + '`').join(', ');
   }
@@ -187,15 +190,15 @@ function pastClientDomain(x) { return Boolean(x.client) && !CLIENTS.includes(x.c
 function renewalsBlocks(r) {
   const bills = r.billing || [];
   const total = bills.reduce((a, o) => a + (Number(o.amount) || 0), 0);
-  const b = bills.map(o => '• *' + o.billing_day + '* — ' + desc(o.description) + ' ' + money(o.amount) + ' · ' + (o.clients || []).join(', '));
+  const b = bills.map(o => '• *' + day(o.billing_day) + '* · ' + desc(o.description) + ' ' + money(o.amount) + ((o.clients || []).length ? ' · ' + o.clients.join(', ') : ''));
   const doms = r.domains || [];
   const past = doms.filter(pastClientDomain);
-  const d = doms.filter(x => !pastClientDomain(x)).map(x => '• *' + x.renewal_at + '* — `' + x.domain + '` ' + money(x.price) + ' · '
+  const d = doms.filter(x => !pastClientDomain(x)).map(x => '• *' + day(x.renewal_at) + '* · `' + x.domain + '`' + price(x.price) + ' · '
     + (x.client || (x.provider === 'unused' ? 'unused' : 'unassigned')));
   const blocks = [section('*' + (bills.length ? money(total) + ' bills in the next ' + (r.billing_days || 14) + ' days* (' + bills.length + ' order' + (bills.length === 1 ? '' : 's') + ')'
     : 'No ScaledMail order bills in the next ' + (r.billing_days || 14) + ' days*')
     + (b.length ? NL + b.join(NL) : '')
-    + NL + NL + '*Domain renewals — next ' + (r.domain_days || 60) + ' days*' + NL + (d.join(NL) || '_none_'))];
+    + NL + NL + '*Domain renewals in the next ' + (r.domain_days || 60) + ' days*' + NL + (d.join(NL) || '_none_'))];
   if (past.length) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: past.length + ' past-client domain' + (past.length === 1 ? '' : 's') + ' renew in this window (no action).' },
       accessory: btn('Show', 'u_show_past', 'sm') });
@@ -209,7 +212,7 @@ function pastRenewalsBlocks(r) {
   if (!r || r.error) return [section(':x: ' + plain(r && r.error))];
   const past = (r.domains || []).filter(pastClientDomain);
   return [section('*ScaledMail past-client domains renewing* (' + past.length + ', no action)' + NL
-    + (past.map(x => '• ' + x.renewal_at + ' — `' + x.domain + '` · ' + x.client).join(NL) || '_none_'))];
+    + (past.map(x => '• ' + day(x.renewal_at) + ' · `' + x.domain + '` · ' + x.client).join(NL) || '_none_'))];
 }
 
 function orderMenu(o) {
@@ -223,7 +226,7 @@ function ordersBlocks(r) {
   for (const o of (r.orders || []).slice(0, 30)) {
     const s = section((o.status === 'Active' ? ':large_green_circle: ' : ':white_circle: ') + '*' + desc(o.description) + '* — '
       + money(o.amount) + '/mo · ' + o.status + ' · ' + o.domains + ' domains / ' + o.mailboxes + ' mailboxes · '
-      + ((o.clients || []).join(', ') || '—') + (o.billing_day ? ' · bills ' + o.billing_day : '') + NL + '`' + o.id + '`');
+      + ((o.clients || []).join(', ') || '—') + (o.billing_day ? ' · bills ' + day(o.billing_day) : '') + NL + '`' + o.id + '`');
     if (ORDER_RE.test(o.id)) s.accessory = orderMenu(o);
     blocks.push(s);
   }
@@ -233,16 +236,16 @@ function ordersBlocks(r) {
 function domainBlocks(r) {
   if (!r || r.error) return [section(':x: ' + plain(r && r.error))];
   if (!r.found) {
-    return [section('`' + r.domain + '` is not on ScaledMail' + (r.inventory ? ' as a live domain — it is an *unused registration* (renews ' + r.inventory.renewal_at + '). It can replace a burnt domain (`/domains sm` → domain → Replace).' : '.'))];
+    return [section('`' + r.domain + '` is not on ScaledMail' + (r.inventory ? ' as a live domain — it is an *unused registration* (renews ' + day(r.inventory.renewal_at) + '). It can replace a burnt domain (`/domains sm` → domain → Replace).' : '.'))];
   }
   const d = r.row;
   const boxes = d.mailbox_rows || [];
-  let t = '*`' + d.domain + '`* — ' + (d.client || ':warning: no client') + ' · ' + PNAME[d.provider] + ' · ' + d.status
+  let t = '*`' + d.domain + '`* · ' + (d.client || ':warning: no client') + ' · ' + PNAME[d.provider] + ' · ' + d.status
     + ' · ' + d.mailboxes + ' mailboxes' + NL
-    + 'Order: ' + desc(d.order || '?') + ' (' + d.order_status + (d.billing_day ? ', bills ' + d.billing_day : '') + ')'
-    + ' · domain renews ' + (d.renewal_at || '?') + (d.renewal_price ? ' at ' + money(d.renewal_price) : '')
-    + ' · redirect ' + (d.redirect || '_none_') + (d.masking ? ' · masked → ' + (d.masking_target || '?') : '') + NL;
-  t += boxes.slice(0, 30).map(b => '• ' + b.email + ' — ' + (b.status || '?') + (b.name ? ' · ' + b.name : '')).join(NL);
+    + (d.order ? 'Order: ' + desc(d.order) + ' (' + d.order_status + (d.billing_day ? ', bills ' + day(d.billing_day) : '') + ') · ' : '')
+    + (d.renewal_at ? 'domain renews ' + day(d.renewal_at) + (d.renewal_price ? ' at ' + money(d.renewal_price) : '') + ' · ' : '')
+    + 'redirect ' + (d.redirect || '_none_') + (d.masking ? ' · masked' + (d.masking_target ? ' → ' + d.masking_target : '') : '') + NL;
+  t += boxes.slice(0, 30).map(b => '• ' + b.email + (b.status ? ' · ' + b.status : '') + (b.name ? ' · ' + b.name : '')).join(NL);
   if (boxes.length > 30) t += NL + '…and ' + (boxes.length - 30) + ' more';
   const base = { domain: d.domain, order_id: d.order_id, client: d.client || '', boxes: boxes.length };
   const elements = [];
@@ -380,7 +383,7 @@ function planBlocks(plans) {
   for (const p of plans) {
     const s = section((icon[p.status] || '•') + ' `' + p.plan_id + '` ' + p.status + ' · ' + p.client + ' · ' + PNAME[p.provider] + ' · '
       + p.mailboxes + ' mailboxes · ' + money(p.monthly_usd) + '/mo · ' + (p.domains || []).join(', ')
-      + (p.error ? NL + '_' + String(p.error).slice(0, 200) + '_' : '') + NL + '_staged ' + String(p.staged_at || '').slice(0, 10) + '_');
+      + (p.error ? NL + '_' + String(p.error).slice(0, 200) + '_' : '') + (p.staged_at ? NL + '_staged ' + day(String(p.staged_at).slice(0, 10)) + '_' : ''));
     if ((p.status === 'planned' || p.status === 'failed') && PLAN_RE.test(p.plan_id)) {
       s.accessory = placeButton(p.plan_id, p.monthly_usd, p.domains_usd, p.client);
     } else if ((p.status === 'unknown' || p.status === 'in_progress' || p.status === 'payment_pending') && PLAN_RE.test(p.plan_id)) {

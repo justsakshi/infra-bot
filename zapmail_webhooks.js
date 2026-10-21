@@ -68,27 +68,27 @@ function summarizeEvent(evt) {
     const critical = typeof score === 'number' && score <= 30 && (x.assignedMailboxesCount || 0) > 0;
     return {
       domain: name, alert: Boolean(prev && status && prev !== status) || critical,
-      text: (critical ? ':rotating_light: ' : ':globe_with_meridians: ') + '`' + (name || '?') + '`'
+      text: (critical ? ':rotating_light: ' : ':globe_with_meridians: ') + (name ? '`' + name + '`' : 'A Zapmail domain')
         + (status ? ' is now *' + status + '*' : ' was updated') + (prev ? ' (was ' + prev + ')' : '')
-        + (typeof score === 'number' ? ' · health ' + score + (critical ? ' — CRITICAL' : '') : '')
+        + (typeof score === 'number' ? ' · health ' + score + (critical ? ' (CRITICAL)' : '') : '')
     };
   }
   if (type.startsWith('mailbox.')) {
     const x = d.mailboxDetails || d.mailbox || d;
-    const email = x.email || (x.username && x.domain ? x.username + '@' + x.domain : '?');
+    const email = x.email || (x.username && x.domain ? x.username + '@' + x.domain : '');
     const status = x.status || d.status;
     const failed = String(status || '').toUpperCase() === 'FAILED';
     const prev = prevOf();
     return {
       domain: x.domain || String(email).split('@')[1], alert: failed,
-      text: (failed ? ':x: ' : ':envelope: ') + 'Mailbox `' + email + '`'
+      text: (failed ? ':x: ' : ':envelope: ') + (email ? 'Mailbox `' + email + '`' : 'A Zapmail mailbox')
         + (status ? ' is *' + status + '*' : ' was updated') + (prev ? ' (was ' + prev + ')' : '')
     };
   }
   if (type === 'export.completed') {
     return {
       domain: null, alert: false,
-      text: ':white_check_mark: Zapmail export to *' + (d.app_name || '?') + '* completed (export ' + d.export_id + ')'
+      text: ':white_check_mark: Zapmail export' + (d.app_name ? ' to *' + d.app_name + '*' : '') + ' completed (export ' + d.export_id + ')'
         + ((d.mailboxes || []).length ? ' · ' + d.mailboxes.length + ' mailbox(es)' : '')
     };
   }
@@ -111,13 +111,13 @@ function summarizeEvent(evt) {
       domain: null, alert: Boolean(failure) || Boolean(status && status !== 'ACTIVE'),
       text: ':credit_card: Zapmail subscription ' + (what || id || '(no details)')
         + (status ? ' is now *' + status + '*' : ' changed') + (prevOf() ? ' (was ' + prevOf() + ')' : '')
-        + (renews ? ' · next bill ' + renews : '') + (failure ? ' · :x: payment failed: ' + failure : '')
+        + (renews ? ' · next bill ' + require('./slack_text').day(renews) : '') + (failure ? ' · :x: payment failed: ' + failure : '')
     };
   }
   if (type === 'export.failed') {
     return {
       domain: null, alert: true,
-      text: ':x: Zapmail export to *' + (d.app_name || '?') + '* failed (export ' + d.export_id + '): '
+      text: ':x: Zapmail export' + (d.app_name ? ' to *' + d.app_name + '*' : '') + ' failed (export ' + d.export_id + '): '
         + (d.error || 'no reason given') + ((d.mailboxes || []).length ? ' · ' + d.mailboxes.length + ' mailbox(es)' : '')
     };
   }
@@ -126,7 +126,7 @@ function summarizeEvent(evt) {
     return {
       domain: null, alert: done,
       text: ':test_tube: Placement test ' + d.id + ' is *' + d.status + '*'
-        + (done ? ' — results in the Zapmail app, or `zapmail_placement.py --report <order id>`' : '')
+        + (done ? '. Results are in the Zapmail app, or run `zapmail_placement.py --report <order id>`' : '')
     };
   }
   if (type === 'subscription.billing_changed') {

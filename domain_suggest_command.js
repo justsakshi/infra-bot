@@ -219,7 +219,7 @@ function buyButtonBlocks(batches, today, accountLabel) {
       && (b.earliest_date || '') <= today)
     .map(b => ({
       type: 'section',
-      text: { type: 'mrkdwn', text: 'Due: `' + b.batch_id + '` ' + (b.client || '') + ' — '
+      text: { type: 'mrkdwn', text: 'Due: `' + b.batch_id + '`' + (b.client ? ' · ' + b.client : '') + ' · '
         + (b.domains || []).join(', ') + ' · est. $' + Number(b.estimated_usd || 0).toFixed(2) },
       accessory: {
         type: 'button', action_id: 'domains_buy', style: 'danger',

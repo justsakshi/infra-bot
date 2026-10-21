@@ -44,7 +44,7 @@ ok(head == ["\U0001f6a8 X, 12 Oct: 2 of 2 mailboxes in spam (2 domains in spam)"
    f"headline: icon, client, date, result, got {head}")
 ok("Outlook \u2192 Google: 1 of 1 in spam (100%)" in txt, "thread shows where the test emails landed")
 ok(txt.index("*Mailboxes in spam (2)*") < txt.index("Where the test emails landed"), "mailbox list comes first in the thread")
-ok("\u2022 b@out.com \u2014 remove from Camp 1\n\u2022 a@gm.com \u2014 not in a live campaign, nothing to remove" in txt,
+ok("\u2022 b@out.com \u00b7 remove from Camp 1\n\u2022 a@gm.com \u00b7 not in a live campaign, nothing to remove" in txt,
    "one list: each mailbox by name with what to do, live ones first")
 ch, cp = format_slack("Y", build_report({"c@gm.com": [{"seed": "x@g.com", "folder": "Inbox"}]}, {"c@gm.com": "GMAIL"}, prov), ["t"])
 ok(ch == ["\u2705 Y: the mailbox lands in the inbox"]

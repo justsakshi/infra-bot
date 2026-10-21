@@ -38,5 +38,21 @@ assert.deepStrictEqual(auto.slice(0, 4), ['autorenew', '050da6e0-82a7-4e9d-834b-
 const { domainBlocks } = require('./zapmail_actions');
 const empty = domainBlocks({ hits: [{ domain: 'gomelior.com', client: 'Melior', account: 'PRECISE_LEADS', status: 'ACTIVE', health: { score: 0, label: 'critical' }, mailboxes: [] }] });
 assert.ok(/health n\/a \(no mailboxes yet\)/.test(empty[0].text.text) && !/rotating_light/.test(empty[0].text.text)); n++;
+// Provider dates read as people write them (natural spacing, 21 Oct 2026).
+{
+  const { day } = require('./slack_text');
+  const now = new Date('2026-10-21T10:00:00Z');
+  assert.strictEqual(day('2026-11-08', now), '8 Nov'); n++;
+  assert.strictEqual(day('2026-11-08T08:26:00.000Z', now), '8 Nov'); n++;
+  assert.strictEqual(day('2027-07-06', now), '6 Jul 2027'); n++;
+  assert.strictEqual(day('', now), ''); n++;
+  assert.strictEqual(day('next week', now), 'next week'); n++;
+  const { boldTitle } = require('./slack_text');
+  assert.strictEqual(boldTitle('⚠️ Kill warnings, 13 Oct'), '⚠️ *Kill warnings, 13 Oct*'); n++;
+  assert.strictEqual(boldTitle(':rotating_light: Key alert'), ':rotating_light: *Key alert*'); n++;
+  assert.strictEqual(boldTitle('Volume review'), '*Volume review*'); n++;
+  for (const keep of ['🩺 *Already bold*', '• a@x.com', '> quote', '`code`', '<https://x|Link>', '']) {
+    assert.strictEqual(boldTitle(keep), keep); n++;
+  }
+}
 console.log(n + ' passed');
-

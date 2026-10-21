@@ -431,6 +431,6 @@ def setup_watch(snap: dict, plans: list[dict], *, today: date) -> dict:
         if days > SETUP_DAYS:
             lines.append(f"Late, business day {days} (support says 2-3), order {oid}: {waiting}. Ask support.")
         else:
-            lines.append(f"Setting up, business day {days} of 2-3, order {oid}: {len(names)} domain(s): "
+            lines.append(f"Setting up, business day {days} of 2-3, order {oid}: {len(names)} domain{'s' if len(names) != 1 else ''}: "
                          + ", ".join(names))
     return {"lines": lines, "newly_live": newly, "covered": covered}
