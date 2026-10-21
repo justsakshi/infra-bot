@@ -402,11 +402,8 @@ async def main() -> None:
         print(f"[SYNC] FAILED: {len(failed_tabs)} of {total} tab(s) NOT written:")
         for e in failed_tabs:
             print(f"[SYNC]   {e['tab']}: {e['error']}")
-        lines = [f"*Sheet sync: {len(failed_tabs)} of {total} tab(s) NOT written* ({end_time})"]
-        lines += [f"• `{e['tab']}` — {e['error'][:160]}" for e in failed_tabs]
-        lines.append("Details on the Last Sync tab.")
         try:
-            _notify.post_digest("\n".join(lines))
+            _notify.post_digest(_notify.sync_failure_text(failed_tabs, total))
         except Exception as exc:
             print(f"[!] Sync-failure Slack alert failed: {exc}")
         sys.exit(2)

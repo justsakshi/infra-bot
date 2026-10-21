@@ -440,7 +440,7 @@ function formatBuyResult(r) {
   if (batches.length) {
     msg += NL;
     batches.forEach((b) => {
-      msg += NL + '• *' + b.earliest_date + '* — ' + list(b.domains)
+      msg += NL + '• ' + (b.earliest_date ? '*' + require('./slack_text').day(b.earliest_date) + '* · ' : '') + list(b.domains)
         + ' · est. $' + Number(b.estimated_usd).toFixed(2) + ' · batch `' + b.batch_id + '`';
     });
     msg += NL + NL + 'Total est. $' + Number(r.total_usd).toFixed(2) + '/yr';

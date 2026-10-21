@@ -235,7 +235,7 @@ def format_slack(client: str, report: dict, test_names: list[str],
         for i in flagged:
             todo = (f"remove from {', '.join(i['campaigns'])}" if i["campaigns"]
                     else "not in a live campaign, nothing to remove")
-            rows.append(f"\u2022 {i['email']} \u2014 {todo}")
+            rows.append(f"\u2022 {i['email']} \u00b7 {todo}")
         parts.append("\n".join(rows))
     if avoid or spam_domains:
         rows = ["*Domains*"]

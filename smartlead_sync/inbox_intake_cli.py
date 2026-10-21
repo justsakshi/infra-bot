@@ -112,10 +112,10 @@ def ready_message(announcements: list[dict]) -> str:
     parts = []
     if ready:
         n = len(ready)
-        parts.append("\n".join([f"✅ Ready to send now: {n} domain{'s' if n != 1 else ''}"] + ready
-                               + ["Run a Smart Delivery placement test before adding them to campaigns."]))
+        parts.append("\n".join([f"✅ *Ready to send now: {n} domain{'s' if n != 1 else ''}*", ""] + ready
+                               + ["", "Run a Smart Delivery placement test before adding them to campaigns."]))
     if low:
-        parts.append("\n".join(["⚠️ Reached the warmup date but not ready yet:"] + low))
+        parts.append("\n".join(["⚠️ *Reached the warmup date but not ready yet*", ""] + low))
     return "\n\n".join(parts)
 
 

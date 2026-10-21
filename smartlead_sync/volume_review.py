@@ -205,14 +205,14 @@ def pilot_add(domains: set[str], store, by: str) -> dict:
 
 def _post(text: str) -> bool:
     import requests
-    from smartlead.notify import redact
+    from smartlead.notify import redact, tidy
     token = os.getenv("SLACK_BOT_TOKEN", "").strip()
     channel = (os.getenv("VOLUME_REVIEW_CHANNEL") or os.getenv("KILL_REPORT_CHANNEL")
                or os.getenv("PLACEMENT_REPORT_CHANNEL") or DEFAULT_CHANNEL)
     if not token:
         return False
     r = requests.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {token}"},
-                      json={"channel": channel, "text": redact(text)[:3900]}, timeout=20).json()
+                      json={"channel": channel, "text": redact(tidy(text))[:3900]}, timeout=20).json()
     if not r.get("ok"):
         print(f"  [volume-review] post failed: {r.get('error')}", file=sys.stderr)
     return bool(r.get("ok"))

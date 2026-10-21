@@ -18,7 +18,7 @@ function resultText(r, domain, client) {
   const { plainError } = require('./slack_text');
   if (!r || r.error) return ':x: Could not set up *' + domain + '*: ' + plainError((r && r.error) || 'no result');
   if (r.client === 'skip') return 'Okay, *' + domain + '* is not ours. The bot will leave it alone and not ask again.';
-  const problems = (r.problems || []).length ? '\n:warning: ' + r.problems.join('\n:warning: ') : '';
+  const problems = (r.problems || []).length ? '\n\n:warning: ' + r.problems.join('\n:warning: ') : '';
   if (!r.set_up) return ':warning: Saved *' + domain + '* as ' + client + ', but nothing was set up yet.' + problems;
   return ':white_check_mark: Set up ' + r.set_up + ' inbox' + (r.set_up === 1 ? '' : 'es') + ' on *' + domain + '* for '
     + client + (r.ready_on ? ', ready to use from ' + day(r.ready_on) : '') + '.' + problems;

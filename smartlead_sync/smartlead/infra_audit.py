@@ -272,7 +272,7 @@ def summary_parts(findings: list[dict], checked: dict, today=None) -> tuple[list
         clients = Counter(f["client"] for f in items)
         lines = [f"*{s} · {NAMES.get(check, check)}* ({len(items)}): "
                  + ", ".join(f"{c} {k}" for c, k in clients.most_common())]
-        lines += [f"   • `{f['subject']}` ({f['client']}): {f['detail']}" for f in items]
+        lines += [f"• `{f['subject']}` ({f['client']}): {f['detail']}" for f in items]
         lines.append(f"_Fix: {items[0]['fix']}_")
         thread.append("\n".join(lines))
     thread.append(NOT_CHECKABLE)

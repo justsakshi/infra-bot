@@ -23,6 +23,7 @@ inboxes, clients}.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 
@@ -81,6 +82,15 @@ SCALEDMAIL_NOTE = ("_ScaledMail's API does not show payment state, so on its bil
                    "went through in ScaledMail (it can need 3-D Secure confirmation)._")
 
 
+_ISO_DAY = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+
+
+def _plain(detail: str) -> str:
+    """An event's saved detail as Slack shows it: '8 Nov' dates, a comma for the dash."""
+    d = _ISO_DAY.sub(lambda m: f"{int(m[3])} {date(int(m[1]), int(m[2]), int(m[3])):%b}", str(detail or ""))
+    return d.replace(" — ", ", ")
+
+
 def format_events(events: list[dict], today: date | None = None) -> tuple[list[str], list[str]]:
     """``(headline_lines, thread_parts)``: a title line plus one line per event
     in the channel; the what-to-do advice once, in the thread."""
@@ -97,7 +107,7 @@ def format_events(events: list[dict], today: date | None = None) -> tuple[list[s
         if e.get("invoice_url") and e["event"] in ("payment", "not_renewed", "status", "bill_day"):
             pay = f" · <{e['invoice_url']}|{'Pay / see invoice' if e['provider'] == 'Zapmail' else 'Open ScaledMail billing'}>"
         head.append(f"{ICON[e['event']]} *{e['provider']} · {e['label']}*" + (f" ({who})" if who else "")
-                    + f" — {e['detail']}{pay}")
+                    + f" · {_plain(e['detail'])}{pay}")
     advice = []
     if any(e["event"] in URGENT for e in alerts):
         advice.append(ADVICE)

@@ -98,6 +98,11 @@ def _yesterdays_cumulative(col, dom: str, yesterday: str) -> dict:
         return {}
 
 
+def _alert_line(dom: str, client: str, alert: str) -> str:
+    """'• *d.com* (Melior): reply rate 0.1% vs 1.2% baseline'; no empty '()'."""
+    return f"• *{dom}*" + (f" ({client})" if client else "") + f": {alert}"
+
+
 def _alert_parts(alert_lines: list[str]) -> tuple[list[str], list[str]]:
     """(headline_lines, thread_parts). Up to 3 alerts sit in the headline; a
     longer list goes in the thread (all of it, split by post_with_thread)."""
@@ -156,7 +161,7 @@ async def main() -> None:
         for alert in evaluate_alerts(dom, current_delta, daily_history):
             alerts_total += 1
             print(f"  [ALERT] {dom} ({cur.get('client', '')}): {alert}")
-            alert_lines.append(f"   • *{dom}* ({cur.get('client', '')}): {alert}")
+            alert_lines.append(_alert_line(dom, cur.get("client", ""), alert))
 
     if col is not None and fleet:
         # store today's CUMULATIVE snapshot (as Smartlead reports it) after

@@ -101,7 +101,10 @@ def test_blacklist_alert_advice_in_thread_and_long_lists_moved():
 
 def test_reply_alert_long_list_in_thread():
     from reply_monitor import _alert_parts
-    lines = [f"   • *d{i}.com* (Melior): reply rate 0.1% vs 1.2% baseline" for i in range(30)]
+    from reply_monitor import _alert_line
+    lines = [_alert_line(f"d{i}.com", "Melior", "reply rate 0.1% vs 1.2% baseline") for i in range(30)]
+    assert lines[0] == "• *d0.com* (Melior): reply rate 0.1% vs 1.2% baseline"
+    assert _alert_line("x.com", "", "drop") == "• *x.com*: drop"
     head, thread = _alert_parts(lines)
     _headline_ok(head)
     assert head[0].startswith("⚠️") and "30 drops" in head[0]

@@ -100,11 +100,11 @@ function domainBlocks(r) {
       : h.health && h.health.score !== undefined && h.health.score !== null
         ? ' · health ' + h.health.score + (h.health.score <= 30 ? ' :rotating_light:' : '') + (h.health.label ? ' (' + h.health.label + ')' : '')
         : '';
-    let text = '*`' + h.domain + '`* — ' + (h.client || '_not a current client_') + ' · ' + h.account
-      + ' (' + (h.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ') · ' + (h.status || '?')
-      + ' · expires ' + (h.expire_on || '?') + ' · auto-renew ' + (h.auto_renew ? 'on' : 'off') + health;
+    let text = '*`' + h.domain + '`* · ' + (h.client || '_not a current client_') + ' · ' + h.account
+      + ' (' + (h.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ')' + (h.status ? ' · ' + h.status : '')
+      + (h.expire_on ? ' · expires ' + day(h.expire_on) : '') + ' · auto-renew ' + (h.auto_renew ? 'on' : 'off') + health;
     text += NL + (boxes.length
-      ? boxes.map(b => '• ' + b.email + ' — ' + (b.status || '?') + (b.warmed_up ? ' · warmed' : '')).join(NL)
+      ? boxes.map(b => '• ' + b.email + (b.status ? ' · ' + b.status : '') + (b.warmed_up ? ' · warmed' : '')).join(NL)
       : '_no mailboxes yet_');
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: text.slice(0, 2900) } });
     if (!h.client) {
@@ -240,18 +240,20 @@ function mailboxModal(p, channelId) {
 }
 
 /** Renewals (zapmail_status.py --renewals --json) → current clients with buttons, past clients as a count. */
+const day = d => require('./slack_text').day(d);
+
 function renewalBlocks(result) {
   const rows = (result && result.renewals) || [];
   const errors = (result && result.renewal_errors) || [];
   const current = rows.filter(r => r.client).sort((a, b) => (a.expire_on || '').localeCompare(b.expire_on || ''));
   const past = rows.filter(r => !r.client);
-  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: '*Domain renewals — next 2 months: '
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: '*Domain renewals in the next 2 months: '
     + current.length + ' current-client domain' + (current.length === 1 ? '' : 's') + '*'
     + (errors.length ? NL + errors.map(e => ':warning: could not check ' + e).join(NL) : '') } }];
   for (const r of current.slice(0, 20)) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: '`' + r.domain + '` — ' + r.client + ' · expires *' + r.expire_on + '* · ' + (r.assigned_mailboxes || 0) + ' inboxes' + (r.provider === 'MICROSOFT' ? ' · Outlook' : '') },
+      text: { type: 'mrkdwn', text: '`' + r.domain + '` · ' + r.client + (r.expire_on ? ' · expires *' + day(r.expire_on) + '*' : ' · no expiry date') + ' · ' + (r.assigned_mailboxes || 0) + ' inboxes' + (r.provider === 'MICROSOFT' ? ' · Outlook' : '') },
       accessory: {
         type: 'overflow', action_id: 'zm_renewal_menu',
         options: [
@@ -350,12 +352,12 @@ function prewarmedModal(p, channelId) {
 function jobBlocks(s) {
   if (!s || s.error) return [{ type: 'section', text: { type: 'mrkdwn', text: ':x: ' + require('./slack_text').plainError((s && s.error) || 'no result') } }];
   const cost = s.cost || { lines: [], total_now_usd: 0 };
-  let t = '*Inbox setup for ' + s.client + '* — ' + s.domains.join(', ') + ' (' + (s.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ')' + NL;
-  t += cost.lines.length ? cost.lines.map(l => '• $' + Number(l.usd).toFixed(2) + ' — ' + l.what + ' (' + l.when + ')').join(NL)
-    : '• Nothing to buy — free slots cover it';
+  let t = '*Inbox setup for ' + s.client + '* · ' + s.domains.join(', ') + ' (' + (s.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ')' + NL + NL;
+  t += cost.lines.length ? cost.lines.map(l => '• $' + Number(l.usd).toFixed(2) + ' · ' + l.what + ' (' + l.when + ')').join(NL)
+    : '• Nothing to buy: free slots cover it';
   if ((s.names || []).length) t += NL + 'Senders: ' + s.names.join(', ');
   t += NL + '*Total charged when it runs: $' + Number(cost.total_now_usd || 0).toFixed(2) + '*'
-    + NL + 'Steps: ' + (s.progress || '') + NL + 'Status: *' + s.status + '*' + (s.detail ? ' — ' + s.detail : '');
+    + (s.progress ? NL + 'Steps: ' + s.progress : '') + NL + 'Status: *' + String(s.status || '').replace(/_/g, ' ') + '*' + (s.detail ? ' · ' + s.detail : '');
   const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: t.slice(0, 2900) } }];
   if (s.status === 'awaiting_approval' && JOB_ID_RE.test(s.job_id)) {
     blocks.push({ type: 'actions', elements: [

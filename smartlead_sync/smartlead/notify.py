@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -22,7 +23,7 @@ def build_digest(rows: list[dict], sheet_url: str) -> str:
     """Markdown digest: only rows needing action (priority set), grouped by client."""
     actionable = [r for r in rows if r.get("priority")]
     if not actionable:
-        return f"✅ Inbox Health: all inboxes healthy today. Workbook: {sheet_url}"
+        return f"✅ *Inbox Health: all inboxes healthy today*\n\n<{sheet_url}|Open the workbook>"
 
     by_client: dict[str, list[dict]] = {}
     for r in actionable:
@@ -32,21 +33,24 @@ def build_digest(rows: list[dict], sheet_url: str) -> str:
     def client_rank(items):
         return (0 if any(i["priority"] == "P0" for i in items) else 1, -len(items))
 
-    lines = [f"*🩺 Inbox Health — {len(actionable)} inbox(es) need attention*",
-             f"<{sheet_url}|Open the workbook>", ""]
+    n = len(actionable)
+    lines = [f"🩺 *Inbox Health: {n} {'inbox needs' if n == 1 else 'inboxes need'} attention*",
+             "", f"<{sheet_url}|Open the workbook>", ""]
     for client, items in sorted(by_client.items(), key=lambda kv: client_rank(kv[1])):
         items.sort(key=lambda r: _PRIORITY_ORDER.get(r["priority"], 9))
         mgr_slack = next((i.get("_mgr_slack") for i in items if i.get("_mgr_slack")), "")
-        mgr_name = items[0].get("manager", "Unassigned")
+        mgr_name = items[0].get("manager") or "Unassigned"
         # Slack member mentions need the <@U…> form; a bare <U…> renders literally
         who = f"<@{mgr_slack}>" if mgr_slack.startswith("U") else (mgr_slack or mgr_name)
         p0 = sum(1 for i in items if i["priority"] == "P0")
-        lines.append(f"*{client}* — {who} · {len(items)} item(s){f', {p0} 🔴 P0' if p0 else ''}")
+        k = len(items)
+        lines.append(" · ".join([f"*{client}*"] + ([who] if who else [])
+                                + [f"{k} item{'s' if k != 1 else ''}" + (f", {p0} 🔴 P0" if p0 else "")]))
         for i in items[:8]:
             auto = " _(auto-fixing)_" if i.get("owner", "").startswith("🤖") else ""
-            lines.append(f"   • `{i['priority']}` {i['email']} — {i['top_problem']}{auto}")
+            lines.append(f"• `{i['priority']}` {i['email']} · {i['top_problem']}{auto}")
         if len(items) > 8:
-            lines.append(f"   • …and {len(items) - 8} more")
+            lines.append(f"• …and {len(items) - 8} more (full list in the thread)")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -57,8 +61,68 @@ def build_full_lists(rows: list[dict]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for r in sorted(actionable, key=lambda r: (_PRIORITY_ORDER.get(r["priority"], 9), r.get("email", ""))):
         out.setdefault(_group_key(r), []).append(
-            f"`{r['priority']}` {r['email']} — {r['top_problem']}")
+            f"`{r['priority']}` {r['email']} · {r['top_problem']}")
     return out
+
+
+# Layout (Manveen, 21 Oct 2026: "right spacing ... so it looks natural") ------
+
+_LEAD_EMOJI = re.compile(r"^((?:(?::[\w+-]+:)|[^\x00-\x7F\w\s])+\s+)?(.*\S)\s*$", re.S)
+
+
+def title(line: str) -> str:
+    """'⚠️ Kill warnings, 13 Oct' -> '⚠️ *Kill warnings, 13 Oct*': the title in
+    bold after its emoji. A line that already has bold (or a quote / list
+    marker) is left as it is."""
+    if (line or "").lstrip()[:1] in (">", "•", "`", "<"):
+        return line
+    m = _LEAD_EMOJI.match(line or "")
+    if not m or "*" in m.group(2) or m.group(2)[:1] in (">", "•", "`"):
+        return line
+    return f"{m.group(1) or ''}*{m.group(2)}*"
+
+
+def tidy(text: str, *, headline: bool = True) -> str:
+    """What every post looks like: no trailing spaces, never two blank lines in
+    a row, no blank lines at the ends; for a channel post (headline=True) the
+    first line is a bold title with one blank line under it."""
+    lines = [l.rstrip() for l in str(text or "").replace("\r\n", "\n").split("\n")]
+    out: list[str] = []
+    for l in lines:
+        if not l and (not out or not out[-1]):
+            continue
+        out.append(l)
+    while out and not out[-1]:
+        out.pop()
+    if headline and out:
+        out[0] = title(out[0])
+        if len(out) > 1 and out[1]:
+            out.insert(1, "")
+    return "\n".join(out)
+
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def sync_failure_text(failed_tabs: list[dict], total: int, when: datetime | None = None) -> str:
+    """The daily sheet sync's alert when a tab was not written (run.py)."""
+    when = (when or datetime.now(IST)).astimezone(IST)
+    n = len(failed_tabs)
+    lines = [f"⚠️ *Sheet sync: {n} of {total} tab{'s' if total != 1 else ''} not written*", ""]
+    lines += [f"• `{e['tab']}`: {str(e.get('error') or '')[:160]}" for e in failed_tabs]
+    lines += ["", f"Details on the Last Sync tab · {when.day} {when:%b, %H:%M} IST"]
+    return "\n".join(lines)
+
+
+def day(iso) -> str:
+    """'2026-11-08' (or a datetime string) -> '8 Nov'; anything else unchanged."""
+    from datetime import date
+    s = str(iso or "")
+    try:
+        d = date.fromisoformat(s[:10])
+    except ValueError:
+        return s
+    return f"{d.day} {d:%b}"
 
 
 _SECRETS = [
@@ -78,8 +142,9 @@ def redact(text: str) -> str:
 
 
 def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> str | None:
-    """Post one message; returns its ts on success, None on failure."""
-    body = {"channel": channel, "text": redact(text), "unfurl_links": False}
+    """Post one message; returns its ts on success, None on failure. A channel
+    post gets the title layout (tidy); a thread reply only the spacing."""
+    body = {"channel": channel, "text": redact(tidy(text, headline=not thread_ts)), "unfurl_links": False}
     if thread_ts:
         body["thread_ts"] = thread_ts
     try:
@@ -145,6 +210,6 @@ def post_digest(text: str, full_lists: dict[str, list[str]] | None = None) -> bo
             continue  # main message already shows everything for this client
         for i in range(0, len(lines), _THREAD_CHUNK):
             chunk = lines[i:i + _THREAD_CHUNK]
-            head = f"*{client} — full list ({len(lines)} items)*\n" if i == 0 else ""
+            head = f"*{client}: full list ({len(lines)} items)*\n" if i == 0 else ""
             _post(token, channel, head + "\n".join(chunk), thread_ts=ts)
     return True

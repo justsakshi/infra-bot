@@ -82,19 +82,15 @@ function makeInfra(deps) {
 
   async function listText() {
     const prepared = prepareAssetsForSheet(await Asset.find().sort({ type: 1, name: 1 }));
-    let message = '📋 *Infrastructure Assets*\n\n';
     const domains = prepared.filter(a => a.type === 'DOMAIN');
     const inboxes = prepared.filter(a => a.type === 'INBOX');
-    if (domains.length > 0) {
-      message += `*DOMAINS (${domains.length})*\n`;
-      domains.forEach(d => { message += `• ${d.name} — ${d.status || 'N/A'} — ${d.daysLeft !== null ? `${d.daysLeft} days left` : 'No expiry'}\n`; });
-      message += '\n';
-    }
-    if (inboxes.length > 0) {
-      message += `*INBOXES (${inboxes.length})*\n`;
-      inboxes.forEach(i => { message += `• ${i.name} — ${i.status || 'N/A'} — ${i.daysLeft !== null ? `${i.daysLeft} days left` : 'No expiry'}\n`; });
-    }
-    return message;
+    const line = a => '• ' + [a.name, a.status, a.daysLeft !== null && a.daysLeft !== undefined
+      ? a.daysLeft + ' day' + (a.daysLeft === 1 ? '' : 's') + ' left' : 'no expiry'].filter(Boolean).join(' · ');
+    const parts = ['📋 *Infrastructure assets*'];
+    if (domains.length > 0) parts.push(`*Domains (${domains.length})*` + NL + domains.map(line).join(NL));
+    if (inboxes.length > 0) parts.push(`*Inboxes (${inboxes.length})*` + NL + inboxes.map(line).join(NL));
+    if (parts.length === 1) parts.push('_No assets in the tracker yet._');
+    return parts.join(NL + NL);
   }
 
   /** Mark names renewed in the tracker: purchase = today, inbox expiry +1 month, domain auto (+365). */
@@ -154,9 +150,9 @@ function makeInfra(deps) {
           await say(`Couldn't detect asset type from filename *${file.name}*. Please name your file with "domain" or "inbox" in it.`);
           continue;
         }
-        await say(isDelete ? `Detected *${assetType}* delete CSV — removing listed entries from *${file.name}*...`
-          : isRenew ? `Detected *${assetType}* renewal CSV — updating dates from *${file.name}*...`
-            : `Detected *${assetType}* CSV — importing *${file.name}*...`);
+        await say(isDelete ? `Detected *${assetType}* delete CSV, removing listed entries from *${file.name}*...`
+          : isRenew ? `Detected *${assetType}* renewal CSV, updating dates from *${file.name}*...`
+            : `Detected *${assetType}* CSV, importing *${file.name}*...`);
         const response = await deps.axios.get(file.url_private_download || file.url_private, {
           headers: { Authorization: `Bearer ${botToken}` }, responseType: 'arraybuffer' });
         const assets = await parseCSVBuffer(Buffer.from(response.data), assetType);
@@ -194,7 +190,7 @@ function makeInfra(deps) {
             else { await Asset.create(asset); inserted++; }
           }
           await resync();
-          await say(`*${file.name}* imported successfully!\n• Inserted: ${inserted}\n• Updated: ${updated}\n• Total: ${assets.length}\n• Google Sheets synced ✓`);
+          await say(`*${file.name}* imported successfully!\n\n• Inserted: ${inserted}\n• Updated: ${updated}\n• Total: ${assets.length}\n• Google Sheets synced ✓`);
         }
       }
       return handled;
@@ -247,8 +243,8 @@ function makeInfra(deps) {
       await Asset.findOneAndUpdate({ name: asset.name }, asset, { upsert: true, new: true });
       await resync();
       await client.chat.postMessage({ channel: body.user.id,
-        text: `✅ *${asset.name}* (${type}) saved successfully!\nStatus: ${asset.status}\n`
-          + `Expiry: ${asset.expiryDate ? dayjs(asset.expiryDate).format('DD/MM/YYYY') : 'Auto-calculated'}` });
+        text: `✅ *${asset.name}* (${type === 'DOMAIN' ? 'domain' : 'inbox'}) saved successfully!\n\n`
+          + `Status: ${asset.status} · Expiry: ${asset.expiryDate ? dayjs(asset.expiryDate).format('D MMM YYYY') : 'auto-calculated'}` });
     } catch (error) {
       console.error('Error saving asset:', error);
       await client.chat.postMessage({ channel: body.user.id, text: `❌ Error saving asset: ${error.message}` });
@@ -275,10 +271,11 @@ function makeInfra(deps) {
       await resync();
       const daysLeft = computeDaysLeft(await Asset.findOne({ name }));
       await client.chat.postMessage({ channel: body.user.id,
-        text: `✅ *${name}* renewed successfully!\n`
-          + `• New Purchase Date: ${newPurchaseDate ? dayjs(newPurchaseDate).format('DD/MM/YYYY') : 'Unchanged'}\n`
-          + `• New Expiry Date: ${updates.expiryDate ? dayjs(updates.expiryDate).format('DD/MM/YYYY') : 'Auto-calculated'}\n`
-          + `• Days until expiry: ${daysLeft !== null ? daysLeft : 'N/A'}\n• Reminder history cleared ✓\n• Google Sheets synced ✓` });
+        text: `✅ *${name}* renewed successfully!\n\n`
+          + `• New purchase date: ${newPurchaseDate ? dayjs(newPurchaseDate).format('D MMM YYYY') : 'unchanged'}\n`
+          + `• New expiry date: ${updates.expiryDate ? dayjs(updates.expiryDate).format('D MMM YYYY') : 'auto-calculated'}\n`
+          + (daysLeft !== null && daysLeft !== undefined ? `• Days until expiry: ${daysLeft}\n` : '')
+          + '• Reminder history cleared ✓\n• Google Sheets synced ✓' });
     } catch (error) {
       console.error('Error renewing asset:', error);
       await client.chat.postMessage({ channel: body.user.id, text: `❌ Error renewing asset: ${error.message}` });
@@ -290,15 +287,15 @@ function makeInfra(deps) {
 
 /** "Expiring in N days" with a Mark-renewed button per client group. */
 function expiringBlocks(rows, days) {
-  const head = '*Tracker: expiring in the next ' + days + ' day' + (days === 1 ? '' : 's') + '* — ' + rows.length + ' active row(s)';
-  if (!rows.length) return [{ type: 'section', text: { type: 'mrkdwn', text: head + NL + '_nothing_' } }];
+  const head = '*Tracker: expiring in the next ' + days + ' day' + (days === 1 ? '' : 's') + '* · ' + rows.length + ' active row' + (rows.length === 1 ? '' : 's');
+  if (!rows.length) return [{ type: 'section', text: { type: 'mrkdwn', text: head + NL + '_Nothing expiring._' } }];
   const byClient = {};
   rows.forEach(r => { (byClient[r.client || 'No client'] = byClient[r.client || 'No client'] || []).push(r); });
-  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: head + NL
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: head + NL + NL
     + '_Zapmail and ScaledMail rows renew on their own (subscriptions); *Mark renewed* only updates the tracker after you have renewed or confirmed it._' } }];
   for (const [client, list] of Object.entries(byClient).slice(0, 20)) {
-    const lines = list.slice(0, 25).map(a => '• `' + a.name + '` — ' + (a.daysLeft === 0 ? '*today*' : a.daysLeft + 'd')
-      + ' · ' + (a.provider || '?') + (a.type === 'INBOX' ? '' : ' · domain'));
+    const lines = list.slice(0, 25).map(a => '• `' + a.name + '` · ' + (a.daysLeft === 0 ? '*today*' : a.daysLeft + 'd')
+      + (a.provider ? ' · ' + a.provider : '') + (a.type === 'INBOX' ? '' : ' · domain'));
     const s = { type: 'section', text: { type: 'mrkdwn', text: ('*' + client + '* (' + list.length + ')' + NL + lines.join(NL)
       + (list.length > 25 ? NL + '…and ' + (list.length - 25) + ' more' : '')).slice(0, 2900) } };
     const names = list.map(a => a.name);
@@ -430,7 +427,7 @@ async function runInfraText(text, { client, trigger_id, user, respond }, infra) 
     return respond({ response_type: 'ephemeral', text: 'Expiring assets', blocks: expiringBlocks(await infra.expiring(days), days) });
   }
   if (respond) {
-    return respond({ response_type: 'ephemeral', text: '*Tracker* — `infra add` · `infra renew` · `infra list` · `infra expiring 7`'
+    return respond({ response_type: 'ephemeral', text: '*Tracker:* `infra add` · `infra renew` · `infra list` · `infra expiring 7`'
       + NL + 'Or send me a CSV (`domains.csv`, `renew_inboxes.csv`, `delete_domains.csv`), or a message starting with `renew` / `delete` and one name per line.' });
   }
   return null;

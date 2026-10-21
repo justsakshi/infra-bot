@@ -279,22 +279,22 @@ def _alert_parts(serious: list[dict], surbl_only: int = 0) -> tuple[list[str], l
     n = len(serious)
     head = [f"🚨 Domain blacklisted (Spamhaus / URIBL): {n} domain{'s' if n != 1 else ''}, "
             "inbox placement at risk"]
-    lines = [f"   • *{r['domain']}* ({', '.join(r['clients'])}) — {', '.join(r['listed_on'])}"
-             for r in serious]
+    lines = [f"• *{r['domain']}*" + (f" ({', '.join(r['clients'])})" if r['clients'] else "")
+             + f" · {', '.join(r['listed_on'])}" for r in serious]
     thread = []
     if n <= 3:
         head += lines
     else:
         by_client: dict[str, int] = {}
         for r in serious:
-            for c in r["clients"] or ["?"]:
+            for c in r["clients"] or ["no client"]:
                 by_client[c] = by_client.get(c, 0) + 1
         head.append(" · ".join(f"{c} {k}" for c, k in sorted(by_client.items(), key=lambda kv: -kv[1])))
         thread.append("\n".join(lines))
     advice = ("Pause campaigns on these domains and file a delisting request. "
               "Domains under 30 days old: replace instead.")
     if surbl_only:
-        advice += (f"\n_Also {surbl_only} domain(s) on SURBL only (link reputation; "
+        advice += (f"\n_Also {surbl_only} domain{'s' if surbl_only != 1 else ''} on SURBL only (link reputation; "
                    "check the links in the copy)._")
     thread.append(advice)
     return head, thread

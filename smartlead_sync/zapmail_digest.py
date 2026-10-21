@@ -41,6 +41,11 @@ def _money(v) -> str:
         return "$?"
 
 
+def _day(iso) -> str:
+    from smartlead.notify import day
+    return day(iso)
+
+
 def _plural(n: int, word: str, many: str | None = None) -> str:
     return f"{n} {word if n == 1 else (many or word + 's')}"
 
@@ -69,13 +74,13 @@ def format_digest(
     look: list[str] = []          # "needs a look" counts for the headline
 
     # ── Zapmail ──
-    zap = ["*Zapmail*", "*Accounts*"]
+    zap = ["*Zapmail*"]
     unreachable = low_wallets = 0
     for name, s in sorted(status.items()):
         if not s.get("ok"):
             actions += 1
             unreachable += 1
-            zap.append(f"• *{name}* — :warning: unreachable ({s.get('error', '')[:80]})")
+            zap.append(f"• *{name}* · :warning: unreachable ({s.get('error', '')[:80]})")
             continue
         wallet = s.get("wallet_balance")
         recharge = "auto-recharge on" if s.get("auto_recharge") else "auto-recharge OFF"
@@ -84,7 +89,7 @@ def format_digest(
         boxes = (f"{s.get('active_mailboxes_total')} mailboxes" if s.get("active_mailboxes_total") is not None
                  else f"{act.get('GOOGLE', '?')} Google + {act.get('MICROSOFT', '?')} Outlook mailboxes"
                  if act else f"{s.get('assigned_mailboxes')} mailboxes")
-        zap.append(f"• *{name}* — wallet {_money(wallet)} ({recharge}) · {boxes}"
+        zap.append(f"• *{name}* · wallet {_money(wallet)} ({recharge}) · {boxes}"
                    + (f" · {credits} placement credits" if credits is not None else ""))
         try:
             low = not s.get("auto_recharge") and float(wallet or 0) < wallet_min
@@ -93,8 +98,8 @@ def format_digest(
         if low:
             actions += 1
             low_wallets += 1
-            zap.append(f"   :warning: wallet under {_money(wallet_min)} with auto-recharge off "
-                       "— purchases and renewals will fail")
+            zap.append(f":warning: {name}'s wallet is under {_money(wallet_min)} with auto-recharge off, "
+                       "so purchases and renewals will fail")
     if unreachable:
         look.append(f"{_plural(unreachable, 'Zapmail account')} unreachable")
     if low_wallets:
@@ -107,7 +112,7 @@ def format_digest(
     # to lapse (standup 2026-09-29): one thread line, never an action.
     past = [r for r in expiring if "client" in r and not r["client"]]
     soon = [r for r in expiring if r not in past]
-    zap += ["", f"*Current-client domains expiring within {expiry_days} days* ({len(soon)})"]
+    zap += ["", f"*Current-client domains expiring within {expiry_days} days ({len(soon)})*"]
     for e in renewal_errors:
         actions += 1
         zap.append(f":warning: could not check renewals for {e[:120]}")
@@ -118,7 +123,7 @@ def format_digest(
         look.append(f"{_plural(len(soon), 'client domain')} expiring")
         for r in soon:
             who = f" · {r['client']}" if r.get("client") else ""
-            zap.append(f"• `{r['domain']}` — {r['expire_on']}{who} · {r.get('account')}"
+            zap.append(f"• `{r['domain']}` · {_day(r['expire_on'])}{who} · {r.get('account')}"
                        f" · {r.get('assigned_mailboxes', 0)} inboxes")
     elif not renewal_errors:
         zap.append("_none_")
@@ -136,15 +141,15 @@ def format_digest(
         look.append(f"{_plural(len(due), 'purchase batch', 'purchase batches')} due")
         zap.append(f"Ready to buy ({len(due)}):")
         for b in sorted(due, key=lambda x: x.get("earliest_date", "")):
-            zap.append(f"• `{b['batch_id']}` {b.get('client') or 'primary'} — "
+            zap.append(f"• `{b['batch_id']}` {b.get('client') or 'primary'} · "
                        f"{', '.join(b.get('domains', []))} · est. "
-                       f"{_money(b.get('estimated_usd'))} · due {b.get('earliest_date')}")
+                       f"{_money(b.get('estimated_usd'))} · due {_day(b.get('earliest_date'))}")
     if blocked:
         actions += len(blocked)
         look.append(f"{_plural(len(blocked), 'batch', 'batches')} to reconcile")
         zap.append(f"Needs reconcile ({len(blocked)}):")
         for b in blocked:
-            zap.append(f"• `{b['batch_id']}` is *{b.get('status')}* — run "
+            zap.append(f"• `{b['batch_id']}` is *{b.get('status')}*: run "
                        f"`zapmail_buy.py --reconcile {b['batch_id']}`")
     if not due and not blocked and ledger_ok:
         zap.append("_nothing due_")
@@ -232,15 +237,15 @@ def billing_lines(rows: list[dict], *, today: date, days: int = 3) -> list[str]:
         due = r.get("bills_on") and r["bills_on"] <= horizon
         if not (due or r.get("payment_failure")):
             continue
-        what = (f"{r.get('mailboxes') or '?'} {'Outlook' if r.get('provider') == 'MICROSOFT' else 'Google'} "
+        what = (f"{str(r.get('mailboxes')) + ' ' if r.get('mailboxes') else ''}{'Outlook' if r.get('provider') == 'MICROSOFT' else 'Google'} "
                 f"{r.get('kind', 'inboxes')}")
         who = ", ".join(r.get("clients") or []) or r.get("account", "")
-        line = f"• {r.get('bills_on')}: {what} {_money(r.get('price'))} ({who})"
+        line = f"{_day(r.get('bills_on'))}: {what} {_money(r.get('price'))}" + (f" ({who})" if who else "")
         if r.get("payment_failure"):
-            line = ":x: " + line + f" — *payment failed: {r['payment_failure']}* (inboxes may be suspended)"
+            line = ":x: " + line + f" · *payment failed: {r['payment_failure']}* (inboxes may be suspended)"
             if r.get("invoice_url"):
                 line += f" · <{r['invoice_url']}|Pay / see invoice>"
-        out.append(line)
+        out.append("• " + line)
     return out
 
 

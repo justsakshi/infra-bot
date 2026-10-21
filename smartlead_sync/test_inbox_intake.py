@@ -360,9 +360,9 @@ def test_ready_message_text():
     from inbox_intake_cli import ready_message
     text = ready_message([{"state": "ready", "line": "• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%"},
                           {"state": "low", "line": "• low.com · Melior · warmup reputation 85% (needs 90%), keep warming"}])
-    assert text == ("✅ Ready to send now: 1 domain\n• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%\n"
+    assert text == ("✅ *Ready to send now: 1 domain*\n\n• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%\n\n"
                     "Run a Smart Delivery placement test before adding them to campaigns.\n\n"
-                    "⚠️ Reached the warmup date but not ready yet:\n• low.com · Melior · warmup reputation 85% (needs 90%), keep warming")
+                    "⚠️ *Reached the warmup date but not ready yet*\n\n• low.com · Melior · warmup reputation 85% (needs 90%), keep warming")
 
 
 def test_run_account_lists_newly_ready_domains_with_their_client():
@@ -383,7 +383,7 @@ def test_ready_post_marks_announced_only_when_it_went_out():
     assert post_ready(ann, store, lambda text: None) is False and not store.announced("ready:a.com")    # Slack failed: retry next run
     sent = []
     assert post_ready(ann, store, lambda text: sent.append(text) or "1.1") is True and store.announced("ready:a.com")
-    assert sent[0].startswith("✅ Ready to send now: 1 domain")
+    assert sent[0].startswith("✅ *Ready to send now: 1 domain*")
     assert post_ready([], store, lambda text: 1 / 0) is False                                            # nothing new: no post
 
 

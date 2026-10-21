@@ -644,24 +644,7 @@ app.action(/^view_details_/, async ({ ack, body, client }) => {
       const prepared = prepareAssetsForSheet(assets);
       const active = prepared.filter(a => a.status === 'Active' && a.daysLeft !== null);
       const gAssets = active.filter(a => payload.daysFilter.includes(a.daysLeft));
-
-      const domains = gAssets.filter(a => a.type === 'DOMAIN');
-      const inboxes = gAssets.filter(a => a.type === 'INBOX');
-
-      const byClient = {};
-      for (const a of gAssets) {
-        const c = a.client || 'No Client';
-        if (!byClient[c]) byClient[c] = [];
-        byClient[c].push(a);
-      }
-
-      let detail = `*Expiring ${payload.label}*\n`;
-      detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
-      for (const [c, items] of Object.entries(byClient)) {
-        detail += `*${c}*\n`;
-        for (const a of items) detail += renewalLabels.assetLine(a) + '\n';
-      }
-      detailText = detail.trim();
+      detailText = renewalLabels.expiringDetail(payload.label, gAssets);
     } else {
       // Legacy / per-owner alerts: detail was pre-serialized in the button value
       detailText = payload.detail;
@@ -964,79 +947,14 @@ async function runNoonSummary() {
     const totalExpiring = groups.reduce((sum, g) => sum + g.assets.length, 0);
     console.log(`[runNoonSummary] totalExpiring: ${totalExpiring}`);
 
-    const blocks = [
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: `⏰ Daily Renewal Check — ${dayjs().format('DD MMM YYYY')}` }
-      }
-    ];
-
-    if (totalExpiring === 0) {
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `✅ No assets expiring today, tomorrow, or in the next 3 working days. All clear!`
-        }
-      });
-    } else {
-      for (const g of groups) {
-        const { label, icon, key, daysFilter, assets: gAssets } = g;
-        if (gAssets.length === 0) continue;
-
-        const domains = gAssets.filter(a => a.type === 'DOMAIN');
-        const inboxes = gAssets.filter(a => a.type === 'INBOX');
-
-        const parts = [];
-        if (domains.length) parts.push(`*${domains.length} domain${domains.length !== 1 ? 's' : ''}*`);
-        if (inboxes.length) parts.push(`*${inboxes.length} inbox${inboxes.length !== 1 ? 'es' : ''}*`);
-        const summaryText = `${icon}  ${parts.join(' and ')} expire${gAssets.length === 1 ? 's' : ''} *${label}*`
-          + renewalLabels.estimatedNote(gAssets);
-
-        const byClient = {};
-        for (const a of gAssets) {
-          const c = a.client || 'No Client';
-          if (!byClient[c]) byClient[c] = [];
-          byClient[c].push(a);
-        }
-        let detail = `*Expiring ${label}*\n`;
-        detail += `Domains: ${domains.length} | Inboxes: ${inboxes.length}\n\n`;
-        for (const [client, items] of Object.entries(byClient)) {
-          detail += `*${client}*\n`;
-          for (const a of items) detail += renewalLabels.assetLine(a) + '\n';
-        }
-
-        blocks.push({
-          type: 'section',
-          text: { type: 'mrkdwn', text: summaryText },
-          accessory: {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Read more' },
-            action_id: `view_details_${key}`,
-            // Store only a compact lookup key — detail is re-fetched from DB on click
-            // to avoid Slack's 2001-char button value limit
-            value: JSON.stringify({ key, channel: CHANNEL, daysFilter, label })
-          }
-        });
-        blocks.push({ type: 'divider' });
-      }
-    }
-
     const baseUrl = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : 'https://infra-bot-1.onrender.com';
-
-    blocks.push({
-      type: 'context',
-      elements: [{
-        type: 'mrkdwn',
-        text: `🔗 <${baseUrl}/|Open dashboard> to renew or manage assets`
-      }]
-    });
+    const { text: summaryTitle, blocks } = renewalLabels.renewalCheckBlocks(groups, { channel: CHANNEL, baseUrl, now: dayjs() });
 
     console.log(`[runNoonSummary] sending message with ${blocks.length} blocks to ${CHANNEL}`);
     const result = await app.client.chat.postMessage({
       token: process.env.SLACK_BOT_TOKEN,
       channel: CHANNEL,
-      text: `Daily Renewal Check — ${dayjs().format('DD MMM YYYY')}`,
+      text: summaryTitle,
       blocks
     });
     console.log(`✅ Noon summary sent, ts: ${result.ts}`);
@@ -1067,7 +985,7 @@ async function runSimpleReminder() {
     await app.client.chat.postMessage({
       token: process.env.SLACK_BOT_TOKEN,
       channel: CHANNEL,
-      text: `🔔 Reminder: Please review and renew any expiring domains or inboxes → ${baseUrl}/`
+      text: renewalLabels.reminderText(baseUrl)
     });
     console.log('✅ Simple reminder sent');
   } catch (error) {

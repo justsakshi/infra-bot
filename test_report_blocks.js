@@ -7,7 +7,7 @@ function test(name, fn) { try { fn(); passed += 1; } catch (err) { console.error
 
 test('headline first, then each thread part, no marker text', () => {
   const b = reportBlocks({ headline: ['🚨 Kill warnings, 13 Oct: 19 inboxes', 'Bettrdata 13'], thread: ['*Bettrdata*\n• a', 'rule'] });
-  assert.strictEqual(b[0].text.text, '🚨 Kill warnings, 13 Oct: 19 inboxes\nBettrdata 13');
+  assert.strictEqual(b[0].text.text, '🚨 *Kill warnings, 13 Oct: 19 inboxes*\n\nBettrdata 13');
   assert.deepStrictEqual(b.slice(1).filter(x => x.type === 'section').map(x => x.text.text), ['*Bettrdata*\n• a', 'rule']);
   assert.ok(!JSON.stringify(b).includes('— thread —'));
 });

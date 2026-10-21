@@ -105,7 +105,7 @@ def test_watch_text_groups_new_problems_by_action():
         c["opened_on"] = "2026-10-20"
     t = fl.watch_text(new, open_count={"warmup_off": 2, "kill": 1, "no_test": 4}, today=TODAY)
     lines = t.splitlines()
-    assert lines[0] == "Fleet watch, 20 Oct: 3 new problems (suggestions only, nothing was changed)"
+    assert lines[0] == "⚠️ Fleet watch, 20 Oct: 3 new problems (suggestions only, nothing was changed)"
     assert any(l.startswith("Turn warmup back on (warmup off): w1@d.com, w2@d.com") for l in lines)
     assert any(l.startswith("Take it out of campaigns, do not renew (kill list): k@e.com") for l in lines)
     assert "Still open: 7" in t

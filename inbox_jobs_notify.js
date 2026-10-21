@@ -12,14 +12,14 @@ const ICON = { done: ':white_check_mark:', waiting: ':hourglass:', running: ':ge
 const LABEL = { done: 'is done', waiting: 'is waiting', running: 'is running',
   failed: 'stopped', needs_check: 'needs a person to check it', cancelled: 'was cancelled' };
 
-/** One Slack line per changed job. Pure. */
+/** One Slack message per changed job: title, then the facts, then any warning. Pure. */
 function jobUpdateText(r) {
-  const head = (ICON[r.status] || ':information_source:') + ' Inbox setup for *' + r.client + '* ('
-    + (r.domains || []).join(', ') + ') ' + (LABEL[r.status] || r.status);
-  const lines = [head, '`' + r.job_id + '` · ' + (r.progress || '')];
-  if (r.detail) lines.push(r.detail);
-  if (r.status === 'needs_check') lines.push('_Nothing will be retried automatically. Check Zapmail billing / the purchase ledger before resuming._');
-  return lines.join('\n');
+  const head = (ICON[r.status] || ':information_source:') + ' *Inbox setup for ' + r.client + ' ' + (LABEL[r.status] || r.status) + '*';
+  const facts = [[(r.domains || []).join(', '), '`' + r.job_id + '`', r.progress].filter(Boolean).join(' · ')];
+  if (r.detail) facts.push(r.detail);
+  const parts = [head, facts.join('\n')];
+  if (r.status === 'needs_check') parts.push('_Nothing will be retried automatically. Check Zapmail billing / the purchase ledger before resuming._');
+  return parts.join('\n\n');
 }
 
 function runTick(baseDir) {

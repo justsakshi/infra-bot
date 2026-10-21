@@ -154,18 +154,20 @@ function formatRenewals(rows, errors) {
     list.forEach(r => {
       const boxes = r.assigned_mailboxes ? ' · ' + r.assigned_mailboxes + ' inboxes' : '';
       const prov = r.provider === 'MICROSOFT' ? ' · Outlook' : '';
-      msg += '• `' + r.domain + '` — ' + (r.expire_on || '?') + boxes + prov + NL;
+      msg += '• `' + r.domain + '`' + (r.expire_on ? ' · ' + day(r.expire_on) : '') + boxes + prov + NL;
     });
   }
   return (warn ? warn + NL : '') + msg;
 }
 
+const day = d => require('./slack_text').day(d);
+
 function formatCrossCheck(cc) {
   const cap = (list, n) => list.slice(0, n).concat(list.length > n ? ['…and ' + (list.length - n) + ' more'] : []);
-  let msg = '*Cross-check* — ' + (cc.zapmail_domains ?? '?') + ' Zapmail domains vs '
+  let msg = '*Cross-check:* ' + (cc.zapmail_domains ?? '?') + ' Zapmail domains vs '
     + (cc.tracker_domains ?? '?') + ' in the /infra tracker' + NL;
   (cc.zapmail_errors || []).forEach(e => {
-    msg += ':warning: could not read ' + e + ' — "only in tracker" is unreliable' + NL;
+    msg += ':warning: could not read ' + e + ', so "only in tracker" is unreliable' + NL;
   });
   // Only what the team acts on (29 Sep review): current-client domains
   // missing from the tracker, blank or wrong dates. Past clients' domains,
@@ -174,7 +176,7 @@ function formatCrossCheck(cc) {
   const missing = (cc.only_in_zapmail || []).filter(x => !('client' in x) || x.client);
   msg += NL + ':warning: *Current-client domains not in the tracker* (' + missing.length + '):' + NL;
   if (missing.length) {
-    cap(missing.map(x => '• `' + x.domain + '` — ' + (x.client || '?') + ' · expires ' + (x.expire_on || '?')), 25)
+    cap(missing.map(x => '• `' + x.domain + '`' + (x.client ? ' · ' + x.client : '') + (x.expire_on ? ' · expires ' + day(x.expire_on) : '')), 25)
       .forEach(l => { msg += l + NL; });
     msg += '_Added by *Apply to tracker* (Tracker sync) or the 9:30 sync._' + NL;
   } else {
@@ -182,33 +184,33 @@ function formatCrossCheck(cc) {
   }
   const noDate = cc.no_tracker_expiry || [];
   if (noDate.length) {
-    msg += NL + ':memo: *Tracked without an expiry date* (' + noDate.length + ') — Zapmail has it:' + NL
-      + cap(noDate.map(x => '• `' + x.domain + '` — Zapmail says ' + (x.expire_on || '?')), 10).join(NL) + NL
+    msg += NL + ':memo: *Tracked without an expiry date* (' + noDate.length + '). Zapmail has it:' + NL
+      + cap(noDate.map(x => '• `' + x.domain + '`' + (x.expire_on ? ' · Zapmail says ' + day(x.expire_on) : '')), 10).join(NL) + NL
       + '_Filled in by *Apply to tracker* or the 9:30 sync._' + NL;
   }
   msg += NL + ':warning: *Date mismatch* (' + cc.date_mismatch.length + '):' + NL;
   if (cc.date_mismatch.length) {
-    cc.date_mismatch.forEach(x => { msg += '• `' + x.domain + '` — zapmail ' + (x.zapmail_expire || '?') + ' vs tracker ' + (x.tracker_expire || '?') + NL; });
+    cc.date_mismatch.forEach(x => { msg += '• `' + x.domain + '` · Zapmail ' + (day(x.zapmail_expire) || 'no date') + ' vs tracker ' + (day(x.tracker_expire) || 'no date') + NL; });
   } else {
     msg += '_none_';
   }
-  return msg;
+  return msg.trimEnd();
 }
 
 function formatDomain(r) {
   const hits = r.hits || [];
   if (!hits.length) return '`' + r.domain + '` is not in any connected Zapmail account.';
   return hits.map(h => {
-    if (h.error) return '• *' + h.account + '* — :warning: ' + h.error;
-    let m = '*`' + h.domain + '`* — *' + h.account + '* ('
-      + (h.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ') · ' + (h.status || '?')
-      + ' · expires ' + (h.expire_on || '?')
+    if (h.error) return '• *' + h.account + '*: :warning: ' + h.error;
+    let m = '*`' + h.domain + '`* · *' + h.account + '* ('
+      + (h.provider === 'MICROSOFT' ? 'Outlook' : 'Google') + ')' + (h.status ? ' · ' + h.status : '')
+      + (h.expire_on ? ' · expires ' + day(h.expire_on) : '')
       + ' · auto-renew ' + (h.auto_renew ? 'on' : 'off')
       + (h.dns_shield ? ' · DNS Shield' : '');
     const boxes = h.mailboxes || [];
     m += NL + (boxes.length
-      ? boxes.map(b => '   • ' + b.email + ' — ' + (b.status || '?') + (b.warmed_up ? ' · warmed' : '')).join(NL)
-      : '   _no mailboxes_');
+      ? boxes.map(b => '• ' + b.email + (b.status ? ' · ' + b.status : '') + (b.warmed_up ? ' · warmed' : '')).join(NL)
+      : '_no mailboxes_');
     return m;
   }).join(NL + NL);
 }
@@ -224,10 +226,10 @@ function formatBatches(r) {
   const bought = rows.length - open.length;
   const lines = open.map(b => {
     const due = (b.status === 'planned' || b.status === 'failed') && (b.earliest_date || '') <= today ? ' · *due*' : '';
-    return (icon[b.status] || '•') + ' `' + b.batch_id + '` ' + (b.earliest_date || '?') + ' · ' + (b.client || 'primary')
+    return (icon[b.status] || '•') + ' `' + b.batch_id + '`' + (b.earliest_date ? ' ' + day(b.earliest_date) : '') + ' · ' + (b.client || 'primary')
       + ' · ' + (b.domains || []).join(', ') + ' · ' + b.status + due;
   });
-  return '*Zapmail domain purchases* — ' + open.length + ' open' + (bought ? ' · ' + bought + ' bought' : '')
+  return '*Zapmail domain purchases:* ' + open.length + ' open' + (bought ? ' · ' + bought + ' bought' : '')
     + (lines.length ? NL + lines.join(NL) : '')
     + (open.some(b => b.status === 'planned' || b.status === 'failed') ? NL + '_Due batches have a *Buy now* button below (approved buyers only)._' : '');
 }
