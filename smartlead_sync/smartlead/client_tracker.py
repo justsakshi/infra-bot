@@ -16,12 +16,14 @@ Only the number columns are written, and never:
   - a lower count: Sent, Connected, Replies and Positive only go up. A lower
     API figure means it misses something the team counted (a reply Smartlead
     never categorised), not that a reply un-happened.
-A campaign with no row yet is added at the bottom with the sheet's own
+A campaign with no row yet is inserted just above the totals row (so the
+totals count it, and it takes the campaign rows' styling), with the sheet's own
 Connect % / Reply % formulas and "New row" in Last Change, the way the team
 marks new rows. The person-written columns stay blank for Precise to fill.
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from gspread.utils import rowcol_to_a1
@@ -69,9 +71,25 @@ def _numbers(r: dict) -> dict:
     return out
 
 
+def totals_row(formulas: list[list[str]]) -> int | None:
+    """The row whose Leads cell is =SUM(...): campaign rows sit above it."""
+    for i, row in enumerate(formulas, start=1):
+        if len(row) >= _COL["leads"] and str(row[_COL["leads"] - 1]).upper().startswith("=SUM("):
+            return i
+    return None
+
+
+def extend_totals(formula: str, old_end: int, added: int) -> str:
+    """'=SUM(I2:I68)' -> '=SUM(I2:I78)' when 10 rows went in above row 69.
+    Only ranges ending on the last campaign row move; others are left as written."""
+    return re.sub(r"([A-Z]+)(\d+):([A-Z]+)(\d+)",
+                  lambda m: (f"{m[1]}{m[2]}:{m[3]}{int(m[4]) + added}"
+                             if int(m[4]) == old_end else m[0]), formula)
+
+
 def plan(values: list[list[str]], formulas: list[list[str]], rows: list[dict],
          today: str) -> tuple[list[dict], list[list]]:
-    """(cell updates, rows to append) for the dashboard.
+    """(cell updates, rows to insert above the totals row) for the dashboard.
 
     `values` / `formulas` are the tab read as displayed and as formulas.
     `rows` are collector rows for this client (Total rows are skipped).
@@ -86,7 +104,7 @@ def plan(values: list[list[str]], formulas: list[list[str]], rows: list[dict],
             where.setdefault((_norm(cell(values, i, _COL["campaign"])), ch), i)
 
     updates, new_rows = [], []
-    next_row = len(values) + 1
+    next_row = totals_row(formulas) or len(values) + 1
     for r in rows:
         if not r.get("channel") or not r.get("campaign"):
             continue
@@ -134,18 +152,75 @@ def update_dashboard(sheet_id: str, rows: list[dict], today: str) -> tuple[int, 
     from smartlead.sheets import SheetsWriter, _retry_write
     ws = SheetsWriter(sheet_id)._sh.worksheet(DASHBOARD_TAB)
     width = rowcol_to_a1(1, _COL["change_date"]).rstrip("1")
+    lift_rows_above_totals(ws)
     values = ws.get_all_values()
     formulas = ws.get(f"A1:{width}{max(len(values), 1)}", value_render_option="FORMULA")
     updates, new_rows = plan(values, formulas, rows, today)
     if updates:
         _retry_write(ws.batch_update, updates, value_input_option="USER_ENTERED")
     if new_rows:
-        first = len(values) + 1
-        _retry_write(ws.update, values=new_rows,
-                     range_name=f"A{first}", value_input_option="USER_ENTERED")
-    # Rows added below the hand-formatted block show rates as 0.0076; give the
-    # rate columns the sheet's own 15.9% style.
-    if updates or new_rows:
-        _retry_write(ws.format, f"O2:P{len(values) + len(new_rows)}",
-                     {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
+        insert_rows(ws, formulas, new_rows)
     return len(updates), len(new_rows)
+
+
+def insert_rows(ws, formulas: list[list[str]], new_rows: list[list]) -> None:
+    """Insert above the totals row, styled like the row above, totals extended."""
+    from smartlead.sheets import _retry_write
+    tot = totals_row(formulas)
+    if tot is None:      # no totals row: plain append
+        _retry_write(ws.append_rows, new_rows, value_input_option="USER_ENTERED")
+        return
+    _retry_write(ws.insert_rows, new_rows, row=tot, value_input_option="USER_ENTERED",
+                 inherit_from_before=True)
+    fixed = [[extend_totals(c, tot - 1, len(new_rows)) if str(c).startswith("=") else c
+              for c in formulas[tot - 1]]]
+    if fixed[0] != formulas[tot - 1]:
+        new_tot = tot + len(new_rows)
+        _retry_write(ws.update, values=fixed, range_name=f"A{new_tot}",
+                     value_input_option="USER_ENTERED")
+
+
+def stray_rows(values: list[list[str]], formulas: list[list[str]]) -> list[int]:
+    """Campaign rows below the totals row (gtm launch appends there, under the
+    notes, so the totals miss them and they take the notes' grey italics)."""
+    tot = totals_row(formulas)
+    if tot is None:
+        return []
+    return [i for i in range(tot + 1, len(values) + 1)
+            if len(values[i - 1]) >= _COL["channel"]
+            and values[i - 1][_COL["channel"] - 1] in ("Email", "LinkedIn")]
+
+
+def lift_rows_above_totals(ws) -> int:
+    """Move stray campaign rows above the totals row, style them like the
+    campaign row above, and extend the totals over them. Returns rows moved."""
+    from smartlead.sheets import _retry_write
+    sh, gid, moved = ws.spreadsheet, ws.id, 0
+    first_tot = None
+    while True:
+        values = ws.get_all_values()
+        formulas = ws.get(f"A1:U{max(len(values), 1)}", value_render_option="FORMULA")
+        stray = stray_rows(values, formulas)
+        tot = totals_row(formulas)
+        if first_tot is None:
+            first_tot, first_formulas = tot, formulas
+        if not stray:
+            break
+        i = stray[0]
+        _retry_write(sh.batch_update, {"requests": [{"moveDimension": {
+            "source": {"sheetId": gid, "dimension": "ROWS", "startIndex": i - 1, "endIndex": i},
+            "destinationIndex": tot - 1}}]})
+        moved += 1
+    if moved:
+        last = first_tot - 1          # campaign rows used to end here
+        _retry_write(sh.batch_update, {"requests": [{"copyPaste": {
+            "source": {"sheetId": gid, "startRowIndex": last - 1, "endRowIndex": last,
+                       "startColumnIndex": 0, "endColumnIndex": 21},
+            "destination": {"sheetId": gid, "startRowIndex": last, "endRowIndex": last + moved,
+                            "startColumnIndex": 0, "endColumnIndex": 21},
+            "pasteType": "PASTE_FORMAT"}}]})
+        fixed = [extend_totals(c, last, moved) if str(c).startswith("=") else c
+                 for c in first_formulas[first_tot - 1]]
+        _retry_write(ws.update, values=[fixed], range_name=f"A{first_tot + moved}",
+                     value_input_option="USER_ENTERED")
+    return moved

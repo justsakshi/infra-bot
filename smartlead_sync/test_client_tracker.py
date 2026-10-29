@@ -102,3 +102,25 @@ def test_missing_rate_formulas_are_filled_in():
                       "2026-10-29")
     got = {u["range"]: u["values"][0][0] for u in updates}
     assert got == {"O2": '=IFERROR(L2/J2,"")', "P2": '=IFERROR(M2/J2,"")'}
+
+
+def test_new_rows_go_above_the_totals_row_and_totals_extend():
+    from smartlead.client_tracker import extend_totals, totals_row
+    values, formulas = _sheet([_line("Old", "Email", "Paused", "1", "1", "", "", "0", "0"),
+                               _line("Yellow = note", "", "", "", "", "", "", "", "")])
+    formulas[2][8] = "=SUM(I2:I2)"                      # row 3 is the totals row
+    assert totals_row(formulas) == 3
+    _, new = plan(values, formulas, [_li("Roundtable | Aaron")], "2026-10-29")
+    assert new[0][14] == '=IFERROR(L3/J3,"")'           # inserted at row 3, totals move to 4
+    assert extend_totals("=SUM(I2:I68)", 68, 10) == "=SUM(I2:I78)"
+    assert extend_totals("=AVERAGE(O2:O65)", 68, 10) == "=AVERAGE(O2:O65)"   # theirs, untouched
+
+
+def test_campaign_rows_below_the_totals_are_found():
+    from smartlead.client_tracker import stray_rows
+    values, formulas = _sheet([_line("Old", "Email", "Paused", "1", "1", "", "", "0", "0"),
+                               _line("Yellow = note", "", "", "", "", "", "", "", ""),
+                               _line("Replies checked ...", "", "", "", "", "", "", "", ""),
+                               _line("Roundtable | Aaron", "Email", "Draft", "804", "", "", "", "", "")])
+    formulas[2][8] = "=SUM(I2:I2)"
+    assert stray_rows(values, formulas) == [5]
