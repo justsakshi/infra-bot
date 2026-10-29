@@ -26,7 +26,9 @@ if sys.platform == "win32":
 
 from smartlead import campaign_history as ch
 from smartlead import campaign_metrics as cm
-from smartlead.config import CAMPAIGN_HISTORY_TAB_NAME, CAMPAIGN_METRICS_SHEET_ID
+from smartlead.config import (BETTRDATA_TRACKER_SHEET_ID, CAMPAIGN_HISTORY_TAB_NAME,
+                              CAMPAIGN_METRICS_SHEET_ID)
+from smartlead import client_tracker
 from smartlead.metrics_collect import collect_metric_rows
 from smartlead.sheets import SheetsWriter
 
@@ -84,6 +86,15 @@ async def main() -> int:
         print(f"[!] Campaign Metrics write failed: {exc}")
         failed = True
     print(f"\n[Metrics] written to sheet {CAMPAIGN_METRICS_SHEET_ID}")
+    if BETTRDATA_TRACKER_SHEET_ID:
+        try:
+            changed, added = client_tracker.update_dashboard(
+                BETTRDATA_TRACKER_SHEET_ID,
+                [r for r in rows if r.get("client") == "BettrData"], day)
+            print(f"[Metrics] BettrData tracker: {changed} cell(s) updated, {added} row(s) added")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[!] BettrData tracker update failed: {exc}")
+            failed = True
     return 2 if failed else 0
 
 
