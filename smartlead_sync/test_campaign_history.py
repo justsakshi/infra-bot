@@ -5,7 +5,8 @@ from smartlead import campaign_history as ch
 def _row(client="BettrData", channel="Email", platform="Smartlead", name="Campaign A",
          cid="1", status="ACTIVE", launch="2026-10-27", **life):
     base = {"life_sent": None, "life_bounced": None, "life_invites": None,
-            "life_accepted": None, "life_replies": None, "life_positive": None}
+            "life_accepted": None, "life_replies": None, "life_positive": None,
+            "life_not_interested": None, "life_wrong_person": None}
     base.update({f"life_{k}": v for k, v in life.items()})
     return {"client": client, "channel": channel, "platform": platform, "campaign": name,
             "campaign_id": cid, "status": status, "launch_date": launch,
@@ -13,7 +14,7 @@ def _row(client="BettrData", channel="Email", platform="Smartlead", name="Campai
 
 
 def test_history_rows_skip_totals_and_mark_missing_figures():
-    rows = [_row(sent=284, bounced=1, replies=5, positive=2),
+    rows = [_row(sent=284, bounced=1, replies=5, positive=2, not_interested=1, wrong_person=0),
             {"client": "BettrData", "campaign": "Total — BettrData"},   # no channel
             _row(channel="LinkedIn", platform="Expandi", name="LinkedIn A", cid="9",
                  invites=12, accepted=0, replies=0, positive=0)]
@@ -21,9 +22,9 @@ def test_history_rows_skip_totals_and_mark_missing_figures():
     assert len(out) == 2
     email = out[0]
     assert email[:3] == ["2026-10-29", "BettrData", "Email"]
-    assert email[8:14] == [284, 1, "-", "-", 5, 2]          # no invites on email
+    assert email[8:16] == [284, 1, "-", "-", 5, 2, 1, 0]    # no invites on email
     linkedin = out[1]
-    assert linkedin[8:14] == ["-", "-", 12, 0, 0, 0]        # a real 0 stays 0
+    assert linkedin[8:16] == ["-", "-", 12, 0, 0, 0, "-", "-"]   # a real 0 stays 0
     assert len(email) == len(ch.HEADER)
 
 
@@ -56,7 +57,8 @@ def test_baseline_is_yesterday_midweek_or_the_latest_before_it():
 
 def _hist(day, **kw):
     r = dict(zip(ch.FIELDS, [day, "BettrData", "Email", "Smartlead", "Campaign A", "ACTIVE",
-                             "2026-10-20", 100, None, None, None, None, None, None, "1"]))
+                             "2026-10-20", 100, None, None, None, None, None, None, None,
+                             None, "1"]))
     r.update(kw)
     return r
 
@@ -66,7 +68,8 @@ def test_change_is_today_minus_base():
          _hist("2026-10-30", sent=265, replies=5, positive=1, bounced=1)]
     (c,) = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
     assert c["change"] == {"sent": 165, "replies": 3, "positive": 0, "bounced": 1,
-                           "invites": None, "accepted": None}
+                           "invites": None, "accepted": None,
+                           "not_interested": None, "wrong_person": None}
     assert c["totals"]["sent"] == 265 and c["running"] is True
 
 
@@ -91,6 +94,9 @@ class _FakeWS:
 
     def col_values(self, n):
         return [r[0] for r in self.values]
+
+    def row_values(self, n):
+        return self.values[n - 1]
 
     def update(self, values, range_name):
         self.values = values + self.values[1:]
@@ -126,3 +132,10 @@ def test_first_write_adds_the_header():
     ws = _FakeWS([])
     ch.write_history(_FakeWriter(ws), [["2026-10-29", "a"]], "2026-10-29", "Campaign History")
     assert ws.values[0] == ch.HEADER and ws.frozen
+
+
+def test_a_changed_header_is_rewritten():
+    old = ch.HEADER[:13] + ["Positive", "Campaign ID"]
+    ws = _FakeWS([old, ["2026-10-29", "old"]])
+    ch.write_history(_FakeWriter(ws), [["2026-10-29", "new"]], "2026-10-29", "Campaign History")
+    assert ws.values[0] == ch.HEADER and [r[1] for r in ws.values[1:]] == ["new"]

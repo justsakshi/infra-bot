@@ -13,12 +13,18 @@ from smartlead.notify import day as _day
 
 # Order the clients appear in; anything else follows alphabetically.
 _CLIENT_ORDER = ["BettrData", "Melior", "Precise Leads"]
+# Fields summed per channel. Email replies are broken down by Smartlead's
+# category (Manveen, 29 Oct 2026: "positive/neutral and not interested and
+# wrong person and how many emails went out"); LinkedIn platforms tag only
+# "interested".
 _FIELDS = {
-    "Email": [("sent", "sent", "sent"), ("replies", "reply", "replies"),
-              ("positive", "positive", "positive"), ("bounced", "bounced", "bounced")],
-    "LinkedIn": [("invites", "invite", "invites"), ("accepted", "accepted", "accepted"),
-                 ("replies", "reply", "replies"), ("positive", "positive", "positive")],
+    "Email": ["sent", "replies", "positive", "not_interested", "wrong_person", "bounced"],
+    "LinkedIn": ["invites", "accepted", "replies", "positive"],
 }
+_REPLY_KINDS = [("positive", "positive/neutral"), ("not_interested", "not interested"),
+                ("wrong_person", "wrong person")]
+_LINKEDIN = [("invites", "invite", "invites"), ("accepted", "accepted", "accepted"),
+             ("replies", "reply", "replies"), ("positive", "interested", "interested")]
 
 
 def weekday_day(iso: str) -> str:
@@ -27,13 +33,37 @@ def weekday_day(iso: str) -> str:
     return f"{d:%a} {_day(iso)}"
 
 
+def _n(n: int, one: str, many: str) -> str:
+    return f"{n:,} {one if n == 1 else many}"
+
+
 def _counts(values: dict, channel: str, *, skip_zero: bool = False) -> str:
-    parts = []
-    for field, one, many in _FIELDS[channel]:
+    """'165 sent, 3 replies (2 positive/neutral, 1 not interested, 0 wrong
+    person), 0 bounced' for email; '12 invites, 0 accepted, ...' for LinkedIn.
+    skip_zero (the running totals) leaves out the zeros."""
+    def shown(field):
         n = values.get(field)
-        if n is None or (skip_zero and n == 0):
-            continue
-        parts.append(f"{n:,} {one if n == 1 else many}")
+        return n is not None and not (skip_zero and n == 0)
+
+    parts = []
+    if channel == "LinkedIn":
+        parts = [_n(values[f], one, many) for f, one, many in _LINKEDIN if shown(f)]
+        return ", ".join(parts) or "nothing yet"
+    if shown("sent"):
+        parts.append(f"{values['sent']:,} sent")
+    if shown("replies"):
+        replies = values["replies"]
+        kinds = [(values.get(f), label) for f, label in _REPLY_KINDS]
+        detail = [f"{n:,} {label}" for n, label in kinds
+                  if n is not None and not (skip_zero and n == 0)]
+        # Do Not Contact, Uncategorizable and custom categories.
+        other = replies - sum(n for n, _ in kinds if n)
+        if other > 0:
+            detail.append(f"{other:,} other")
+        parts.append(_n(replies, "reply", "replies")
+                     + (f" ({', '.join(detail)})" if replies and detail else ""))
+    if shown("bounced"):
+        parts.append(f"{values['bounced']:,} bounced")
     return ", ".join(parts) or "nothing yet"
 
 
@@ -46,7 +76,7 @@ def _sum(rows: list[dict], key: str, channel: str) -> dict:
     total: dict = {}
     for r in rows:
         vals = r[key] or {}
-        for field, _, _ in _FIELDS[channel]:
+        for field in _FIELDS[channel]:
             v = vals.get(field)
             if v is not None:
                 total[field] = total.get(field, 0) + v
