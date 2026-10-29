@@ -172,6 +172,7 @@ def insert_rows(ws, formulas: list[list[str]], new_rows: list[list]) -> None:
         return
     _retry_write(ws.insert_rows, new_rows, row=tot, value_input_option="USER_ENTERED",
                  inherit_from_before=True)
+    compact(ws, tot, tot + len(new_rows) - 1)
     fixed = [[extend_totals(c, tot - 1, len(new_rows)) if str(c).startswith("=") else c
               for c in formulas[tot - 1]]]
     if fixed[0] != formulas[tot - 1]:
@@ -223,4 +224,21 @@ def lift_rows_above_totals(ws) -> int:
                  for c in first_formulas[first_tot - 1]]
         _retry_write(ws.update, values=[fixed], range_name=f"A{first_tot + moved}",
                      value_input_option="USER_ENTERED")
+        compact(ws, last + 1, last + moved)
     return moved
+
+
+def compact(ws, first: int, last: int) -> None:
+    """One line per row for rows first..last: text clipped, height 21 px.
+    Copied campaign styling wraps text, and the long Target Titles cell then
+    grows a row to ~10 lines (Manveen, 29 Oct: "can you crop this")."""
+    from smartlead.sheets import _retry_write
+    gid = ws.id
+    _retry_write(ws.spreadsheet.batch_update, {"requests": [
+        {"repeatCell": {"range": {"sheetId": gid, "startRowIndex": first - 1, "endRowIndex": last,
+                                  "startColumnIndex": 0, "endColumnIndex": 21},
+                        "cell": {"userEnteredFormat": {"wrapStrategy": "CLIP"}},
+                        "fields": "userEnteredFormat.wrapStrategy"}},
+        {"updateDimensionProperties": {"range": {"sheetId": gid, "dimension": "ROWS",
+                                                 "startIndex": first - 1, "endIndex": last},
+                                       "properties": {"pixelSize": 21}, "fields": "pixelSize"}}]})
