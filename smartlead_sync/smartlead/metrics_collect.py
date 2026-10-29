@@ -28,6 +28,12 @@ from smartlead.heyreach import HeyReachClient
 from smartlead.heyreach_accounts import discover_heyreach_workspaces
 
 
+# (client, channel, campaign name) -> platform status for EVERY campaign of an
+# active client, including the paused-and-quiet ones left off the rows, so the
+# client tracker can mark them Paused. Refilled by each collect_metric_rows().
+STATUSES: dict[tuple[str, str, str], str] = {}
+
+
 def _n(payload: dict, field: str) -> int:
     return int(float((payload or {}).get(field, 0) or 0))
 
@@ -68,6 +74,7 @@ async def _smartlead_rows(today: datetime, start_dt: datetime, end_dt: datetime,
                         cm.metrics_client_for(acc.name, camp.get("client_id")))
                     if not cm.row_client_wanted(client, CAMPAIGN_METRICS_CLIENTS):
                         continue
+                    STATUSES[(client, "Email", str(camp.get("name", "")))] = status
                     # A failed fetch is not "zero activity": skip the campaign
                     # and say so, rather than write a fabricated 0.
                     try:
@@ -145,7 +152,8 @@ async def collect_metric_rows(today: datetime, start_dt: datetime, end_dt: datet
                               log: str = "[Metrics]") -> list[dict]:
     """Every active client's campaign rows, without totals."""
     print(f"{log} clients: {', '.join(sorted(CAMPAIGN_METRICS_CLIENTS))}")
+    STATUSES.clear()
     rows = await _smartlead_rows(today, start_dt, end_dt, log)
     rows += await _heyreach_rows(today, start_dt, end_dt, log)
-    rows += await build_expandi_rows(today, start_dt, log=log)
+    rows += await build_expandi_rows(today, start_dt, log=log, statuses=STATUSES)
     return rows
