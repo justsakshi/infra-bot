@@ -147,6 +147,21 @@ async def _sweep_lead_activity(client, leads, workspace: str,
           f"cache holds {len(known)}, took {elapsed:.0f}s{suffix}")
 
 
+_ACTIVITY = ("initiated", "connected", "contacted_people", "replied_msg",
+             "replied_excl_msg")
+
+
+def _quiet_since(stats: dict, week_ago: dict | None) -> bool:
+    """True when no counter moved since the snapshot from a week ago.
+
+    No snapshot (no Mongo, or a campaign younger than the store) means the
+    week is unknown, so the campaign is kept rather than hidden.
+    """
+    if week_ago is None:
+        return False
+    return all(int(stats.get(f) or 0) <= int(week_ago.get(f) or 0) for f in _ACTIVITY)
+
+
 async def build_expandi_rows(today: datetime, start_dt: datetime,
                              log: str = "[Metrics]") -> list[dict]:
     """Snapshot today's counters, then build one row per campaign.
@@ -167,7 +182,7 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
         print(f"{log} Expandi: no Mongo — activity columns fall back to all-time")
 
     for ws in workspaces:
-        if CAMPAIGN_METRICS_CLIENTS and ws.name.upper() not in CAMPAIGN_METRICS_CLIENTS:
+        if not cm.row_client_wanted(ws.name, CAMPAIGN_METRICS_CLIENTS):
             continue
         try:
             async with ExpandiClient(ws.api_key, ws.api_secret, ws.name) as exc_client:
@@ -207,6 +222,14 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                     # Smartlead side applies, so the tab stays consistent.
                     if not int(stats.get("people_in_campaign") or 0):
                         continue
+                    # A paused campaign that did nothing all week is finished
+                    # work, dropped like a quiet PAUSED Smartlead campaign. On
+                    # 29 Oct 22 of 28 Expandi rows were paused campaigns that
+                    # had not moved in weeks.
+                    if not camp.get("active") and _quiet_since(
+                            stats, store.baseline(ws.name, str(camp.get("name", "")).strip(),
+                                                  (today - timedelta(days=7)).date())):
+                        continue
                     reportable.append(camp)
 
                 await _sweep_lead_activity(exc_client, leads, ws.name,
@@ -225,7 +248,7 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                         camp,
                         store.baseline(ws.name, name, start_dt.date()),
                         store.previous_day(ws.name, name, today.date()),
-                        client=ws.name,
+                        client=cm.display_client(ws.name),
                         lead_counts=lc,
                     ))
                 if pending:

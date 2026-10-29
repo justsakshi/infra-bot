@@ -908,17 +908,24 @@ class SheetsWriter:
     # ── internals ────────────────────────────────────────────────────────
 
     def _get_or_create_tab(self, title: str, rows: int = 500, cols: int = 20) -> Any:
-        full_title = f"{self.prefix}{title}"
-        try:
-            return self._sh.worksheet(full_title)
-        except gspread.exceptions.WorksheetNotFound:
-            return self._sh.add_worksheet(title=full_title, rows=str(rows), cols=str(cols))
+        return self._get_or_create_shared_tab(f"{self.prefix}{title}", rows, cols)
 
     def _get_or_create_shared_tab(self, title: str, rows: int = 500, cols: int = 20) -> Any:
-        """Create/get a tab without the account prefix (shared across accounts)."""
+        """Get a tab by its exact title, creating it if absent.
+
+        Matched case-blind as a fallback. Google treats "BETTRDATA - Inboxes"
+        and "BettrData - Inboxes" as the same name (adding one fails with
+        "already exists") but gspread looks titles up case-sensitively. The
+        account is "BETTRDATA" when its key is read on Windows and "BettrData"
+        on Render, so from mid-September every Render write to BettrData's tabs
+        failed and they went stale.
+        """
         try:
             return self._sh.worksheet(title)
         except gspread.exceptions.WorksheetNotFound:
+            for ws in self._sh.worksheets():
+                if ws.title.casefold() == title.casefold():
+                    return ws
             return self._sh.add_worksheet(title=title, rows=str(rows), cols=str(cols))
 
     def _write_tab(self, tab_key: str, data: list[dict], custom_headers: dict[str, str] | None = None) -> None:

@@ -2,7 +2,7 @@
 import os
 import sys
 
-from smartlead.campaign_metrics import expandi_metric_row, total_row, COLUMNS
+from smartlead.campaign_metrics import expandi_metric_row, total_row, COLUMNS, HISTORY_KEYS
 from smartlead.expandi_accounts import discover_expandi_workspaces
 
 
@@ -111,7 +111,8 @@ paused = expandi_metric_row({**CAMP, "active": False}, BASE, PREV)
 ok(paused["status"] == "PAUSED", "active False -> PAUSED")
 
 # --- row shape matches the sheet ---
-ok(set(r.keys()) == set(COLUMNS), "row keys match COLUMNS exactly")
+ok(set(r.keys()) == set(COLUMNS) | set(HISTORY_KEYS),
+   "row keys match COLUMNS plus the history keys")
 
 # --- workspace discovery needs BOTH key and secret ---
 saved = {k: v for k, v in os.environ.items() if k.startswith("EXPANDEE_")}

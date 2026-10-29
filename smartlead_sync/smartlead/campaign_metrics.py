@@ -149,6 +149,22 @@ def _norm_client(name: str) -> str:
     return str(name or "").strip().upper().replace("_", " ")
 
 
+# One spelling per client. The same client arrives as "BETTRDATA" (Expandi,
+# or any env var read on Windows), "BettrData" (Smartlead key on Render) and
+# "Bettrdata" (sub-client label inside PRECISE_LEADS); grouped as written they
+# split one client into two subtotals and two per-client tabs.
+_DISPLAY_CLIENT = {
+    "BETTRDATA": "BettrData",
+    "MELIOR": "Melior",
+    "PRECISE LEADS": "Precise Leads",
+}
+
+
+def display_client(name: str) -> str:
+    """The client's one display name; unknown names pass through unchanged."""
+    return _DISPLAY_CLIENT.get(_norm_client(name), str(name or "").strip())
+
+
 def account_in_scope(account_name: str, wanted: set[str]) -> bool:
     """Whether a metrics run needs to open this Smartlead account.
 
@@ -270,12 +286,19 @@ def smartlead_summary_from_analytics(analytics: dict) -> dict:
         "interested": _int(lead_stats.get("interested", 0)),
         "unaccounted": max(0, total - sum(states.values())),
         "sent": _int(analytics.get("sent_count", 0)),
+        "bounced": _int(analytics.get("bounce_count", 0)),
     }
 
 
 _INACTIVE_STATUSES = {"DRAFTED", "DRAFT"}
 _STALE_STATUSES = {"PAUSED", "COMPLETED", "COMPLETE", "STOPPED", "STOP", "ARCHIVED"}
 _STALE_DAYS = 7
+
+
+def is_finished_status(status: str) -> bool:
+    """PAUSED / COMPLETED / STOPPED / ARCHIVED: kept only if it sent this week."""
+    s = str(status or "").upper()
+    return s in _STALE_STATUSES or any(s.startswith(x) for x in _STALE_STATUSES)
 
 
 def is_excluded_campaign_name(name: str, patterns: list[str] | None = None) -> bool:
@@ -325,9 +348,7 @@ def should_include_smartlead_campaign(summary: dict, week_sent: int, month_sent:
     if status in _INACTIVE_STATUSES or status.startswith("DRAFT"):
         return False
 
-    finished = (status in _STALE_STATUSES
-                or any(status.startswith(s) for s in _STALE_STATUSES))
-    if finished:
+    if is_finished_status(status):
         # The week is the whole rule. `month_sent` is deliberately ignored: a
         # campaign that sent on 2 September and nothing since is exactly what
         # this filter exists to remove, and honouring the month figure would
@@ -445,6 +466,35 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         # Smartlead's own auto-categorisation (Interested / Meeting Request /
         # Information Request). Machine-tagged, not human-verified.
         "positive_neutral_month": pos_neutral,
+        # Running totals for Campaign History (not sheet columns): two days'
+        # totals subtracted give what happened in between.
+        **_lifetime(summary.get("campaign_id"), "Email",
+                    sent=_int(summary.get("sent", 0)),
+                    bounced=_int(summary.get("bounced", 0)),
+                    replies=max(0, replied - auto_replied),
+                    positive=pos_neutral),
+    }
+
+
+# Keys every row carries for Campaign History, beyond the sheet's COLUMNS.
+HISTORY_KEYS = ("campaign_id", "channel", "life_sent", "life_bounced",
+                "life_invites", "life_accepted", "life_replies", "life_positive")
+
+
+def _lifetime(campaign_id, channel: str, *, sent=None, bounced=None,
+              invites=None, accepted=None, replies=None, positive=None) -> dict:
+    """Running totals carried on a metrics row for Campaign History.
+
+    Keys sit outside COLUMNS, so the sheet writers (which project onto COLUMNS)
+    never show them. None means the platform has no such figure (an email
+    campaign sends no invites), which history writes as "-", not 0.
+    """
+    return {
+        "campaign_id": "" if campaign_id is None else str(campaign_id),
+        "channel": channel,
+        "life_sent": sent, "life_bounced": bounced,
+        "life_invites": invites, "life_accepted": accepted,
+        "life_replies": replies, "life_positive": positive,
     }
 
 
@@ -455,12 +505,12 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
                         overall_yesterday: dict | None = None) -> dict:
     """Build the metrics row for one HeyReach campaign.
 
-    `overall_alltime` is accepted but no longer read: every activity column is
-    month-to-date so the row lines up with the Smartlead rows beside it. The
-    parameter stays so the two call sites keep working unchanged, and because
-    an all-time column may well be wanted again later.
+    Every activity column is month-to-date so the row lines up with the
+    Smartlead rows beside it; `overall_alltime` feeds only the running totals
+    kept for Campaign History.
     """
     ps = campaign.get("progressStats", {}) or {}
+    oa = (overall_alltime or {}).get("overallStats", {}) or {}
     om = (overall_month or {}).get("overallStats", {}) or {}
     by_day = (overall_month or {}).get("byDayStats", {}) or {}
 
@@ -526,6 +576,11 @@ def heyreach_metric_row(campaign: dict, overall_alltime: dict, overall_month: di
         "total_responses_month": _int(om.get("totalMessageReplies", 0)),
         # HeyReach's own auto-tagging, same caveat as the Smartlead column.
         "positive_neutral_month": _int(om.get("autoTaggedInterested", 0)),
+        **_lifetime(campaign.get("id"), "LinkedIn",
+                    invites=_int(oa.get("connectionsSent", 0)),
+                    accepted=_int(oa.get("connectionsAccepted", 0)),
+                    replies=_int(oa.get("totalMessageReplies", 0)),
+                    positive=_int(oa.get("autoTaggedInterested", 0))),
     }
 
 
@@ -677,6 +732,12 @@ def expandi_metric_row(campaign: dict, baseline: dict | None, prev_day: dict | N
         # Running totals, not month deltas — see the note above.
         "total_responses_month": replied_total,
         "positive_neutral_month": _int(stats.get("interested_people")),
+        # `initiated` = connection requests sent, `connected` = accepted.
+        **_lifetime(campaign.get("id"), "LinkedIn",
+                    invites=_int(stats.get("initiated")),
+                    accepted=_int(stats.get("connected")),
+                    replies=replied_total,
+                    positive=_int(stats.get("interested_people"))),
     }
 
 

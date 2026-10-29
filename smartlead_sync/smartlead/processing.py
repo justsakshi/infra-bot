@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone, timedelta
 from smartlead.api import SmartleadClient
+from smartlead.client_filter import is_past_client_campaign
 from smartlead.config import MIN_WARMUP_REP_PCT, ACTIVE_STATUSES, MAX_INBOX_LIMIT
 from smartlead.dns_checker import audit_domain_dns
 
@@ -341,8 +342,10 @@ async def fetch_account_data(
         c_id = _campaign_id(campaign)
         c_name = campaign.get("name", "")
         c_status = campaign.get("status", "")
+        listed = not is_past_client_campaign(campaign)
         if not c_id:
-            campaign_summary.append(_basic_campaign_row(campaign))
+            if listed:
+                campaign_summary.append(_basic_campaign_row(campaign))
             continue
 
         # Analytics (pre-fetched concurrently above)
@@ -352,7 +355,8 @@ async def fetch_account_data(
         not_started = lead_stats.get("notStarted", 0)
         in_progress = lead_stats.get("inprogress", 0)
 
-        campaign_summary.append(_summary_row(c_id, c_name, c_status, analytics))
+        if listed:
+            campaign_summary.append(_summary_row(c_id, c_name, c_status, analytics))
 
         # Load stats
         leads_rem = not_started + in_progress
@@ -401,7 +405,7 @@ async def fetch_account_data(
     # 4b. Inactive campaigns: basic summary row only (no API calls for analytics/inboxes)
     if active_only:
         for campaign in inactive_campaigns:
-            if not isinstance(campaign, dict):
+            if not isinstance(campaign, dict) or is_past_client_campaign(campaign):
                 continue
             campaign_summary.append(_basic_campaign_row(campaign))
 

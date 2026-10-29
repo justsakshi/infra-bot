@@ -13,7 +13,7 @@ import asyncio
 import argparse
 import sys
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 # Fix Windows console encoding for Polars unicode table output
 if sys.platform == "win32":
@@ -36,14 +36,8 @@ from smartlead.processing import fetch_account_data
 from smartlead.client_filter import is_excluded_inbox
 from smartlead.config import (
     TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_TAB_NAME,
-    CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_SHEET_ID, CAMPAIGN_METRICS_EXCLUDE,
-    SMARTLEAD_POSITIVE_CATEGORY_IDS,
 )
 from smartlead.sheets import DeliverabilityReader, SheetsWriter
-from smartlead.expandi_rows import build_expandi_rows
-from smartlead.heyreach import HeyReachClient
-from smartlead.heyreach_accounts import discover_heyreach_workspaces
-from smartlead import campaign_metrics as cm
 from datetime import date as _date
 from smartlead.health import build_health_rows, health_records_for_store
 from smartlead.health_store import HealthStore
@@ -145,20 +139,6 @@ async def main() -> None:
     # gets its own consolidated master tab (a separate-workspace client on its
     # own sheet gets an isolated 'All Inboxes'; clients sharing a sheet share one).
     rows_by_sheet: dict[str, list[dict]] = {}
-    # Metrics fetch campaigns independently. The full inbox pipeline can take
-    # several minutes or fail on one mailbox; that must not erase Smartlead
-    # rows while HeyReach still reaches the shared Campaign Metrics tab.
-    # Match case-insensitively. Windows upper-cases environment variable names,
-    # Linux does not, so SMARTLEAD_API_KEY_Darlean yields an account called
-    # "DARLEAN" locally but "Darlean" on Render. A case-sensitive comparison
-    # therefore passed every local test and silently dropped Darlean from the
-    # metrics tab in production — HeyReach rows appeared, Smartlead rows did not.
-    # Two-stage: open an account if it holds a wanted client (PRECISE_LEADS
-    # holds Melior), then drop rows whose resolved client was not asked for.
-    smartlead_accounts_for_metrics = [
-        acc for acc in accounts
-        if cm.account_in_scope(acc.name, CAMPAIGN_METRICS_CLIENTS)
-    ]
 
     # Process each account sequentially with its own deliverability data
     failed_accounts: list = []
@@ -264,123 +244,9 @@ async def main() -> None:
     except Exception as exc:
         print(f"[!] Inbox Health workbook failed: {exc}")
 
-    # ── Campaign Metrics dashboard (Smartlead + HeyReach) ────────────────────
-    try:
-        today = datetime.now(timezone.utc)
-        reporting_start, reporting_end, month_name = cm.get_reporting_range(args.month, today)
-        ms_str = reporting_start.strftime("%Y-%m-%d")
-        end_str = reporting_end.strftime("%Y-%m-%d")
-        print(f"[*] Reporting range for metrics: {ms_str} to {end_str} ({month_name})")
-        metric_rows: list[dict] = []
-
-        # Smartlead rows (DARLEAN account(s))
-        week_start_str = cm.week_start_str(today)
-        yest_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
-        for acc in smartlead_accounts_for_metrics:
-          # Each account is isolated like the HeyReach loop below: one
-          # account's outage must not cost every other account's rows, and
-          # a bare `campaigns = []` here previously vanished silently — the
-          # exact failure mode that dropped Darlean's 22 Smartlead rows from
-          # its per-client tab while HeyReach's 13 rows still wrote fine.
-          try:
-            async with SmartleadClient(acc.api_key, acc.name) as slc:
-                campaigns = await slc.list_campaigns()
-                if not campaigns:
-                    print(f"  [metrics] Smartlead account {acc.name} returned 0 "
-                          f"campaigns — check this is not silent data loss")
-                for camp in campaigns:
-                    cid = str(camp.get("id") or "")
-                    if not cid:
-                        continue
-                    # Drafts and de-scoped verticals never qualify — skip them
-                    # before spending API calls on their analytics.
-                    status = str(camp.get("status", "")).upper()
-                    if status in cm._INACTIVE_STATUSES or status.startswith("DRAFT"):
-                        continue
-                    if cm.is_excluded_campaign_name(camp.get("name", ""),
-                                                    CAMPAIGN_METRICS_EXCLUDE):
-                        continue
-                    # A failed fetch is not "zero activity" — skip the campaign
-                    # rather than writing a fabricated 0 into the sheet.
-                    try:
-                        week_an = await slc.get_analytics_by_date(cid, week_start_str, today.strftime("%Y-%m-%d"))
-                        week_sent = int(float(week_an.get("sent_count", 0) or 0))
-                        m_an = await slc.get_analytics_by_date(cid, ms_str, end_str)
-                        month_sent = int(float(m_an.get("sent_count", 0) or 0))
-                        month_replies = int(float(m_an.get("reply_count", 0) or 0))
-                        y_an = await slc.get_analytics_by_date(cid, yest_str, yest_str)
-                        yest_sent = int(float(y_an.get("sent_count", 0) or 0))
-                        analytics = await slc.get_campaign_analytics(cid)
-                        leads = await slc.get_campaign_leads(cid)
-                    except Exception as exc:
-                        print(f"  [metrics] Smartlead campaign {cid} "
-                              f"({camp.get('name','')}) skipped — fetch failed: {exc}")
-                        continue
-                    # Filter after fetching, so lead counts are available to it.
-                    summary = cm.smartlead_summary_from_analytics(analytics)
-                    if not cm.should_include_smartlead_campaign(summary, week_sent, month_sent):
-                        continue
-                    row_client = cm.metrics_client_for(acc.name, camp.get("client_id"))
-                    if not cm.row_client_wanted(row_client, CAMPAIGN_METRICS_CLIENTS):
-                        continue
-                    metric_rows.append(cm.smartlead_metric_row(
-                        summary, leads, month_replies, 0, today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
-                        client=row_client,
-                        month_sent=month_sent, start_dt=reporting_start, end_dt=reporting_end,
-                        yest_sent=yest_sent,
-                        launch_date=str(camp.get("created_at", ""))[:10]))
-          except Exception as exc:
-            print(f"  [metrics] Smartlead account {acc.name} failed to list "
-                  f"campaigns — its rows are MISSING this run: {exc}")
-
-        # HeyReach rows (all workspaces; currently DARLEAN)
-        for ws in discover_heyreach_workspaces():
-            try:
-                async with HeyReachClient(ws.api_key, ws.name) as hrc:
-                    for camp in await hrc.list_campaigns():
-                        cid = camp["id"]
-                        try:
-                            oa = await hrc.get_overall_stats(cid)
-                            om = await hrc.get_overall_stats(
-                                cid,
-                                start=reporting_start.isoformat().replace("+00:00", "Z"),
-                                end=reporting_end.isoformat().replace("+00:00", "Z"),
-                            )
-                            oy = await hrc.get_overall_stats(
-                                cid, start=f"{yest_str}T00:00:00Z",
-                                end=f"{yest_str}T23:59:59Z")
-                            leads = await hrc.get_campaign_leads(cid)
-                        except Exception as exc:
-                            print(f"  [metrics] HeyReach campaign {cid} failed: {exc}")
-                            oa, om, oy, leads = {}, {}, {}, []
-                        by_day = (om or {}).get("byDayStats", {}) or {}
-                        if not cm.should_include_heyreach_campaign(camp, by_day):
-                            continue
-                        metric_rows.append(cm.heyreach_metric_row(
-                            camp, oa, om, leads, today, client=ws.name,
-                            start_dt=reporting_start, end_dt=reporting_end,
-                            overall_yesterday=oy))
-            except Exception as exc:
-                print(f"  [metrics] HeyReach workspace {ws.name} failed: {exc}")
-
-        metric_rows.extend(await build_expandi_rows(
-            today, reporting_start, log="  [metrics]"))
-
-        if metric_rows:
-            campaign_count = len(metric_rows)
-            campaign_rows = metric_rows  # keep the pre-totals rows for the per-client tabs
-            metric_rows = cm.rows_with_totals(metric_rows)
-            writer = SheetsWriter(CAMPAIGN_METRICS_SHEET_ID)
-            writer.write_campaign_metrics(metric_rows, month_name=month_name)
-            writer.write_campaign_metrics_per_client(campaign_rows, month_name=month_name)
-            # No-ops unless CAMPAIGN_METRICS_CLIENT_SHEETS names a spreadsheet.
-            SheetsWriter.write_campaign_metrics_client_sheets(
-                campaign_rows, month_name=month_name)
-            clients = sorted({str(r.get("client", "")) for r in metric_rows if r.get("client")})
-            print(f"[*] Campaign Metrics tab written: {campaign_count} campaigns "
-                  f"across {len(clients)} client(s): {', '.join(clients)}")
-    except Exception as exc:
-        print(f"[!] Campaign Metrics dashboard failed: {exc}")
+    # Campaign Metrics and Campaign History are written by metrics_only.py
+    # (09:00 IST job in index.js), before the 10:30 stats post that reads them.
+    # This run used to repeat the same ~24-minute pull at its end.
 
     # ── Sync verdict ─────────────────────────────────────────────────────────
     # Written last, so the Last Sync ledger covers every tab above. Until

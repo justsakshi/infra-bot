@@ -127,28 +127,37 @@ def _parse_client_sheets(raw: str) -> dict[str, str]:
 # spreadsheet or the write fails with a permission error naming that sheet.
 CAMPAIGN_METRICS_CLIENT_SHEETS: dict[str, str] = _parse_client_sheets(
     os.getenv("CAMPAIGN_METRICS_CLIENT_SHEETS", ""))
-# Smartlead accounts (by discovered name) to include in the metrics tab.
-# Names come from discover_accounts(), which upper-cases the env-var suffix:
-# SMARTLEAD_API_KEY_BettrData -> "BETTRDATA".
-# This one list gates all three platforms — Smartlead accounts, HeyReach
-# workspaces and Expandi workspaces are each filtered by name against it. A
-# client missing here is discovered and then dropped with no error and no rows,
-# which is indistinguishable from "that client has no campaigns", so the
-# default carries every client the tab actually reports on.
+# The clients PL works for today. Campaign Metrics, Campaign History and the
+# daily stats post report these and nothing else: a past client's campaigns
+# (Belardi Wong, Darlean, Mythic, OSC) never reach the sheet, whatever keys
+# are set (Manveen, 29 Oct 2026: "remove Belardi Wong and all the campaigns
+# that are for past clients ... so this is clean and easy to follow").
 #
-# BETTRDATA pulls in both its Expandi (LinkedIn) and Smartlead (email)
-# campaigns, since the name matches on both platforms.
+# This one list gates all three platforms — Smartlead accounts, HeyReach
+# workspaces and Expandi workspaces are each filtered by name against it.
+# Names are compared case- and underscore-blind ("PRECISE_LEADS" == "Precise
+# Leads"): Windows upper-cases env var names, Linux does not.
 #
 # MELIOR is not a Smartlead account: it is a client inside PRECISE_LEADS,
-# identified by campaign client_id 12256. Naming it here admits its rows; the
-# PRECISE_LEADS account itself is not listed, so the agency's own campaigns
-# stay out of the tab.
-CAMPAIGN_METRICS_CLIENTS: set[str] = {
+# identified by campaign client_id 12256, so naming it opens that account and
+# keeps only its rows. PRECISE LEADS is the agency's own outbound (client_id
+# None in that account).
+#
+# Read from ACTIVE_CLIENTS. The older CAMPAIGN_METRICS_CLIENTS variable is
+# deliberately ignored: Render still carried DARLEAN in it, which kept a past
+# client's HeyReach campaigns on the tab every morning.
+ACTIVE_CLIENTS: set[str] = {
     c.strip().upper()
-    for c in os.getenv("CAMPAIGN_METRICS_CLIENTS",
-                       "BELARDI WONG,MELIOR,BETTRDATA").split(",")
+    for c in os.getenv("ACTIVE_CLIENTS", "PRECISE LEADS,MELIOR,BETTRDATA").split(",")
     if c.strip()
 }
+CAMPAIGN_METRICS_CLIENTS: set[str] = ACTIVE_CLIENTS
+# Day-by-day record of every campaign's running totals, so progress between
+# any two days is a subtraction (see smartlead/campaign_history.py).
+CAMPAIGN_HISTORY_TAB_NAME: str = os.getenv("CAMPAIGN_HISTORY_TAB_NAME", "Campaign History")
+# The daily stats post (campaign_stats_post.py). Default #pl_daily, the
+# internal channel: the post covers every client, so never a client channel.
+CAMPAIGN_STATS_CHANNEL: str = os.getenv("CAMPAIGN_STATS_CHANNEL", "C0C9MAZMYPN")
 # Smartlead lead-category ids treated as positive/neutral (from /leads/fetch-categories):
 # 1=Interested, 2=Meeting Request, 5=Information Request. Excluded: 3=Not Interested,
 # 4=Do Not Contact, 6=Out Of Office (auto), 7=Wrong Person, 9=Sender Originated Bounce.
