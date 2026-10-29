@@ -54,7 +54,10 @@ Same inboxes, scored and prioritized. **This is the tab every manager opens firs
 **How you actually use this, daily (5 min):** open the tab, filter to your client, sort by Priority. Every P0 row — fix today, "What To Do" tells you how. P1 — this week. Skip anything marked 🤖. Watch the Trend column for anything sliding down before it becomes a P0.
 
 ### Tab: "Campaign Metrics" — is the campaign itself working
-Per-campaign send/reply/positive-reply numbers, last 7 days. Used Fridays: 21-day-old campaign at ≥2× baseline reply rate → scale it; near baseline → iterate copy; <50% of baseline → kill it.
+Per-campaign send/reply/positive-reply numbers for this month, email (Smartlead) and LinkedIn (Expandi, HeyReach), for the active clients only: Precise Leads, Melior, BettrData (`ACTIVE_CLIENTS`; past clients never appear). One "Campaign Metrics — <client>" tab per client as well. Used Fridays: 21-day-old campaign at ≥2× baseline reply rate → scale it; near baseline → iterate copy; <50% of baseline → kill it.
+
+### Tab: "Campaign History" — progress over time (since 29 Oct 2026)
+One row per campaign per day, written at 09:00 IST: running totals of emails sent, bounced, LinkedIn invites sent, accepted, replies and positives. Filter by campaign to watch it move; subtract two days to get what happened between them. Re-running on the same day replaces that day's rows. The 10:30 stats post in #pl_daily is built from this tab.
 
 ### Client deliverability test tabs (Belardiwong, Melior, Precise Leads, Darlean new, Mythic)
 Raw spam-placement test results — one row per test, which domain, when, inbox or spam. This is the raw material that feeds the Placement score in Inbox Health. You don't read this daily; the score is the finished product.
@@ -67,7 +70,9 @@ Six jobs run on a schedule (Render, all times IST). Each one reads the Sheet dat
 
 | Job | When | What it does | What to check |
 |---|---|---|---|
-| **Daily sync** (`run.py`) | 10:00 daily | Pulls every inbox/campaign from Smartlead, checks DNS, scores everything, writes all 4+ tabs above | Sheet has today's date; row counts look normal (~376 inboxes) |
+| **Campaign stats** (`metrics_only.py`) | 09:00 daily | Writes Campaign Metrics (+ per-client tabs) and today's Campaign History rows | Campaign History has rows dated today |
+| **Stats post** (`campaign_stats_post.py --post`) | 10:30 Mon–Fri | Posts each client's email + LinkedIn numbers since the last post to #pl_daily, every campaign in the thread; says "not ready" if 09:00 failed. Off switch: `CAMPAIGN_STATS_POST=off` | The post is in #pl_daily before the 11:00 standup |
+| **Daily sync** (`run.py`) | 10:00 daily | Pulls every inbox/campaign from Smartlead, checks DNS, scores everything, writes all 4+ tabs above (not Campaign Metrics: that is the 09:00 job) | Sheet has today's date; row counts look normal (~376 inboxes) |
 | **Auto placement-test** | 11:00 daily | Runs a real spam-placement test on stale/untested inboxes | Log shows test targets picked |
 | **Auto-warmup** | 11:30 daily | Sets the correct warmup volume/settings per inbox (see §4) | Log shows change counts |
 | **Headroom fix** (NEW) | 12:15 daily | Raises an inbox's daily send limit so warmup actually has room to run (see §4) | Log shows inboxes fixed |

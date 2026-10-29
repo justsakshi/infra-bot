@@ -1513,6 +1513,31 @@ async function start() {
     // (paused only), daily 06:00 IST, so any inbox can go into the Monday test.
     cron.schedule('0 6 * * *', () => runBilling('dt-senders', ['dt_senders.py', '--apply']), { timezone: 'Asia/Kolkata' });
 
+    // Campaign stats (Manveen, 29 Oct 2026). 09:00 IST every day: Campaign
+    // Metrics tabs + today's Campaign History rows (one row per campaign per
+    // day, so progress is visible). 10:30 IST Mon-Fri: the email + LinkedIn
+    // numbers since the last post, in #pl_daily before the 11:00 standup.
+    // The Mongo lock keeps a second instance (during a deploy) from posting twice.
+    // CAMPAIGN_STATS_POST=off stops the post; the 09:00 history keeps running.
+    const onceToday = async (job) => {
+      try {
+        await CronLock.create({ jobName: `${job}-${dayjs().format('YYYY-MM-DD')}` });
+      } catch (e) {
+        if (e.code === 11000) {
+          console.log(`[${job}] already ran today on another instance. Skipping.`);
+          return false;
+        }
+      }
+      return true;
+    };
+    cron.schedule('0 9 * * *', async () => {
+      if (await onceToday('campaign-metrics')) runBilling('campaign-metrics', ['metrics_only.py']);
+    }, { timezone: 'Asia/Kolkata' });
+    cron.schedule('30 10 * * 1-5', async () => {
+      if (process.env.CAMPAIGN_STATS_POST === 'off') return;
+      if (await onceToday('campaign-stats-post')) runBilling('campaign-stats-post', ['campaign_stats_post.py', '--post']);
+    }, { timezone: 'Asia/Kolkata' });
+
     // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: raise, hold
     // or step back daily limits per domain (spec 2026-10-15). Changes only the
     // pilot domains (volume_review.py --pilot-add); every other domain is reported.
