@@ -70,7 +70,7 @@ Six jobs run on a schedule (Render, all times IST). Each one reads the Sheet dat
 
 | Job | When | What it does | What to check |
 |---|---|---|---|
-| **Campaign stats** (`metrics_only.py`) | 09:00 daily | Writes Campaign Metrics (+ per-client tabs) and today's Campaign History rows | Campaign History has rows dated today |
+| **Campaign stats** (`metrics_only.py`) | 09:00 daily | Writes Campaign Metrics (+ per-client tabs), today's Campaign History rows, and the number columns of BettrData's own tracker (Outbound Tracker V2 → Campaign Dashboard; counts only go up, formulas / Blocked / LinkedIn Positive never touched, new campaigns added at the bottom) | Campaign History has rows dated today |
 | **Stats post** (`campaign_stats_post.py --post`) | 10:30 Mon–Fri | Posts each client's email + LinkedIn numbers since the last post to #pl_daily, every campaign in the thread; says "not ready" if 09:00 failed. Off switch: `CAMPAIGN_STATS_POST=off` | The post is in #pl_daily before the 11:00 standup |
 | **Daily sync** (`run.py`) | 10:00 daily | Pulls every inbox/campaign from Smartlead, checks DNS, scores everything, writes all 4+ tabs above (not Campaign Metrics: that is the 09:00 job) | Sheet has today's date; row counts look normal (~376 inboxes) |
 | **Auto placement-test** | 11:00 daily | Runs a real spam-placement test on stale/untested inboxes | Log shows test targets picked |

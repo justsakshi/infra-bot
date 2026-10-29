@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from smartlead.campaign_metrics import (
     smartlead_metric_row, smartlead_summary_from_analytics,
-    heyreach_metric_row, total_row, COLUMNS, HISTORY_KEYS,
+    heyreach_metric_row, total_row, COLUMNS, HISTORY_KEYS, EMAIL_EXTRA_KEYS,
     should_include_smartlead_campaign,
 )
 
@@ -155,7 +155,7 @@ ok(_hr2["connections_sent_yesterday"] == 0,
    "absent yesterday window counts as zero activity, never the all-time figure")
 ok(_hr2["launch_date"] == "", "no creationTime -> blank launch date, not a guess")
 
-ok(set(_sl.keys()) == set(COLUMNS) | set(HISTORY_KEYS)
+ok(set(_sl.keys()) == set(COLUMNS) | set(HISTORY_KEYS) | set(EMAIL_EXTRA_KEYS)
    and set(_hr.keys()) == set(COLUMNS) | set(HISTORY_KEYS),
    "both platforms emit exactly the sheet's columns plus the history keys")
 

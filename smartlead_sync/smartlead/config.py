@@ -158,6 +158,11 @@ CAMPAIGN_HISTORY_TAB_NAME: str = os.getenv("CAMPAIGN_HISTORY_TAB_NAME", "Campaig
 # The daily stats post (campaign_stats_post.py). Default #pl_daily, the
 # internal channel: the post covers every client, so never a client channel.
 CAMPAIGN_STATS_CHANNEL: str = os.getenv("CAMPAIGN_STATS_CHANNEL", "C0C9MAZMYPN")
+# BettrData's own "Outbound Tracker V2" sheet: its Campaign Dashboard number
+# columns are refreshed by metrics_only.py (smartlead/client_tracker.py).
+# Empty disables it.
+BETTRDATA_TRACKER_SHEET_ID: str = os.getenv("BETTRDATA_TRACKER_SHEET_ID",
+                                            "1y8K5_khUID0i9Eza5Dt8uWk9hpwaNl7Z3b3F86n891M")
 # Smartlead lead-category ids treated as positive/neutral (from /leads/fetch-categories):
 # 1=Interested, 2=Meeting Request, 5=Information Request. Excluded: 3=Not Interested,
 # 4=Do Not Contact, 6=Out Of Office (auto), 7=Wrong Person, 9=Sender Originated Bounce.

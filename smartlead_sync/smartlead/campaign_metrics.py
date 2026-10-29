@@ -287,6 +287,8 @@ def smartlead_summary_from_analytics(analytics: dict) -> dict:
         "unaccounted": max(0, total - sum(states.values())),
         "sent": _int(analytics.get("sent_count", 0)),
         "bounced": _int(analytics.get("bounce_count", 0)),
+        "unique_sent": _int(analytics.get("unique_sent_count", 0)),
+        "unique_opens": _int(analytics.get("unique_open_count", 0)),
     }
 
 
@@ -480,6 +482,10 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                     replies=max(0, replied - auto_replied),
                     positive=pos_neutral, not_interested=not_interested,
                     wrong_person=wrong_person),
+        # People reached and people who opened, for the client tracker's
+        # "Sent / Initiated" and "Open %" (smartlead/client_tracker.py).
+        "unique_sent": _int(summary.get("unique_sent", 0)),
+        "unique_opens": _int(summary.get("unique_opens", 0)),
     }
 
 
@@ -487,6 +493,8 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
 HISTORY_KEYS = ("campaign_id", "channel", "life_sent", "life_bounced",
                 "life_invites", "life_accepted", "life_replies", "life_positive",
                 "life_not_interested", "life_wrong_person")
+# Email rows also carry these (client tracker only).
+EMAIL_EXTRA_KEYS = ("unique_sent", "unique_opens")
 
 
 def _lifetime(campaign_id, channel: str, *, sent=None, bounced=None,
