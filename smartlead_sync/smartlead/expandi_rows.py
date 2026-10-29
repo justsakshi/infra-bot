@@ -163,7 +163,8 @@ def _quiet_since(stats: dict, week_ago: dict | None) -> bool:
 
 
 async def build_expandi_rows(today: datetime, start_dt: datetime,
-                             log: str = "[Metrics]") -> list[dict]:
+                             log: str = "[Metrics]",
+                             statuses: dict | None = None) -> list[dict]:
     """Snapshot today's counters, then build one row per campaign.
 
     The snapshot is written before the rows are built so that today's numbers
@@ -212,6 +213,10 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
 
                 reportable = []
                 for camp in campaigns:
+                    if statuses is not None:
+                        statuses[(cm.display_client(ws.name), "LinkedIn",
+                                  str(camp.get("name", "")).strip())] = (
+                            "IN_PROGRESS" if camp.get("active") else "PAUSED")
                     if camp.get("archived"):
                         continue
                     if cm.is_excluded_campaign_name(camp.get("name", ""),

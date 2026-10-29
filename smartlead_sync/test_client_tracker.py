@@ -43,7 +43,7 @@ def test_existing_row_gets_new_numbers_only_where_they_changed():
                                      "", "")], formula_rows=[2])
     updates, new = plan(values, formulas, [_email("Roundtable  |  laurie")], "2026-10-29")
     got = {u["range"]: u["values"][0][0] for u in updates}
-    assert got == {"D2": "Active", "I2": 1420, "J2": 165, "M2": 3, "N2": 2}   # O/P formulas exist
+    assert got == {"D2": "Active", "I2": 1420, "J2": 165, "L2": "-", "M2": 3, "N2": 2}   # O/P formulas exist
     assert new == []
 
 
@@ -73,7 +73,7 @@ def test_open_rate_only_when_opens_are_tracked():
                                                 unique_opens=0, life_replies=7, life_positive=1)],
                       "2026-10-29")
     got = {u["range"]: u["values"][0][0] for u in updates}
-    assert got == {"K2": "55.00%", "N2": 0}
+    assert got == {"K2": "55.00%", "N2": 0, "L2": "-", "L3": "-"}
 
 
 def test_new_campaign_appended_with_the_sheets_formulas_and_new_row_mark():
@@ -91,7 +91,7 @@ def test_counts_never_go_down_but_leads_and_status_follow_the_platform():
                                                 unique_sent=867, life_replies=0, life_positive=0)],
                       "2026-10-29")
     got = {u["range"]: u["values"][0][0] for u in updates}
-    assert got == {"D2": "Paused", "I2": 90, "N2": 0}   # J 868->867 and M 1->0 skipped
+    assert got == {"D2": "Paused", "I2": 90, "L2": "-", "N2": 0}   # J 868->867 and M 1->0 skipped
 
 
 def test_missing_rate_formulas_are_filled_in():
@@ -101,7 +101,7 @@ def test_missing_rate_formulas_are_filled_in():
                                                 unique_sent=284, life_replies=0, life_positive=0)],
                       "2026-10-29")
     got = {u["range"]: u["values"][0][0] for u in updates}
-    assert got == {"O2": '=IFERROR(L2/J2,"")', "P2": '=IFERROR(M2/J2,"")'}
+    assert got == {"O2": '=IFERROR(L2/J2,"")', "P2": '=IFERROR(M2/J2,"")', "L2": "-"}
 
 
 def test_new_rows_go_above_the_totals_row_and_totals_extend():
@@ -124,3 +124,43 @@ def test_campaign_rows_below_the_totals_are_found():
                                _line("Roundtable | Aaron", "Email", "Draft", "804", "", "", "", "", "")])
     formulas[2][8] = "=SUM(I2:I2)"
     assert stray_rows(values, formulas) == [5]
+
+
+def test_paused_and_quiet_campaign_gets_its_status_from_the_platform():
+    values, formulas = _sheet([_line("Old LI", "LinkedIn", "Active", "", "50", "", "5", "1", ""),
+                               _line("Twain", "LinkedIn", "Blocked", "", "9", "", "1", "0", ""),
+                               _line("Live", "Email", "Active", "10", "10", "", "-", "0", "0")])
+    updates, _ = plan(values, formulas, [_email("Live", total_leads=10, unique_sent=10,
+                                                life_replies=0, life_positive=0)], "2026-10-29",
+                      statuses={("old li", "LinkedIn"): "PAUSED", ("Twain", "LinkedIn"): "PAUSED",
+                                ("Live", "Email"): "PAUSED"})
+    got = {u["range"]: u["values"][0][0] for u in updates}
+    # Old LI -> Paused; Twain stays Blocked; Live's status comes from its own row (ACTIVE)
+    assert got == {"D2": "Paused"}
+
+
+def test_channel_casing_on_the_sheet_still_matches():
+    values, formulas = _sheet([_line("Retail", "Linkedin", "Paused", "", "5", "", "1", "0", "0")])
+    updates, new = plan(values, formulas, [_li("Retail", life_invites=9)], "2026-10-29")
+    assert new == [] and {u["range"] for u in updates} == {"D2", "J2"}
+
+
+class _TotWS:
+    """Totals row as Sheets has it AFTER an insert: own-row refs already shifted."""
+    def __init__(self, formulas):
+        self.formulas, self.written = formulas, None
+
+    def get(self, rng, value_render_option):
+        return [self.formulas]
+
+    def update(self, values, range_name, value_input_option):
+        self.written = (range_name, values[0])
+
+
+def test_totals_row_is_reread_after_insert_so_own_row_refs_stay_right():
+    from smartlead.client_tracker import _extend_totals_row
+    ws = _TotWS(["Yellow", "", "", "", "", "", "", "", "=SUM(I2:I68)", "", "", "", "", "",
+                 "", "", "=N71/M71"])
+    _extend_totals_row(ws, 71, 68, 2)
+    assert ws.written[0] == "A71"
+    assert ws.written[1][8] == "=SUM(I2:I70)" and ws.written[1][16] == "=N71/M71"

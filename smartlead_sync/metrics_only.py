@@ -29,7 +29,7 @@ from smartlead import campaign_metrics as cm
 from smartlead.config import (BETTRDATA_TRACKER_SHEET_ID, CAMPAIGN_HISTORY_TAB_NAME,
                               CAMPAIGN_METRICS_SHEET_ID)
 from smartlead import client_tracker
-from smartlead.metrics_collect import collect_metric_rows
+from smartlead.metrics_collect import STATUSES, collect_metric_rows
 from smartlead.sheets import SheetsWriter
 
 
@@ -90,7 +90,9 @@ async def main() -> int:
         try:
             changed, added = client_tracker.update_dashboard(
                 BETTRDATA_TRACKER_SHEET_ID,
-                [r for r in rows if r.get("client") == "BettrData"], day)
+                [r for r in rows if r.get("client") == "BettrData"], day,
+                {(name, ch): st for (client, ch, name), st in STATUSES.items()
+                 if client == "BettrData"})
             print(f"[Metrics] BettrData tracker: {changed} cell(s) updated, {added} row(s) added")
         except Exception as exc:  # noqa: BLE001
             print(f"[!] BettrData tracker update failed: {exc}")
@@ -98,5 +100,24 @@ async def main() -> int:
     return 2 if failed else 0
 
 
+def _alert(text: str) -> None:
+    """Failures go to the infra alerts channel; index.js only logs exit codes."""
+    import os
+    from smartlead.config import HEALTH_NOTIFY_CHANNEL
+    from smartlead.notify import _post
+    token = os.getenv("SLACK_BOT_TOKEN", "")
+    if token and HEALTH_NOTIFY_CHANNEL:
+        _post(token, HEALTH_NOTIFY_CHANNEL, text)
+
+
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    try:
+        code = asyncio.run(main())
+    except Exception as exc:  # noqa: BLE001
+        code = 1
+        print(f"[!] metrics_only crashed: {exc}")
+    if code and "--dry-run" not in sys.argv:
+        _alert("⚠️ Campaign stats run failed\n\nThe 9:00 job that fills Campaign History, "
+               "Campaign Metrics and BettrData's tracker did not finish cleanly "
+               f"(exit {code}). Its log is on Render: search for [campaign-metrics].")
+    sys.exit(code)
