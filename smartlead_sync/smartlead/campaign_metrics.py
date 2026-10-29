@@ -382,9 +382,11 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                          month_sent: int = 0, start_dt: datetime | None = None,
                          end_dt: datetime | None = None,
                          yest_sent: int = 0, launch_date: str = "") -> dict:
-    from smartlead.config import SMARTLEAD_AUTO_REPLY_CATEGORY_IDS
+    from smartlead.config import (SMARTLEAD_AUTO_REPLY_CATEGORY_IDS,
+                                  SMARTLEAD_NOT_INTERESTED_CATEGORY_IDS,
+                                  SMARTLEAD_WRONG_PERSON_CATEGORY_IDS)
     added_month = added_yest = pos_neutral = 0
-    replied = auto_replied = 0
+    replied = auto_replied = not_interested = wrong_person = 0
     if start_dt is None or end_dt is None:
         start_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end_dt = today
@@ -398,6 +400,10 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         cat = lead.get("lead_category_id")
         if cat in positive_ids:
             pos_neutral += 1
+        elif cat in SMARTLEAD_NOT_INTERESTED_CATEGORY_IDS:
+            not_interested += 1
+        elif cat in SMARTLEAD_WRONG_PERSON_CATEGORY_IDS:
+            wrong_person += 1
         # A category is only assigned once a lead replies, so any categorised
         # lead answered at least once.
         if cat is not None:
@@ -472,17 +478,20 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                     sent=_int(summary.get("sent", 0)),
                     bounced=_int(summary.get("bounced", 0)),
                     replies=max(0, replied - auto_replied),
-                    positive=pos_neutral),
+                    positive=pos_neutral, not_interested=not_interested,
+                    wrong_person=wrong_person),
     }
 
 
 # Keys every row carries for Campaign History, beyond the sheet's COLUMNS.
 HISTORY_KEYS = ("campaign_id", "channel", "life_sent", "life_bounced",
-                "life_invites", "life_accepted", "life_replies", "life_positive")
+                "life_invites", "life_accepted", "life_replies", "life_positive",
+                "life_not_interested", "life_wrong_person")
 
 
 def _lifetime(campaign_id, channel: str, *, sent=None, bounced=None,
-              invites=None, accepted=None, replies=None, positive=None) -> dict:
+              invites=None, accepted=None, replies=None, positive=None,
+              not_interested=None, wrong_person=None) -> dict:
     """Running totals carried on a metrics row for Campaign History.
 
     Keys sit outside COLUMNS, so the sheet writers (which project onto COLUMNS)
@@ -495,6 +504,8 @@ def _lifetime(campaign_id, channel: str, *, sent=None, bounced=None,
         "life_sent": sent, "life_bounced": bounced,
         "life_invites": invites, "life_accepted": accepted,
         "life_replies": replies, "life_positive": positive,
+        # Email only: LinkedIn platforms tag no such categories.
+        "life_not_interested": not_interested, "life_wrong_person": wrong_person,
     }
 
 

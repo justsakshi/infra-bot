@@ -167,6 +167,12 @@ SMARTLEAD_POSITIVE_CATEGORY_IDS: set[int] = {1, 2, 5}
 # columns never matched what the team counted by hand.
 # 6=Out Of Office, 9=Sender Originated Bounce.
 SMARTLEAD_AUTO_REPLY_CATEGORY_IDS: set[int] = {6, 9}
+# Reply kinds the stats post breaks out beside positive/neutral (Manveen, 29 Oct
+# 2026: "positive/neutral and not interested and wrong person"). Any other
+# category (4 Do Not Contact, 8 Uncategorizable, PL's custom 1326 Closed and
+# 1885 Close the Loop) counts as "other".
+SMARTLEAD_NOT_INTERESTED_CATEGORY_IDS: set[int] = {3}
+SMARTLEAD_WRONG_PERSON_CATEGORY_IDS: set[int] = {7}
 
 # ── Inbox Health workbook ────────────────────────────────────────────────────
 INBOX_HEALTH_TAB_NAME: str = os.getenv("INBOX_HEALTH_TAB_NAME", "Inbox Health")

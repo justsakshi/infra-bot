@@ -18,11 +18,12 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 HEADER = ["Date", "Client", "Channel", "Platform", "Campaign", "Status", "Launched",
           "Leads", "Emails sent", "Bounced", "Invites sent", "Accepted", "Replies",
-          "Positive", "Campaign ID"]
+          "Positive/neutral", "Not interested", "Wrong person", "Campaign ID"]
 FIELDS = ["date", "client", "channel", "platform", "campaign", "status", "launch_date",
           "leads", "sent", "bounced", "invites", "accepted", "replies",
-          "positive", "campaign_id"]
-COUNTERS = ("sent", "bounced", "invites", "accepted", "replies", "positive")
+          "positive", "not_interested", "wrong_person", "campaign_id"]
+COUNTERS = ("sent", "bounced", "invites", "accepted", "replies", "positive",
+            "not_interested", "wrong_person")
 # Statuses that mean "running now" on each platform; anything else is listed
 # in the post only when its numbers moved.
 _RUNNING = {"ACTIVE", "IN_PROGRESS", "INPROGRESS", "RUNNING", "STARTED"}
@@ -49,6 +50,7 @@ def history_rows(metric_rows: list[dict], day: str) -> list[list]:
             _cell(r.get("life_sent")), _cell(r.get("life_bounced")),
             _cell(r.get("life_invites")), _cell(r.get("life_accepted")),
             _cell(r.get("life_replies")), _cell(r.get("life_positive")),
+            _cell(r.get("life_not_interested")), _cell(r.get("life_wrong_person")),
             str(r.get("campaign_id", "")),
         ])
     out.sort(key=lambda row: (row[1], row[2], row[4].lower()))
@@ -108,6 +110,10 @@ def write_history(writer, rows: list[list], day: str, tab: str) -> int:
             _retry_write(ws.update, values=[HEADER], range_name="A1")
             ws.freeze(rows=1)
             col_a = [HEADER[0]]
+        elif ws.row_values(1) != HEADER:
+            # Columns changed (29 Oct: reply kinds added). Rows already on the
+            # tab keep their old layout; only the first day predates this.
+            _retry_write(ws.update, values=[HEADER], range_name="A1")
         same_day = [i + 1 for i, v in enumerate(col_a) if v == day]
         for start, end in reversed(_row_ranges(same_day)):
             _retry_write(ws.delete_rows, start, end)

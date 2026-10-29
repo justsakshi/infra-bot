@@ -153,3 +153,13 @@ def test_collector_skips_before_spending_calls(monkeypatch):
 def test_past_client_campaigns_are_recognised(campaign, past):
     from smartlead.client_filter import is_past_client_campaign
     assert is_past_client_campaign(campaign) is past
+
+
+def test_smartlead_row_counts_each_reply_kind():
+    from datetime import datetime, timezone
+    leads = [{"lead_category_id": c} for c in (1, 2, 5, 3, 3, 7, 4, 1326, 6, 9, None)]
+    row = cm.smartlead_metric_row({"campaign_id": 1, "sent": 50}, leads, 0, 0,
+                                  datetime(2026, 10, 29, tzinfo=timezone.utc), {1, 2, 5})
+    # 10 categorised leads, 2 of them automatic (OOO 6, bounce 9) -> 8 human replies
+    assert row["life_replies"] == 8
+    assert (row["life_positive"], row["life_not_interested"], row["life_wrong_person"]) == (3, 2, 1)
