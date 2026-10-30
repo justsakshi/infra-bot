@@ -18,12 +18,17 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 HEADER = ["Date", "Client", "Channel", "Platform", "Campaign", "Status", "Launched",
           "Leads", "Emails sent", "Bounced", "Invites sent", "Accepted", "Replies",
-          "Positive/neutral", "Not interested", "Wrong person", "Campaign ID"]
+          "Positive/neutral", "Not interested", "Wrong person", "Campaign ID",
+          "Reached", "Opened", "Open tracking"]
 FIELDS = ["date", "client", "channel", "platform", "campaign", "status", "launch_date",
           "leads", "sent", "bounced", "invites", "accepted", "replies",
-          "positive", "not_interested", "wrong_person", "campaign_id"]
+          "positive", "not_interested", "wrong_person", "campaign_id",
+          "reached", "opened", "open_tracking"]
+# reached / opened: people emailed and people who opened (Smartlead's unique
+# counts), for the open rate; "Open tracking" says whether opens are counted at
+# all (30 Oct: about half the campaigns have it off, so their 0 is not a rate).
 COUNTERS = ("sent", "bounced", "invites", "accepted", "replies", "positive",
-            "not_interested", "wrong_person")
+            "not_interested", "wrong_person", "reached", "opened")
 # Statuses that mean "running now" on each platform; anything else is listed
 # in the post only when its numbers moved.
 _RUNNING = {"ACTIVE", "IN_PROGRESS", "INPROGRESS", "RUNNING", "STARTED"}
@@ -52,6 +57,8 @@ def history_rows(metric_rows: list[dict], day: str) -> list[list]:
             _cell(r.get("life_replies")), _cell(r.get("life_positive")),
             _cell(r.get("life_not_interested")), _cell(r.get("life_wrong_person")),
             str(r.get("campaign_id", "")),
+            _cell(r.get("unique_sent")), _cell(r.get("unique_opens")),
+            r.get("open_tracking", "") if r["channel"] == "Email" else "",
         ])
     out.sort(key=lambda row: (row[1], row[2], row[4].lower()))
     return out
@@ -167,10 +174,14 @@ def campaign_changes(history: list[dict], today: str, base: str | None) -> list[
             b = {f: 0 for f in COUNTERS}
         change = None
         if b is not None:
-            change = {f: (max(0, totals[f] - (b.get(f) or 0))
-                          if totals[f] is not None else None) for f in COUNTERS}
+            # A counter the base day lacks (a column added since) is unknown,
+            # not a jump from zero.
+            change = {f: (max(0, totals[f] - b[f])
+                          if totals[f] is not None and b.get(f) is not None else None)
+                      for f in COUNTERS}
         out.append({**{k: r.get(k, "") for k in ("client", "channel", "platform",
-                                                 "campaign", "status")},
+                                                 "campaign", "status", "campaign_id",
+                                                 "open_tracking")},
                     "running": str(r.get("status", "")).upper() in _RUNNING,
                     "totals": totals, "change": change})
     return out

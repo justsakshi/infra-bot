@@ -101,6 +101,10 @@ async def _smartlead_rows(today: datetime, start_dt: datetime, end_dt: datetime,
                         month_sent=_n(mo, "sent_count"), start_dt=start_dt, end_dt=end_dt,
                         yest_sent=_n(yd, "sent_count"),
                         launch_date=str(camp.get("created_at", ""))[:10]))
+                    # Opens are counted only with tracking on; off, 0 opens is
+                    # not a 0% open rate.
+                    rows[-1]["open_tracking"] = (
+                        "off" if "DONT_EMAIL_OPEN" in (camp.get("track_settings") or []) else "on")
                     kept += 1
                 print(f"{log} Smartlead {acc.name}: {kept} campaign(s) of "
                       f"{len(campaigns)} reported")

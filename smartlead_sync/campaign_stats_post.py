@@ -33,7 +33,7 @@ from smartlead.expandi_accounts import discover_expandi_workspaces
 from smartlead.heyreach_accounts import discover_heyreach_workspaces
 from smartlead.notify import _post, post_with_thread
 from smartlead.sheets import SheetsWriter
-from smartlead.stats_post import build_post, not_ready_text
+from smartlead.stats_post import build_post, not_ready_text, part_as_text
 
 
 def not_counted() -> list[str]:
@@ -86,7 +86,7 @@ def main() -> int:
                               url, not_counted())
     print(head)
     for part in thread:
-        print("\n--- thread ---\n" + part)
+        print("\n--- thread ---\n" + part_as_text(part))
     if not target:
         return 0
     if not post_with_thread(token, target, [head], thread):
