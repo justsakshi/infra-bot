@@ -63,7 +63,12 @@ async def main() -> int:
     # PL LinkedIn: replies from the n8n Waalaxy log, history only (Waalaxy's
     # API has no stats, so there is nothing for the Campaign Metrics tabs).
     try:
-        li_pl = waalaxy_log.history_rows(waalaxy_log.read_log())
+        try:
+            accepts = waalaxy_log.read_log(waalaxy_log.ACCEPTS_TAB)
+        except Exception as exc:  # noqa: BLE001 - replies still count without it
+            accepts = None
+            print(f"[!] Waalaxy accepts log unreadable: {type(exc).__name__}")
+        li_pl = waalaxy_log.history_rows(waalaxy_log.read_log(), accepts)
         print(f"[Metrics] Waalaxy log: {len(li_pl)} PL LinkedIn campaign(s)")
     except Exception as exc:  # noqa: BLE001
         li_pl = []

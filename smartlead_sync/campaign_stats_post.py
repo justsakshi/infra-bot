@@ -47,8 +47,8 @@ def not_counted() -> list[str]:
             cm._norm_client(ws.name) == "MELIOR" for ws in discover_heyreach_workspaces()):
         out.append("Melior LinkedIn (no HeyReach key on the server)")
     if "PRECISE LEADS" in active:
-        out.append("Precise Leads LinkedIn invites and accepts (Waalaxy's API has no stats; "
-                   "its replies are counted from 30 Oct)")
+        out.append("Precise Leads LinkedIn invites (Waalaxy's API has no stats; replies count "
+                   "from 30 Oct, accepts once a campaign has the CRM Sync step)")
     return out
 
 
