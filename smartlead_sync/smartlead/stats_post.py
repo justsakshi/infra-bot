@@ -7,9 +7,11 @@ the thread lists every campaign with its change and its running total.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from smartlead.notify import day as _day
+from smartlead.reply_view import post_window, short_names
 
 # Order the clients appear in; anything else follows alphabetically.
 _CLIENT_ORDER = ["BettrData", "Melior", "Precise Leads"]
@@ -37,7 +39,7 @@ def _n(n: int, one: str, many: str) -> str:
     return f"{n:,} {one if n == 1 else many}"
 
 
-def _counts(values: dict, channel: str, *, skip_zero: bool = False) -> str:
+def _counts(values: dict, channel: str, *, skip_zero: bool = False, sep: str = ", ") -> str:
     """'165 sent, 3 replies (2 positive/neutral, 1 not interested, 0 wrong
     person), 0 bounced' for email; '12 invites, 0 accepted, ...' for LinkedIn.
     skip_zero (the running totals) leaves out the zeros."""
@@ -48,7 +50,7 @@ def _counts(values: dict, channel: str, *, skip_zero: bool = False) -> str:
     parts = []
     if channel == "LinkedIn":
         parts = [_n(values[f], one, many) for f, one, many in _LINKEDIN if shown(f)]
-        return ", ".join(parts) or "nothing yet"
+        return sep.join(parts) or "nothing yet"
     if shown("sent"):
         parts.append(f"{values['sent']:,} sent")
     if shown("replies"):
@@ -64,7 +66,115 @@ def _counts(values: dict, channel: str, *, skip_zero: bool = False) -> str:
                      + (f" ({', '.join(detail)})" if replies and detail else ""))
     if shown("bounced"):
         parts.append(f"{values['bounced']:,} bounced")
-    return ", ".join(parts) or "nothing yet"
+    return sep.join(parts) or "nothing yet"
+
+
+def _pct(part, whole) -> str | None:
+    if not whole or part is None:
+        return None
+    return f"{round(100 * part / whole)}%"
+
+
+def _rate(totals: dict, channel: str, open_tracking: str) -> str:
+    """' · 80% opened' (email with open tracking) or ' · 4% accepted' (LinkedIn)."""
+    if channel == "Email":
+        p = _pct(totals.get("opened"), totals.get("reached")) if open_tracking == "on" else None
+        return f" · {p} opened" if p else ""
+    p = _pct(totals.get("accepted"), totals.get("invites"))
+    return f" · {p} accepted" if p else ""
+
+
+def _open_rate(rows: list[dict]) -> str:
+    """The client's open rate over the campaigns that track opens."""
+    tracked = [r for r in rows if r.get("open_tracking") == "on" and r["totals"].get("reached")]
+    reached = sum(r["totals"]["reached"] for r in tracked)
+    opened = sum(r["totals"].get("opened") or 0 for r in tracked)
+    p = _pct(opened, reached)
+    if not p:
+        return ""
+    return (f" · {p} opened to date ({len(tracked)} of {len(rows)} campaigns track opens)"
+            if len(tracked) < len(rows) else f" · {p} opened to date")
+
+
+_MAX_SECTIONS = 45   # Slack allows 50 blocks a message
+
+
+def _button(r: dict, title: str, window: tuple, replies: int) -> dict:
+    value = {"client": r["client"], "channel": r["channel"], "platform": r.get("platform", ""),
+             "id": str(r.get("campaign_id") or ""), "name": r["campaign"], "title": title,
+             "from": window[0], "to": window[1], "n": replies}
+    return {"type": "button", "action_id": "show_replies",
+            "text": {"type": "plain_text", "text": f"Show {_n(replies, 'reply', 'replies')}"},
+            "value": json.dumps(value, ensure_ascii=False)}   # Slack's cap is 2,000
+
+
+def _thread_part(client: str, channel: str, rows: list[dict], first: bool,
+                 base: str | None, window: tuple) -> list[dict]:
+    """One client·channel as Slack messages: a short block per campaign that
+    moved, a Show replies button where it got replies, the rest on one line."""
+    names = short_names([r["campaign"] for r in rows])
+    sections, quiet = [], []
+    for r in sorted(rows, key=lambda r: (not r["running"], r["campaign"].lower())):
+        title = names[r["campaign"]]
+        moved = bool(r["change"]) and any(r["change"].get(f) for f in _FIELDS[channel])
+        to_date = _counts(r["totals"], channel, skip_zero=True, sep=" · ")
+        rate = _rate(r["totals"], channel, r.get("open_tracking", ""))
+        if first:
+            text = f"*{title}*\n{to_date}{rate}"
+        elif r["change"] is None and not r["running"]:
+            # Paused / finished and missing from the last snapshot (29 Oct:
+            # Melior's 26 HeyReach campaigns on their first day): nothing to
+            # report. The sheet still has the row.
+            continue
+        elif r["change"] is None:
+            text = (f"*{title}*\nTo date: {to_date}{rate}\n_Not in the {_day(base)} "
+                    f"numbers, so no change shown_")
+        elif not moved:
+            if r["running"]:
+                quiet.append(title)
+            continue
+        else:
+            text = (f"*{title}*\n{_counts(r['change'], channel, skip_zero=True, sep=' · ')}"
+                    f"\n_To date: {to_date}{rate}_")
+        block = {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+        replies = (r["change"] or {}).get("replies") or 0
+        if replies and r.get("campaign_id") and not first:
+            block["accessory"] = _button(r, title, window, replies)
+        sections.append(block)
+    if not sections and not quiet:
+        return []
+    head = {"type": "header", "text": {"type": "plain_text", "text": f"{client} · {channel}"}}
+    tail = ([{"type": "context", "elements": [{"type": "mrkdwn",
+                                                "text": _quiet_line(quiet)}]}]
+            if quiet else [])
+    parts = []
+    for i in range(0, max(len(sections), 1), _MAX_SECTIONS):
+        chunk = sections[i:i + _MAX_SECTIONS]
+        last = i + _MAX_SECTIONS >= len(sections)
+        blocks = ([head] if i == 0 else []) + chunk + (tail if last else [])
+        parts.append({"text": f"{client} · {channel}", "blocks": blocks})
+    return parts
+
+
+def _quiet_line(names: list[str], cap: int = 40) -> str:
+    more = f" and {len(names) - cap} more" if len(names) > cap else ""
+    return "No change: " + ", ".join(names[:cap]) + more
+
+
+def part_as_text(part) -> str:
+    """A thread part as plain text, for --dry-run and the logs."""
+    if isinstance(part, str):
+        return part
+    lines = []
+    for b in part.get("blocks", []):
+        if b["type"] in ("header", "section"):
+            lines.append(b["text"]["text"])
+            if b.get("accessory"):
+                lines.append(f"   [{b['accessory']['text']['text']}]")
+        elif b["type"] == "context":
+            lines.append(b["elements"][0]["text"])
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def _client_rank(client: str):
@@ -84,7 +194,7 @@ def _sum(rows: list[dict], key: str, channel: str) -> dict:
 
 
 def build_post(changes: list[dict], today: str, base: str | None,
-               sheet_url: str, not_counted: list[str]) -> tuple[str, list[str]]:
+               sheet_url: str, not_counted: list[str]) -> tuple[str, list[dict]]:
     """(headline, thread parts) for notify.post_with_thread([headline], parts).
 
     The headline is one string: post_with_thread drops empty items from its
@@ -96,43 +206,28 @@ def build_post(changes: list[dict], today: str, base: str | None,
         head.append("Totals to date. Campaign History starts today, so from the "
                     "next post these are changes since the post before.")
     else:
-        head.append(f"Since {weekday_day(base)}, 9:00 IST. Each campaign is in the thread.")
-    thread: list[str] = []
+        head.append(f"Since {weekday_day(base)}, 9:00 IST. Each campaign is in the thread, "
+                    "with a button to read its new replies.")
+    thread: list[dict] = []
 
     by_client: dict[str, list[dict]] = {}
     for c in changes:
         by_client.setdefault(c["client"], []).append(c)
 
+    window = post_window(base, today)
     for client in sorted(by_client, key=_client_rank):
         rows = by_client[client]
         head += ["", f"*{client}*"]
-        detail: list[str] = []
         for channel in ("Email", "LinkedIn"):
             ch_rows = [r for r in rows if r["channel"] == channel]
             if not ch_rows:
                 continue
             key = "totals" if first else "change"
             known = [r for r in ch_rows if r[key] is not None]
-            head.append(f"{channel}: {_counts(_sum(known, key, channel), channel)}" if known
+            rate = _open_rate(ch_rows) if channel == "Email" else ""
+            head.append(f"{channel}: {_counts(_sum(known, key, channel), channel)}{rate}" if known
                         else f"{channel}: no earlier numbers to compare (see the thread)")
-            lines = []
-            for r in sorted(ch_rows, key=lambda r: (not r["running"], r["campaign"].lower())):
-                moved = r["change"] and any(v for v in r["change"].values())
-                if not first and not r["running"] and not moved:
-                    continue
-                to_date = _counts(r["totals"], channel, skip_zero=True)
-                if first:
-                    lines.append(f"• {r['campaign']}: {to_date}")
-                elif r["change"] is None:
-                    lines.append(f"• {r['campaign']}: to date {to_date} "
-                                 f"(not in the {_day(base)} numbers, so no change shown)")
-                else:
-                    lines.append(f"• {r['campaign']}: {_counts(r['change'], channel)}"
-                                 f" · to date {to_date}")
-            if lines:
-                detail += [f"*{client} · {channel}*"] + lines + [""]
-        if detail:
-            thread.append("\n".join(detail).strip())
+            thread += _thread_part(client, channel, ch_rows, first, base, window)
 
     if not by_client:
         head += ["", "No active campaigns in today's numbers."]

@@ -629,6 +629,8 @@ const INFRA_DEPS = {
 require('./infra_slack').registerInfraHandlers(app, INFRA_DEPS, {
   command: '/infra', messages: true, botToken: process.env.SLACK_BOT_TOKEN
 });
+// "Show replies" buttons in the 10:30 campaign stats post.
+require('./campaign_replies_slack').registerShowReplies(app);
 
 /* -------------------- View Details Button Handlers -------------------- */
 app.action(/^view_details_/, async ({ ack, body, client }) => {

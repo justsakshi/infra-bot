@@ -163,6 +163,29 @@ def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> 
         return None
 
 
+def _post_blocks(token: str, channel: str, text: str, blocks: list[dict],
+                 thread_ts: str | None = None) -> str | None:
+    """Post one Block Kit message (buttons need blocks); `text` is the
+    notification fallback. Returns its ts, or None on failure."""
+    body = {"channel": channel, "text": redact(text), "blocks": blocks, "unfurl_links": False}
+    if thread_ts:
+        body["thread_ts"] = thread_ts
+    try:
+        resp = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {token}"},
+            json=body, timeout=15,
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            print(f"  [Notify] Slack error: {data.get('error')}")
+            return None
+        return data.get("ts")
+    except requests.RequestException as exc:
+        print(f"  [Notify] Slack post failed: {exc}")
+        return None
+
+
 _THREAD_CHUNK = 40  # lines per thread reply — stays well inside Slack's msg limit
 
 
@@ -170,7 +193,7 @@ _REPLY_PAUSE_S = 1.1  # Slack allows about one post per second per channel
 
 
 def post_with_thread(token: str, channel: str, headline_lines: list[str],
-                     thread_parts: list[str]) -> str | None:
+                     thread_parts: list) -> str | None:
     """Headline in the channel, details in its thread (spec 2026-10-13).
 
     The parent is the headline (a few short lines); each thread part is a
@@ -181,6 +204,13 @@ def post_with_thread(token: str, channel: str, headline_lines: list[str],
     if not ts:
         return None
     for part in thread_parts:
+        if isinstance(part, dict):            # a Block Kit message (stats post)
+            time.sleep(_REPLY_PAUSE_S)
+            if not _post_blocks(token, channel, part.get("text", ""), part["blocks"], ts):
+                time.sleep(_REPLY_PAUSE_S * 2)
+                if not _post_blocks(token, channel, part.get("text", ""), part["blocks"], ts):
+                    print("  [Notify] a thread reply failed twice; the headline stays.")
+            continue
         lines = str(part or "").strip("\n").split("\n")
         if not "".join(lines).strip():
             continue
