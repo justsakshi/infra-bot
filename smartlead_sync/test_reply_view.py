@@ -223,3 +223,18 @@ def test_waalaxy_log_replies_in_the_window_only():
     t = datetime(2026, 10, 31, 3, 30, tzinfo=timezone.utc)
     got = replies(WX, "Clay Kochi Event", f, t)
     assert [(r["name"], r["category"]) for r in got] == [("Ann", "Positive"), ("Bob", "Neutral")]
+
+
+def test_waalaxy_accepts_join_the_reply_counts():
+    from smartlead.waalaxy_log import history_rows
+    acc = [["Prospect ID", "Campaign", "Full Name", "Company", "Profile URL", "Status",
+            "Invited on", "Connected on", "Imported on", "Last synced"],
+           ["p1", "clay kochi event", "Ann", "", "", "connected", "2026-10-29", "2026-10-30", "", ""],
+           ["p2", "clay kochi event", "Dan", "", "", "waiting", "2026-10-29", "", "", ""],
+           ["p3", "Only accepts", "Eve", "", "", "connected", "", "2026-10-30", "", ""]]
+    rows = {r["campaign"]: r for r in history_rows(WX, acc)}
+    assert rows["clay kochi event"]["life_accepted"] == 1
+    assert rows["clay kochi event"]["life_replies"] == 2
+    assert rows["Only accepts"]["life_accepted"] == 1 and rows["Only accepts"]["life_replies"] == 0
+    assert rows["College Talks"]["life_accepted"] is None        # no sync step: unknown, not 0
+    assert all(r["life_accepted"] is None for r in history_rows(WX))
