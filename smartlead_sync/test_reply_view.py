@@ -198,3 +198,28 @@ def test_expandi_log_rows_match_by_campaign_and_day():
     t = datetime(2026, 10, 30, 3, 30, tzinfo=timezone.utc)
     got = expandi_log_replies(rows, "marketplace - new agencies", f, t)
     assert [(r["name"], r["time"], r["lead"]) for r in got] == [("Ann", "2026-10-29", "li/ann")]
+
+
+WX = [["Received at", "Campaign", "Full Name", "Title", "Company", "Profile URL", "Category",
+       "Reply from Lead", "Conversation ID"],
+      ["2026-10-30T05:00:00.000Z", "clay kochi event", "Ann", "CTO", "Acme", "li/ann", "POSITIVE", "Yes, keen!", "c1"],
+      ["2026-10-30T06:00:00.000Z", "clay kochi event", "Bob", "", "Beta", "li/bob", "NEUTRAL", "Tell me more", "c2"],
+      ["2026-10-29T01:00:00.000Z", "College Talks", "Cy", "", "Co", "li/cy", "WRONG_PERSON", "Not me", "c3"],
+      ["", "", "", "", "", "", "", "", ""]]
+
+
+def test_waalaxy_log_gives_history_counts_per_campaign():
+    from smartlead.waalaxy_log import history_rows
+    rows = {r["campaign"]: r for r in history_rows(WX)}
+    k = rows["clay kochi event"]
+    assert (k["life_replies"], k["life_positive"], k["platform"], k["channel"]) == (2, 1, "Waalaxy", "LinkedIn")
+    assert k["campaign_id"] == "clay kochi event" and k["life_invites"] is None
+    assert rows["College Talks"]["launch_date"] == "2026-10-29"
+
+
+def test_waalaxy_log_replies_in_the_window_only():
+    from smartlead.waalaxy_log import replies
+    f = datetime(2026, 10, 30, 3, 30, tzinfo=timezone.utc)
+    t = datetime(2026, 10, 31, 3, 30, tzinfo=timezone.utc)
+    got = replies(WX, "Clay Kochi Event", f, t)
+    assert [(r["name"], r["category"]) for r in got] == [("Ann", "Positive"), ("Bob", "Neutral")]

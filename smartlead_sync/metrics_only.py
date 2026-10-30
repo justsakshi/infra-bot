@@ -28,7 +28,7 @@ from smartlead import campaign_history as ch
 from smartlead import campaign_metrics as cm
 from smartlead.config import (BETTRDATA_TRACKER_SHEET_ID, CAMPAIGN_HISTORY_TAB_NAME,
                               CAMPAIGN_METRICS_SHEET_ID)
-from smartlead import client_tracker
+from smartlead import client_tracker, waalaxy_log
 from smartlead.metrics_collect import STATUSES, collect_metric_rows
 from smartlead.sheets import SheetsWriter
 
@@ -60,7 +60,15 @@ async def main() -> int:
               f"{str(r.get('life_invites', '')):>7} {str(r.get('life_replies', '')):>7}")
 
     day = ch.snapshot_day()
-    history = ch.history_rows(rows, day)
+    # PL LinkedIn: replies from the n8n Waalaxy log, history only (Waalaxy's
+    # API has no stats, so there is nothing for the Campaign Metrics tabs).
+    try:
+        li_pl = waalaxy_log.history_rows(waalaxy_log.read_log())
+        print(f"[Metrics] Waalaxy log: {len(li_pl)} PL LinkedIn campaign(s)")
+    except Exception as exc:  # noqa: BLE001
+        li_pl = []
+        print(f"[!] Waalaxy log unreadable, PL LinkedIn left out: {type(exc).__name__}")
+    history = ch.history_rows(rows + li_pl, day)
     if args.dry_run:
         print(f"\n[Metrics] --dry-run: sheet not written ({len(history)} history rows "
               f"for {day} not written).")

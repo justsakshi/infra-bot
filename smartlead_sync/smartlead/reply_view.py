@@ -513,6 +513,10 @@ async def fetch_and_render(payload: dict) -> dict:
             replies = select_replies(found, start, end, int(payload.get("n") or 0))
         elif p == "heyreach":
             replies = await _heyreach(str(payload.get("client")), str(payload["id"]), start, end)
+        elif p == "waalaxy":
+            from smartlead import waalaxy_log
+            values = await asyncio.to_thread(waalaxy_log.read_log)
+            replies = waalaxy_log.replies(values, str(payload.get("name") or ""), start, end)
         elif p == "expandi":
             replies = await asyncio.to_thread(_expandi, str(payload.get("client")),
                                               str(payload.get("name") or ""), start, end)
