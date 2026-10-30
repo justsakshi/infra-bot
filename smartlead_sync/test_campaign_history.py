@@ -70,7 +70,7 @@ def test_change_is_today_minus_base():
     assert c["change"] == {"sent": 165, "replies": 3, "positive": 0, "bounced": 1,
                            "invites": None, "accepted": None,
                            "not_interested": None, "wrong_person": None,
-                           "reached": None, "opened": None}
+                           "reached": None, "opened": None, "out_of_office": None}
     assert c["totals"]["sent"] == 265 and c["running"] is True
 
 
@@ -144,11 +144,11 @@ def test_a_changed_header_is_rewritten():
 
 def test_open_columns_are_written_for_email_and_blank_for_linkedin():
     email = _row(sent=284, replies=5)
-    email.update(unique_sent=132, unique_opens=106, open_tracking="on")
+    email.update(unique_sent=132, unique_opens=106, open_tracking="on", out_of_office=2)
     li = _row(channel="LinkedIn", platform="Expandi", name="LinkedIn A", cid="9", invites=3)
     out = ch.history_rows([email, li], "2026-10-30")
-    assert out[0][-3:] == [132, 106, "on"]
-    assert out[1][-3:] == ["-", "-", ""]
+    assert out[0][-4:] == [132, 106, "on", 2]
+    assert out[1][-4:] == ["-", "-", "", "-"]
     parsed = ch.parse_history([ch.HEADER] + [[str(c) for c in r] for r in out])
     assert parsed[0]["reached"] == 132 and parsed[0]["opened"] == 106
     assert parsed[0]["open_tracking"] == "on"

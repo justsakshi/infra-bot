@@ -36,10 +36,10 @@ def test_headline_has_each_clients_totals_in_order():
     assert head.split("\n")[0] == "📊 Campaign stats, Fri 30 Oct"
     assert "Since Thu 29 Oct, 9:00 IST." in text
     assert text.index("*BettrData*") < text.index("*Precise Leads*")
-    assert ("Email: 200 sent, 3 replies (2 positive/neutral, 2 not interested, "
-            "0 wrong person), 0 bounced") in text
+    assert ("Email: 200 emails sent · 3 replies (2 positive/neutral, 2 not interested)"
+            ) in text
     assert "LinkedIn: 12 invites, 1 accepted, 0 replies, 0 interested" in text
-    assert "Email: 20 sent, 1 reply (2 positive/neutral, 1 not interested" in text   # singular
+    assert "Email: 20 emails sent · 1 reply (2 positive/neutral, 1 not interested" in text
 
 
 def test_thread_lists_each_campaign_with_change_and_running_total():
@@ -48,8 +48,28 @@ def test_thread_lists_each_campaign_with_change_and_running_total():
     assert len(thread) == 1
     assert _texts(thread[0]) == [
         "BettrData · Email",
-        "*Campaign A*\n165 sent · 3 replies (2 positive/neutral, 1 not interested)"
-        "\n_To date: 284 sent · 5 replies (2 positive/neutral, 1 not interested, 2 other)_"]
+        "*Campaign A*\nNew: 165 emails sent · 3 replies (2 positive/neutral, 1 not interested)"
+        "\nTotal: 284 emails sent · 5 replies (2 positive/neutral, 1 not interested, 2 other)"]
+
+
+def test_email_lines_use_avinashs_numbers():
+    change = dict(EMAIL, reached=93, sent=93, replies=0, positive=0, not_interested=0,
+                  out_of_office=1)
+    totals = dict(EMAIL, reached=93, sent=93, replies=0, positive=0, not_interested=0,
+                  opened=58, out_of_office=1)
+    _, thread = _post([_c("Precise Leads", "Email", "PL | Exhibitors | 10 Names", change, totals,
+                          open_tracking="on")])
+    assert _texts(thread[0])[1] == (
+        "*PL · Exhibitors · 10 Names*"
+        "\nNew: 93 new people reached · 93 emails sent · 0 replies · 1 out-of-office"
+        "\nTotal: 93 people reached · 62% opened · 0% replied (0 of 93)")
+
+
+def test_reply_rate_counts_positives_too():
+    totals = dict(EMAIL, reached=330, sent=500, replies=7, positive=6)
+    _, thread = _post([_c("BettrData", "Email", "Laurie", EMAIL, totals)])
+    assert "Total: 330 people reached · 2% replied (7 of 330, 6 positive/neutral)" in \
+        part_as_text(thread[0])
 
 
 def test_a_campaign_with_new_replies_gets_a_button_carrying_the_window():
@@ -94,7 +114,8 @@ def test_open_rate_only_where_opens_are_tracked():
 def test_linkedin_shows_the_accept_rate():
     _, thread = _post([_c("BettrData", "LinkedIn", "LinkedIn A", LI,
                           dict(LI, invites=25, accepted=1), platform="Expandi")])
-    assert "_To date: 25 invites · 1 accepted · 4% accepted_" in part_as_text(thread[0])
+    assert "New: 12 invites · 1 accepted\nTotal: 25 invites · 1 accepted · 4% accepted" in \
+        part_as_text(thread[0])
 
 
 def test_quiet_paused_campaign_is_left_out_but_a_moving_one_stays():
@@ -121,8 +142,9 @@ def test_a_stopped_campaign_with_nothing_to_compare_is_left_out():
 
 def test_first_day_shows_totals_to_date():
     head, thread = _post([_c("BettrData", "Email", "Campaign A", None, EMAIL)], base=None)
-    assert "Totals to date." in head and "Email: 165 sent" in head
-    assert _texts(thread[0])[1] == "*Campaign A*\n165 sent · 3 replies (2 positive/neutral, 1 not interested)"
+    assert "Totals to date." in head and "Email: 165 emails sent" in head
+    assert _texts(thread[0])[1] == ("*Campaign A*\nTotal: 165 emails sent · 3 replies "
+                                    "(2 positive/neutral, 1 not interested)")
     assert "accessory" not in thread[0]["blocks"][1]
 
 
@@ -178,11 +200,11 @@ def test_no_replies_means_no_breakdown_and_wrong_person_is_counted():
                                                           not_interested=1, wrong_person=2))])
     text = part_as_text(thread[0])
     assert "4 replies (1 positive/neutral, 1 not interested, 2 wrong person)" in text
-    assert "*Quiet*\n165 sent\n" in text
+    assert "*Quiet*\nNew: 165 emails sent · 0 replies\n" in text
 
 
 def test_only_shown_numbers_make_a_campaign_count_as_moved():
     still = {k: (0 if v is not None else None) for k, v in EMAIL.items()}
-    _, thread = _post([_c("BettrData", "Email", "Opens moved", dict(still, reached=5, opened=3),
+    _, thread = _post([_c("BettrData", "Email", "Opens moved", dict(still, opened=3),
                           EMAIL)])
     assert "No change: Opens moved" in part_as_text(thread[0])
