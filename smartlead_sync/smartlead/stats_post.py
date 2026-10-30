@@ -20,7 +20,8 @@ _CLIENT_ORDER = ["BettrData", "Melior", "Precise Leads"]
 # wrong person and how many emails went out"); LinkedIn platforms tag only
 # "interested".
 _FIELDS = {
-    "Email": ["sent", "replies", "positive", "not_interested", "wrong_person", "bounced"],
+    "Email": ["sent", "reached", "replies", "positive", "not_interested", "wrong_person",
+              "out_of_office", "bounced"],
     "LinkedIn": ["invites", "accepted", "replies", "positive"],
 }
 _REPLY_KINDS = [("positive", "positive/neutral"), ("not_interested", "not interested"),
@@ -67,6 +68,52 @@ def _counts(values: dict, channel: str, *, skip_zero: bool = False, sep: str = "
     if shown("bounced"):
         parts.append(f"{values['bounced']:,} bounced")
     return sep.join(parts) or "nothing yet"
+
+
+def _replies(v: dict) -> str:
+    """'4 replies (3 positive/neutral, 1 other)'; zeros left out of the brackets."""
+    replies = v.get("replies") or 0
+    kinds = [(v.get(f), label) for f, label in _REPLY_KINDS]
+    detail = [f"{n:,} {label}" for n, label in kinds if n]
+    other = replies - sum(n for n, _ in kinds if n)     # Do Not Contact, custom...
+    if other > 0:
+        detail.append(f"{other:,} other")
+    return _n(replies, "reply", "replies") + (f" ({', '.join(detail)})" if replies and detail else "")
+
+
+def email_new(v: dict) -> str:
+    """Since the last post, in Avinash's terms (standup 30 Oct 2026): new
+    people reached, emails sent, replies, out-of-office, bounces if any."""
+    parts = []
+    if v.get("reached") is not None:
+        parts.append(_n(v["reached"], "new person reached", "new people reached"))
+    if v.get("sent"):
+        parts.append(_n(v["sent"], "email sent", "emails sent"))
+    if v.get("replies") is not None:
+        parts.append(_replies(v))
+    if v.get("out_of_office"):
+        parts.append(f"{v['out_of_office']:,} out-of-office")
+    if v.get("bounced"):
+        parts.append(f"{v['bounced']:,} bounced")
+    return " · ".join(parts) or "no activity"
+
+
+def email_total(t: dict, open_tracking: str) -> str:
+    """To date: people reached, open rate (tracked campaigns only), reply rate."""
+    reached, replies = t.get("reached"), t.get("replies")
+    parts = []
+    if reached:
+        parts.append(_n(reached, "person reached", "people reached"))
+    elif t.get("sent"):
+        parts.append(_n(t["sent"], "email sent", "emails sent"))
+    if open_tracking == "on" and reached and t.get("opened") is not None:
+        parts.append(f"{_pct(t['opened'], reached)} opened")
+    if reached and replies is not None:
+        pos = f", {t['positive']:,} positive/neutral" if t.get("positive") else ""
+        parts.append(f"{_pct(replies, reached)} replied ({replies:,} of {reached:,}{pos})")
+    elif replies:
+        parts.append(_replies(t))
+    return " · ".join(parts) or "nothing yet"
 
 
 def _pct(part, whole) -> str | None:
@@ -117,25 +164,29 @@ def _thread_part(client: str, channel: str, rows: list[dict], first: bool,
     for r in sorted(rows, key=lambda r: (not r["running"], r["campaign"].lower())):
         title = names[r["campaign"]]
         moved = bool(r["change"]) and any(r["change"].get(f) for f in _FIELDS[channel])
-        to_date = _counts(r["totals"], channel, skip_zero=True, sep=" · ")
-        rate = _rate(r["totals"], channel, r.get("open_tracking", ""))
+        if channel == "Email":
+            to_date, rate = email_total(r["totals"], r.get("open_tracking", "")), ""
+        else:
+            to_date = _counts(r["totals"], channel, skip_zero=True, sep=" · ")
+            rate = _rate(r["totals"], channel, "")
         if first:
-            text = f"*{title}*\n{to_date}{rate}"
+            text = f"*{title}*\nTotal: {to_date}{rate}"
         elif r["change"] is None and not r["running"]:
             # Paused / finished and missing from the last snapshot (29 Oct:
             # Melior's 26 HeyReach campaigns on their first day): nothing to
             # report. The sheet still has the row.
             continue
         elif r["change"] is None:
-            text = (f"*{title}*\nTo date: {to_date}{rate}\n_Not in the {_day(base)} "
+            text = (f"*{title}*\nTotal: {to_date}{rate}\n_Not in the {_day(base)} "
                     f"numbers, so no change shown_")
         elif not moved:
             if r["running"]:
                 quiet.append(title)
             continue
         else:
-            text = (f"*{title}*\n{_counts(r['change'], channel, skip_zero=True, sep=' · ')}"
-                    f"\n_To date: {to_date}{rate}_")
+            new = (email_new(r["change"]) if channel == "Email"
+                   else _counts(r["change"], channel, skip_zero=True, sep=" · "))
+            text = f"*{title}*\nNew: {new}\nTotal: {to_date}{rate}"
         block = {"type": "section", "text": {"type": "mrkdwn", "text": text}}
         replies = (r["change"] or {}).get("replies") or 0
         if replies and r.get("campaign_id") and not first:
@@ -225,8 +276,13 @@ def build_post(changes: list[dict], today: str, base: str | None,
             key = "totals" if first else "change"
             known = [r for r in ch_rows if r[key] is not None]
             rate = _open_rate(ch_rows) if channel == "Email" else ""
-            head.append(f"{channel}: {_counts(_sum(known, key, channel), channel)}{rate}" if known
-                        else f"{channel}: no earlier numbers to compare (see the thread)")
+            if not known:
+                head.append(f"{channel}: no earlier numbers to compare (see the thread)")
+            elif channel == "Email":
+                summed = _sum(known, key, channel)
+                head.append(f"Email: {email_total(summed, '') if first else email_new(summed)}{rate}")
+            else:
+                head.append(f"LinkedIn: {_counts(_sum(known, key, channel), channel)}")
             thread += _thread_part(client, channel, ch_rows, first, base, window)
 
     if not by_client:

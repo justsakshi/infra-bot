@@ -388,7 +388,7 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
                                   SMARTLEAD_NOT_INTERESTED_CATEGORY_IDS,
                                   SMARTLEAD_WRONG_PERSON_CATEGORY_IDS)
     added_month = added_yest = pos_neutral = 0
-    replied = auto_replied = not_interested = wrong_person = 0
+    replied = auto_replied = not_interested = wrong_person = out_of_office = 0
     if start_dt is None or end_dt is None:
         start_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end_dt = today
@@ -412,6 +412,8 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
             replied += 1
             if cat in SMARTLEAD_AUTO_REPLY_CATEGORY_IDS:
                 auto_replied += 1
+            if cat == 6:                 # Out Of Office (Avinash asks for it, 30 Oct)
+                out_of_office += 1
     return {
         "client": client,
         "campaign": summary.get("name", ""),
@@ -486,6 +488,7 @@ def smartlead_metric_row(summary: dict, leads: list[dict], month_replies: int,
         # "Sent / Initiated" and "Open %" (smartlead/client_tracker.py).
         "unique_sent": _int(summary.get("unique_sent", 0)),
         "unique_opens": _int(summary.get("unique_opens", 0)),
+        "out_of_office": out_of_office,
     }
 
 
@@ -494,7 +497,7 @@ HISTORY_KEYS = ("campaign_id", "channel", "life_sent", "life_bounced",
                 "life_invites", "life_accepted", "life_replies", "life_positive",
                 "life_not_interested", "life_wrong_person")
 # Email rows also carry these (client tracker only).
-EMAIL_EXTRA_KEYS = ("unique_sent", "unique_opens")
+EMAIL_EXTRA_KEYS = ("unique_sent", "unique_opens", "out_of_office")
 
 
 def _lifetime(campaign_id, channel: str, *, sent=None, bounced=None,
