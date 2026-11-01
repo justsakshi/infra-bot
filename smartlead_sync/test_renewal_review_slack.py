@@ -124,7 +124,9 @@ def test_poster_run_splits_headline_and_thread_and_posts_both(monkeypatch):
     import sys
     import renewal_review as cli
     from smartlead import notify
-    bills = [{"provider": "ScaledMail", "label": "2 × Google", "bills_on": "2026-10-15", "price": 7.0,
+    from datetime import date, timedelta
+    due = date.today() + timedelta(days=2)   # inside run(7)'s window whatever day the suite runs (a fixed date expired)
+    bills = [{"provider": "ScaledMail", "label": "2 × Google", "bills_on": due.isoformat(), "price": 7.0,
               "clients": ["Precise Leads"], "inboxes": ["a@x.com", "b@x.com"]}]
     monkeypatch.setattr(cli, "zapmail_bills", lambda d, e: e.append("Zapmail: 500") or [])
     monkeypatch.setattr(cli, "scaledmail_bills", lambda d, e: bills)
@@ -133,7 +135,7 @@ def test_poster_run_splits_headline_and_thread_and_posts_both(monkeypatch):
     assert len(res["headline"]) <= 4 and "could not be read" in res["headline"][-1]
     assert "Zapmail: 500" in "\n".join(res["thread"]) and "removes the inboxes" in res["thread"][-1]
     assert "thread" not in res["text"]
-    assert res["text"].startswith(res["headline"][0]) and "Bill on 15 Oct · ScaledMail · 2 × Google" in res["text"]
+    assert res["text"].startswith(res["headline"][0]) and f"Bill on {due.day} {due:%b} (Precise Leads)" in res["text"]
     sent = []
     monkeypatch.setattr(cli, "run", lambda days: res)
     monkeypatch.setattr(notify, "post_with_thread", lambda *a: sent.append(a) or "1.1")

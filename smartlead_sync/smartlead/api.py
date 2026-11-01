@@ -393,6 +393,25 @@ class SmartleadClient:
         return await self._get(f"/campaigns/{campaign_id}/analytics-by-date",
                                extra_params={"start_date": start_date, "end_date": end_date})
 
+    async def get_campaign_statistics(self, campaign_id: str) -> list[dict]:
+        """Per-sent-email rows for a campaign (paginated, 100 a page): lead_email,
+        sent_time, reply_time, lead_category, is_bounced, sequence_number ...
+        GET /campaigns/{id}/statistics -> {"total_stats", "data": [...]}; field
+        names read live on BettrData 2026-11-01. Its sent_time date filter
+        returned 0 rows on a campaign that had sent, so callers filter dates."""
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            resp = await self._get(f"/campaigns/{campaign_id}/statistics",
+                                   extra_params={"offset": offset, "limit": 100})
+            data = (resp.get("data") if isinstance(resp, dict) else resp) or []
+            rows.extend(data)
+            total = int(resp.get("total_stats") or 0) if isinstance(resp, dict) else 0
+            offset += len(data)
+            if not data or offset >= total:
+                break
+        return rows
+
     async def get_campaign_mailbox_statistics(self, campaign_id: str) -> list[dict]:
         """Per-sender-mailbox stats for a campaign (paginated).
 
