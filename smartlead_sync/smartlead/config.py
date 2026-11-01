@@ -158,6 +158,9 @@ CAMPAIGN_HISTORY_TAB_NAME: str = os.getenv("CAMPAIGN_HISTORY_TAB_NAME", "Campaig
 # The daily stats post (campaign_stats_post.py). Default #pl_daily, the
 # internal channel: the post covers every client, so never a client channel.
 CAMPAIGN_STATS_CHANNEL: str = os.getenv("CAMPAIGN_STATS_CHANNEL", "C0C9MAZMYPN")
+# Weekly Microsoft / Proofpoint reach check (provider_reply_watch.py): #pl_daily,
+# Mondays 10:40 IST (Manveen, 1 Nov 2026).
+PROVIDER_WATCH_CHANNEL: str = os.getenv("PROVIDER_WATCH_CHANNEL", "C0C9MAZMYPN")
 # BettrData's own "Outbound Tracker V2" sheet: its Campaign Dashboard number
 # columns are refreshed by metrics_only.py (smartlead/client_tracker.py).
 # Empty disables it.

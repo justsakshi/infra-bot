@@ -87,3 +87,21 @@ def test_text_says_report_only_and_names_the_alert():
     assert "most likely going to junk" in text and text.endswith("nothing was paused or changed.")
     quiet = report_text([client_lines("Melior", judge({}, _of))], TODAY)
     assert "junk" not in quiet
+
+
+def test_post_goes_to_pl_daily_by_default(monkeypatch):
+    import sys
+    import provider_reply_watch as cli
+    sent = []
+
+    async def fake_build(today, days):
+        return "report"
+
+    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setattr(cli, "_post", lambda token, channel, text: sent.append((channel, text)) or "1.1")
+    monkeypatch.delenv("PROVIDER_WATCH_CHANNEL", raising=False)
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setattr(sys, "argv", ["provider_reply_watch.py", "--post", "--today", "2026-11-02"])
+    assert cli.main() == 0 and sent == [("C0C9MAZMYPN", "report")]
+    monkeypatch.delenv("SLACK_BOT_TOKEN")
+    assert cli.main() == 1 and len(sent) == 1          # no token: says so, posts nothing

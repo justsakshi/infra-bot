@@ -1540,6 +1540,15 @@ async function start() {
       if (await onceToday('campaign-stats-post')) runBilling('campaign-stats-post', ['campaign_stats_post.py', '--post']);
     }, { timezone: 'Asia/Kolkata' });
 
+    // Microsoft / Proofpoint reach (Manveen, 1 Nov 2026): Mondays 10:40 IST in
+    // #pl_daily, after the stats post. Real sends, each campaign against its own
+    // Google recipients (seed tests said 7/7 inbox while BettrData's Microsoft
+    // recipients answered at 0.11x). Report only. PROVIDER_WATCH_POST=off stops it.
+    cron.schedule('40 10 * * 1', async () => {
+      if (process.env.PROVIDER_WATCH_POST === 'off') return;
+      if (await onceToday('provider-watch')) runBilling('provider-watch', ['provider_reply_watch.py', '--post']);
+    }, { timezone: 'Asia/Kolkata' });
+
     // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: raise, hold
     // or step back daily limits per domain (spec 2026-10-15). Changes only the
     // pilot domains (volume_review.py --pilot-add); every other domain is reported.

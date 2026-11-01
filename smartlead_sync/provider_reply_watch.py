@@ -7,10 +7,11 @@ Google rate (measured 2026-11-01). Rule and thresholds: smartlead/provider_watch
 
     python provider_reply_watch.py                  print it, post nothing (default)
     python provider_reply_watch.py --to U09TQ9D7YNM post to one person (a test)
-    python provider_reply_watch.py --post           post to PROVIDER_WATCH_CHANNEL
+    python provider_reply_watch.py --post           post to PROVIDER_WATCH_CHANNEL (#pl_daily)
 
 Read-only against Smartlead (campaign list + statistics) and DNS; never pauses or
-changes anything. Not scheduled: adding it to cron is a separate decision.
+changes anything. Scheduled in index.js: Mondays 10:40 IST, #pl_daily (Manveen,
+1 Nov 2026); PROVIDER_WATCH_POST=off stops the post.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ import httpx
 from smartlead import provider_watch as pw
 from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
+from smartlead.config import PROVIDER_WATCH_CHANNEL
 from smartlead.notify import _post
 
 LIVE_STATUSES = {"ACTIVE", "PAUSED", "COMPLETED"}
@@ -108,10 +110,7 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=pw.WINDOW_DAYS, help="window of sends, days")
     args = ap.parse_args()
 
-    target = args.to or (os.getenv("PROVIDER_WATCH_CHANNEL", "") if args.post else "")
-    if args.post and not target:
-        print("[provider-watch] PROVIDER_WATCH_CHANNEL is not set - nothing posted.")
-        return 1
+    target = args.to or (PROVIDER_WATCH_CHANNEL if args.post else "")
     token = os.getenv("SLACK_BOT_TOKEN", "")
     if target and not token:
         print("[provider-watch] SLACK_BOT_TOKEN missing - cannot post.")
