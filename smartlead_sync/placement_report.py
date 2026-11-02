@@ -32,6 +32,7 @@ try:
 except Exception:
     pass
 
+from smartlead.api import raise_for_status
 from smartlead.accounts import discover_accounts
 from smartlead.config import SMARTDELIVERY_BASE_URL
 from smartlead.placement_report import (active_campaign, build_report, format_slack, mx_provider,
@@ -64,7 +65,7 @@ def _posted_collection():
 
 def _get(url, key, **params):
     r = httpx.get(url, params={"api_key": key, **params}, headers=UA, timeout=120)
-    r.raise_for_status()
+    raise_for_status(r)  # no key in the error text
     return r.json()
 
 
@@ -137,7 +138,7 @@ def pick_tests(key, since, ids):
         return out
     r = httpx.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": key},
                    json={"limit": 50}, headers=UA, timeout=60)
-    r.raise_for_status()
+    raise_for_status(r)  # no key in the error text
     return select_tests(r.json(), since)
 
 
