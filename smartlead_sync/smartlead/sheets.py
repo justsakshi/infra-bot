@@ -56,6 +56,11 @@ def _retry_write(fn, *args, **kwargs):
 _SYNC_LEDGER: list[dict] = []
 
 
+def _redact(text: str) -> str:
+    from smartlead.notify import redact
+    return redact(text)
+
+
 def _record_write(tab: str, rows: int | None = None,
                   error: BaseException | None = None) -> None:
     _SYNC_LEDGER.append({
@@ -63,7 +68,9 @@ def _record_write(tab: str, rows: int | None = None,
         "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "rows": "" if rows is None else rows,
         "status": "FAILED" if error else "ok",
-        "error": f"{type(error).__name__}: {error}"[:300] if error else "",
+        # Redacted: the ledger is written to the Last Sync tab, and a provider
+        # error can quote a URL with the key in it (2 Nov 2026).
+        "error": _redact(f"{type(error).__name__}: {error}")[:300] if error else "",
     })
 
 

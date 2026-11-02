@@ -45,3 +45,13 @@ def test_client_get_raises_without_the_key():
     with pytest.raises(httpx.HTTPStatusError) as err:
         asyncio.run(run())
     assert KEY not in str(err.value) and "Plan expired!" in str(err.value)
+
+
+def test_the_last_sync_ledger_never_stores_a_key():
+    # 2 Nov 2026: the Last Sync tab showed the PRECISE_LEADS key in its Error cell.
+    from smartlead import sheets
+    sheets._SYNC_LEDGER.clear()
+    sheets._record_write("PRECISE_LEADS - (account sync)", error=RuntimeError(
+        f"401 for url 'https://server.smartlead.ai/api/v1/campaigns?api_key={KEY}'"))
+    (row,) = sheets._SYNC_LEDGER
+    assert KEY not in row["error"] and "401" in row["error"]
