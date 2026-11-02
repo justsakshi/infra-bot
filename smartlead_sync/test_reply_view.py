@@ -238,3 +238,21 @@ def test_waalaxy_accepts_join_the_reply_counts():
     assert rows["Only accepts"]["life_accepted"] == 1 and rows["Only accepts"]["life_replies"] == 0
     assert rows["College Talks"]["life_accepted"] is None        # no sync step: unknown, not 0
     assert all(r["life_accepted"] is None for r in history_rows(WX))
+
+
+def test_a_stats_post_period_is_labelled_by_its_days():
+    from datetime import datetime, timezone
+    from smartlead.reply_view import window_label
+    d = lambda *a: datetime(*a, tzinfo=timezone.utc)  # noqa: E731
+    assert window_label(d(2026, 10, 30), "smartlead", d(2026, 10, 31)) == "on Fri 30 Oct"
+    assert window_label(d(2026, 10, 30), "heyreach", d(2026, 11, 6)) == "Fri 30 Oct – Thu 5 Nov"
+
+
+def test_a_day_window_does_not_take_the_next_days_logged_replies():
+    from datetime import datetime, timezone
+    from smartlead.reply_view import expandi_log_replies
+    rows = [["Reply date", "Campaign Name", "Reply from Lead"],
+            ["2026-10-30", "C", "yes"], ["2026-10-31", "C", "later"]]
+    got = expandi_log_replies(rows, "C", datetime(2026, 10, 30, tzinfo=timezone.utc),
+                              datetime(2026, 10, 31, tzinfo=timezone.utc))
+    assert [r["text"] for r in got] == ["yes"]

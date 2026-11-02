@@ -2,10 +2,10 @@
 
 Campaign Metrics is rewritten each morning, so it only says where things stand
 today. History keeps each morning's running totals (emails sent, invites,
-accepted, replies, positives), so the progress between any two days is a
-subtraction: the daily stats post reads it, and anyone can filter the tab by
-campaign to watch it move (Manveen, 29 Oct 2026: "track progress of all my
-campaigns periodically").
+accepted, replies, positives), so anyone can filter the tab by campaign to
+watch it move (Manveen, 29 Oct 2026: "track progress of all my campaigns
+periodically"). The 10:15 stats post no longer reads it: since 2 Nov it
+counts by date from the platforms (smartlead/daily_stats.py).
 
 Rows are written by metrics_only.py at 09:00 IST and dated in IST. Re-running
 on the same day replaces that day's rows instead of adding a second set.
@@ -29,12 +29,6 @@ FIELDS = ["date", "client", "channel", "platform", "campaign", "status", "launch
 # all (30 Oct: about half the campaigns have it off, so their 0 is not a rate).
 COUNTERS = ("sent", "bounced", "invites", "accepted", "replies", "positive",
             "not_interested", "wrong_person", "reached", "opened", "out_of_office")
-# How far before the base day a campaign's last snapshot may be and still
-# serve as its starting point (a run that missed a client on the base day).
-_FALLBACK_DAYS = 7
-# Statuses that mean "running now" on each platform; anything else is listed
-# in the post only when its numbers moved.
-_RUNNING = {"ACTIVE", "IN_PROGRESS", "INPROGRESS", "RUNNING", "STARTED"}
 
 
 def snapshot_day(now: datetime | None = None) -> str:
@@ -135,76 +129,3 @@ def write_history(writer, rows: list[list], day: str, tab: str) -> int:
         raise
     _record_write(tab, rows=len(rows))
     return len(rows)
-
-
-# ── progress between two days ────────────────────────────────────────────────
-
-def baseline_day(days: list[str], today: str) -> str | None:
-    """The snapshot the post compares today against.
-
-    The last post day: Friday for a Monday post (so it covers the weekend),
-    yesterday otherwise. If that snapshot is missing, the latest one before it;
-    failing that, the earliest one after it. None when today is the only day.
-    """
-    prior = sorted(d for d in set(days) if d < today)
-    if not prior:
-        return None
-    t = date.fromisoformat(today)
-    want = (t - timedelta(days=3 if t.weekday() == 0 else 1)).isoformat()
-    at_or_before = [d for d in prior if d <= want]
-    return at_or_before[-1] if at_or_before else prior[0]
-
-
-def _key(r: dict) -> tuple[str, str]:
-    return (r.get("platform", ""), r.get("campaign_id") or r.get("campaign", ""))
-
-
-def campaign_changes(history: list[dict], today: str, base: str | None) -> list[dict]:
-    """Today's campaigns with their totals and the change since `base`.
-
-    `change` is None when the change cannot be known: the campaign is missing
-    from the base day and was launched before it (it was filtered out then, so
-    its whole history would wrongly count as new). A campaign launched on or
-    after the base day starts from zero. A counter that went down (a lead
-    re-categorised, a lead deleted) shows as 0, not a negative.
-
-    A campaign missing from the base day because that morning's run could not
-    read its account (30 Oct 2026: no BettrData) is compared with its latest
-    snapshot in the week before; `since` is the day compared with.
-    """
-    cur = [r for r in history if r["date"] == today]
-    floor = ((date.fromisoformat(base) - timedelta(days=_FALLBACK_DAYS)).isoformat()
-             if base else "")
-    before: dict = {}
-    for r in sorted((r for r in history if base and floor <= r["date"] <= base),
-                    key=lambda r: r["date"]):
-        before[_key(r)] = r                 # the latest day wins
-    out = []
-    for r in cur:
-        totals = {f: r.get(f) for f in COUNTERS}
-        b = before.get(_key(r))
-        since = b["date"] if b else base
-        if b is None and base and (r.get("launch_date") or "") >= base:
-            b = {f: 0 for f in COUNTERS}
-        change = None
-        if b is not None:
-            # A counter the base day lacks (a column added since) is unknown,
-            # not a jump from zero.
-            change = {f: (max(0, totals[f] - b[f])
-                          if totals[f] is not None and b.get(f) is not None else None)
-                      for f in COUNTERS}
-        out.append({**{k: r.get(k, "") for k in ("client", "channel", "platform",
-                                                 "campaign", "status", "campaign_id",
-                                                 "open_tracking")},
-                    "running": str(r.get("status", "")).upper() in _RUNNING,
-                    "totals": totals, "change": change, "since": since})
-    return out
-
-
-def missing_today(history: list[dict], today: str, base: str | None) -> list[tuple[str, str]]:
-    """(client, channel) pairs the base day had and today has none of: the
-    9:00 run could not read them (2 Nov 2026: the PRECISE_LEADS Smartlead plan
-    expired), which is not the same as "no activity"."""
-    def pairs(day):
-        return {(r["client"], r["channel"]) for r in history if r["date"] == day}
-    return sorted(pairs(base) - pairs(today)) if base else []

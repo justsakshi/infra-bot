@@ -15,9 +15,8 @@ Sources, one per platform:
     "Expandi Responses" tab the n8n LinkedIn router fills in BettrData's
     Outbound Tracker V2. It dates replies by day only.
 
-The window is the post's: from the previous post's 09:00 IST snapshot to this
-one's. The button carries it, so a click days later still shows the replies
-behind that day's number.
+The window is the post's period, whole UTC days (Smartlead's day). The button
+carries it, so a click days later still shows the replies behind that number.
 """
 from __future__ import annotations
 
@@ -175,14 +174,6 @@ def in_window(value, start: datetime | None, end: datetime | None) -> bool:
     if dt is None:
         return False
     return (start is None or dt >= start) and (end is None or dt < end)
-
-
-def post_window(base_day: str | None, today: str) -> tuple[str | None, str]:
-    """(from, to) as UTC ISO strings: 09:00 IST on the base day and today."""
-    def nine(d: str) -> str:
-        return datetime.combine(date.fromisoformat(d), datetime.min.time(),
-                                IST).replace(hour=9).astimezone(timezone.utc).isoformat()
-    return (nine(base_day) if base_day else None), nine(today)
 
 
 # ── campaign names ──────────────────────────────────────────────────────────
@@ -458,8 +449,10 @@ def expandi_log_replies(values: list[list[str]], campaign: str,
     i_day, i_camp, i_text = col("Reply date"), col("Campaign Name"), col("Reply from Lead")
     if None in (i_day, i_camp, i_text):
         raise LookupError("Expandi Responses tab is missing a column")
-    lo = start.astimezone(IST).date() if start else None
-    hi = end.astimezone(IST).date() if end else None
+    # Logged by day only: a window of whole UTC days (the stats post's) keeps
+    # its own days; the end is exclusive, so midnight does not pull in the next.
+    lo = start.astimezone(timezone.utc).date() if start else None
+    hi = (end - timedelta(microseconds=1)).astimezone(timezone.utc).date() if end else None
     out = []
     for raw in values[1:]:
         row = raw + [""] * (len(head) - len(raw))
@@ -486,9 +479,21 @@ def _expandi(client: str, name: str, start, end) -> list[dict]:
     return expandi_log_replies(ws.get_all_values(), name, start, end)
 
 
+def _whole_days(start: datetime, end: datetime | None) -> bool:
+    return end is not None and all(t.astimezone(timezone.utc).time() == datetime.min.time()
+                                   for t in (start, end))
+
+
 def window_label(start: datetime | None, platform: str, end: datetime | None = None) -> str:
     if start is None:
         return "to date"
+    if _whole_days(start, end):
+        # The stats post's periods: whole UTC days (Smartlead's day).
+        a = start.astimezone(timezone.utc).date()
+        b = (end - timedelta(days=1)).astimezone(timezone.utc).date()
+        if a == b:
+            return f"on {a:%a} {a.day} {a:%b}"
+        return f"{a:%a} {a.day} {a:%b} – {b:%a} {b.day} {b:%b}"
     d = start.astimezone(IST)
     if platform.lower() == "expandi":
         e = (end or start).astimezone(IST)

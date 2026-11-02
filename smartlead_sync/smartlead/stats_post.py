@@ -1,221 +1,197 @@
-"""Text of the daily campaign stats post (campaign_stats_post.py).
+"""Text of the 10:15 stats post (campaign_stats_post.py).
 
 Asked for at the 29 Oct 2026 standup: the email and LinkedIn numbers in the
 group before the call, so nobody opens Smartlead or Expandi on the call to
-read them out. The headline gives each client's totals since the last post;
-the thread lists every campaign with its change and its running total.
+read them out. Since 2 Nov (Manveen) it reports the last working day only,
+plus the week on Fridays and last month on the month's first working day;
+the numbers come from smartlead.daily_stats.
+
+The headline has each client's numbers; the thread lists the day's campaigns,
+each with a button that shows the replies behind its number.
 """
 from __future__ import annotations
 
 import json
 from datetime import date
 
-from smartlead.notify import day as _day
-from smartlead.reply_view import post_window, short_names
+from smartlead.daily_stats import Period, month_name
+from smartlead.reply_view import short_names
 
 # Order the clients appear in; anything else follows alphabetically.
 _CLIENT_ORDER = ["BettrData", "Melior", "Precise Leads"]
-# Fields summed per channel. Email replies are broken down by Smartlead's
-# category (Manveen, 29 Oct 2026: "positive/neutral and not interested and
-# wrong person and how many emails went out"); LinkedIn platforms tag only
-# "interested".
-_FIELDS = {
-    "Email": ["sent", "reached", "replies", "positive", "not_interested", "wrong_person",
-              "out_of_office", "bounced"],
-    "LinkedIn": ["invites", "accepted", "replies", "positive"],
-}
 _REPLY_KINDS = [("positive", "positive/neutral"), ("not_interested", "not interested"),
                 ("wrong_person", "wrong person")]
-_LINKEDIN = [("invites", "invite", "invites"), ("accepted", "accepted", "accepted"),
-             ("replies", "reply", "replies"), ("positive", "interested", "interested")]
+_MAX_SECTIONS = 45   # Slack allows 50 blocks a message
 
 
-def weekday_day(iso: str) -> str:
-    """'2026-10-30' -> 'Fri 30 Oct'."""
-    d = date.fromisoformat(iso)
-    return f"{d:%a} {_day(iso)}"
+def weekday_day(d: date | str) -> str:
+    """date(2026, 10, 30) -> 'Fri 30 Oct'."""
+    d = date.fromisoformat(d) if isinstance(d, str) else d
+    return f"{d:%a} {d.day} {d:%b}"
 
 
 def _n(n: int, one: str, many: str) -> str:
     return f"{n:,} {one if n == 1 else many}"
 
 
-def _counts(values: dict, channel: str, *, skip_zero: bool = False, sep: str = ", ") -> str:
-    """'165 sent, 3 replies (2 positive/neutral, 1 not interested, 0 wrong
-    person), 0 bounced' for email; '12 invites, 0 accepted, ...' for LinkedIn.
-    skip_zero (the running totals) leaves out the zeros."""
-    def shown(field):
-        n = values.get(field)
-        return n is not None and not (skip_zero and n == 0)
+def _people_replied(n: int) -> str:
+    return f"{n:,} {'person' if n == 1 else 'people'} replied"
 
+
+def email_line(c: dict) -> str:
+    """Avinash's terms (standup 30 Oct 2026): new people reached, emails
+    sent, replies by kind, out-of-office, bounces."""
+    if not any(c.get(f) for f in c):
+        return "nothing sent, no replies"
     parts = []
-    if channel == "LinkedIn":
-        parts = [_n(values[f], one, many) for f, one, many in _LINKEDIN if shown(f)]
-        return sep.join(parts) or "nothing yet"
-    if shown("sent"):
-        parts.append(f"{values['sent']:,} sent")
-    if shown("replies"):
-        replies = values["replies"]
-        kinds = [(values.get(f), label) for f, label in _REPLY_KINDS]
-        detail = [f"{n:,} {label}" for n, label in kinds
-                  if n is not None and not (skip_zero and n == 0)]
-        # Do Not Contact, Uncategorizable and custom categories.
-        other = replies - sum(n for n, _ in kinds if n)
-        if other > 0:
-            detail.append(f"{other:,} other")
-        parts.append(_n(replies, "reply", "replies")
-                     + (f" ({', '.join(detail)})" if replies and detail else ""))
-    if shown("bounced"):
-        parts.append(f"{values['bounced']:,} bounced")
-    return sep.join(parts) or "nothing yet"
-
-
-def _replies(v: dict) -> str:
-    """'4 replies (3 positive/neutral, 1 other)'; zeros left out of the brackets."""
-    replies = v.get("replies") or 0
-    kinds = [(v.get(f), label) for f, label in _REPLY_KINDS]
-    detail = [f"{n:,} {label}" for n, label in kinds if n]
-    other = replies - sum(n for n, _ in kinds if n)     # Do Not Contact, custom...
+    if c.get("reached"):
+        parts.append(_n(c["reached"], "new person reached", "new people reached"))
+    if c.get("sent") or not c.get("replies"):
+        parts.append(_n(c.get("sent") or 0, "email sent", "emails sent"))
+    replies = c.get("replies") or 0
+    kinds = [f"{c[f]:,} {label}" for f, label in _REPLY_KINDS if c.get(f)]
+    other = replies - sum(c.get(f) or 0 for f, _ in _REPLY_KINDS)
     if other > 0:
-        detail.append(f"{other:,} other")
-    return _n(replies, "reply", "replies") + (f" ({', '.join(detail)})" if replies and detail else "")
+        kinds.append(f"{other:,} other")
+    parts.append(_people_replied(replies) + (f" ({', '.join(kinds)})" if replies and kinds else ""))
+    if c.get("out_of_office"):
+        parts.append(f"{c['out_of_office']:,} out-of-office")
+    if c.get("bounced"):
+        parts.append(f"{c['bounced']:,} bounced")
+    return " · ".join(parts)
 
 
-def email_new(v: dict) -> str:
-    """Since the last post, in Avinash's terms (standup 30 Oct 2026): new
-    people reached, emails sent, replies, out-of-office, bounces if any."""
+def linkedin_line(c: dict) -> str:
+    if not any(c.get(f) for f in c):
+        return "no activity"
     parts = []
-    if v.get("reached") is not None:
-        parts.append(_n(v["reached"], "new person reached", "new people reached"))
-    if v.get("sent"):
-        parts.append(_n(v["sent"], "email sent", "emails sent"))
-    if v.get("replies") is not None:
-        parts.append(_replies(v))
-    if v.get("out_of_office"):
-        parts.append(f"{v['out_of_office']:,} out-of-office")
-    if v.get("bounced"):
-        parts.append(f"{v['bounced']:,} bounced")
-    return " · ".join(parts) or "no activity"
+    if c.get("invites") is not None:
+        parts.append(_n(c["invites"], "invite", "invites"))
+    if c.get("accepted") is not None:
+        parts.append(f"{c['accepted']:,} accepted")
+    replies = c.get("replies") or 0
+    pos = f" ({c['positive']:,} interested)" if replies and c.get("positive") else ""
+    parts.append(_people_replied(replies) + pos)
+    return " · ".join(parts)
 
 
-def email_total(t: dict, open_tracking: str) -> str:
-    """To date: people reached, open rate (tracked campaigns only), reply rate."""
-    reached, replies = t.get("reached"), t.get("replies")
-    parts = []
-    if reached:
-        parts.append(_n(reached, "person reached", "people reached"))
-    elif t.get("sent"):
-        parts.append(_n(t["sent"], "email sent", "emails sent"))
-    if open_tracking == "on" and reached and t.get("opened") is not None:
-        parts.append(f"{_pct(t['opened'], reached)} opened")
-    if reached and replies is not None:
-        pos = f", {t['positive']:,} positive/neutral" if t.get("positive") else ""
-        parts.append(f"{_pct(replies, reached)} replied ({replies:,} of {reached:,}{pos})")
-    elif replies:
-        parts.append(_replies(t))
-    return " · ".join(parts) or "nothing yet"
+def _line(channel: str, c: dict) -> str:
+    return email_line(c) if channel == "Email" else linkedin_line(c)
 
 
-def _pct(part, whole) -> str | None:
-    if not whole or part is None:
-        return None
-    return f"{round(100 * part / whole)}%"
+def _sum(rows: list[dict], key: str) -> dict:
+    """Field totals over campaigns; a field no campaign has (Waalaxy invites)
+    stays None so it is left out rather than shown as 0."""
+    total: dict = {}
+    for r in rows:
+        for f, v in r["counts"][key].items():
+            if v is None:
+                total.setdefault(f, None)
+            else:
+                total[f] = (total.get(f) or 0) + v
+    return total
 
 
-def _rate(totals: dict, channel: str, open_tracking: str) -> str:
-    """' · 80% opened' (email with open tracking) or ' · 4% accepted' (LinkedIn)."""
-    if channel == "Email":
-        p = _pct(totals.get("opened"), totals.get("reached")) if open_tracking == "on" else None
-        return f" · {p} opened" if p else ""
-    p = _pct(totals.get("accepted"), totals.get("invites"))
-    return f" · {p} accepted" if p else ""
+def _client_rank(client: str):
+    return (_CLIENT_ORDER.index(client) if client in _CLIENT_ORDER else len(_CLIENT_ORDER),
+            client)
 
 
-def _open_rate(rows: list[dict]) -> str:
-    """The client's open rate over the campaigns that track opens."""
-    tracked = [r for r in rows if r.get("open_tracking") == "on" and r["totals"].get("reached")]
-    reached = sum(r["totals"]["reached"] for r in tracked)
-    opened = sum(r["totals"].get("opened") or 0 for r in tracked)
-    p = _pct(opened, reached)
-    if not p:
-        return ""
-    return (f" · {p} opened to date ({len(tracked)} of {len(rows)} campaigns track opens)"
-            if len(tracked) < len(rows) else f" · {p} opened to date")
+def _period_title(p: Period) -> str:
+    if p.key == "week":
+        return f"This week, {weekday_day(p.start)} – {weekday_day(p.end)}"
+    if p.key == "month":
+        return month_name(p)
+    return weekday_day(p.start)
 
 
-_MAX_SECTIONS = 45   # Slack allows 50 blocks a message
-
-
-def _button(r: dict, title: str, window: tuple, replies: int) -> dict:
+def _button(r: dict, title: str, p: Period, replies: int) -> dict:
+    lo, hi = p.window
     value = {"client": r["client"], "channel": r["channel"], "platform": r.get("platform", ""),
              "id": str(r.get("campaign_id") or ""), "name": r["campaign"], "title": title,
-             "from": window[0], "to": window[1], "n": replies}
+             "from": lo.isoformat(), "to": hi.isoformat(), "n": replies}
     return {"type": "button", "action_id": "show_replies",
             "text": {"type": "plain_text", "text": f"Show {_n(replies, 'reply', 'replies')}"},
             "value": json.dumps(value, ensure_ascii=False)}   # Slack's cap is 2,000
 
 
-def _thread_part(client: str, channel: str, rows: list[dict], first: bool,
-                 base: str | None, today: str) -> list[dict]:
-    """One client·channel as Slack messages: a short block per campaign that
-    moved, a Show replies button where it got replies, the rest on one line.
-    A campaign compared with an earlier day than the base says since when."""
-    names = short_names([r["campaign"] for r in rows])
-    sections, quiet = [], []
-    for r in sorted(rows, key=lambda r: (not r["running"], r["campaign"].lower())):
-        title = names[r["campaign"]]
-        moved = bool(r["change"]) and any(r["change"].get(f) for f in _FIELDS[channel])
-        if channel == "Email":
-            to_date, rate = email_total(r["totals"], r.get("open_tracking", "")), ""
-        else:
-            to_date = _counts(r["totals"], channel, skip_zero=True, sep=" · ")
-            rate = _rate(r["totals"], channel, "")
-        if first:
-            text = f"*{title}*\nTotal: {to_date}{rate}"
-        elif r["change"] is None and not r["running"]:
-            # Paused / finished and missing from the last snapshot (29 Oct:
-            # Melior's 26 HeyReach campaigns on their first day): nothing to
-            # report. The sheet still has the row.
-            continue
-        elif r["change"] is None:
-            text = (f"*{title}*\nTotal: {to_date}{rate}\n_Not in the {_day(base)} "
-                    f"numbers, so no change shown_")
-        elif not moved:
-            if r["running"]:
-                quiet.append(title)
-            continue
-        else:
-            new = (email_new(r["change"]) if channel == "Email"
-                   else _counts(r["change"], channel, skip_zero=True, sep=" · "))
-            text = f"*{title}*\nNew: {new}\nTotal: {to_date}{rate}"
-            since = r.get("since") or base
-            if since != base:
-                text += (f"\n_Since {weekday_day(since)}: the {_day(base)} run "
-                         f"did not read it_")
-        block = {"type": "section", "text": {"type": "mrkdwn", "text": text}}
-        replies = (r["change"] or {}).get("replies") or 0
-        if replies and r.get("campaign_id") and not first:
-            block["accessory"] = _button(r, title,
-                                         post_window(r.get("since") or base, today), replies)
-        sections.append(block)
-    if not sections and not quiet:
+def _thread_part(client: str, channel: str, rows: list[dict], day: Period) -> list[dict]:
+    """The day's campaigns for one client·channel, a button where people replied."""
+    moved = [r for r in rows if any(r["counts"][day.key].values())]
+    if not moved:
         return []
+    names = short_names([r["campaign"] for r in moved])
+    sections = []
+    for r in sorted(moved, key=lambda r: names[r["campaign"]].lower()):
+        c = r["counts"][day.key]
+        title = names[r["campaign"]]
+        block = {"type": "section",
+                 "text": {"type": "mrkdwn", "text": f"*{title}*\n{_line(channel, c)}"}}
+        if c.get("replies") and r.get("campaign_id"):
+            block["accessory"] = _button(r, title, day, c["replies"])
+        sections.append(block)
     head = {"type": "header", "text": {"type": "plain_text", "text": f"{client} · {channel}"}}
-    tail = ([{"type": "context", "elements": [{"type": "mrkdwn",
-                                                "text": _quiet_line(quiet)}]}]
-            if quiet else [])
     parts = []
-    for i in range(0, max(len(sections), 1), _MAX_SECTIONS):
-        chunk = sections[i:i + _MAX_SECTIONS]
-        last = i + _MAX_SECTIONS >= len(sections)
-        blocks = ([head] if i == 0 else []) + chunk + (tail if last else [])
+    for i in range(0, len(sections), _MAX_SECTIONS):
+        blocks = ([head] if i == 0 else []) + sections[i:i + _MAX_SECTIONS]
         parts.append({"text": f"{client} · {channel}", "blocks": blocks})
     return parts
 
 
-def _quiet_line(names: list[str], cap: int = 40) -> str:
-    more = f" and {len(names) - cap} more" if len(names) > cap else ""
-    return "No change: " + ", ".join(names[:cap]) + more
+def build_post(rows: list[dict], periods: list[Period], clients: list[str],
+               not_counted: list[str] = (), failed: list[str] = (),
+               linkedin_clients: tuple = (),
+               linkedin_from: dict | None = None) -> tuple[str, list[dict]]:
+    """(headline, thread parts) for notify.post_with_thread([headline], parts).
+
+    `clients` are the active clients, each listed even on a quiet day so a
+    missing line never reads as "nothing happened". `linkedin_clients` get a
+    LinkedIn line whether or not a campaign moved. `linkedin_from` (client ->
+    first day tracked) marks a period that starts before it as incomplete
+    (PL's Waalaxy replies are logged from 30 Oct 2026).
+    """
+    day = next(p for p in periods if p.key == "day")
+    head = [f"📊 Campaign stats for {weekday_day(day.start)}", "",
+            "A day runs 05:30 to 05:30 IST, as in Smartlead. New people reached = first "
+            "emails; emails sent includes follow-ups. Each campaign is in the thread, "
+            "with a button to read its replies."]
+    thread: list[dict] = []
+    order = sorted(set(clients) | {r["client"] for r in rows}, key=_client_rank)
+
+    def lines(p: Period, prefix: bool) -> list[str]:
+        out = []
+        for client in order:
+            mine = [r for r in rows if r["client"] == client]
+            chans = ["Email"] + (["LinkedIn"] if client in linkedin_clients
+                                 or any(r["channel"] == "LinkedIn" for r in mine) else [])
+            if not prefix:
+                out += ["", f"*{client}*"]
+            for ch in chans:
+                ch_rows = [r for r in mine if r["channel"] == ch]
+                text = _line(ch, _sum(ch_rows, p.key)) if ch_rows else _line(ch, {})
+                if ch == "LinkedIn" and any(r.get("partial") for r in ch_rows):
+                    text += " · invites and accepts may be low (Expandi's lead history is still loading)"
+                since = (linkedin_from or {}).get(client) if ch == "LinkedIn" else None
+                if since and p.end < since:
+                    text = f"not tracked before {weekday_day(since)}"
+                elif since and p.start <= since:      # logging began during that day
+                    text += f" (tracked from {weekday_day(since)})"
+                out.append(f"{client} {ch.lower() if ch == 'Email' else ch}: {text}"
+                           if prefix else f"{ch}: {text}")
+            if not prefix:
+                for ch in chans:
+                    thread.extend(_thread_part(client, ch, [r for r in mine if r["channel"] == ch], day))
+        return out
+
+    head += lines(day, prefix=False)
+    for p in periods:
+        if p.key != "day":
+            head += ["", f"*{_period_title(p)}*"] + lines(p, prefix=True)
+    if not_counted:
+        head += ["", "Not counted: " + "; ".join(not_counted) + "."]
+    if failed:
+        head += ["", "⚠️ Not fully read, so these numbers may be off: " + "; ".join(failed) + "."]
+    return "\n".join(head), thread
 
 
 def part_as_text(part) -> str:
@@ -232,109 +208,3 @@ def part_as_text(part) -> str:
             lines.append(b["elements"][0]["text"])
         lines.append("")
     return "\n".join(lines).strip()
-
-
-def _client_rank(client: str):
-    return (_CLIENT_ORDER.index(client) if client in _CLIENT_ORDER else len(_CLIENT_ORDER),
-            client)
-
-
-def _sum(rows: list[dict], key: str, channel: str) -> dict:
-    """Per-field totals. A field any row lacks is left out: 2 Nov 2026 the
-    post said Melior had "0 new people reached" because only a brand-new
-    campaign had the figure and the others predated the column."""
-    total: dict = {}
-    for field in _FIELDS[channel]:
-        vals = [(r[key] or {}).get(field) for r in rows]
-        if vals and all(v is not None for v in vals):
-            total[field] = sum(vals)
-    return total
-
-
-def _left_out(rows: list[dict], key: str, base: str) -> str:
-    """' · not counting X (no 29 Oct numbers)' for running campaigns that
-    could not be compared, so the headline never undercounts quietly."""
-    names = [r["campaign"] for r in rows if r[key] is None and r.get("running")]
-    if not names:
-        return ""
-    what = names[0] if len(names) == 1 else f"{len(names)} campaigns"
-    return f" · not counting {what} (no {_day(base)} numbers)"
-
-
-def _since_label(channel: str, rows: list[dict], base: str) -> str:
-    """'Email' or 'Email (since Thu 29 Oct)' when campaigns were compared with
-    an earlier day than the base (the base day's run missed them)."""
-    sinces = {r.get("since") or base for r in rows}
-    if sinces == {base}:
-        return channel
-    early = weekday_day(min(sinces))
-    return f"{channel} (since {early})" if len(sinces) == 1 else f"{channel} (some since {early})"
-
-
-def build_post(changes: list[dict], today: str, base: str | None,
-               sheet_url: str, not_counted: list[str],
-               missing: list[tuple[str, str]] = ()) -> tuple[str, list[dict]]:
-    """(headline, thread parts) for notify.post_with_thread([headline], parts).
-
-    The headline is one string: post_with_thread drops empty items from its
-    headline list, which would take out the blank line between clients.
-    `missing` is campaign_history.missing_today: client·channels the last post
-    had and today's numbers lack, said out loud rather than left out.
-    """
-    first = base is None
-    head = [f"📊 Campaign stats, {weekday_day(today)}", ""]
-    if first:
-        head.append("Totals to date. Campaign History starts today, so from the "
-                    "next post these are changes since the post before.")
-    else:
-        head.append(f"Since {weekday_day(base)}, 9:00 IST. Each campaign is in the thread, "
-                    "with a button to read its new replies.")
-    thread: list[dict] = []
-
-    by_client: dict[str, list[dict]] = {}
-    for c in changes:
-        by_client.setdefault(c["client"], []).append(c)
-    for client, _ in missing:
-        by_client.setdefault(client, [])
-
-    for client in sorted(by_client, key=_client_rank):
-        rows = by_client[client]
-        head += ["", f"*{client}*"]
-        for channel in ("Email", "LinkedIn"):
-            ch_rows = [r for r in rows if r["channel"] == channel]
-            if not ch_rows:
-                if (client, channel) in missing:
-                    head.append(f"{channel}: not in today's numbers (the 9:00 run "
-                                f"couldn't read it)")
-                continue
-            key = "totals" if first else "change"
-            known = [r for r in ch_rows if r[key] is not None]
-            rate = _open_rate(ch_rows) if channel == "Email" else ""
-            if not known:
-                head.append(f"{channel}: no earlier numbers to compare (see the thread)")
-            elif channel == "Email":
-                summed = _sum(known, key, channel)
-                label = "Email" if first else _since_label(channel, known, base)
-                gap = "" if first else _left_out(ch_rows, key, base)
-                head.append(f"{label}: {email_total(summed, '') if first else email_new(summed)}{rate}{gap}")
-            else:
-                label = "LinkedIn" if first else _since_label(channel, known, base)
-                gap = "" if first else _left_out(ch_rows, key, base)
-                head.append(f"{label}: {_counts(_sum(known, key, channel), channel)}{gap}")
-            thread += _thread_part(client, channel, ch_rows, first, base, today)
-
-    if not by_client:  # nothing today and nothing missing
-        head += ["", "No active campaigns in today's numbers."]
-    if not_counted:
-        head += ["", "Not counted: " + "; ".join(not_counted) + "."]
-    head += ["", f"<{sheet_url}|Campaign History sheet>"]
-    return "\n".join(head), thread
-
-
-def not_ready_text(today: str, latest: str | None) -> str:
-    """The post when the 9:00 run left no numbers for today."""
-    seen = f"The latest numbers are from {weekday_day(latest)}." if latest else \
-        "Campaign History is empty."
-    return (f"⚠️ Campaign stats, {weekday_day(today)}: not ready\n\n"
-            f"The 9:00 stats run has not written today's numbers to Campaign History. "
-            f"{seen} Its log is on Render (search for [campaign-metrics]).")
