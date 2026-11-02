@@ -176,6 +176,11 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
     rows: list[dict] = []
     workspaces = discover_expandi_workspaces()
     if not workspaces:
+        # 2 Nov 2026: Render had no Expandi key, so BettrData LinkedIn was
+        # missing from every 9:00 run with nothing in the log. Say so.
+        if failed is not None and cm.row_client_wanted("BETTRDATA", CAMPAIGN_METRICS_CLIENTS):
+            print(f"{log} [!] Expandi: no EXPANDEE_API_KEY + EXPANDEE_SECRET on this server")
+            failed.append("Expandi BETTRDATA (no EXPANDEE_API_KEY + EXPANDEE_SECRET on this server)")
         return rows
 
     store = ExpandiStore()
