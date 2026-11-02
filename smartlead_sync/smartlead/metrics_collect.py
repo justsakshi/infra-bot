@@ -15,6 +15,7 @@ the block take about 24 minutes (Last Sync tab, 29 Oct).
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 from smartlead import campaign_metrics as cm
@@ -37,6 +38,31 @@ STATUSES: dict[tuple[str, str, str], str] = {}
 # campaigns" (2 Nov 2026: the PRECISE_LEADS plan expired and PL and Melior
 # email vanished from the post without a word). Refilled each run.
 FAILED: list[str] = []
+# A campaign whose fetch failed is tried once more after this pause (shared
+# rate limits: 30-31 Oct Render kept 12, then 5, of Melior's 26 HeyReach
+# campaigns); still failing, it goes in FAILED instead of vanishing quietly.
+RETRY_PAUSE = 30
+
+
+async def _each_with_retry(items, fetch, label, log: str) -> list:
+    """fetch(item) for every item; those that raise get one more try after
+    RETRY_PAUSE. Returns the results (None = skipped on purpose)."""
+    out, failed = [], []
+    for item in items:
+        try:
+            out.append(await fetch(item))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [!] {label(item)} fetch failed: {exc} - will retry")
+            failed.append(item)
+    if failed:
+        await asyncio.sleep(RETRY_PAUSE)
+        for item in failed:
+            try:
+                out.append(await fetch(item))
+            except Exception as exc:  # noqa: BLE001
+                print(f"{log} {label(item)} left out - fetch failed twice: {exc}")
+                FAILED.append(label(item))
+    return [r for r in out if r is not None]
 
 
 def _n(payload: dict, field: str) -> int:
@@ -63,7 +89,7 @@ async def _smartlead_rows(today: datetime, start_dt: datetime, end_dt: datetime,
                 if not campaigns:
                     print(f"{log} Smartlead {acc.name} returned 0 campaigns — "
                           f"check this is not silent data loss")
-                kept = 0
+                wanted = []
                 for camp in campaigns:
                     cid = str(camp.get("id") or "")
                     if not cid:
@@ -80,38 +106,41 @@ async def _smartlead_rows(today: datetime, start_dt: datetime, end_dt: datetime,
                     if not cm.row_client_wanted(client, CAMPAIGN_METRICS_CLIENTS):
                         continue
                     STATUSES[(client, "Email", str(camp.get("name", "")))] = status
-                    # A failed fetch is not "zero activity": skip the campaign
-                    # and say so, rather than write a fabricated 0.
-                    try:
-                        week_sent = _n(await slc.get_analytics_by_date(
-                            cid, week_start, today_str), "sent_count")
-                        if cm.is_finished_status(status) and week_sent == 0:
-                            continue
-                        mo = await slc.get_analytics_by_date(cid, ms_str, end_str)
-                        yd = await slc.get_analytics_by_date(cid, yest_str, yest_str)
-                        analytics = await slc.get_campaign_analytics(cid)
-                        leads = await slc.get_campaign_leads(cid)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"  [!] Smartlead {cid} ({camp.get('name', '')}) "
-                              f"skipped — fetch failed: {exc}")
-                        continue
+                    wanted.append((camp, cid, client, status))
+
+                # A failed fetch is not "zero activity": retried once, then
+                # named for the alert, never written as a fabricated 0.
+                async def fetch(item, slc=slc):
+                    camp, cid, client, status = item
+                    week_sent = _n(await slc.get_analytics_by_date(
+                        cid, week_start, today_str), "sent_count")
+                    if cm.is_finished_status(status) and week_sent == 0:
+                        return None
+                    mo = await slc.get_analytics_by_date(cid, ms_str, end_str)
+                    yd = await slc.get_analytics_by_date(cid, yest_str, yest_str)
+                    analytics = await slc.get_campaign_analytics(cid)
+                    leads = await slc.get_campaign_leads(cid)
                     summary = cm.smartlead_summary_from_analytics(analytics)
                     if not cm.should_include_smartlead_campaign(
                             summary, week_sent, _n(mo, "sent_count")):
-                        continue
-                    rows.append(cm.smartlead_metric_row(
+                        return None
+                    row = cm.smartlead_metric_row(
                         summary, leads, _n(mo, "reply_count"), 0,
                         today, SMARTLEAD_POSITIVE_CATEGORY_IDS,
                         client=client,
                         month_sent=_n(mo, "sent_count"), start_dt=start_dt, end_dt=end_dt,
                         yest_sent=_n(yd, "sent_count"),
-                        launch_date=str(camp.get("created_at", ""))[:10]))
+                        launch_date=str(camp.get("created_at", ""))[:10])
                     # Opens are counted only with tracking on; off, 0 opens is
                     # not a 0% open rate.
-                    rows[-1]["open_tracking"] = (
+                    row["open_tracking"] = (
                         "off" if "DONT_EMAIL_OPEN" in (camp.get("track_settings") or []) else "on")
-                    kept += 1
-                print(f"{log} Smartlead {acc.name}: {kept} campaign(s) of "
+                    return row
+
+                kept = await _each_with_retry(
+                    wanted, fetch, lambda it, a=acc.name: f"Smartlead {a}: {it[0].get('name', '')}", log)
+                rows += kept
+                print(f"{log} Smartlead {acc.name}: {len(kept)} campaign(s) of "
                       f"{len(campaigns)} reported")
         except Exception as exc:  # noqa: BLE001
             print(f"{log} Smartlead account {acc.name} failed to list campaigns "
@@ -131,28 +160,28 @@ async def _heyreach_rows(today: datetime, start_dt: datetime, end_dt: datetime,
             async with HeyReachClient(ws.api_key, ws.name) as hrc:
                 camps = await hrc.list_campaigns()
                 print(f"{log} HeyReach {ws.name}: {len(camps)} campaign(s)")
-                for camp in camps:
+
+                async def fetch(camp, hrc=hrc, ws=ws):
                     cid = camp["id"]
-                    try:
-                        oa = await hrc.get_overall_stats(cid)
-                        om = await hrc.get_overall_stats(
-                            cid, start=start_dt.isoformat().replace("+00:00", "Z"),
-                            end=end_dt.isoformat().replace("+00:00", "Z"))
-                        # HeyReach honours a date range, so yesterday is a real
-                        # query rather than a difference between snapshots.
-                        oy = await hrc.get_overall_stats(
-                            cid, start=f"{yest_str}T00:00:00Z",
-                            end=f"{yest_str}T23:59:59Z")
-                        leads = await hrc.get_campaign_leads(cid)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"  [!] HeyReach {cid} failed: {exc}")
-                        continue
+                    oa = await hrc.get_overall_stats(cid)
+                    om = await hrc.get_overall_stats(
+                        cid, start=start_dt.isoformat().replace("+00:00", "Z"),
+                        end=end_dt.isoformat().replace("+00:00", "Z"))
+                    # HeyReach honours a date range, so yesterday is a real
+                    # query rather than a difference between snapshots.
+                    oy = await hrc.get_overall_stats(
+                        cid, start=f"{yest_str}T00:00:00Z",
+                        end=f"{yest_str}T23:59:59Z")
+                    leads = await hrc.get_campaign_leads(cid)
                     if not cm.should_include_heyreach_campaign(
                             camp, (om or {}).get("byDayStats", {}) or {}):
-                        continue
-                    rows.append(cm.heyreach_metric_row(
+                        return None
+                    return cm.heyreach_metric_row(
                         camp, oa, om, leads, today, client=cm.display_client(ws.name),
-                        start_dt=start_dt, end_dt=end_dt, overall_yesterday=oy))
+                        start_dt=start_dt, end_dt=end_dt, overall_yesterday=oy)
+
+                rows += await _each_with_retry(
+                    camps, fetch, lambda c, w=ws.name: f"HeyReach {w}: {c.get('name', c['id'])}", log)
         except Exception as exc:  # noqa: BLE001
             print(f"[!] HeyReach workspace {ws.name} failed: {exc}")
             FAILED.append(f"HeyReach {ws.name}")
