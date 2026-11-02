@@ -240,14 +240,25 @@ def _client_rank(client: str):
 
 
 def _sum(rows: list[dict], key: str, channel: str) -> dict:
+    """Per-field totals. A field any row lacks is left out: 2 Nov 2026 the
+    post said Melior had "0 new people reached" because only a brand-new
+    campaign had the figure and the others predated the column."""
     total: dict = {}
-    for r in rows:
-        vals = r[key] or {}
-        for field in _FIELDS[channel]:
-            v = vals.get(field)
-            if v is not None:
-                total[field] = total.get(field, 0) + v
+    for field in _FIELDS[channel]:
+        vals = [(r[key] or {}).get(field) for r in rows]
+        if vals and all(v is not None for v in vals):
+            total[field] = sum(vals)
     return total
+
+
+def _left_out(rows: list[dict], key: str, base: str) -> str:
+    """' · not counting X (no 29 Oct numbers)' for running campaigns that
+    could not be compared, so the headline never undercounts quietly."""
+    names = [r["campaign"] for r in rows if r[key] is None and r.get("running")]
+    if not names:
+        return ""
+    what = names[0] if len(names) == 1 else f"{len(names)} campaigns"
+    return f" · not counting {what} (no {_day(base)} numbers)"
 
 
 def _since_label(channel: str, rows: list[dict], base: str) -> str:
@@ -304,10 +315,12 @@ def build_post(changes: list[dict], today: str, base: str | None,
             elif channel == "Email":
                 summed = _sum(known, key, channel)
                 label = "Email" if first else _since_label(channel, known, base)
-                head.append(f"{label}: {email_total(summed, '') if first else email_new(summed)}{rate}")
+                gap = "" if first else _left_out(ch_rows, key, base)
+                head.append(f"{label}: {email_total(summed, '') if first else email_new(summed)}{rate}{gap}")
             else:
                 label = "LinkedIn" if first else _since_label(channel, known, base)
-                head.append(f"{label}: {_counts(_sum(known, key, channel), channel)}")
+                gap = "" if first else _left_out(ch_rows, key, base)
+                head.append(f"{label}: {_counts(_sum(known, key, channel), channel)}{gap}")
             thread += _thread_part(client, channel, ch_rows, first, base, today)
 
     if not by_client:  # nothing today and nothing missing

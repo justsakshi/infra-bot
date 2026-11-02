@@ -228,3 +228,24 @@ def test_a_client_channel_missing_today_says_it_could_not_be_read():
     assert "*Precise Leads*\nEmail: not in today's numbers" in head
     assert "Melior*\nEmail: not in today's numbers" in head
     assert head.index("*Melior*") < head.index("*Precise Leads*")
+
+
+def test_a_figure_only_some_campaigns_have_is_not_summed():
+    # 2 Nov 2026: "Melior: 0 new people reached" came from one new campaign
+    # alone; the others predated the reached column.
+    head, _ = _post([
+        _c("Melior", "Email", "Old", dict(EMAIL, reached=None)),
+        _c("Melior", "Email", "New", dict(EMAIL, sent=0, replies=0, positive=0,
+                                          not_interested=0, reached=0)),
+    ])
+    assert "reached" not in head and "165 emails sent" in head
+
+
+def test_a_running_campaign_with_no_earlier_numbers_is_named_in_the_headline():
+    head, _ = _post([
+        _c("Melior", "Email", "Ryan", EMAIL),
+        _c("Melior", "Email", "Competitor AI", None, totals=EMAIL),
+        _c("Melior", "Email", "Done", None, totals=EMAIL, running=False, status="COMPLETED"),
+    ])
+    line = next(l for l in head.split("\n") if l.startswith("Email"))
+    assert line.endswith("· not counting Competitor AI (no 29 Oct numbers)")
