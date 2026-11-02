@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""Post the daily campaign stats to Slack: #pl_daily, 10:30 IST, Mon-Fri.
+"""Post the campaign stats to Slack: #pl_daily, 10:15 IST, Mon-Fri.
 
-Reads the Campaign History tab that metrics_only.py fills at 09:00 IST and
-posts each client's email and LinkedIn numbers since the last post (Friday's
-for a Monday post), with every campaign in the thread. Decided with Manveen,
-29 Oct 2026: #pl_daily, 30 minutes before the 11:00 standup, weekdays.
+The last working day's email and LinkedIn numbers per client (a Monday post
+covers Friday), plus the week Friday to Thursday on Fridays and last month on
+the month's first working day; each day's campaigns in the thread. Counted
+from the platforms' dated records at posting time (smartlead.daily_stats),
+not from the 09:00 snapshots. Decided with Manveen, 29 Oct and 2 Nov 2026.
 
     python campaign_stats_post.py --dry-run          print it, post nothing
     python campaign_stats_post.py --to U09TQ9D7YNM   post to one person (a test)
     python campaign_stats_post.py --post             post to CAMPAIGN_STATS_CHANNEL
-
-If today's numbers are missing it posts a short "not ready" notice instead
-(silence would read as "no activity") and exits 1.
+    python campaign_stats_post.py --today 2026-11-06 the post that day would make
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import sys
+from datetime import date
 
 if sys.platform == "win32":
     try:
@@ -27,16 +28,15 @@ if sys.platform == "win32":
 
 from smartlead import campaign_history as ch
 from smartlead import campaign_metrics as cm
-from smartlead.config import (ACTIVE_CLIENTS, CAMPAIGN_HISTORY_TAB_NAME,
-                              CAMPAIGN_METRICS_SHEET_ID, CAMPAIGN_STATS_CHANNEL)
+from smartlead import daily_stats as ds
+from smartlead.config import ACTIVE_CLIENTS, CAMPAIGN_STATS_CHANNEL
 from smartlead.expandi_accounts import discover_expandi_workspaces
 from smartlead.heyreach_accounts import discover_heyreach_workspaces
-from smartlead.notify import _post, post_with_thread
-from smartlead.sheets import SheetsWriter
-from smartlead.stats_post import build_post, not_ready_text, part_as_text
+from smartlead.notify import post_with_thread
+from smartlead.stats_post import build_post, part_as_text
 
 
-def not_counted() -> list[str]:
+def not_counted(rows: list[dict] = ()) -> list[str]:
     """Active clients' LinkedIn numbers this server cannot read, and why."""
     active = {cm._norm_client(c) for c in ACTIVE_CLIENTS}
     out = []
@@ -47,8 +47,12 @@ def not_counted() -> list[str]:
             cm._norm_client(ws.name) == "MELIOR" for ws in discover_heyreach_workspaces()):
         out.append("Melior LinkedIn (no HeyReach key on the server)")
     if "PRECISE LEADS" in active:
-        out.append("Precise Leads LinkedIn invites (Waalaxy's API has no stats; replies count "
-                   "from 30 Oct, accepts once a campaign has the CRM Sync step)")
+        accepts = any(c.get("accepted") is not None for r in rows if r.get("platform") == "Waalaxy"
+                      for c in r["counts"].values())
+        out.append("Precise Leads LinkedIn invites (Waalaxy has no invite count; accepts "
+                   "only from campaigns with the CRM Sync step)" if accepts else
+                   "Precise Leads LinkedIn invites and accepts (Waalaxy has no invite count; "
+                   "accepts are logged only for campaigns with a CRM Sync step, and none has one yet)")
     return out
 
 
@@ -67,24 +71,15 @@ def main() -> int:
         print("[stats-post] SLACK_BOT_TOKEN missing - cannot post.")
         return 1
 
-    writer = SheetsWriter(CAMPAIGN_METRICS_SHEET_ID)
-    ws = writer._get_or_create_shared_tab(CAMPAIGN_HISTORY_TAB_NAME, rows=1000,
-                                          cols=len(ch.HEADER))
-    history = ch.parse_history(ws.get_all_values())
-    today = args.today or ch.snapshot_day()
-    days = sorted({r["date"] for r in history})
-
-    if today not in days:
-        text = not_ready_text(today, days[-1] if days else None)
-        print(text)
-        if target:
-            _post(token, target, text)
-        return 1
-
-    base = ch.baseline_day(days, today)
-    url = f"https://docs.google.com/spreadsheets/d/{CAMPAIGN_METRICS_SHEET_ID}/edit#gid={ws.id}"
-    head, thread = build_post(ch.campaign_changes(history, today, base), today, base,
-                              url, not_counted(), ch.missing_today(history, today, base))
+    today = date.fromisoformat(args.today or ch.snapshot_day())
+    periods = ds.periods_for(today)
+    rows, failed = asyncio.run(ds.collect(periods))
+    clients = sorted({cm.display_client(c) for c in ACTIVE_CLIENTS})
+    linkedin = tuple({cm.display_client(w.name) for w in discover_expandi_workspaces()}
+                     | {cm.display_client(w.name) for w in discover_heyreach_workspaces()}
+                     | ({"Precise Leads"} if "Precise Leads" in clients else set()))
+    head, thread = build_post(rows, periods, clients, not_counted(rows), failed, linkedin,
+                              {"Precise Leads": ds.WAALAXY_LOG_START})
     print(head)
     for part in thread:
         print("\n--- thread ---\n" + part_as_text(part))

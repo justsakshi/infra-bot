@@ -1,4 +1,4 @@
-"""Campaign History: rows written per day, and the change between two days. No network."""
+"""Campaign History: rows written per day. No network."""
 from smartlead import campaign_history as ch
 
 
@@ -39,53 +39,6 @@ def test_parse_history_round_trip():
 def test_row_ranges_group_contiguous_rows():
     assert ch._row_ranges([10, 5, 6, 7]) == [(5, 7), (10, 10)]
     assert ch._row_ranges([]) == []
-
-
-def test_baseline_is_friday_for_a_monday_post():
-    days = ["2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"]
-    assert ch.baseline_day(days, "2026-11-02") == "2026-10-30"      # Mon -> Fri
-
-
-def test_baseline_is_yesterday_midweek_or_the_latest_before_it():
-    assert ch.baseline_day(["2026-10-29", "2026-10-30"], "2026-10-30") == "2026-10-29"
-    # yesterday missing: the latest earlier day
-    assert ch.baseline_day(["2026-10-27", "2026-10-30"], "2026-10-30") == "2026-10-27"
-    # history started on Sunday, Monday post: the earliest day there is
-    assert ch.baseline_day(["2026-11-01", "2026-11-02"], "2026-11-02") == "2026-11-01"
-    assert ch.baseline_day(["2026-10-29"], "2026-10-29") is None
-
-
-def _hist(day, **kw):
-    r = dict(zip(ch.FIELDS, [day, "BettrData", "Email", "Smartlead", "Campaign A", "ACTIVE",
-                             "2026-10-20", 100, None, None, None, None, None, None, None,
-                             None, "1"]))
-    r.update(kw)
-    return r
-
-
-def test_change_is_today_minus_base():
-    h = [_hist("2026-10-29", sent=100, replies=2, positive=1, bounced=0),
-         _hist("2026-10-30", sent=265, replies=5, positive=1, bounced=1)]
-    (c,) = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
-    assert c["change"] == {"sent": 165, "replies": 3, "positive": 0, "bounced": 1,
-                           "invites": None, "accepted": None,
-                           "not_interested": None, "wrong_person": None,
-                           "reached": None, "opened": None, "out_of_office": None}
-    assert c["totals"]["sent"] == 265 and c["running"] is True
-
-
-def test_new_campaign_starts_from_zero_old_unseen_one_is_unknown():
-    h = [_hist("2026-10-30", campaign_id="2", campaign="New", launch_date="2026-10-29", sent=40),
-         _hist("2026-10-30", campaign_id="3", campaign="Resumed", launch_date="2026-09-01", sent=900)]
-    new, resumed = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
-    assert new["change"]["sent"] == 40
-    assert resumed["change"] is None          # its 900 must not count as one day's sends
-
-
-def test_a_counter_that_goes_down_shows_zero():
-    h = [_hist("2026-10-29", replies=5), _hist("2026-10-30", replies=4)]
-    (c,) = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
-    assert c["change"]["replies"] == 0
 
 
 class _FakeWS:
@@ -151,46 +104,6 @@ def test_open_columns_are_written_for_email_and_blank_for_linkedin():
     assert out[1][-4:] == ["-", "-", "", "-"]
     parsed = ch.parse_history([ch.HEADER] + [[str(c) for c in r] for r in out])
     assert parsed[0]["reached"] == 132 and parsed[0]["opened"] == 106
-    assert parsed[0]["open_tracking"] == "on"
-    (c, _) = ch.campaign_changes(parsed, "2026-10-30", None)
-    assert c["open_tracking"] == "on" and c["campaign_id"] == "1"
+    assert parsed[0]["open_tracking"] == "on" and parsed[0]["campaign_id"] == "1"
 
 
-def test_a_counter_missing_on_the_base_day_is_unknown_not_a_jump():
-    h = [_hist("2026-10-29", sent=100, replies=2, reached=None, opened=None),
-         _hist("2026-10-30", sent=100, replies=2, reached=132, opened=106)]
-    (c,) = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
-    assert c["change"]["reached"] is None and c["change"]["opened"] is None
-    assert c["change"]["sent"] == 0
-
-
-# 2 Nov 2026: Friday 30 Oct's run missed BettrData, so Monday's post said "no
-# earlier numbers to compare" though Thursday's numbers were there.
-def test_a_campaign_missing_on_the_base_day_compares_with_the_latest_day_before_it():
-    h = [_hist("2026-10-29", sent=100, replies=2),
-         _hist("2026-10-30", campaign_id="9", campaign="Other", sent=5),
-         _hist("2026-11-02", sent=250, replies=3)]
-    a = next(c for c in ch.campaign_changes(h, "2026-11-02", "2026-10-30")
-             if c["campaign_id"] == "1")
-    assert a["change"]["sent"] == 150 and a["change"]["replies"] == 1
-    assert a["since"] == "2026-10-29"
-
-
-def test_since_is_the_base_day_normally():
-    h = [_hist("2026-10-29", sent=100), _hist("2026-10-30", sent=120)]
-    (c,) = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
-    assert c["since"] == "2026-10-29"
-
-
-def test_a_snapshot_more_than_a_week_before_the_base_is_not_used():
-    h = [_hist("2026-10-20", sent=100), _hist("2026-11-02", sent=250)]
-    (c,) = ch.campaign_changes(h, "2026-11-02", "2026-10-30")
-    assert c["change"] is None
-
-
-def test_missing_today_names_client_channels_the_base_day_had():
-    h = [_hist("2026-10-30", client="Precise Leads"),
-         _hist("2026-10-30", client="Melior", channel="LinkedIn", platform="Heyreach"),
-         _hist("2026-11-02", client="Melior", channel="LinkedIn", platform="Heyreach")]
-    assert ch.missing_today(h, "2026-11-02", "2026-10-30") == [("Precise Leads", "Email")]
-    assert ch.missing_today(h, "2026-11-02", None) == []

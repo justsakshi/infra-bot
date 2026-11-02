@@ -1517,8 +1517,8 @@ async function start() {
 
     // Campaign stats (Manveen, 29 Oct 2026). 09:00 IST every day: Campaign
     // Metrics tabs + today's Campaign History rows (one row per campaign per
-    // day, so progress is visible). 10:30 IST Mon-Fri: the email + LinkedIn
-    // numbers since the last post, in #pl_daily before the 11:00 standup.
+    // day, so progress is visible). 10:15 IST Mon-Fri: the last working day's
+    // email + LinkedIn numbers (and week / month), in #pl_daily before the 11:00 standup.
     // The Mongo lock keeps a second instance (during a deploy) from posting twice.
     // CAMPAIGN_STATS_POST=off stops the post; the 09:00 history keeps running.
     const onceToday = async (job) => {
@@ -1535,7 +1535,9 @@ async function start() {
     cron.schedule('0 9 * * *', async () => {
       if (await onceToday('campaign-metrics')) runBilling('campaign-metrics', ['metrics_only.py']);
     }, { timezone: 'Asia/Kolkata' });
-    cron.schedule('30 10 * * 1-5', async () => {
+    // 10:15 since 2 Nov: the post now counts by date from the platforms
+    // (several minutes), so it still lands before the 11:00 standup.
+    cron.schedule('15 10 * * 1-5', async () => {
       if (process.env.CAMPAIGN_STATS_POST === 'off') return;
       if (await onceToday('campaign-stats-post')) runBilling('campaign-stats-post', ['campaign_stats_post.py', '--post']);
     }, { timezone: 'Asia/Kolkata' });

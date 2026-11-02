@@ -128,6 +128,12 @@ class ExpandiLeadStore:
             print(f"  [Expandi] cache read failed: {exc}")
             return set()
 
+    def campaign_names(self, workspace: str) -> list[str]:
+        """Every campaign the cache holds leads for (the stats post's list)."""
+        if self._col is None:
+            return []
+        return sorted(n for n in self._col.distinct("campaign_name", {"workspace": workspace}) if n)
+
     def save(self, workspace: str, campaign_name: str, messengers: list[dict]) -> int:
         if self._col is None or not messengers:
             return 0
@@ -221,4 +227,4 @@ class ExpandiLeadStore:
             return empty
         except PyMongoError as exc:  # noqa: BLE001
             print(f"  [Expandi] cache aggregate failed: {exc}")
-            return empty
+            return {**empty, "error": True}

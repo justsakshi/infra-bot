@@ -1,251 +1,168 @@
-"""Text of the daily campaign stats post. No network."""
+"""Text of the 10:30 stats post (smartlead/stats_post.py). No network."""
 import json
+from datetime import date
 
-from smartlead.stats_post import build_post, not_ready_text, part_as_text, weekday_day
+from smartlead.daily_stats import Period
+from smartlead.notify import post_with_thread
+from smartlead.stats_post import build_post, part_as_text, weekday_day
+
+DAY = Period("day", date(2026, 10, 30), date(2026, 10, 30))
+WEEK = Period("week", date(2026, 10, 30), date(2026, 11, 5))
+MONTH = Period("month", date(2026, 10, 1), date(2026, 10, 31))
+CLIENTS = ["BettrData", "Melior", "Precise Leads"]
 
 
-def _c(client, channel, name, change, totals=None, running=True, status="ACTIVE",
-       cid="11", platform="Smartlead", open_tracking=""):
+def _email(**kw):
+    c = dict(reached=0, sent=0, replies=0, positive=0, not_interested=0, wrong_person=0,
+             out_of_office=0, bounced=0)
+    c.update(kw)
+    return c
+
+
+def _li(**kw):
+    c = dict(invites=0, accepted=0, replies=0, positive=0)
+    c.update(kw)
+    return c
+
+
+def _r(client, channel, name, platform="Smartlead", cid="11", **counts):
     return {"client": client, "channel": channel, "platform": platform, "campaign": name,
-            "status": status, "running": running, "change": change,
-            "totals": totals or change, "campaign_id": cid, "open_tracking": open_tracking}
+            "campaign_id": cid, "counts": counts}
 
 
-def _texts(part):
-    return [b["text"]["text"] for b in part["blocks"] if b["type"] in ("section", "header")]
+def _post(rows, periods=(DAY,), **kw):
+    return build_post(rows, list(periods), CLIENTS, **kw)
 
 
-EMAIL = dict(sent=165, replies=3, positive=2, not_interested=1, wrong_person=0, bounced=0,
-             invites=None, accepted=None)
-LI = dict(sent=None, bounced=None, invites=12, accepted=1, replies=0, positive=0,
-          not_interested=None, wrong_person=None)
-
-
-def _post(changes, base="2026-10-29", not_counted=()):
-    return build_post(changes, "2026-10-30", base, "https://sheet", list(not_counted))
-
-
-def test_headline_has_each_clients_totals_in_order():
+def test_headline_names_the_day_and_each_clients_numbers_in_order():
     head, _ = _post([
-        _c("Precise Leads", "Email", "Campaign D", dict(EMAIL, sent=20, replies=1)),
-        _c("BettrData", "Email", "Campaign A", EMAIL),
-        _c("BettrData", "Email", "Campaign B", dict(EMAIL, sent=35, replies=0, positive=0)),
-        _c("BettrData", "LinkedIn", "LinkedIn A", LI),
+        _r("Precise Leads", "Email", "D", day=_email(sent=20, replies=1, positive=1)),
+        _r("BettrData", "Email", "A", day=_email(reached=100, sent=120, replies=3, positive=2,
+                                                 not_interested=1, out_of_office=1, bounced=2)),
+        _r("BettrData", "Email", "B", day=_email(sent=30)),
     ])
-    text = head
-    assert head.split("\n")[0] == "📊 Campaign stats, Fri 30 Oct"
-    assert "Since Thu 29 Oct, 9:00 IST." in text
-    assert text.index("*BettrData*") < text.index("*Precise Leads*")
-    assert ("Email: 200 emails sent · 3 replies (2 positive/neutral, 2 not interested)"
-            ) in text
-    assert "LinkedIn: 12 invites, 1 accepted, 0 replies, 0 interested" in text
-    assert "Email: 20 emails sent · 1 reply (2 positive/neutral, 1 not interested" in text
+    lines = head.split("\n")
+    assert lines[0] == "📊 Campaign stats for Fri 30 Oct"
+    assert "05:30 to 05:30 IST" in head
+    assert head.index("*BettrData*") < head.index("*Melior*") < head.index("*Precise Leads*")
+    assert ("Email: 100 new people reached · 150 emails sent · 3 people replied "
+            "(2 positive/neutral, 1 not interested) · 1 out-of-office · 2 bounced") in lines
 
 
-def test_thread_lists_each_campaign_with_change_and_running_total():
-    totals = dict(EMAIL, sent=284, replies=5)
-    _, thread = _post([_c("BettrData", "Email", "Campaign A", EMAIL, totals)])
-    assert len(thread) == 1
-    assert _texts(thread[0]) == [
-        "BettrData · Email",
-        "*Campaign A*\nNew: 165 emails sent · 3 replies (2 positive/neutral, 1 not interested)"
-        "\nTotal: 284 emails sent · 5 replies (2 positive/neutral, 1 not interested, 2 other)"]
+def test_a_quiet_client_is_still_listed():
+    head, thread = _post([])
+    assert head.count("Email: nothing sent, no replies") == 3
+    assert thread == []
 
 
-def test_email_lines_use_avinashs_numbers():
-    change = dict(EMAIL, reached=93, sent=93, replies=0, positive=0, not_interested=0,
-                  out_of_office=1)
-    totals = dict(EMAIL, reached=93, sent=93, replies=0, positive=0, not_interested=0,
-                  opened=58, out_of_office=1)
-    _, thread = _post([_c("Precise Leads", "Email", "PL | Exhibitors | 10 Names", change, totals,
-                          open_tracking="on")])
-    assert _texts(thread[0])[1] == (
-        "*PL · Exhibitors · 10 Names*"
-        "\nNew: 93 new people reached · 93 emails sent · 0 replies · 1 out-of-office"
-        "\nTotal: 93 people reached · 62% opened · 0% replied (0 of 93)")
+def test_linkedin_line_for_clients_with_a_linkedin_source():
+    head, _ = _post([_r("Melior", "LinkedIn", "ES", "Heyreach", day=_li(invites=25, accepted=11,
+                                                                     replies=1, positive=1))],
+                    linkedin_clients=("BettrData", "Melior"))
+    assert "LinkedIn: 25 invites · 11 accepted · 1 person replied (1 interested)" in head
+    assert "LinkedIn: no activity" in head                             # BettrData, quiet
+    assert head.count("LinkedIn:") == 2                                 # not Precise Leads
 
 
-def test_reply_rate_counts_positives_too():
-    totals = dict(EMAIL, reached=330, sent=500, replies=7, positive=6)
-    _, thread = _post([_c("BettrData", "Email", "Laurie", EMAIL, totals)])
-    assert "Total: 330 people reached · 2% replied (7 of 330, 6 positive/neutral)" in \
-        part_as_text(thread[0])
+def test_waalaxy_shows_only_what_it_tracks():
+    head, _ = _post([_r("Precise Leads", "LinkedIn", "kochi", "Waalaxy",
+                        day=_li(invites=None, accepted=None, replies=2))])
+    assert "LinkedIn: 2 people replied" in head
 
 
-def test_a_campaign_with_new_replies_gets_a_button_carrying_the_window():
-    _, thread = _post([_c("BettrData", "Email", "Campaign A", EMAIL, cid="4251027")])
-    btn = thread[0]["blocks"][1]["accessory"]
-    assert btn["action_id"] == "show_replies" and btn["text"]["text"] == "Show 3 replies"
-    v = json.loads(btn["value"])
-    assert v["id"] == "4251027" and v["platform"] == "Smartlead" and v["n"] == 3
-    assert v["from"] == "2026-10-29T03:30:00+00:00" and v["to"] == "2026-10-30T03:30:00+00:00"
-    assert len(btn["value"]) < 2000
+def test_a_period_before_tracking_started_says_so():
+    since = {"Precise Leads": date(2026, 10, 30)}
+    before = Period("day", date(2026, 10, 29), date(2026, 10, 29))
+    head, _ = build_post([], [before, Period("week", date(2026, 10, 23), date(2026, 10, 29))],
+                         CLIENTS, linkedin_clients=("Precise Leads",), linkedin_from=since)
+    assert "LinkedIn: not tracked before Fri 30 Oct" in head
+    assert "Precise Leads LinkedIn: not tracked before Fri 30 Oct" in head
+    row = _r("Precise Leads", "LinkedIn", "kochi", "Waalaxy",
+             day=_li(invites=None, accepted=None, replies=2),
+             month=_li(invites=None, accepted=None, replies=2))
+    head, _ = build_post([row], [DAY, MONTH], CLIENTS, linkedin_from=since)
+    assert "Precise Leads LinkedIn: 2 people replied (tracked from Fri 30 Oct)" in head
+    assert "LinkedIn: 2 people replied (tracked from Fri 30 Oct)" in head.split("*October")[0]
+    later = Period("day", date(2026, 10, 31), date(2026, 10, 31))
+    head, _ = build_post([], [later], CLIENTS, linkedin_clients=("Precise Leads",), linkedin_from=since)
+    assert "LinkedIn: no activity" in head and "tracked" not in head
 
 
-def test_no_button_without_new_replies():
-    _, thread = _post([_c("Melior", "Email", "Quiet", dict(EMAIL, replies=0, positive=0,
-                                                          not_interested=0))])
-    assert "accessory" not in thread[0]["blocks"][1]
+def test_replies_to_earlier_emails_do_not_show_zero_sent():
+    head, _ = _post([_r("Melior", "Email", "C", day=_email(replies=1, positive=1))])
+    assert "Email: 1 person replied (1 positive/neutral)" in head
 
 
-def test_long_names_are_shortened_and_quiet_running_campaigns_share_one_line():
-    zero = {k: (0 if v is not None else None) for k, v in EMAIL.items()}
+def test_other_replies_are_the_uncategorised_rest():
+    head, _ = _post([_r("Melior", "Email", "C", day=_email(sent=5, replies=3, positive=1))])
+    assert "3 people replied (1 positive/neutral, 2 other)" in head
+
+
+def test_thread_lists_the_days_campaigns_with_a_button_for_the_day():
     _, thread = _post([
-        _c("BettrData", "Email", "Roundtable | AI in the Data Business | Laurie", EMAIL),
-        _c("BettrData", "Email", "Roundtable | AI in the Data Business | Aaron", zero, EMAIL),
-        _c("BettrData", "Email", "Marketplace | Hard to Find audiences", zero, EMAIL)])
-    text = part_as_text(thread[0])
-    assert "*Roundtable · Laurie*" in text
-    assert "No change: Marketplace · Hard to Find audiences, Roundtable · Aaron" in text
-    assert "0 sent" not in text
+        _r("BettrData", "Email", "Roundtable | Aaron", day=_email(sent=258, replies=4, positive=1),
+           week=_email(sent=900)),
+        _r("BettrData", "Email", "Roundtable | Quiet", cid="12", day=_email(),
+           week=_email(sent=5)),
+    ], periods=(DAY, WEEK))
+    (part,) = thread
+    text = part_as_text(part)
+    assert "Roundtable · Aaron" in text and "Quiet" not in text
+    button = part["blocks"][1]["accessory"]
+    v = json.loads(button["value"])
+    assert v["from"] == "2026-10-30T00:00:00+00:00" and v["to"] == "2026-10-31T00:00:00+00:00"
+    assert v["n"] == 4 and button["text"]["text"] == "Show 4 replies"
 
 
-def test_open_rate_only_where_opens_are_tracked():
-    on = dict(EMAIL, reached=132, opened=106)
-    head, thread = _post([
-        _c("BettrData", "Email", "Tracked", EMAIL, on, open_tracking="on"),
-        _c("BettrData", "Email", "Untracked", EMAIL, dict(EMAIL, reached=500, opened=0),
-           open_tracking="off")])
-    text = part_as_text(thread[0])
-    assert "80% opened" in text and text.count("opened") == 1
-    assert "· 80% opened to date (1 of 2 campaigns track opens)" in head
-
-
-def test_linkedin_shows_the_accept_rate():
-    _, thread = _post([_c("BettrData", "LinkedIn", "LinkedIn A", LI,
-                          dict(LI, invites=25, accepted=1), platform="Expandi")])
-    assert "New: 12 invites · 1 accepted\nTotal: 25 invites · 1 accepted · 4% accepted" in \
-        part_as_text(thread[0])
-
-
-def test_quiet_paused_campaign_is_left_out_but_a_moving_one_stays():
-    zero = {k: (0 if v is not None else None) for k, v in EMAIL.items()}
-    _, thread = _post([_c("Melior", "Email", "Old", zero, EMAIL, running=False),
-                       _c("Melior", "Email", "Finishing", EMAIL, running=False)])
-    text = part_as_text(thread[0])
-    assert "Old" not in text and "Finishing" in text
-
-
-def test_unknown_change_says_so_instead_of_a_number():
-    head, thread = _post([_c("Melior", "Email", "Resumed", None, EMAIL)])
-    assert "no earlier numbers to compare" in head
-    assert "Not in the 29 Oct numbers" in part_as_text(thread[0])
-
-
-def test_a_stopped_campaign_with_nothing_to_compare_is_left_out():
-    _, thread = _post([_c("Melior", "LinkedIn", "Finished long ago", None, LI, running=False,
-                          status="FINISHED", platform="Heyreach"),
-                       _c("Melior", "LinkedIn", "Running", LI, platform="Heyreach")])
-    text = part_as_text(thread[0])
-    assert "Finished long ago" not in text and "Running" in text
-
-
-def test_first_day_shows_totals_to_date():
-    head, thread = _post([_c("BettrData", "Email", "Campaign A", None, EMAIL)], base=None)
-    assert "Totals to date." in head and "Email: 165 emails sent" in head
-    assert _texts(thread[0])[1] == ("*Campaign A*\nTotal: 165 emails sent · 3 replies "
-                                    "(2 positive/neutral, 1 not interested)")
+def test_no_button_without_replies():
+    _, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=10))])
     assert "accessory" not in thread[0]["blocks"][1]
+
+
+def test_friday_adds_the_week_and_first_working_day_adds_the_month():
+    rows = [_r("BettrData", "Email", "A", day=_email(sent=10), week=_email(sent=70),
+               month=_email(sent=300, replies=2, positive=2))]
+    head, _ = _post(rows, periods=(DAY, WEEK, MONTH))
+    assert "*This week, Fri 30 Oct – Thu 5 Nov*" in head
+    assert "BettrData email: 70 emails sent · 0 people replied" in head
+    assert "*October 2026*" in head
+    assert "BettrData email: 300 emails sent · 2 people replied (2 positive/neutral)" in head
+    assert head.index("This week") < head.index("October 2026")
+
+
+def test_a_platform_that_could_not_be_read_is_named():
+    head, _ = _post([], failed=["Smartlead PRECISE_LEADS"])
+    assert "⚠️ Not fully read, so these numbers may be off: Smartlead PRECISE_LEADS." in head
+
+
+def test_expandi_still_loading_is_said():
+    row = _r("BettrData", "LinkedIn", "DP", "Expandi", day=_li(invites=3))
+    row["partial"] = True
+    head, _ = _post([row])
+    assert "may be low (Expandi's lead history is still loading)" in head
+
+
+def test_not_counted_line():
+    head, _ = _post([], not_counted=["Precise Leads LinkedIn invites (no count)"])
+    assert head.endswith("Not counted: Precise Leads LinkedIn invites (no count).")
 
 
 def test_many_campaigns_stay_under_slacks_block_cap():
-    many = [_c("BettrData", "Email", f"Campaign {i:02}", EMAIL) for i in range(60)]
-    _, thread = _post(many)
+    rows = [_r("Melior", "Email", f"C{i}", cid=str(i), day=_email(sent=1)) for i in range(60)]
+    _, thread = _post(rows)
     assert len(thread) == 2 and all(len(p["blocks"]) <= 50 for p in thread)
-    assert sum(len(p["blocks"]) for p in thread) == 61          # 60 + one header
-
-
-def test_not_counted_line_and_sheet_link_close_the_post():
-    head, _ = _post([_c("BettrData", "Email", "Campaign A", EMAIL)],
-                    not_counted=["Precise Leads LinkedIn (Waalaxy has no API)"])
-    assert head.endswith("Not counted: Precise Leads LinkedIn (Waalaxy has no API).\n\n"
-                         "<https://sheet|Campaign History sheet>")
 
 
 def test_spacing_survives_the_real_posting_path(monkeypatch):
-    # Checks what Slack receives: post_with_thread drops empty headline items,
-    # which once took out every blank line; thread parts go as blocks.
+    sent = []
     from smartlead import notify
-    sent, blocks = [], []
-    monkeypatch.setattr(notify, "_post", lambda tok, ch, text, thread_ts=None:
-                        sent.append(notify.tidy(text, headline=not thread_ts)) or "1.0")
-    monkeypatch.setattr(notify, "_post_blocks", lambda tok, ch, text, b, thread_ts=None:
-                        blocks.append((text, b, thread_ts)) or "2.0")
-    monkeypatch.setattr(notify, "_REPLY_PAUSE_S", 0)
-    head, thread = _post([_c("BettrData", "Email", "Campaign A", EMAIL),
-                          _c("BettrData", "LinkedIn", "LinkedIn A", LI),
-                          _c("Melior", "Email", "Campaign C", EMAIL)])
-    notify.post_with_thread("t", "C1", [head], thread)
-    parent = sent[0]
-    assert parent.startswith("📊 *Campaign stats, Fri 30 Oct*\n\nSince Thu 29 Oct")
-    assert "\n\n\n" not in parent
-    assert "\n\n*BettrData*\nEmail:" in parent and "\n\n*Melior*\nEmail:" in parent
-    assert "\n\n<https://sheet|" in parent
-    assert [t for t, _, _ in blocks] == ["BettrData · Email", "BettrData · LinkedIn",
-                                         "Melior · Email"]
-    assert all(ts == "1.0" for _, _, ts in blocks)
+    monkeypatch.setattr(notify, "_post", lambda t, c, text, thread_ts=None: sent.append(text) or "1.0")
+    monkeypatch.setattr(notify, "_post_blocks", lambda *a, **k: True)
+    monkeypatch.setattr(notify.time, "sleep", lambda s: None)
+    head, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=1))])
+    post_with_thread("x", "C1", [head], thread)
+    assert "\n\n*BettrData*\n" in sent[0]
 
 
-def test_not_ready_notice():
-    text = not_ready_text("2026-10-30", "2026-10-29")
-    assert text.startswith("⚠️ Campaign stats, Fri 30 Oct: not ready\n\n")
-    assert "latest numbers are from Thu 29 Oct" in text
-    assert weekday_day("2026-11-02") == "Mon 2 Nov"
-
-
-def test_no_replies_means_no_breakdown_and_wrong_person_is_counted():
-    _, thread = _post([_c("Melior", "Email", "Quiet", dict(EMAIL, replies=0, positive=0,
-                                                          not_interested=0)),
-                       _c("Melior", "Email", "Mixed", dict(EMAIL, replies=4, positive=1,
-                                                          not_interested=1, wrong_person=2))])
-    text = part_as_text(thread[0])
-    assert "4 replies (1 positive/neutral, 1 not interested, 2 wrong person)" in text
-    assert "*Quiet*\nNew: 165 emails sent · 0 replies\n" in text
-
-
-def test_only_shown_numbers_make_a_campaign_count_as_moved():
-    still = {k: (0 if v is not None else None) for k, v in EMAIL.items()}
-    _, thread = _post([_c("BettrData", "Email", "Opens moved", dict(still, opened=3),
-                          EMAIL)])
-    assert "No change: Opens moved" in part_as_text(thread[0])
-
-
-def test_a_campaign_compared_with_an_earlier_day_says_since_when():
-    from smartlead.reply_view import post_window
-    row = dict(_c("BettrData", "Email", "Campaign A", EMAIL), since="2026-10-28")
-    head, thread = _post([row])
-    assert "Email (since Wed 28 Oct):" in head
-    text = part_as_text(thread[0])
-    assert "Since Wed 28 Oct" in text
-    button = thread[0]["blocks"][1]["accessory"]
-    assert json.loads(button["value"])["from"] == post_window("2026-10-28", "2026-10-30")[0]
-
-
-def test_a_client_channel_missing_today_says_it_could_not_be_read():
-    head, _ = build_post([_c("Melior", "LinkedIn", "Running", LI, platform="Heyreach")],
-                         "2026-10-30", "2026-10-29", "https://sheet", [],
-                         missing=[("Precise Leads", "Email"), ("Melior", "Email")])
-    assert "*Precise Leads*\nEmail: not in today's numbers" in head
-    assert "Melior*\nEmail: not in today's numbers" in head
-    assert head.index("*Melior*") < head.index("*Precise Leads*")
-
-
-def test_a_figure_only_some_campaigns_have_is_not_summed():
-    # 2 Nov 2026: "Melior: 0 new people reached" came from one new campaign
-    # alone; the others predated the reached column.
-    head, _ = _post([
-        _c("Melior", "Email", "Old", dict(EMAIL, reached=None)),
-        _c("Melior", "Email", "New", dict(EMAIL, sent=0, replies=0, positive=0,
-                                          not_interested=0, reached=0)),
-    ])
-    assert "reached" not in head and "165 emails sent" in head
-
-
-def test_a_running_campaign_with_no_earlier_numbers_is_named_in_the_headline():
-    head, _ = _post([
-        _c("Melior", "Email", "Ryan", EMAIL),
-        _c("Melior", "Email", "Competitor AI", None, totals=EMAIL),
-        _c("Melior", "Email", "Done", None, totals=EMAIL, running=False, status="COMPLETED"),
-    ])
-    line = next(l for l in head.split("\n") if l.startswith("Email"))
-    assert line.endswith("· not counting Competitor AI (no 29 Oct numbers)")
+def test_weekday_day():
+    assert weekday_day(date(2026, 10, 30)) == "Fri 30 Oct" == weekday_day("2026-10-30")

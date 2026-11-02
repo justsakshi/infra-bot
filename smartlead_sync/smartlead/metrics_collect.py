@@ -44,24 +44,26 @@ FAILED: list[str] = []
 RETRY_PAUSE = 30
 
 
-async def _each_with_retry(items, fetch, label, log: str) -> list:
+async def _each_with_retry(items, fetch, label, log: str, failed: list | None = None) -> list:
     """fetch(item) for every item; those that raise get one more try after
-    RETRY_PAUSE. Returns the results (None = skipped on purpose)."""
-    out, failed = [], []
+    RETRY_PAUSE, then are named in `failed` (FAILED by default). Returns the
+    results (None = skipped on purpose)."""
+    named = FAILED if failed is None else failed
+    out, again = [], []
     for item in items:
         try:
             out.append(await fetch(item))
         except Exception as exc:  # noqa: BLE001
             print(f"  [!] {label(item)} fetch failed: {exc} - will retry")
-            failed.append(item)
-    if failed:
+            again.append(item)
+    if again:
         await asyncio.sleep(RETRY_PAUSE)
-        for item in failed:
+        for item in again:
             try:
                 out.append(await fetch(item))
             except Exception as exc:  # noqa: BLE001
                 print(f"{log} {label(item)} left out - fetch failed twice: {exc}")
-                FAILED.append(label(item))
+                named.append(label(item))
     return [r for r in out if r is not None]
 
 
