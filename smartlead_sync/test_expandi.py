@@ -207,3 +207,20 @@ ok(hasattr(_es.ExpandiStore, "purge_stale"),
    "store can purge snapshots for names no longer reported")
 
 print("\nALL PASSED")
+
+
+def test_no_expandi_key_is_named_for_the_9am_alert(monkeypatch):
+    # 2 Nov 2026: Render had no EXPANDEE_* vars; BettrData LinkedIn vanished silently.
+    import asyncio
+    from datetime import datetime, timezone
+    from smartlead import expandi_rows as er
+    monkeypatch.setattr(er, "discover_expandi_workspaces", lambda: [])
+    monkeypatch.setattr(er, "CAMPAIGN_METRICS_CLIENTS", set())
+    failed: list = []
+    now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    assert asyncio.run(er.build_expandi_rows(now, now, failed=failed)) == []
+    assert failed and "EXPANDEE_API_KEY" in failed[0]
+    monkeypatch.setattr(er, "CAMPAIGN_METRICS_CLIENTS", {"MELIOR"})
+    failed.clear()
+    asyncio.run(er.build_expandi_rows(now, now, failed=failed))
+    assert failed == []                      # BettrData not wanted here: no alert

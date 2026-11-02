@@ -8,7 +8,7 @@
 
 | Variable | Required? | Notes |
 |---|---|---|
-| `EXPANDEE_API_KEY` | **yes** | Expandi/Liaufa key. Without it the Expandi block is skipped entirely — no error, no rows. |
+| `EXPANDEE_API_KEY` | **yes** | Expandi/Liaufa key. Without it there are no Expandi (BettrData LinkedIn) rows; the 9:00 alert names it. |
 | `EXPANDEE_SECRET` | **yes** | Both are needed; a key without its secret is skipped with a warning. |
 | `MONGO_URI` | already set | Reused for snapshots. If it were missing, Expandi rows would still appear but every month-to-date cell would read `?`. |
 | `CAMPAIGN_METRICS_CLIENTS` | no | Defaults to `DARLEAN,BETTRDATA`, which is what the tab reports on. Only set it to override. |
