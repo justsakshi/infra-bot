@@ -162,3 +162,35 @@ def test_a_counter_missing_on_the_base_day_is_unknown_not_a_jump():
     (c,) = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
     assert c["change"]["reached"] is None and c["change"]["opened"] is None
     assert c["change"]["sent"] == 0
+
+
+# 2 Nov 2026: Friday 30 Oct's run missed BettrData, so Monday's post said "no
+# earlier numbers to compare" though Thursday's numbers were there.
+def test_a_campaign_missing_on_the_base_day_compares_with_the_latest_day_before_it():
+    h = [_hist("2026-10-29", sent=100, replies=2),
+         _hist("2026-10-30", campaign_id="9", campaign="Other", sent=5),
+         _hist("2026-11-02", sent=250, replies=3)]
+    a = next(c for c in ch.campaign_changes(h, "2026-11-02", "2026-10-30")
+             if c["campaign_id"] == "1")
+    assert a["change"]["sent"] == 150 and a["change"]["replies"] == 1
+    assert a["since"] == "2026-10-29"
+
+
+def test_since_is_the_base_day_normally():
+    h = [_hist("2026-10-29", sent=100), _hist("2026-10-30", sent=120)]
+    (c,) = ch.campaign_changes(h, "2026-10-30", "2026-10-29")
+    assert c["since"] == "2026-10-29"
+
+
+def test_a_snapshot_more_than_a_week_before_the_base_is_not_used():
+    h = [_hist("2026-10-20", sent=100), _hist("2026-11-02", sent=250)]
+    (c,) = ch.campaign_changes(h, "2026-11-02", "2026-10-30")
+    assert c["change"] is None
+
+
+def test_missing_today_names_client_channels_the_base_day_had():
+    h = [_hist("2026-10-30", client="Precise Leads"),
+         _hist("2026-10-30", client="Melior", channel="LinkedIn", platform="Heyreach"),
+         _hist("2026-11-02", client="Melior", channel="LinkedIn", platform="Heyreach")]
+    assert ch.missing_today(h, "2026-11-02", "2026-10-30") == [("Precise Leads", "Email")]
+    assert ch.missing_today(h, "2026-11-02", None) == []

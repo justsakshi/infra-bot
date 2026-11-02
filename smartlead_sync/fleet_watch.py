@@ -37,6 +37,7 @@ try:
 except Exception:
     pass
 
+from smartlead.api import raise_for_status
 from smartlead import fleet as fl
 from smartlead import inbox_standard as st
 
@@ -126,7 +127,7 @@ def _day_metrics(key: str, today: date) -> dict[str, dict[str, dict]]:
         day = (today - timedelta(days=n)).isoformat()
         r = httpx.get(HEALTH_URL, params={"api_key": key, "start_date": day, "end_date": day, "timezone": "Asia/Kolkata"},
                       timeout=120)
-        r.raise_for_status()
+        raise_for_status(r)  # no key in the error text
         for x in ((r.json() or {}).get("data") or {}).get("email_health_metrics") or []:
             out[str(x.get("from_email", "")).lower()][day] = {
                 "sent": int(x.get("sent") or 0), "bounced": int(x.get("bounced") or 0),

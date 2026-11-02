@@ -84,7 +84,7 @@ def main() -> int:
     base = ch.baseline_day(days, today)
     url = f"https://docs.google.com/spreadsheets/d/{CAMPAIGN_METRICS_SHEET_ID}/edit#gid={ws.id}"
     head, thread = build_post(ch.campaign_changes(history, today, base), today, base,
-                              url, not_counted())
+                              url, not_counted(), ch.missing_today(history, today, base))
     print(head)
     for part in thread:
         print("\n--- thread ---\n" + part_as_text(part))

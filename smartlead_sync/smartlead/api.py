@@ -13,6 +13,23 @@ from smartlead.config import (
 )
 
 
+def raise_for_status(resp: httpx.Response) -> None:
+    """raise_for_status(resp) without the key.
+
+    Smartlead takes the key as ?api_key=, and httpx's message quotes the whole
+    URL, so every logged or Slack-posted error carried it (2 Nov 2026: the
+    PRECISE_LEADS plan expired and each morning's Render log printed the key).
+    Same exception type and .response; the message has the status, the path
+    and Smartlead's own short reason ("Plan expired!") instead.
+    """
+    if 200 <= resp.status_code < 300:
+        return
+    reason = " ".join(resp.text.split())[:200] if resp.text else resp.reason_phrase
+    raise httpx.HTTPStatusError(
+        f"{resp.status_code} on {resp.request.url.path}: {reason}",
+        request=resp.request, response=resp) from None
+
+
 class SmartleadClient:
     """Thin async wrapper around the Smartlead v1 API.
 
@@ -73,9 +90,9 @@ class SmartleadClient:
                     print(f"  [!] {resp.status_code} on {endpoint} - retrying in {delay:.0f}s (attempt {attempt + 1}/{API_MAX_RETRIES})")
                     await asyncio.sleep(delay)
                     continue
-            resp.raise_for_status()
+            raise_for_status(resp)
             return resp.json()
-        resp.raise_for_status()  # final attempt - let it raise
+        raise_for_status(resp)  # final attempt - let it raise
 
     # ── campaigns ────────────────────────────────────────────────────────
     async def list_campaigns(self) -> list[dict]:
@@ -143,9 +160,9 @@ class SmartleadClient:
                     print(f"  [!] {resp.status_code} updating account {account_id} - retry in {delay:.0f}s")
                     await asyncio.sleep(delay)
                     continue
-            resp.raise_for_status()
+            raise_for_status(resp)
             return resp.json()
-        resp.raise_for_status()
+        raise_for_status(resp)
 
     async def set_warmup(self, account_id: str, enabled: bool,
                          total_per_day: int = 40, daily_rampup: int = 5,
@@ -195,9 +212,9 @@ class SmartleadClient:
                     print(f"  [!] {resp.status_code} on warmup {account_id} - retry in {delay:.0f}s")
                     await asyncio.sleep(delay)
                     continue
-            resp.raise_for_status()
+            raise_for_status(resp)
             return resp.json()
-        resp.raise_for_status()
+        raise_for_status(resp)
 
     # ── inbox rotation (add/remove senders on a campaign, lead reassignment) ──
     async def save_email_account(self, fields: dict) -> dict:
@@ -236,9 +253,9 @@ class SmartleadClient:
                     print(f"  [!] {resp.status_code} on {endpoint} - retry in {delay:.0f}s")
                     await asyncio.sleep(delay)
                     continue
-            resp.raise_for_status()
+            raise_for_status(resp)
             return resp.json()
-        resp.raise_for_status()
+        raise_for_status(resp)
 
     async def add_campaign_email_accounts(self, campaign_id: str, account_ids: list[int]) -> dict:
         """Attach sender inboxes to a campaign (verified: POST /campaigns/{id}/email-accounts)."""

@@ -29,7 +29,7 @@ from smartlead import campaign_metrics as cm
 from smartlead.config import (BETTRDATA_TRACKER_SHEET_ID, CAMPAIGN_HISTORY_TAB_NAME,
                               CAMPAIGN_METRICS_SHEET_ID)
 from smartlead import client_tracker, waalaxy_log
-from smartlead.metrics_collect import STATUSES, collect_metric_rows
+from smartlead.metrics_collect import FAILED, STATUSES, collect_metric_rows
 from smartlead.sheets import SheetsWriter
 
 
@@ -80,7 +80,11 @@ async def main() -> int:
         return 0
 
     writer = SheetsWriter(CAMPAIGN_METRICS_SHEET_ID)
-    failed = False
+    # An unreadable account still writes what was read, but the run is not
+    # clean: the alert names it, and the 10:30 post says the client is missing.
+    failed = bool(FAILED)
+    for source in FAILED:
+        print(f"[!] not read this run: {source}")
     # History first: it is the record the 10:30 post depends on, and a missed
     # day cannot be rebuilt later the way a stale tab can be rewritten.
     try:
@@ -132,5 +136,6 @@ if __name__ == "__main__":
     if code and "--dry-run" not in sys.argv:
         _alert("⚠️ Campaign stats run failed\n\nThe 9:00 job that fills Campaign History, "
                "Campaign Metrics and BettrData's tracker did not finish cleanly "
-               f"(exit {code}). Its log is on Render: search for [campaign-metrics].")
+               f"(exit {code}). Its log is on Render: search for [campaign-metrics]."
+               + ("\n\nNot read: " + "; ".join(FAILED) if FAILED else ""))
     sys.exit(code)

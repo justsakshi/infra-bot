@@ -33,6 +33,7 @@ except Exception:
 
 import httpx
 
+from smartlead.api import raise_for_status
 from smartlead import renewal_review as rr
 from smartlead.accounts import discover_accounts
 from smartlead.config import SMARTDELIVERY_BASE_URL
@@ -51,7 +52,7 @@ def _get(url, key, **params):
         if r.status_code != 429:
             break
         time.sleep(10 * (attempt + 1))
-    r.raise_for_status()
+    raise_for_status(r)  # no key in the error text
     return r.json()
 
 

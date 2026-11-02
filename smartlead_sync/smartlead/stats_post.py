@@ -156,9 +156,10 @@ def _button(r: dict, title: str, window: tuple, replies: int) -> dict:
 
 
 def _thread_part(client: str, channel: str, rows: list[dict], first: bool,
-                 base: str | None, window: tuple) -> list[dict]:
+                 base: str | None, today: str) -> list[dict]:
     """One client·channel as Slack messages: a short block per campaign that
-    moved, a Show replies button where it got replies, the rest on one line."""
+    moved, a Show replies button where it got replies, the rest on one line.
+    A campaign compared with an earlier day than the base says since when."""
     names = short_names([r["campaign"] for r in rows])
     sections, quiet = [], []
     for r in sorted(rows, key=lambda r: (not r["running"], r["campaign"].lower())):
@@ -187,10 +188,15 @@ def _thread_part(client: str, channel: str, rows: list[dict], first: bool,
             new = (email_new(r["change"]) if channel == "Email"
                    else _counts(r["change"], channel, skip_zero=True, sep=" · "))
             text = f"*{title}*\nNew: {new}\nTotal: {to_date}{rate}"
+            since = r.get("since") or base
+            if since != base:
+                text += (f"\n_Since {weekday_day(since)}: the {_day(base)} run "
+                         f"did not read it_")
         block = {"type": "section", "text": {"type": "mrkdwn", "text": text}}
         replies = (r["change"] or {}).get("replies") or 0
         if replies and r.get("campaign_id") and not first:
-            block["accessory"] = _button(r, title, window, replies)
+            block["accessory"] = _button(r, title,
+                                         post_window(r.get("since") or base, today), replies)
         sections.append(block)
     if not sections and not quiet:
         return []
@@ -244,12 +250,25 @@ def _sum(rows: list[dict], key: str, channel: str) -> dict:
     return total
 
 
+def _since_label(channel: str, rows: list[dict], base: str) -> str:
+    """'Email' or 'Email (since Thu 29 Oct)' when campaigns were compared with
+    an earlier day than the base (the base day's run missed them)."""
+    sinces = {r.get("since") or base for r in rows}
+    if sinces == {base}:
+        return channel
+    early = weekday_day(min(sinces))
+    return f"{channel} (since {early})" if len(sinces) == 1 else f"{channel} (some since {early})"
+
+
 def build_post(changes: list[dict], today: str, base: str | None,
-               sheet_url: str, not_counted: list[str]) -> tuple[str, list[dict]]:
+               sheet_url: str, not_counted: list[str],
+               missing: list[tuple[str, str]] = ()) -> tuple[str, list[dict]]:
     """(headline, thread parts) for notify.post_with_thread([headline], parts).
 
     The headline is one string: post_with_thread drops empty items from its
     headline list, which would take out the blank line between clients.
+    `missing` is campaign_history.missing_today: client·channels the last post
+    had and today's numbers lack, said out loud rather than left out.
     """
     first = base is None
     head = [f"📊 Campaign stats, {weekday_day(today)}", ""]
@@ -264,14 +283,18 @@ def build_post(changes: list[dict], today: str, base: str | None,
     by_client: dict[str, list[dict]] = {}
     for c in changes:
         by_client.setdefault(c["client"], []).append(c)
+    for client, _ in missing:
+        by_client.setdefault(client, [])
 
-    window = post_window(base, today)
     for client in sorted(by_client, key=_client_rank):
         rows = by_client[client]
         head += ["", f"*{client}*"]
         for channel in ("Email", "LinkedIn"):
             ch_rows = [r for r in rows if r["channel"] == channel]
             if not ch_rows:
+                if (client, channel) in missing:
+                    head.append(f"{channel}: not in today's numbers (the 9:00 run "
+                                f"couldn't read it)")
                 continue
             key = "totals" if first else "change"
             known = [r for r in ch_rows if r[key] is not None]
@@ -280,12 +303,14 @@ def build_post(changes: list[dict], today: str, base: str | None,
                 head.append(f"{channel}: no earlier numbers to compare (see the thread)")
             elif channel == "Email":
                 summed = _sum(known, key, channel)
-                head.append(f"Email: {email_total(summed, '') if first else email_new(summed)}{rate}")
+                label = "Email" if first else _since_label(channel, known, base)
+                head.append(f"{label}: {email_total(summed, '') if first else email_new(summed)}{rate}")
             else:
-                head.append(f"LinkedIn: {_counts(_sum(known, key, channel), channel)}")
-            thread += _thread_part(client, channel, ch_rows, first, base, window)
+                label = "LinkedIn" if first else _since_label(channel, known, base)
+                head.append(f"{label}: {_counts(_sum(known, key, channel), channel)}")
+            thread += _thread_part(client, channel, ch_rows, first, base, today)
 
-    if not by_client:
+    if not by_client:  # nothing today and nothing missing
         head += ["", "No active campaigns in today's numbers."]
     if not_counted:
         head += ["", "Not counted: " + "; ".join(not_counted) + "."]
