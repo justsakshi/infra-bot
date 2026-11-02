@@ -164,7 +164,8 @@ def _quiet_since(stats: dict, week_ago: dict | None) -> bool:
 
 async def build_expandi_rows(today: datetime, start_dt: datetime,
                              log: str = "[Metrics]",
-                             statuses: dict | None = None) -> list[dict]:
+                             statuses: dict | None = None,
+                             failed: list | None = None) -> list[dict]:
     """Snapshot today's counters, then build one row per campaign.
 
     The snapshot is written before the rows are built so that today's numbers
@@ -266,4 +267,6 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                           f"{' …' if len(pending) > 5 else ''}")
         except Exception as exc:  # noqa: BLE001
             print(f"[!] Expandi workspace {ws.name} failed: {exc}")
+            if failed is not None:
+                failed.append(f"Expandi {ws.name}")
     return rows

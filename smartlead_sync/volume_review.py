@@ -40,6 +40,7 @@ try:
 except Exception:
     pass
 
+from smartlead.api import raise_for_status
 from smartlead import inbox_standard as st
 from smartlead import volume_rule as vr
 
@@ -122,7 +123,7 @@ def _health(key: str, start: date, end: date) -> dict:
     import httpx
     r = httpx.get(HEALTH_URL, params={"api_key": key, "start_date": start.isoformat(), "end_date": end.isoformat(),
                                       "timezone": "Asia/Kolkata"}, timeout=120)
-    r.raise_for_status()
+    raise_for_status(r)  # no key in the error text
     rows = ((r.json() or {}).get("data") or {}).get("email_health_metrics") or []
     return {str(x.get("from_email", "")).lower(): (int(x.get("sent") or 0), int(x.get("bounced") or 0)) for x in rows}
 

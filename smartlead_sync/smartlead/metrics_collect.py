@@ -32,6 +32,11 @@ from smartlead.heyreach_accounts import discover_heyreach_workspaces
 # active client, including the paused-and-quiet ones left off the rows, so the
 # client tracker can mark them Paused. Refilled by each collect_metric_rows().
 STATUSES: dict[tuple[str, str, str], str] = {}
+# Smartlead accounts / LinkedIn workspaces this run could not read at all, so
+# metrics_only.py can alert instead of reporting their absence as "no
+# campaigns" (2 Nov 2026: the PRECISE_LEADS plan expired and PL and Melior
+# email vanished from the post without a word). Refilled each run.
+FAILED: list[str] = []
 
 
 def _n(payload: dict, field: str) -> int:
@@ -111,6 +116,7 @@ async def _smartlead_rows(today: datetime, start_dt: datetime, end_dt: datetime,
         except Exception as exc:  # noqa: BLE001
             print(f"{log} Smartlead account {acc.name} failed to list campaigns "
                   f"— its rows are MISSING this run: {exc}")
+            FAILED.append(f"Smartlead {acc.name} ({exc})")
     return rows
 
 
@@ -149,6 +155,7 @@ async def _heyreach_rows(today: datetime, start_dt: datetime, end_dt: datetime,
                         start_dt=start_dt, end_dt=end_dt, overall_yesterday=oy))
         except Exception as exc:  # noqa: BLE001
             print(f"[!] HeyReach workspace {ws.name} failed: {exc}")
+            FAILED.append(f"HeyReach {ws.name}")
     return rows
 
 
@@ -157,7 +164,9 @@ async def collect_metric_rows(today: datetime, start_dt: datetime, end_dt: datet
     """Every active client's campaign rows, without totals."""
     print(f"{log} clients: {', '.join(sorted(CAMPAIGN_METRICS_CLIENTS))}")
     STATUSES.clear()
+    FAILED.clear()
     rows = await _smartlead_rows(today, start_dt, end_dt, log)
     rows += await _heyreach_rows(today, start_dt, end_dt, log)
-    rows += await build_expandi_rows(today, start_dt, log=log, statuses=STATUSES)
+    rows += await build_expandi_rows(today, start_dt, log=log, statuses=STATUSES,
+                                     failed=FAILED)
     return rows

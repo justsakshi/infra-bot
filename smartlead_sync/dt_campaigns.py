@@ -33,6 +33,7 @@ try:
 except Exception:
     pass
 
+from smartlead.api import raise_for_status
 from smartlead.accounts import discover_accounts
 
 SL = "https://server.smartlead.ai/api/v1"
@@ -52,7 +53,7 @@ def call(method, key, path, **kw):
         if r.status_code != 429:
             break
         time.sleep(3 * (i + 1))
-    r.raise_for_status()
+    raise_for_status(r)  # no key in the error text
     return r.json()
 
 

@@ -208,3 +208,23 @@ def test_only_shown_numbers_make_a_campaign_count_as_moved():
     _, thread = _post([_c("BettrData", "Email", "Opens moved", dict(still, opened=3),
                           EMAIL)])
     assert "No change: Opens moved" in part_as_text(thread[0])
+
+
+def test_a_campaign_compared_with_an_earlier_day_says_since_when():
+    from smartlead.reply_view import post_window
+    row = dict(_c("BettrData", "Email", "Campaign A", EMAIL), since="2026-10-28")
+    head, thread = _post([row])
+    assert "Email (since Wed 28 Oct):" in head
+    text = part_as_text(thread[0])
+    assert "Since Wed 28 Oct" in text
+    button = thread[0]["blocks"][1]["accessory"]
+    assert json.loads(button["value"])["from"] == post_window("2026-10-28", "2026-10-30")[0]
+
+
+def test_a_client_channel_missing_today_says_it_could_not_be_read():
+    head, _ = build_post([_c("Melior", "LinkedIn", "Running", LI, platform="Heyreach")],
+                         "2026-10-30", "2026-10-29", "https://sheet", [],
+                         missing=[("Precise Leads", "Email"), ("Melior", "Email")])
+    assert "*Precise Leads*\nEmail: not in today's numbers" in head
+    assert "Melior*\nEmail: not in today's numbers" in head
+    assert head.index("*Melior*") < head.index("*Precise Leads*")
