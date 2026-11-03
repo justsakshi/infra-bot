@@ -145,6 +145,8 @@ For each inbox (smartlead/warmup_planner.py):
 ### C. Auto-placement-test — turn on when ready
 - Currently DRY-RUN (`RETEST_ENABLED=false`) — logs targets daily, spends nothing.
 - To go live: set `RETEST_ENABLED=true` + per-client caps. Start small (1 client, cap 1, one real test) → verify → scale.
+- 7-day floor (3 Nov 2026): an inbox with any test or result in Mongo in the last 7 days is skipped, whoever ran it (this job, the Thursday batch, the weekly scheduled-test report). Before this the job re-picked the same inboxes daily, because its health rows read only the sheet grid. If Mongo can't be read, it creates nothing that day.
+- Check it: `python retest_watch.py` (read-only) lists this job's tests since a date and flags a broken cap, a broken floor, warm-up left off, stuck tests and whole-campaign tests. Exit code 1 = a rule broke.
 - PRECISE_LEADS has 92 credits confirmed; other accounts' balances are dashboard-only but the code catches credit errors safely.
 
 ### D. Longer-term (optional)

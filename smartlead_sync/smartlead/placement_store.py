@@ -84,6 +84,31 @@ class PlacementStore:
         except PyMongoError:
             return 0
 
+    def emails_tested_since(self, since: str) -> set[str] | None:
+        """Lower-cased inboxes with a test created, or a result dated, on or
+        after ``since``, whatever ran it: the retest executor, the Thursday
+        batch, the weekly scheduled-test report, EmailGuard, NC. Abandoned
+        tests don't count (they produced no result).
+
+        The retest floor reads this because its health rows see only the sheet
+        grid, where none of those results land: without it the executor picked
+        the same inboxes again every day (found 3 Nov 2026). None when the
+        history can't be read, so the caller can refuse to spend blind."""
+        if self._tests is None or self._results is None:
+            return None
+        out: set[str] = set()
+        try:
+            for t in self._tests.find({"created": {"$gte": since}, "status": {"$ne": "ABANDONED"}},
+                                      {"emails": 1}):
+                out.update(str(e).strip().lower() for e in t.get("emails") or [] if e)
+            for r in self._results.find({"date": {"$gte": since}}, {"email": 1}):
+                if r.get("email"):
+                    out.add(str(r["email"]).strip().lower())
+        except PyMongoError as exc:
+            print(f"  [Retest] emails_tested_since failed: {exc}")
+            return None
+        return out
+
     def save_copy_snapshot(self, client: str, campaign_id, sequence: object) -> None:
         """Keep the test campaign's sequence as it was before a copy refresh, so
         a bad refresh is one restore away rather than gone."""
