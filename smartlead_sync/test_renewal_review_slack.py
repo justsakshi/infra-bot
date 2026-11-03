@@ -154,13 +154,14 @@ def test_unused_and_setting_up_are_not_called_kill_list():
                                     "s1@new.com", "s2@new.com", "s3@new.com"],
                         "setting_up": ["s1@new.com", "s2@new.com", "s3@new.com"]}, facts, T)
     head, parts = rr.format_review([b], 7)
-    assert head == ["⚠️ Bills in the next 7 days ($31.50, 1 bill): drop 2 kill-list inboxes, "
-                    "2 paid-for inboxes not in Smartlead, saves up to $18.00/mo"]
+    assert head == ["⚠️ Bills in the next 7 days ($31.50, 1 bill): drop 2 kill-list inboxes before they renew, "
+                    "saves $9.00/mo; 2 paid-for inboxes not in Smartlead ($9.00/mo)"]
     drop = parts[0]
     assert "drop dead.com (2 inboxes), saves $9.00/mo" in drop and "3 inboxes still being set up, left alone" in drop
     assert "gone.com" not in drop and "new.com" not in "\n".join(parts)
     unused = next(p for p in parts if p.startswith("*Paying for inboxes not in Smartlead*"))
-    assert "gone.com (2 inboxes)" in unused and "saves $9.00/mo" in unused
+    assert "gone.com (2 inboxes)" in unused and "($9.00/mo)" in unused and "Connect them" in unused
+    assert "gone.com" not in next((p for p in parts if p.startswith("*Check before paying*")), "")
 
 
 def test_no_recent_test_is_one_line_per_bill():

@@ -156,7 +156,7 @@ function billBlocks(rv) {
   t += chk.slice(0, 15).map(x => NL + ':grey_question: `' + x.email + '` · ' + x.why).join('');
   if (chk.length > 15) t += NL + '…and ' + (chk.length - 15) + ' more to check';
   const blocks = [section(t),
-    { type: 'context', elements: [{ type: 'mrkdwn', text: 'RETIRE = under 80% inbox in its latest test, on a spam domain, or not in Smartlead at all. CHECK = no recent test, broken connection or low warmup reputation.' }] }];
+    { type: 'context', elements: [{ type: 'mrkdwn', text: 'RETIRE = under 80% inbox in its latest test, or on a spam domain. CHECK = no recent test, broken connection, low warmup reputation, or not in Smartlead (connect it if it\'s new, drop it if nobody will use it).' }] }];
   if (rv.support_message) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*Message for ' + rv.provider + ' support* (copy and send):' }] });
     blocks.push(section('```' + rv.support_message.slice(0, 2800) + '```'));
