@@ -346,13 +346,32 @@ def log_reply_people(replies: list[dict]) -> tuple[int, int]:
     return len(who), pos
 
 
-def _expandi(periods: list[Period], failed: list[str], log: str) -> list[dict]:
-    """Invites and accepts from the per-lead cache the 09:00 run tops up;
-    replies from the n8n Expandi Responses log (the button's source)."""
+def expandi_counts(messengers: list[dict], period: Period) -> dict:
+    """Invites and accepts in a period from Expandi's per-lead rows
+    (invited_at / connected_at); one row per lead and campaign instance."""
+    from smartlead.expandi_leads import _day
+    lo, hi = period.start.isoformat(), period.end.isoformat()
+    inside = lambda v: (d := _day(v)) is not None and lo <= d <= hi  # noqa: E731
+    return {"invites": sum(1 for m in messengers if inside(m.get("invited_at"))),
+            "accepted": sum(1 for m in messengers if inside(m.get("connected_at")))}
+
+
+async def _expandi(periods: list[Period], failed: list[str], log: str) -> list[dict]:
+    """Invites and accepts read live from each campaign's lead list; replies
+    from the n8n Expandi Responses log (the button's source).
+
+    Live, not the per-lead cache the 09:00 run tops up: that sweep stops at the
+    first page of leads it already holds, so a lead cached before being invited
+    never gets its invite date (3 Nov: the post said 0 invites for Monday,
+    Expandi had 31+). Every campaign with people is read, paused ones too,
+    since invitations sent earlier are still accepted after a pause.
+    """
     from smartlead import campaign_metrics as cm
     from smartlead.config import BETTRDATA_TRACKER_SHEET_ID, CAMPAIGN_METRICS_CLIENTS
+    from smartlead.expandi import ExpandiClient
     from smartlead.expandi_accounts import discover_expandi_workspaces
     from smartlead.expandi_leads import ExpandiLeadStore
+    from smartlead.expandi_rows import _merge_by_name
     from smartlead.reply_view import EXPANDI_LOG_TAB, expandi_log_replies
     from smartlead.sheets import SheetsWriter
 
@@ -362,28 +381,37 @@ def _expandi(periods: list[Period], failed: list[str], log: str) -> list[dict]:
             continue
         client = cm.display_client(ws.name)
         try:
+            log_values = (await asyncio.to_thread(
+                lambda: SheetsWriter(BETTRDATA_TRACKER_SHEET_ID)._sh
+                .worksheet(EXPANDI_LOG_TAB).get_all_values())
+                if client == "BettrData" else [])
             store = ExpandiLeadStore()
-            if not store.available:
-                raise RuntimeError("no Mongo")
-            names = store.campaign_names(ws.name)
-            log_values = (SheetsWriter(BETTRDATA_TRACKER_SHEET_ID)._sh
-                          .worksheet(EXPANDI_LOG_TAB).get_all_values()
-                          if client == "BettrData" else [])
-            for name in names:
-                counts, partial = {}, False
-                for p in periods:
-                    c = store.counts(ws.name, name, p.start, p.end, p.end)
-                    if c.get("error"):
-                        raise RuntimeError("Expandi lead cache unreadable")
-                    lo, hi = p.window
-                    people, pos = log_reply_people(expandi_log_replies(log_values, name, lo, hi))
-                    counts[p.key] = {"invites": c["invited_month"], "accepted": c["connected_month"],
-                                     "replies": people, "positive": pos}
-                    partial = partial or not c.get("swept")
-                if any(moved(c) for c in counts.values()):
-                    rows.append({"client": client, "channel": "LinkedIn", "platform": "Expandi",
-                                 "campaign": name, "campaign_id": name, "counts": counts,
-                                 "partial": partial})
+            async with ExpandiClient(ws.api_key, ws.api_secret, ws.name) as exc_client:
+                raw: list[dict] = []
+                for acc in await exc_client.list_li_accounts():
+                    if acc.get("id") is not None:
+                        raw.extend(await exc_client.list_campaigns(acc["id"]))
+                camps = [c for c in _merge_by_name(raw) if not c.get("archived")
+                         and int((c.get("stats") or {}).get("people_in_campaign") or 0)]
+                for camp in camps:
+                    name = str(camp.get("name", "")).strip()
+                    leads: list[dict] = []
+                    for acc_id, inst_id in camp.get("_instance_refs", []):
+                        got, done = await exc_client.list_messengers(
+                            acc_id, inst_id, page_size=100, max_pages=1000)
+                        if not done:
+                            raise RuntimeError(f"lead list of {name} not fully read")
+                        leads += got
+                    store.save(ws.name, name, leads)      # keeps the 09:00 cache current too
+                    counts = {}
+                    for p in periods:
+                        lo, hi = p.window
+                        people, pos = log_reply_people(expandi_log_replies(log_values, name, lo, hi))
+                        counts[p.key] = {**expandi_counts(leads, p), "replies": people,
+                                         "positive": pos}
+                    if any(moved(c) for c in counts.values()):
+                        rows.append({"client": client, "channel": "LinkedIn", "platform": "Expandi",
+                                     "campaign": name, "campaign_id": name, "counts": counts})
         except Exception as exc:  # noqa: BLE001
             print(f"{log} Expandi {ws.name} failed: {exc}")
             failed.append(f"Expandi {ws.name}")
@@ -446,11 +474,11 @@ def _waalaxy(periods: list[Period], failed: list[str], log: str) -> list[dict]:
 async def collect(periods: list[Period], log: str = "[stats-post]") -> tuple[list[dict], list[str]]:
     """Every campaign that moved in any period, and what could not be read."""
     failed: list[str] = []
-    rows = await _smartlead(periods, failed, log)
-    rows += await _heyreach(periods, failed, log)
-    rows += await asyncio.to_thread(_expandi, periods, failed, log)
-    rows += await asyncio.to_thread(_waalaxy, periods, failed, log)
-    return rows, failed
+    # Side by side: Smartlead takes ~8 min, reading every Expandi lead ~5.5.
+    parts = await asyncio.gather(_smartlead(periods, failed, log), _heyreach(periods, failed, log),
+                                 _expandi(periods, failed, log),
+                                 asyncio.to_thread(_waalaxy, periods, failed, log))
+    return [r for part in parts for r in part], failed
 
 
 def month_name(p: Period) -> str:
