@@ -70,6 +70,23 @@ ok(r["priority"] == "P0" and "spam" in r["top_problem"].lower(), "spam flag ON -
 ok(resolve_action(snap(warmup_spam_count=1), 100)["priority"] == "", "under threshold -> no flag")
 _h.HEALTH_SPAM_FLAG_ENABLED = False  # restore
 
+# --- warm-up spam triggers a placement test, never a verdict (Manveen, 3 Nov 2026) ---
+# 3 Nov data: 20 SMTP inboxes ~30% of warm-up mail in spam, Outlook ~2%, Google ~0%.
+ws = resolve_action(snap(warmup_spam_count=30, warmup_sent_7d=100, test_sheet_status="", test_date=""), 100)
+ok(ws["top_problem"] == _h.WARMUP_SPAM_PROBLEM and ws["owner"] == "auto" and ws["priority"] == "P1",
+   f"30% of 100 warm-up in spam -> auto placement test (got {ws['top_problem']!r}/{ws['owner']})")
+ok("30%" in ws["what_to_do"] and "100" in ws["what_to_do"], "action states the rate and the sample")
+ok(resolve_action(snap(warmup_spam_count=2, warmup_sent_7d=100), 100)["top_problem"] != _h.WARMUP_SPAM_PROBLEM,
+   "2% (Outlook-like) -> no trigger")
+ok(resolve_action(snap(warmup_spam_count=5, warmup_sent_7d=20), 100)["top_problem"] != _h.WARMUP_SPAM_PROBLEM,
+   "under 30 warm-up emails -> too few to judge")
+ok(resolve_action(snap(warmup_spam_count=5, warmup_sent_7d=0), 100)["top_problem"] != _h.WARMUP_SPAM_PROBLEM,
+   "no warm-up sends -> no trigger (and no divide by zero)")
+low = resolve_action(snap(warmup_spam_count=30, warmup_sent_7d=100, warmup_rep_pct="55%", busy_reason="low_rep"), 100)
+ok(low["top_problem"] == _h.WARMUP_SPAM_PROBLEM, f"outranks low reputation, so the test still runs (got {low['top_problem']!r})")
+fail = resolve_action(snap(warmup_spam_count=30, warmup_sent_7d=100, test_sheet_status="fail", busy_reason="failed_test"), 100)
+ok(fail["top_problem"] == "Failed placement test", "a failed placement test still wins: that IS the verdict")
+
 # --- 2026 volume-cap watch ---
 v = resolve_action(snap(sent_today=60), 100)
 ok(v["priority"] == "P2" and "volume" in v["top_problem"].lower(), "sent 60/day -> P2 volume flag")

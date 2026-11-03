@@ -7,6 +7,7 @@ from smartlead.config import (
     HEALTH_WEIGHTS, HEALTH_TEST_STALE_DAYS, HEALTH_TEST_DEAD_DAYS,
     HEALTH_WARMUP_FULL, HEALTH_WARMUP_ZERO, HEALTH_TREND_DROP,
     HEALTH_SPAM_FLAG_ENABLED, HEALTH_SPAM_COUNT_THRESHOLD,
+    WARMUP_SPAM_RETEST_PCT, WARMUP_SPAM_RETEST_MIN_SENT,
     HEALTH_BOUNCE_P0_PCT, VOLUME_SAFE_MAX,
 )
 
@@ -151,6 +152,18 @@ def compute_health_score(snapshot: dict, today: date) -> dict:
     return {"score": score, "grade": _grade(score), "drivers": drivers}
 
 
+WARMUP_SPAM_PROBLEM = "Warm-up mail landing in spam"   # retest_targets matches this text
+
+
+def warmup_spam_rate(snapshot: dict) -> float | None:
+    """% of the last 7 days' warm-up mail that landed in spam, or None when
+    there were too few warm-up emails to say."""
+    sent = _num(snapshot.get("warmup_sent_7d", 0))
+    if sent < WARMUP_SPAM_RETEST_MIN_SENT:
+        return None
+    return 100.0 * _num(snapshot.get("warmup_spam_count", 0)) / sent
+
+
 def resolve_action(snapshot: dict, score: int) -> dict:
     """First-match-wins problem -> fix/owner/priority. Same order as the queue."""
     reasons = _reasons(snapshot)
@@ -223,6 +236,18 @@ def resolve_action(snapshot: dict, score: int) -> dict:
         return item("P1", "DMARC misconfigured or missing",
                     f"Escalate to Zapmail support (do NOT edit DNS yourself): {dmarc_msg}",
                     "1-2 days", "human", "deliverability-incident-response")
+
+    # Warm-up spam is a cheap daily signal: it orders a placement test, and the
+    # test decides (Manveen, 3 Nov 2026). Above low_rep so a low-rep inbox in
+    # spam still gets tested instead of waiting on a human.
+    rate = warmup_spam_rate(snapshot)
+    if rate is not None and rate >= WARMUP_SPAM_RETEST_PCT:
+        sent = int(_num(snapshot.get("warmup_sent_7d", 0)))
+        return item("P1", WARMUP_SPAM_PROBLEM,
+                    f"{rate:.0f}% of its {sent} warm-up emails in the last 7 days landed in spam. "
+                    "Auto-run a placement test to confirm before any keep/retire call; "
+                    "keep it out of new campaigns until the result is in.",
+                    "auto", "auto", "deliverability-test-public")
 
     if "low_rep" in reasons:
         return item("P1", "Warmup reputation below threshold",

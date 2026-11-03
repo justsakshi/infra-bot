@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from smartlead.health import WARMUP_SPAM_PROBLEM
+
 _UNTESTED = "No placement test on record"
 _STALE = "Placement test is stale"
 # problems whose owner is the auto-tester (must match health.resolve_action text)
-_AUTO_PROBLEMS = {_UNTESTED, _STALE}
+_AUTO_PROBLEMS = {WARMUP_SPAM_PROBLEM, _UNTESTED, _STALE}
 
 # Playbook rule: never re-test within 7 days of the last test — reputation
 # moves slowly and an early re-test wastes a credit on a meaningless result.
@@ -28,8 +30,11 @@ def _tested_within_floor(row: dict, today: date) -> bool:
 
 
 def _rank(row: dict) -> tuple:
-    """Sort key: untested (0) before stale (1); within stale, oldest test_date first."""
+    """Sort key: warm-up mail in spam first (a live signal), then untested (0),
+    then stale (1); within stale, oldest test_date first."""
     problem = row.get("top_problem", "")
+    if problem == WARMUP_SPAM_PROBLEM:
+        return (-1, "")
     if problem == _UNTESTED:
         return (0, "")
     # stale: empty date sorts first (unknown = treat as very old)

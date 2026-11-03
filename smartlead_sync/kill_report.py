@@ -134,7 +134,12 @@ def format_report(res: dict, errors: list[str], today: date,
         doms[(cl, r["email"].split("@")[1])].append(r)
     when = _day(today)
 
-    if not kills:
+    if not kills and c[kr.NO_DATA] > c[kr.GOOD] + c[kr.WATCH]:
+        # 3 Nov: a green tick while 343 of 386 inboxes had no recent test read as "all clear"
+        tested = c[kr.GOOD] + c[kr.WATCH]
+        head = [f"⚠️ Kill warnings, {when}: none of the {_n(tested, 'tested inbox', 'tested inboxes')} "
+                f"is landing in spam; {_n(c[kr.NO_DATA], 'inbox has', 'inboxes have')} no recent test"]
+    elif not kills:
         head = [f"✅ Kill warnings, {when}: no domain is landing in spam"]
     else:
         n = len(doms)

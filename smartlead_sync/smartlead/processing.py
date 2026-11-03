@@ -459,6 +459,7 @@ def process_inbox_availability(
         item["warmup_max_count"] = info.get("warmup_max_count", 0) if isinstance(info, dict) else 0
         item["last_active_date"] = info.get("last_active_date", "") if isinstance(info, dict) else ""
         item["warmup_spam_count"] = info.get("warmup_spam_count", 0) if isinstance(info, dict) else 0
+        item["warmup_sent_7d"] = info.get("warmup_sent_7d", 0) if isinstance(info, dict) else 0
         item["warmup_reply_rate_pct"] = info.get("warmup_reply_rate_pct") if isinstance(info, dict) else None
 
         # Aggregate True Load and CAMPAIGN-visible Capacity.
@@ -767,7 +768,8 @@ async def _build_warmup_data(
             entry["warmup_limit"] = stats[0].get("warmup_limit", entry["warmup_limit"])
             total_sent = sum(int(d.get("sent_count", 0)) for d in stats)
             total_inbox = sum(int(d.get("inbox_count", 0)) for d in stats)
-            total_spam = sum(int(d.get("spam_count", 0)) for d in stats)
+            # per-day rows carry save_from_spam_count, not spam_count (checked 3 Nov 2026)
+            total_spam = sum(int(d.get("spam_count", d.get("save_from_spam_count", 0)) or 0) for d in stats)
             entry.update(warmup_sent=total_sent, landed_inbox=total_inbox, landed_spam=total_spam)
         elif isinstance(stats, dict):
             entry["warmup_limit"] = stats.get("warmup_limit", entry["warmup_limit"])
@@ -782,6 +784,7 @@ async def _build_warmup_data(
             "warmup_max_count": warmup_details.get("warmup_max_count", 0),
             "last_active_date": _latest_active_date(stats_map.get(str(acc_id)), acc.get("updated_at", "")),
             "warmup_spam_count": entry["landed_spam"],
+            "warmup_sent_7d": entry["warmup_sent"],
             "warmup_reply_rate_pct": warmup_details.get("reply_rate"),
         }
         warmup_data.append(entry)
