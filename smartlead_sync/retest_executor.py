@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 # Windows console: force UTF-8 so arrows/em-dashes in logs don't crash.
 if sys.platform == "win32":
@@ -31,7 +31,7 @@ from smartlead.config import (
 from smartlead.processing import fetch_account_data
 from smartlead.health import build_health_rows
 from smartlead.manager_map import resolve_manager
-from smartlead.retest_targets import select_targets
+from smartlead.retest_targets import select_targets, MIN_DAYS_BETWEEN_TESTS
 from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeliveryError
 from smartlead.placement_store import PlacementStore
 from smartlead.client_filter import is_excluded_inbox
@@ -222,7 +222,14 @@ async def main() -> None:
     print(f"[Retest] Pass A done: {completed} test(s) completed.")
 
     print("[Retest] Pass B: selecting worst-first targets...")
-    pending_emails = store.pending_emails()
+    since = (date.today() - timedelta(days=MIN_DAYS_BETWEEN_TESTS)).isoformat()
+    recent = store.emails_tested_since(since)
+    if recent is None:
+        print("[Retest] Can't read test history from Mongo - not creating tests today "
+              "(without it the 7-day floor can't hold).")
+        return
+    print(f"[Retest] {len(recent)} inbox(es) tested since {since} - skipped by the 7-day floor.")
+    pending_emails = store.pending_emails() | recent
     all_targets: list[dict] = []
     acc_by_client = {a.name: a for a in accounts}
     id_by_email: dict[str, str] = {}
@@ -289,8 +296,12 @@ async def main() -> None:
                                            f"auto-{t['client']}-{date.today().isoformat()}",
                                            is_warmup=not RETEST_DISABLE_WARMUP)
                 # store the ids whose warmup we turned off so Pass A can restore
+                # source/target/reason let retest_watch.py count this job's
+                # tests apart from the Thursday batch and the scheduled tests
                 store.record_created(tid, t["client"], cid, senders,
-                                     warmup_off_ids=disabled_ids)
+                                     warmup_off_ids=disabled_ids,
+                                     extra={"source": "retest", "target": t["email"],
+                                            "reason": t["reason"]})
                 created += 1
                 print(f"  [Retest] created test {tid} for {t['client']} campaign {cid}"
                       f"{' (warmup-off mode)' if RETEST_DISABLE_WARMUP else ''}")

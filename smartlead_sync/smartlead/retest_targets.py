@@ -44,12 +44,13 @@ def _rank(row: dict) -> tuple:
 def select_targets(health_rows: list[dict], per_client_cap: int,
                    pending_emails: set[str]) -> list[dict]:
     today = date.today()
+    skip = {str(e).strip().lower() for e in pending_emails}
     by_client: dict[str, list[dict]] = {}
     for r in health_rows:
         if r.get("top_problem") not in _AUTO_PROBLEMS:
             continue
         email = str(r.get("email", "")).strip()
-        if not email or email in pending_emails:
+        if not email or email.lower() in skip:
             continue
         if _tested_within_floor(r, today):
             continue  # tested <7 days ago -> too fresh, skip
