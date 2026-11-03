@@ -74,7 +74,7 @@ def _judge(f):
 
 
 def test_judge_inbox_follows_the_kill_rule():
-    assert _judge(None) == "RETIRE"                                          # not in Smartlead
+    assert _judge(None) == "CHECK"     # not in Smartlead: new or abandoned, a person decides (3 Nov)
     assert _judge(_facts(pct=60.0)) == "CHECK"                               # ONE strike: warn, retest
     assert _judge(_facts(pct=60.0, history=[("2026-09-28", 65.0)])) == "RETIRE"   # two strikes 7d apart
     assert _judge(_facts(pct=40.0)) == "RETIRE"                              # clearly dead (<50% on 20)
@@ -125,22 +125,32 @@ def test_support_message_names_bad_domains_and_keeps_good_ones():
     assert clean["support_message"] == ""
 
 
-def test_support_message_gives_each_inbox_its_true_reason():
-    # 3 Nov: the 6 and 8 Nov messages told ScaledMail "our inbox-placement tests put them in spam"
-    # about inboxes that were never in Smartlead, so no test had ever run on them.
+def test_no_support_message_asks_to_remove_inboxes_not_in_smartlead():
+    # 3 Nov: the review drafted "please remove" notes for 9 PL inboxes that were ready that day
+    # (not connected yet) and 25 Melior inboxes that were live under new addresses.
     facts = {"c@good.com": _facts()}
     bill = {"provider": "ScaledMail", "label": "30 × Google", "bills_on": "2026-11-08", "price": 10.5,
             "clients": ["Precise Leads"], "order_id": "rec3"}
-    m = rr.review_bill({**bill, "inboxes": ["a@unused.com", "b@unused.com", "c@good.com"]}, facts, T)["support_message"]
-    assert "unused.com (2 inboxes)" in m and "never used" in m and "keep the rest" in m
-    assert "placement" not in m and "spam" not in m and "not delivering" not in m and "replace" not in m
+    r = rr.review_bill({**bill, "inboxes": ["a@new.com", "b@new.com", "c@good.com"]}, facts, T)
+    assert r["support_message"] == ""
+    assert {x["email"]: x["verdict"] for x in r["rows"]} == {"a@new.com": "CHECK", "b@new.com": "CHECK", "c@good.com": "KEEP"}
+    assert r["retire_saves_monthly"] == 0 and r["unused_saves_monthly"] == 7.0
 
     both = {**facts, "d@bad.com": _facts(pct=45.0), "e@bad.com": _facts(pct=45.0)}
-    m2 = rr.review_bill({**bill, "inboxes": ["a@unused.com", "d@bad.com", "e@bad.com", "c@good.com"]},
-                        both, T)["support_message"]
-    spam_part, never_part = m2.split("never used", 1)
-    assert "put them in spam" in spam_part and "bad.com (2 inboxes)" in spam_part and "unused.com" not in spam_part
-    assert "unused.com (1 inbox)" in never_part and "bad.com" not in never_part
+    m = rr.review_bill({**bill, "inboxes": ["a@new.com", "d@bad.com", "e@bad.com", "c@good.com"]},
+                       both, T)["support_message"]
+    assert "bad.com (2 inboxes)" in m and "put them in spam" in m and "new.com" not in m
+
+
+def test_renamed_mailboxes_are_judged_on_what_smartlead_has():
+    # 3 Nov: ScaledMail still listed baker_ken@growmelior.com x25 while Smartlead held 25
+    # ryan_markman-style inboxes on that domain, so all 25 looked "never used".
+    facts = {"ryan@grow.com": _facts(), "r.m@grow.com": _facts(), "c@good.com": _facts()}
+    r = rr.review_bill({"provider": "ScaledMail", "label": "L", "bills_on": "2026-11-06", "price": 6.0,
+                        "inboxes": ["baker_ken@grow.com", "ken.b@grow.com", "c@good.com"]}, facts, T)
+    assert sorted(x["email"] for x in r["rows"]) == ["c@good.com", "r.m@grow.com", "ryan@grow.com"]
+    assert r["counts"] == {"KEEP": 3, "RETIRE": 0, "CHECK": 0} and r["unused_saves_monthly"] == 0
+    assert r["support_message"] == ""
 
 
 def test_tracker_flags_refuse_a_half_read_review():
