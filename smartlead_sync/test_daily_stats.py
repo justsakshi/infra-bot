@@ -153,3 +153,11 @@ def test_an_unreadable_accept_date_is_an_error_not_a_zero():
     import pytest
     with pytest.raises(ValueError):
         ds.waalaxy_rows([], [["Campaign", "Connected on"], ["kochi", "30/10/2026"]], [DAY])
+
+
+def test_expandi_invites_and_accepts_come_from_each_leads_dates():
+    # 3 Nov: the cache said 0 invites for Monday; Expandi's lead rows had 31+.
+    leads = [{"invited_at": "2026-10-30T09:00:00+0200", "connected_at": "2026-10-30T21:00:00+0200"},
+             {"invited_at": "2026-10-30T01:30:00+0200", "connected_at": None},   # 29 Oct 23:30 UTC
+             {"invited_at": None, "connected_at": None}]
+    assert ds.expandi_counts(leads, DAY) == {"invites": 1, "accepted": 1}
