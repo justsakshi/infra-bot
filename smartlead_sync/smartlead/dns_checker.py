@@ -37,7 +37,10 @@ import httpx
 _DNS_CACHE: dict[str, dict] = {}
 
 # DKIM selectors to try, in order of how common they are in this fleet.
-DKIM_SELECTORS: tuple[str, ...] = ("google", "selector1", "selector2", "default")
+# "dkim": ScaledMail's SMTP (Amazon SES) domains sign with it. Without it all 20
+# PL SMTP inboxes read "DKIM missing" (P0) on 3 Nov 2026, which also hid their
+# ~30% warm-up spam from the retest trigger.
+DKIM_SELECTORS: tuple[str, ...] = ("google", "selector1", "selector2", "default", "dkim")
 
 # Shared, pooled HTTP client + concurrency cap for all DoH lookups (module-
 # level so every caller across a run reuses the same connection pool instead

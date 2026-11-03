@@ -155,8 +155,16 @@ async def _health_rows_for(acc) -> tuple[list[dict], dict[str, str]]:
     return build_health_rows(inbox, date.today(), None, resolve_manager), id_by_email
 
 
-async def _campaign_launch_args(acc, campaign_name: str):
-    """Resolve (campaign_id, sequence_mapping_id, sender_emails) for a campaign name."""
+async def _campaign_launch_args(acc, campaign_name: str, target_email: str):
+    """Resolve (campaign_id, sequence_mapping_id, [target], [target_id]) to test
+    ONE inbox through a campaign it already sends in, with that campaign's copy.
+    None when the campaign is gone or the inbox is no longer attached to it
+    (the caller then falls back to the standing test campaign).
+
+    Only the target is tested. This used to test every sender on the campaign
+    (up to 100) for one flagged inbox: ~100x the credits, and one blended
+    verdict stamped on all of them. Found 3 Nov 2026, when the dry run showed
+    two 100-sender tests through Melior's test campaign for two PL picks."""
     async with SmartleadClient(acc.api_key, acc.name) as c:
         camps = await c.list_campaigns()
         camp = next((x for x in camps if x.get("name") == campaign_name), None)
@@ -168,12 +176,13 @@ async def _campaign_launch_args(acc, campaign_name: str):
         if not seqs:
             return None
         accts = await c.get_campaign_email_accounts(str(cid))
-        senders = [a.get("from_email") for a in accts if a.get("from_email")]
-        # account ids of the senders we'll test — needed to toggle warmup off/on
-        sender_ids = [str(a.get("id")) for a in accts if a.get("from_email") and a.get("id")]
-        if not senders:
+        want = str(target_email).strip().lower()
+        mine = next((a for a in accts if a.get("id")
+                     and str(a.get("from_email", "")).strip().lower() == want), None)
+        if not mine:
             return None
-        return cid, seqs[0]["id"], senders[:100], sender_ids[:100]
+        # the account id is needed to toggle warmup off/on (RETEST_DISABLE_WARMUP)
+        return cid, seqs[0]["id"], [mine["from_email"]], [str(mine["id"])]
 
 
 async def _test_campaign_fallback_args(acc, target_email: str, target_account_id: str):
@@ -264,7 +273,7 @@ async def main() -> None:
         acc = acc_by_client.get(t["client"])
         if not acc:
             continue
-        args = await _campaign_launch_args(acc, t["campaign_hint"])
+        args = await _campaign_launch_args(acc, t["campaign_hint"], t["email"])
         if not args:
             # bench inbox (no live campaign) -> route via the account's
             # standing deliverability-test campaign

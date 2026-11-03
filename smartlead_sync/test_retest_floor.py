@@ -112,3 +112,37 @@ def test_watch_catches_cap_floor_warmup_and_stuck_tests():
     assert "still have warm-up off" in text
     warn = " ".join(res["warnings"])
     assert "running since 2026-11-04" in warn and "tested 40 inboxes" in warn
+
+
+class _FakeSL:
+    """Smartlead client with one campaign of 100 senders."""
+    def __init__(self, *a):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        pass
+
+    async def list_campaigns(self):
+        return [{"id": 4085678, "name": "Melior - Deliverability Test Campaign"}]
+
+    async def _get(self, path):
+        return [{"id": 77}]
+
+    async def get_campaign_email_accounts(self, cid):
+        return [{"id": 1000 + i, "from_email": f"s{i}@peer.com"} for i in range(99)] + \
+               [{"id": 5, "from_email": "M_Ryan@peer.com"}]
+
+
+def test_one_flagged_inbox_tests_one_inbox_not_its_whole_campaign(monkeypatch):
+    # 3 Nov 2026 dry run: two picks would each have tested all 100 senders of
+    # Melior's test campaign.
+    import retest_executor as rx
+    monkeypatch.setattr(rx, "SmartleadClient", _FakeSL)
+    acc = SimpleNamespace(name="PRECISE_LEADS", api_key="k")
+    args = asyncio.run(rx._campaign_launch_args(acc, "Melior - Deliverability Test Campaign", "m_ryan@peer.com"))
+    assert args == (4085678, 77, ["M_Ryan@peer.com"], ["5"])
+    # not attached any more -> None, so the caller uses the standing test campaign
+    assert asyncio.run(rx._campaign_launch_args(acc, "Melior - Deliverability Test Campaign", "gone@peer.com")) is None
