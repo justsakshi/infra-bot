@@ -126,6 +126,14 @@ def test_nothing_to_take_out():
     assert parts[-1].startswith("_" + RULE)
 
 
+def test_no_green_tick_when_most_inboxes_were_not_tested():
+    # 3 Nov: "✅ no domain is landing in spam" while 343 of 386 inboxes had no recent test
+    facts = {"a@ok.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 0)]},
+             "b@n.com": {"client": "Melior", "tests": []}, "c@n.com": {"client": "Melior", "tests": []}}
+    head, _ = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY)
+    assert head == ["⚠️ Kill warnings, 13 Oct: none of the 1 tested inbox is landing in spam; 2 inboxes have no recent test"]
+
+
 def test_none_sending_says_wait_for_the_bill():
     facts = {"a@x.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 12)], "campaigns": [], "sending": []}}
     head, _ = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY)

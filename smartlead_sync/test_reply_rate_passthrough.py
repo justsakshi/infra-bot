@@ -27,3 +27,12 @@ def test_missing_reply_rate_is_none():
                            "warmup_spam_count": 0}}
     process_inbox_availability([row], rep_map, {})
     assert row["warmup_reply_rate_pct"] is None
+
+
+def test_warmup_sent_7d_flows_into_row():
+    # the warm-up spam trigger needs the sample size next to the spam count
+    row = _mk_row()
+    rep_map = {"a@x.com": {"rep": "60%", "warmup_state": "on", "warmup_max_count": 20, "last_active_date": "",
+                           "warmup_spam_count": 30, "warmup_sent_7d": 100}}
+    process_inbox_availability([row], rep_map, {})
+    assert row["warmup_spam_count"] == 30 and row["warmup_sent_7d"] == 100

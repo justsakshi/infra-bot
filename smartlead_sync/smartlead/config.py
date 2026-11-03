@@ -249,6 +249,13 @@ HEALTH_TREND_DROP: int = 8         # score drop >= this over 7d -> "declining" e
 HEALTH_SPAM_FLAG_ENABLED: bool = os.getenv("HEALTH_SPAM_FLAG_ENABLED", "false").lower() == "true"
 HEALTH_SPAM_COUNT_THRESHOLD: int = int(os.getenv("HEALTH_SPAM_COUNT_THRESHOLD", "3"))
 
+# Warm-up spam as a TEST TRIGGER, not a verdict (Manveen, 3 Nov 2026): an inbox
+# whose warm-up mail landed in spam at this rate over Smartlead's last 7 days
+# gets an automatic placement test (retest_executor, same caps and 7-day floor);
+# the test decides. 3 Nov data: SMTP ~30%, Outlook ~2%, Google ~0%.
+WARMUP_SPAM_RETEST_PCT: float = float(os.getenv("WARMUP_SPAM_RETEST_PCT", "10"))
+WARMUP_SPAM_RETEST_MIN_SENT: int = int(os.getenv("WARMUP_SPAM_RETEST_MIN_SENT", "30"))
+
 # Volume-cap watch (2026): sending above this per day = reputation risk
 # (Woodpecker 2025: 100+/day = 4.3x bounce; safe band 20-50). Read-only flag
 # in the workbook — tells the manager to lower the campaign cap.
