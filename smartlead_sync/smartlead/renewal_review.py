@@ -188,20 +188,37 @@ def support_message(review: dict) -> str:
     bad = [r for r in review.get("rows") or [] if r["verdict"] == "RETIRE"]
     if not bad:
         return ""
-    by_dom: dict[str, list[dict]] = defaultdict(list)
-    for r in bad:
-        by_dom[r["email"].split("@")[1]].append(r)
-    keep = sorted({r["email"].split("@")[1] for r in review.get("rows") or [] if r["verdict"] == "KEEP"} - set(by_dom))
+    # Each inbox gets its real reason: a never-used inbox has no placement test, so it
+    # must not be described as "in spam" (3 Nov: both messages due that week did).
+    spam = [r for r in bad if r.get("kind") != "unused"]
+    never = [r for r in bad if r.get("kind") == "unused"]
+    flagged = {r["email"].split("@")[1] for r in bad}
+    keep = sorted({r["email"].split("@")[1] for r in review.get("rows") or [] if r["verdict"] == "KEEP"} - flagged)
     ref = review.get("order_id") or review.get("subscription_id") or ""
     lines = [f"Hi {review['provider']} team,", "",
              f"Our {review['label']} ({', '.join(review.get('clients') or []) or 'our account'}"
-             + (f", ref {ref}" if ref else "") + f") renews on {_day(review['bills_on'])} {review['bills_on'][:4]}.",
-             f"{len(bad)} of its inboxes are not delivering — our inbox-placement tests put them in spam:", ""]
-    for dom in sorted(by_dom):
-        whys = sorted({r["why"] for r in by_dom[dom]})
-        lines.append(f"• {dom} ({len(by_dom[dom])} inboxes) — {'; '.join(whys)}")
-    lines += ["", "Could you please replace these inboxes (fresh domains) or remove them from the order, "
-              "and not charge us for them for this billing cycle?"]
+             + (f", ref {ref}" if ref else "") + f") renews on {_day(review['bills_on'])} {review['bills_on'][:4]}."]
+
+    def domains(rows: list[dict], with_why: bool) -> list[str]:
+        by_dom: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            by_dom[r["email"].split("@")[1]].append(r)
+        out = []
+        for dom in sorted(by_dom):
+            n = len(by_dom[dom])
+            why = " — " + "; ".join(sorted({r["why"] for r in by_dom[dom]})) if with_why else ""
+            out.append(f"• {dom} ({n} {'inbox' if n == 1 else 'inboxes'}){why}")
+        return out
+
+    if spam:
+        lines += ["", f"{len(spam)} of its inboxes are not delivering — our inbox-placement tests put them in spam:", ""]
+        lines += domains(spam, with_why=True)
+        lines += ["", "Could you please replace these inboxes (fresh domains) or remove them from the order, "
+                  "and not charge us for them for this billing cycle?"]
+    if never:
+        lines += ["", f"{len(never)} of its inboxes we never used:", ""]
+        lines += domains(never, with_why=False)
+        lines += ["", "Could you please remove these from the order so they are not charged from this bill on?"]
     if keep:
         lines.append(f"Please keep the rest as they are ({', '.join(keep)}).")
     lines += ["", "Thanks!"]
