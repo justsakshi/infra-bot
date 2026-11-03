@@ -57,4 +57,11 @@ async def _bypass():   # script-style check; not a pytest async test
 
 asyncio.run(_bypass())
 
+
+# 3 Nov 2026: ScaledMail SMTP (SES) domains publish DKIM only at "dkim"
+from smartlead.dns_checker import DKIM_SELECTORS
+ok("dkim" in DKIM_SELECTORS, "the 'dkim' selector is checked (ScaledMail SMTP domains)")
+ok_ses, _ = audit_dkim_multi({s: ([] if s != "dkim" else ["v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC"]) for s in DKIM_SELECTORS})
+ok(ok_ses, "DKIM found only at 'dkim' -> pass")
+
 print("\nALL PASSED (test_dns_checker)")
