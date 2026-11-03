@@ -81,7 +81,7 @@ def check(tests: list[dict], today: date, cap: int) -> dict:
             "per_day": {f"{d} {c}": n for (d, c), n in sorted(per_day.items())}}
 
 
-def render(res: dict, since: str, total: int) -> str:
+def render(res: dict, since: str, total: int, weekly: int | None = None) -> str:
     lines = [f"Auto placement tests since {since}: {total} created."]
     if not total:
         lines.append("None created. If RETEST_ENABLED=true was set before the last 11:00 IST run, "
@@ -96,6 +96,12 @@ def render(res: dict, since: str, total: int) -> str:
     if res["results"]:
         lines.append("Results:")
         lines += [f"  - {r}" for r in res["results"]]
+    if weekly is not None:
+        # Auto tests and the Mon/Tue scheduled tests spend the same SmartDelivery
+        # credits, which the API can't show; a week with no scheduled results is
+        # the first sign the auto tests drained them.
+        lines.append(f"Weekly scheduled-test results saved since {since}: {weekly} inboxes"
+                     f"{' - check the Mon/Tue tests ran (shared credits)' if not weekly else ''}.")
     if RETEST_DISABLE_WARMUP:
         lines.append("Note: RETEST_DISABLE_WARMUP is on here, so tests switch warm-up off while they run.")
     return "\n".join(lines)
@@ -104,6 +110,8 @@ def render(res: dict, since: str, total: int) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Check the auto placement-test job (read-only)")
     ap.add_argument("--since", default=(date.today() - timedelta(days=7)).isoformat())
+    ap.add_argument("--cap", type=int, default=RETEST_PER_CLIENT_DAILY_CAP,
+                    help="the per-client daily cap set on Render (default: this machine's env)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     from smartlead.placement_store import PlacementStore
@@ -112,9 +120,11 @@ def main() -> int:
         print("Mongo unavailable - can't check the auto placement tests.")
         return 1
     tests = list(store._tests.find({"source": "retest", "created": {"$gte": args.since}}, {"_id": 0}))
-    res = check(tests, date.today(), RETEST_PER_CLIENT_DAILY_CAP)
-    print(json.dumps({**res, "since": args.since, "created": len(tests)}, default=str)
-          if args.json else render(res, args.since, len(tests)))
+    res = check(tests, date.today(), args.cap)
+    weekly = len(store._results.distinct("email", {"source": "weekly_report", "date": {"$gte": args.since}}))
+    print(json.dumps({**res, "since": args.since, "created": len(tests), "weekly_results": weekly},
+                     default=str)
+          if args.json else render(res, args.since, len(tests), weekly))
     return 1 if res["problems"] else 0
 
 
