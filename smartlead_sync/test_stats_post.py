@@ -52,7 +52,7 @@ def test_headline_names_the_day_and_each_clients_numbers_in_order():
 def test_a_quiet_client_is_still_listed():
     head, thread = _post([])
     assert head.count("Email: nothing sent, no replies") == 3
-    assert thread == []
+    assert [p["text"] for p in thread] == ["Campaign summary"]
 
 
 def test_linkedin_line_for_clients_with_a_linkedin_source():
@@ -105,18 +105,32 @@ def test_thread_lists_the_days_campaigns_with_a_button_for_the_day():
         _r("BettrData", "Email", "Roundtable | Quiet", cid="12", day=_email(),
            week=_email(sent=5)),
     ], periods=(DAY, WEEK))
-    (part,) = thread
+    part, _summary = thread
     text = part_as_text(part)
     assert "Roundtable · Aaron" in text and "Quiet" not in text
     button = part["blocks"][1]["accessory"]
     v = json.loads(button["value"])
     assert v["from"] == "2026-10-30T00:00:00+00:00" and v["to"] == "2026-10-31T00:00:00+00:00"
-    assert v["n"] == 4 and button["text"]["text"] == "Show 4 replies"
+    assert v["n"] == 4 and button["text"]["text"] == "1 interested, 3 other"
 
 
-def test_no_button_without_replies():
-    _, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=10))])
-    assert "accessory" not in thread[0]["blocks"][1]
+def test_campaigns_without_replies_stay_out_of_the_thread():
+    # Manveen, 3 Nov 2026: "just put campaign with replies".
+    head, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=10)),
+                          _r("BettrData", "Email", "B", cid="12", day=_email(sent=5, replies=1))])
+    part, _summary = thread
+    assert "*B*" in part_as_text(part) and "*A*" not in part_as_text(part)
+    assert "15 emails sent" in head                                   # still counted above
+
+
+def test_button_names_the_kinds_of_reply_and_follow_up_replies():
+    from smartlead.stats_post import button_label
+    assert button_label(_email(replies=3, positive=2, not_interested=1)) == "2 interested, 1 not interested"
+    assert button_label(_email(replies=2, wrong_person=1, later_touch=1)) == "1 wrong person, 1 other · 1 on 2nd+ touch"
+    assert button_label(_li(replies=2), "LinkedIn") == "2 replies"
+    assert button_label(_li(replies=3, positive=1), "LinkedIn") == "1 interested, 2 more"
+    assert len(button_label(_email(replies=9999, positive=1000, not_interested=1000,
+                                   wrong_person=1000, later_touch=1000))) <= 75
 
 
 def test_friday_adds_the_week_and_first_working_day_adds_the_month():
@@ -148,9 +162,9 @@ def test_not_counted_line():
 
 
 def test_many_campaigns_stay_under_slacks_block_cap():
-    rows = [_r("Melior", "Email", f"C{i}", cid=str(i), day=_email(sent=1)) for i in range(60)]
+    rows = [_r("Melior", "Email", f"C{i}", cid=str(i), day=_email(sent=1, replies=1)) for i in range(60)]
     _, thread = _post(rows)
-    assert len(thread) == 2 and all(len(p["blocks"]) <= 50 for p in thread)
+    assert len(thread) == 3 and all(len(p["blocks"]) <= 50 for p in thread)
 
 
 def test_spacing_survives_the_real_posting_path(monkeypatch):
@@ -166,3 +180,29 @@ def test_spacing_survives_the_real_posting_path(monkeypatch):
 
 def test_weekday_day():
     assert weekday_day(date(2026, 10, 30)) == "Fri 30 Oct" == weekday_day("2026-10-30")
+
+
+def test_the_thread_ends_with_the_campaign_summary_button():
+    _, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=10, replies=1))])
+    last = thread[-1]["blocks"][0]["accessory"]
+    assert last["action_id"] == "show_campaign_summary"
+    assert json.loads(last["value"]) == {"day": "2026-10-30"}
+
+
+def test_campaign_summary_lists_every_campaign_that_moved():
+    from smartlead.stats_post import summary_messages
+    rows = [_r("Melior", "Email", "Quiet", day=_email()),
+            _r("BettrData", "Email", "Sent only", cid="12", day=_email(sent=225, reached=118)),
+            _r("BettrData", "LinkedIn", "DP", "Expandi", day=_li(invites=15, accepted=4))]
+    (msg,) = summary_messages(rows, DAY)
+    text = part_as_text(msg)
+    assert "Campaign summary, Fri 30 Oct" in text
+    assert "*Sent only*\n118 new people reached · 225 emails sent\n" in text + "\n"    # no "0 replied"
+    assert "15 invites · 4 accepted" in text and "Quiet" not in text
+    assert text.index("BettrData · Email") < text.index("BettrData · LinkedIn")
+
+
+def test_thread_shows_the_campaign_name_and_the_button_only():
+    _, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=225, replies=1, positive=1))])
+    block = thread[0]["blocks"][1]
+    assert block["text"]["text"] == "*A*" and block["accessory"]["text"]["text"] == "1 interested"

@@ -631,6 +631,7 @@ require('./infra_slack').registerInfraHandlers(app, INFRA_DEPS, {
 });
 // "Show replies" buttons in the 10:30 campaign stats post.
 require('./campaign_replies_slack').registerShowReplies(app);
+require('./campaign_replies_slack').registerCampaignSummary(app);
 
 /* -------------------- View Details Button Handlers -------------------- */
 app.action(/^view_details_/, async ({ ack, body, client }) => {

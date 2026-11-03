@@ -1,6 +1,6 @@
 // "Show replies" click: private, in the thread, never silent. Run: node test_campaign_replies_slack.js
 const assert = require('assert');
-const { registerShowReplies, parseLastJson } = require('./campaign_replies_slack');
+const { registerShowReplies, registerCampaignSummary, parseLastJson } = require('./campaign_replies_slack');
 
 let passed = 0;
 async function test(name, fn) {
@@ -54,6 +54,29 @@ const body = { channel: { id: 'C1' }, user: { id: 'U1' }, message: { ts: '200.1'
     const out = '  [!] 429 on /campaigns - retrying\n{"text":"t","blocks":[{"type":"divider"}]}\n';
     assert.deepStrictEqual(parseLastJson(out), { text: 't', blocks: [{ type: 'divider' }] });
     assert.strictEqual(parseLastJson('Traceback ...'), null);
+  });
+
+  await test('Campaign summary posts the saved messages privately in the thread', async () => {
+    const handlers = {}; const posted = [];
+    const app = { action: (id, fn) => { handlers[id] = fn; } };
+    const client = { chat: { postEphemeral: async (m) => { posted.push(m); } } };
+    const msgs = [{ text: 'Campaign summary, Mon 2 Nov', blocks: [{ type: 'divider' }] }, { text: 'more', blocks: [] }];
+    let asked = null;
+    registerCampaignSummary(app, { load: async (d) => { asked = d; return { messages: msgs }; } });
+    await handlers.show_campaign_summary({ ack: async () => {}, body, action: { value: '{"day":"2026-11-02"}' }, client });
+    assert.strictEqual(asked, '2026-11-02');
+    assert.strictEqual(posted.length, 2);
+    assert.strictEqual(posted[0].user, body.user.id);
+    assert.deepStrictEqual(posted[0].blocks, [{ type: 'divider' }]);
+  });
+
+  await test('Campaign summary with nothing saved says so', async () => {
+    const handlers = {}; const posted = [];
+    const app = { action: (id, fn) => { handlers[id] = fn; } };
+    const client = { chat: { postEphemeral: async (m) => { posted.push(m); } } };
+    registerCampaignSummary(app, { load: async () => null });
+    await handlers.show_campaign_summary({ ack: async () => {}, body, action: { value: '{"day":"2026-11-02"}' }, client });
+    assert.match(posted[0].text, /No campaign summary saved for 2026-11-02/);
   });
 
   console.log(`${passed} passed`);

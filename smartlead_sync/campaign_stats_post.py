@@ -33,7 +33,7 @@ from smartlead.config import ACTIVE_CLIENTS, CAMPAIGN_STATS_CHANNEL
 from smartlead.expandi_accounts import discover_expandi_workspaces
 from smartlead.heyreach_accounts import discover_heyreach_workspaces
 from smartlead.notify import post_with_thread
-from smartlead.stats_post import build_post, part_as_text
+from smartlead.stats_post import build_post, part_as_text, summary_messages
 
 
 def not_counted(rows: list[dict] = ()) -> list[str]:
@@ -54,6 +54,21 @@ def not_counted(rows: list[dict] = ()) -> list[str]:
                    "Precise Leads LinkedIn invites and accepts (Waalaxy has no invite count; "
                    "accepts are logged only for campaigns with a CRM Sync step, and none has one yet)")
     return out
+
+
+def save_summary(day: str, messages: list[dict]) -> bool:
+    """Keep the Campaign summary button's answer in Mongo (the bot reads it
+    on click; Render's disk does not survive a restart)."""
+    try:
+        from pymongo import MongoClient
+        from smartlead.config import HEALTH_HISTORY_DB
+        col = MongoClient(os.getenv("MONGO_URI", ""), serverSelectionTimeoutMS=10000)[
+            HEALTH_HISTORY_DB]["stats_post_summaries"]
+        col.replace_one({"_id": day}, {"_id": day, "messages": messages}, upsert=True)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[stats-post] summary save failed: {type(exc).__name__}")
+        return False
 
 
 def main() -> int:
@@ -80,6 +95,9 @@ def main() -> int:
                      | ({"Precise Leads"} if "Precise Leads" in clients else set()))
     head, thread = build_post(rows, periods, clients, not_counted(rows), failed, linkedin,
                               {"Precise Leads": ds.WAALAXY_LOG_START})
+    day = next(p for p in periods if p.key == "day")
+    if target and not save_summary(day.start.isoformat(), summary_messages(rows, day)):
+        print("[stats-post] Campaign summary not saved; its button will say so.")
     print(head)
     for part in thread:
         print("\n--- thread ---\n" + part_as_text(part))

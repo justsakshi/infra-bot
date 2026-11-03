@@ -63,4 +63,35 @@ function registerShowReplies(app, { run = runReplyView } = {}) {
   });
 }
 
-module.exports = { registerShowReplies, runReplyView, parseLastJson };
+// "Campaign summary" button at the end of the thread (Manveen, 3 Nov 2026):
+// every campaign's numbers for the day, saved with the post in Mongo
+// (stats_post_summaries), shown only to whoever clicks.
+function loadSummary(day) {
+  const mongoose = require('mongoose');
+  return mongoose.connection.collection('stats_post_summaries').findOne({ _id: day });
+}
+
+function registerCampaignSummary(app, { load = loadSummary } = {}) {
+  app.action('show_campaign_summary', async ({ ack, body, action, client }) => {
+    await ack();
+    const { channel, user, thread_ts } = where(body);
+    if (!channel || !user) return;
+    const say = (m) => client.chat.postEphemeral({ channel, user, thread_ts, ...m })
+      .catch(err => console.error('[campaign-summary] postEphemeral failed:', err.data ? err.data.error : err.message));
+    let day = '';
+    try { day = JSON.parse(action.value).day || ''; } catch (_) { /* no day */ }
+    let doc = null;
+    try { doc = day ? await load(day) : null; } catch (err) {
+      console.error('[campaign-summary] read failed:', err.message);
+    }
+    if (!doc || !Array.isArray(doc.messages) || !doc.messages.length) {
+      await say({ text: `:warning: No campaign summary saved for ${day || 'this post'}.` });
+      return;
+    }
+    for (const m of doc.messages) {
+      await say({ text: m.text || 'Campaign summary', blocks: (m.blocks || []).slice(0, 50) });
+    }
+  });
+}
+
+module.exports = { registerShowReplies, registerCampaignSummary, runReplyView, parseLastJson };
