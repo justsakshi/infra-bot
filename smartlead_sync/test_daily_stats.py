@@ -161,3 +161,10 @@ def test_expandi_invites_and_accepts_come_from_each_leads_dates():
              {"invited_at": "2026-10-30T01:30:00+0200", "connected_at": None},   # 29 Oct 23:30 UTC
              {"invited_at": None, "connected_at": None}]
     assert ds.expandi_counts(leads, DAY) == {"invites": 1, "accepted": 1}
+
+
+def test_a_reply_to_a_follow_up_is_counted_as_a_later_touch():
+    stats = [_s("a@x.com", seq=1), _s("a@x.com", seq=2, reply="2026-10-30T10:00:00Z", cat="Interested"),
+             _s("b@x.com", seq=1, reply="2026-10-30T10:00:00Z", cat="Not Interested")]
+    c = ds.email_counts(stats, DAY)
+    assert (c["replies"], c["later_touch"]) == (2, 1)

@@ -38,7 +38,7 @@ def _people_replied(n: int) -> str:
     return f"{n:,} {'person' if n == 1 else 'people'} replied"
 
 
-def email_line(c: dict) -> str:
+def email_line(c: dict, quiet_zero: bool = False) -> str:
     """Avinash's terms (standup 30 Oct 2026): new people reached, emails
     sent, replies by kind, out-of-office, bounces."""
     if not any(c.get(f) for f in c):
@@ -53,7 +53,8 @@ def email_line(c: dict) -> str:
     other = replies - sum(c.get(f) or 0 for f, _ in _REPLY_KINDS)
     if other > 0:
         kinds.append(f"{other:,} other")
-    parts.append(_people_replied(replies) + (f" ({', '.join(kinds)})" if replies and kinds else ""))
+    if replies or not quiet_zero:
+        parts.append(_people_replied(replies) + (f" ({', '.join(kinds)})" if replies and kinds else ""))
     if c.get("out_of_office"):
         parts.append(f"{c['out_of_office']:,} out-of-office")
     if c.get("bounced"):
@@ -61,7 +62,7 @@ def email_line(c: dict) -> str:
     return " · ".join(parts)
 
 
-def linkedin_line(c: dict) -> str:
+def linkedin_line(c: dict, quiet_zero: bool = False) -> str:
     if not any(c.get(f) for f in c):
         return "no activity"
     parts = []
@@ -71,12 +72,15 @@ def linkedin_line(c: dict) -> str:
         parts.append(f"{c['accepted']:,} accepted")
     replies = c.get("replies") or 0
     pos = f" ({c['positive']:,} interested)" if replies and c.get("positive") else ""
-    parts.append(_people_replied(replies) + pos)
+    if replies or not quiet_zero:
+        parts.append(_people_replied(replies) + pos)
     return " · ".join(parts)
 
 
-def _line(channel: str, c: dict) -> str:
-    return email_line(c) if channel == "Email" else linkedin_line(c)
+def _line(channel: str, c: dict, quiet_zero: bool = False) -> str:
+    """quiet_zero leaves out "0 people replied" (the Campaign summary, where
+    most campaigns had none)."""
+    return email_line(c, quiet_zero) if channel == "Email" else linkedin_line(c, quiet_zero)
 
 
 def _sum(rows: list[dict], key: str) -> dict:
@@ -105,19 +109,41 @@ def _period_title(p: Period) -> str:
     return weekday_day(p.start)
 
 
-def _button(r: dict, title: str, p: Period, replies: int) -> dict:
+def button_label(c: dict, channel: str = "Email") -> str:
+    """What the replies were, e.g. '1 interested, 1 not interested · 1 on 2nd+
+    touch' (Manveen, 3 Nov 2026). LinkedIn tags only "interested", so the rest
+    are just replies. Slack caps a button at 75 characters."""
+    replies = c.get("replies") or 0
+    if channel == "LinkedIn":
+        pos = c.get("positive") or 0
+        text = (f"{pos} interested" + (f", {replies - pos} more" if replies > pos else "")
+                if pos else _n(replies, "reply", "replies"))
+    else:
+        kinds = [(c.get("positive") or 0, "interested"), (c.get("not_interested") or 0, "not interested"),
+                 (c.get("wrong_person") or 0, "wrong person")]
+        other = replies - sum(n for n, _ in kinds)
+        parts = [f"{n} {label}" for n, label in kinds + [(other, "other")] if n > 0]
+        text = ", ".join(parts) or _n(replies, "reply", "replies")
+    if c.get("later_touch"):
+        text += f" · {c['later_touch']} on 2nd+ touch"
+    return text if len(text) <= 75 else text[:74] + "…"
+
+
+def _button(r: dict, title: str, p: Period, c: dict) -> dict:
     lo, hi = p.window
     value = {"client": r["client"], "channel": r["channel"], "platform": r.get("platform", ""),
              "id": str(r.get("campaign_id") or ""), "name": r["campaign"], "title": title,
-             "from": lo.isoformat(), "to": hi.isoformat(), "n": replies}
+             "from": lo.isoformat(), "to": hi.isoformat(), "n": c["replies"]}
     return {"type": "button", "action_id": "show_replies",
-            "text": {"type": "plain_text", "text": f"Show {_n(replies, 'reply', 'replies')}"},
+            "text": {"type": "plain_text", "text": button_label(c, r["channel"])},
             "value": json.dumps(value, ensure_ascii=False)}   # Slack's cap is 2,000
 
 
 def _thread_part(client: str, channel: str, rows: list[dict], day: Period) -> list[dict]:
-    """The day's campaigns for one client·channel, a button where people replied."""
-    moved = [r for r in rows if any(r["counts"][day.key].values())]
+    """The day's campaigns that got replies, for one client·channel, each with
+    its button. Campaigns that only sent are left out (Manveen, 3 Nov 2026:
+    "just put campaign with replies"); the headline still counts them."""
+    moved = [r for r in rows if r["counts"][day.key].get("replies")]
     if not moved:
         return []
     names = short_names([r["campaign"] for r in moved])
@@ -125,10 +151,9 @@ def _thread_part(client: str, channel: str, rows: list[dict], day: Period) -> li
     for r in sorted(moved, key=lambda r: names[r["campaign"]].lower()):
         c = r["counts"][day.key]
         title = names[r["campaign"]]
-        block = {"type": "section",
-                 "text": {"type": "mrkdwn", "text": f"*{title}*\n{_line(channel, c)}"}}
+        block = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}}
         if c.get("replies") and r.get("campaign_id"):
-            block["accessory"] = _button(r, title, day, c["replies"])
+            block["accessory"] = _button(r, title, day, c)
         sections.append(block)
     head = {"type": "header", "text": {"type": "plain_text", "text": f"{client} · {channel}"}}
     parts = []
@@ -136,6 +161,49 @@ def _thread_part(client: str, channel: str, rows: list[dict], day: Period) -> li
         blocks = ([head] if i == 0 else []) + sections[i:i + _MAX_SECTIONS]
         parts.append({"text": f"{client} · {channel}", "blocks": blocks})
     return parts
+
+
+SUMMARY_ACTION = "show_campaign_summary"
+
+
+def summary_messages(rows: list[dict], day: Period) -> list[dict]:
+    """Every campaign that moved on the day, per client and channel: the
+    Campaign summary button's answer (Manveen, 3 Nov 2026: "how many emails
+    were sent from each campaign and also replies and everything"). Saved with
+    the post, shown only to whoever clicks."""
+    sections: list[dict] = []
+    for client in sorted({r["client"] for r in rows}, key=_client_rank):
+        for channel in ("Email", "LinkedIn"):
+            mine = [r for r in rows if r["client"] == client and r["channel"] == channel
+                    and any(r["counts"][day.key].values())]
+            if not mine:
+                continue
+            names = short_names([r["campaign"] for r in mine])
+            sections.append({"type": "header", "text": {"type": "plain_text",
+                                                        "text": f"{client} · {channel}"}})
+            for r in sorted(mine, key=lambda r: names[r["campaign"]].lower()):
+                sections.append({"type": "section", "text": {"type": "mrkdwn", "text":
+                                 f"*{names[r['campaign']]}*\n{_line(channel, r['counts'][day.key], True)}"}})
+    if not sections:
+        sections = [{"type": "section", "text": {"type": "mrkdwn",
+                                                 "text": "No campaign moved this day."}}]
+    title = {"type": "section", "text": {"type": "mrkdwn",
+                                         "text": f"*Campaign summary, {weekday_day(day.start)}*"}}
+    out = []
+    for i in range(0, len(sections), _MAX_SECTIONS):
+        out.append({"text": f"Campaign summary, {weekday_day(day.start)}",
+                    "blocks": ([title] if i == 0 else []) + sections[i:i + _MAX_SECTIONS]})
+    return out
+
+
+def summary_part(day: Period) -> dict:
+    """The thread's last message: the Campaign summary button."""
+    return {"text": "Campaign summary",
+            "blocks": [{"type": "section",
+                        "text": {"type": "mrkdwn", "text": "Every campaign's numbers for the day:"},
+                        "accessory": {"type": "button", "action_id": SUMMARY_ACTION,
+                                      "text": {"type": "plain_text", "text": "Campaign summary"},
+                                      "value": json.dumps({"day": day.start.isoformat()})}}]}
 
 
 def build_post(rows: list[dict], periods: list[Period], clients: list[str],
@@ -152,9 +220,10 @@ def build_post(rows: list[dict], periods: list[Period], clients: list[str],
     """
     day = next(p for p in periods if p.key == "day")
     head = [f"📊 Campaign stats for {weekday_day(day.start)}", "",
-            "A day runs 05:30 to 05:30 IST, as in Smartlead. New people reached = first "
-            "emails; emails sent includes follow-ups. Each campaign is in the thread, "
-            "with a button to read its replies."]
+            "Day = 05:30 to 05:30 IST (Smartlead's day). New people reached = first emails; "
+            "emails sent includes follow-ups.",
+            "In the thread: the campaigns that got replies (click to read them), then "
+            "*Campaign summary* for every campaign's numbers."]
     thread: list[dict] = []
     order = sorted(set(clients) | {r["client"] for r in rows}, key=_client_rank)
 
@@ -187,6 +256,7 @@ def build_post(rows: list[dict], periods: list[Period], clients: list[str],
     for p in periods:
         if p.key != "day":
             head += ["", f"*{_period_title(p)}*"] + lines(p, prefix=True)
+    thread.append(summary_part(day))
     if not_counted:
         head += ["", "Not counted: " + "; ".join(not_counted) + "."]
     if failed:

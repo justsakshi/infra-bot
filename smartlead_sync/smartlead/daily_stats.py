@@ -46,7 +46,9 @@ OUT_OF_OFFICE = {"out of office"}
 BOUNCE_NOTICE = {"sender originated bounce"}   # a bounce, not a reply
 
 EMAIL_FIELDS = ("reached", "sent", "replies", "positive", "not_interested",
-                "wrong_person", "out_of_office", "bounced")
+                "wrong_person", "out_of_office", "bounced", "later_touch")
+# later_touch: of the people who replied, those who answered a follow-up
+# (email 2 or later), for the button label (Manveen, 3 Nov: "2nd touch").
 LINKEDIN_FIELDS = ("invites", "accepted", "replies", "positive")
 
 
@@ -138,6 +140,7 @@ def email_counts(stats: list[dict], period: Period,
     out = dict.fromkeys(EMAIL_FIELDS, 0)
     kinds: dict[str, str] = {}
     category: dict[str, str] = {}
+    touch: dict[str, int] = {}
     for r in stats:
         if period.holds(r.get("sent_time")):
             out["sent"] += 1
@@ -149,6 +152,8 @@ def email_counts(stats: list[dict], period: Period,
         if not email or not r.get("reply_time"):
             continue
         kind = "bounce" if r.get("is_bounced") else _kind(r.get("lead_category"))
+        if kind != "bounce":
+            touch[email] = max(touch.get(email, 0), int(r.get("sequence_number") or 1))
         if kind != "bounce" and category.get(email, "other") == "other":
             category[email] = kind
         if kind == "ooo" and period.holds(r.get("reply_time")):
@@ -161,13 +166,15 @@ def email_counts(stats: list[dict], period: Period,
             if times and any(period.holds(t) for t in times) \
                     and category.get(email) not in (None, "ooo"):
                 kinds[email] = category[email]
-    for kind in kinds.values():
+    for email, kind in kinds.items():
         if kind == "ooo":
             out["out_of_office"] += 1
             continue
         out["replies"] += 1
         if kind in ("positive", "not_interested", "wrong_person"):
             out[kind] += 1
+        if touch.get(email, 1) >= 2:
+            out["later_touch"] += 1
     return out
 
 
