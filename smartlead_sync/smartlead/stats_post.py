@@ -202,7 +202,7 @@ def summary_part(day: Period, clients: list[str], no_replies: list[str] = ()) ->
     blocks: list[dict] = []
     if no_replies:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
-                       f"No replies on {weekday_day(day.start)} (US time): {', '.join(no_replies)}."}})
+                       f"No replies on {weekday_day(day.start)}: {', '.join(no_replies)}."}})
     blocks.append({"type": "section", "text": {"type": "mrkdwn",
                                                "text": "Each client's numbers, campaign by campaign:"}})
     blocks.append({"type": "actions", "elements": [
@@ -227,9 +227,9 @@ def build_post(rows: list[dict], periods: list[Period], clients: list[str],
     """
     day = next(p for p in periods if p.key == "day")
     nxt = day.start + timedelta(days=1)
-    head = [f"📊 Campaign stats for {weekday_day(day.start)}, US time", "",
-            f"{weekday_day(day.start)} 05:30 IST to {weekday_day(nxt)} 05:30 IST, the US working day. "
-            "A reply that reaches India before 05:30 counts for the day before.",
+    head = [f"📊 Campaign stats for {weekday_day(day.start)}", "",
+            f"{weekday_day(day.start)} = 5:30 AM {day.start:%a} to 5:30 AM {weekday_day(nxt)}, India time. "
+            "Anything before 5:30 AM counts for the day before.",
             "New people reached = first emails; emails sent includes follow-ups.",
             "In the thread: the campaigns that got replies (click to read them), then a "
             "summary button per client with every campaign's numbers."]
