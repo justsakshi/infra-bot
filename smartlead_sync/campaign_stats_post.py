@@ -96,7 +96,7 @@ def main() -> int:
     head, thread = build_post(rows, periods, clients, not_counted(rows), failed, linkedin,
                               {"Precise Leads": ds.WAALAXY_LOG_START})
     day = next(p for p in periods if p.key == "day")
-    if target and not save_summary(day.start.isoformat(), summary_messages(rows, day)):
+    if target and not save_summary(day.start.isoformat(), summary_messages(rows, day, clients)):
         print("[stats-post] Campaign summary not saved; its button will say so.")
     print(head)
     for part in thread:

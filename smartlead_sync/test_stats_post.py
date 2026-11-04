@@ -52,7 +52,8 @@ def test_headline_names_the_day_and_each_clients_numbers_in_order():
 def test_a_quiet_client_is_still_listed():
     head, thread = _post([])
     assert head.count("Email: nothing sent, no replies") == 3
-    assert [p["text"] for p in thread] == ["Campaign summary"]
+    assert [p["text"] for p in thread] == ["Client summaries"]
+    assert "No replies on Fri 30 Oct: BettrData, Melior, Precise Leads." in part_as_text(thread[0])
 
 
 def test_linkedin_line_for_clients_with_a_linkedin_source():
@@ -182,24 +183,33 @@ def test_weekday_day():
     assert weekday_day(date(2026, 10, 30)) == "Fri 30 Oct" == weekday_day("2026-10-30")
 
 
-def test_the_thread_ends_with_the_campaign_summary_button():
-    _, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=10, replies=1))])
-    last = thread[-1]["blocks"][0]["accessory"]
-    assert last["action_id"] == "show_campaign_summary"
-    assert json.loads(last["value"]) == {"day": "2026-10-30"}
+def test_the_thread_ends_with_a_summary_button_per_client():
+    # Manveen, 4 Nov 2026: "what about bettrdata and i want summary per client".
+    _, thread = _post([_r("Melior", "Email", "A", day=_email(sent=10, replies=1))])
+    last = thread[-1]
+    text = part_as_text(last)
+    assert "No replies on Fri 30 Oct: BettrData, Precise Leads." in text
+    buttons = last["blocks"][-1]["elements"]
+    assert [b["text"]["text"] for b in buttons] == ["BettrData summary", "Melior summary",
+                                                    "Precise Leads summary"]
+    assert len({b["action_id"] for b in buttons}) == 3
+    assert all(b["action_id"].startswith("show_campaign_summary_") for b in buttons)
+    assert json.loads(buttons[1]["value"]) == {"day": "2026-10-30", "client": "Melior"}
 
 
-def test_campaign_summary_lists_every_campaign_that_moved():
+def test_each_client_gets_its_own_summary_with_every_campaign_that_moved():
     from smartlead.stats_post import summary_messages
     rows = [_r("Melior", "Email", "Quiet", day=_email()),
             _r("BettrData", "Email", "Sent only", cid="12", day=_email(sent=225, reached=118)),
             _r("BettrData", "LinkedIn", "DP", "Expandi", day=_li(invites=15, accepted=4))]
-    (msg,) = summary_messages(rows, DAY)
-    text = part_as_text(msg)
-    assert "Campaign summary, Fri 30 Oct" in text
-    assert "*Sent only*\n118 new people reached · 225 emails sent\n" in text + "\n"    # no "0 replied"
-    assert "15 invites · 4 accepted" in text and "Quiet" not in text
-    assert text.index("BettrData · Email") < text.index("BettrData · LinkedIn")
+    msgs = summary_messages(rows, DAY, CLIENTS)
+    assert [m["client"] for m in msgs] == ["BettrData", "Melior", "Precise Leads"]
+    bettr = part_as_text(msgs[0])
+    assert bettr.startswith("*BettrData, Fri 30 Oct*")
+    assert "*Sent only*\n118 new people reached · 225 emails sent\n" in bettr + "\n"   # no "0 replied"
+    assert "15 invites · 4 accepted" in bettr and bettr.index("Email") < bettr.index("LinkedIn")
+    assert "Quiet" not in part_as_text(msgs[1])
+    assert "No campaign sent or got a reply this day." in part_as_text(msgs[1])
 
 
 def test_thread_shows_the_campaign_name_and_the_button_only():

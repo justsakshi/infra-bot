@@ -166,44 +166,51 @@ def _thread_part(client: str, channel: str, rows: list[dict], day: Period) -> li
 SUMMARY_ACTION = "show_campaign_summary"
 
 
-def summary_messages(rows: list[dict], day: Period) -> list[dict]:
-    """Every campaign that moved on the day, per client and channel: the
-    Campaign summary button's answer (Manveen, 3 Nov 2026: "how many emails
-    were sent from each campaign and also replies and everything"). Saved with
-    the post, shown only to whoever clicks."""
-    sections: list[dict] = []
-    for client in sorted({r["client"] for r in rows}, key=_client_rank):
+def summary_messages(rows: list[dict], day: Period, clients: list[str] = ()) -> list[dict]:
+    """Each client's campaigns that moved on the day, by channel: the answer
+    to that client's summary button (Manveen, 3-4 Nov 2026: "how many emails
+    were sent from each campaign and also replies and everything", "i want
+    summary per client"). Every message carries its "client"; saved with the
+    post, shown only to whoever clicks."""
+    out: list[dict] = []
+    for client in sorted(set(clients) | {r["client"] for r in rows}, key=_client_rank):
+        sections: list[dict] = []
         for channel in ("Email", "LinkedIn"):
             mine = [r for r in rows if r["client"] == client and r["channel"] == channel
                     and any(r["counts"][day.key].values())]
             if not mine:
                 continue
             names = short_names([r["campaign"] for r in mine])
-            sections.append({"type": "header", "text": {"type": "plain_text",
-                                                        "text": f"{client} · {channel}"}})
+            sections.append({"type": "header", "text": {"type": "plain_text", "text": channel}})
             for r in sorted(mine, key=lambda r: names[r["campaign"]].lower()):
                 sections.append({"type": "section", "text": {"type": "mrkdwn", "text":
                                  f"*{names[r['campaign']]}*\n{_line(channel, r['counts'][day.key], True)}"}})
-    if not sections:
-        sections = [{"type": "section", "text": {"type": "mrkdwn",
-                                                 "text": "No campaign moved this day."}}]
-    title = {"type": "section", "text": {"type": "mrkdwn",
-                                         "text": f"*Campaign summary, {weekday_day(day.start)}*"}}
-    out = []
-    for i in range(0, len(sections), _MAX_SECTIONS):
-        out.append({"text": f"Campaign summary, {weekday_day(day.start)}",
-                    "blocks": ([title] if i == 0 else []) + sections[i:i + _MAX_SECTIONS]})
+        if not sections:
+            sections = [{"type": "section", "text": {"type": "mrkdwn",
+                                                     "text": "No campaign sent or got a reply this day."}}]
+        heading = f"{client}, {weekday_day(day.start)}"
+        title = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{heading}*"}}
+        for i in range(0, len(sections), _MAX_SECTIONS):
+            out.append({"client": client, "text": heading,
+                        "blocks": ([title] if i == 0 else []) + sections[i:i + _MAX_SECTIONS]})
     return out
 
 
-def summary_part(day: Period) -> dict:
-    """The thread's last message: the Campaign summary button."""
-    return {"text": "Campaign summary",
-            "blocks": [{"type": "section",
-                        "text": {"type": "mrkdwn", "text": "Every campaign's numbers for the day:"},
-                        "accessory": {"type": "button", "action_id": SUMMARY_ACTION,
-                                      "text": {"type": "plain_text", "text": "Campaign summary"},
-                                      "value": json.dumps({"day": day.start.isoformat()})}}]}
+def summary_part(day: Period, clients: list[str], no_replies: list[str] = ()) -> dict:
+    """The thread's last message: who had no replies, and one summary button
+    per client."""
+    blocks: list[dict] = []
+    if no_replies:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
+                       f"No replies on {weekday_day(day.start)}: {', '.join(no_replies)}."}})
+    blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                                               "text": "Each client's numbers, campaign by campaign:"}})
+    blocks.append({"type": "actions", "elements": [
+        {"type": "button", "action_id": f"{SUMMARY_ACTION}_{i}",
+         "text": {"type": "plain_text", "text": f"{client} summary"[:75]},
+         "value": json.dumps({"day": day.start.isoformat(), "client": client})}
+        for i, client in enumerate(sorted(clients, key=_client_rank)[:25])]})
+    return {"text": "Client summaries", "blocks": blocks}
 
 
 def build_post(rows: list[dict], periods: list[Period], clients: list[str],
@@ -222,8 +229,8 @@ def build_post(rows: list[dict], periods: list[Period], clients: list[str],
     head = [f"📊 Campaign stats for {weekday_day(day.start)}", "",
             "Day = 05:30 to 05:30 IST (Smartlead's day). New people reached = first emails; "
             "emails sent includes follow-ups.",
-            "In the thread: the campaigns that got replies (click to read them), then "
-            "*Campaign summary* for every campaign's numbers."]
+            "In the thread: the campaigns that got replies (click to read them), then a "
+            "summary button per client with every campaign's numbers."]
     thread: list[dict] = []
     order = sorted(set(clients) | {r["client"] for r in rows}, key=_client_rank)
 
@@ -256,7 +263,9 @@ def build_post(rows: list[dict], periods: list[Period], clients: list[str],
     for p in periods:
         if p.key != "day":
             head += ["", f"*{_period_title(p)}*"] + lines(p, prefix=True)
-    thread.append(summary_part(day))
+    quiet = [c for c in order if not any(r["client"] == c and r["counts"][day.key].get("replies")
+                                         for r in rows)]
+    thread.append(summary_part(day, order, quiet))
     if not_counted:
         head += ["", "Not counted: " + "; ".join(not_counted) + "."]
     if failed:
@@ -274,6 +283,8 @@ def part_as_text(part) -> str:
             lines.append(b["text"]["text"])
             if b.get("accessory"):
                 lines.append(f"   [{b['accessory']['text']['text']}]")
+        elif b["type"] == "actions":
+            lines.append("   " + " ".join(f"[{e['text']['text']}]" for e in b["elements"]))
         elif b["type"] == "context":
             lines.append(b["elements"][0]["text"])
         lines.append("")

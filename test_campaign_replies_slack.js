@@ -58,7 +58,7 @@ const body = { channel: { id: 'C1' }, user: { id: 'U1' }, message: { ts: '200.1'
 
   await test('Campaign summary posts the saved messages privately in the thread', async () => {
     const handlers = {}; const posted = [];
-    const app = { action: (id, fn) => { handlers[id] = fn; } };
+    const app = { action: (id, fn) => { handlers.id = id; handlers.show_campaign_summary = fn; } };
     const client = { chat: { postEphemeral: async (m) => { posted.push(m); } } };
     const msgs = [{ text: 'Campaign summary, Mon 2 Nov', blocks: [{ type: 'divider' }] }, { text: 'more', blocks: [] }];
     let asked = null;
@@ -72,11 +72,30 @@ const body = { channel: { id: 'C1' }, user: { id: 'U1' }, message: { ts: '200.1'
 
   await test('Campaign summary with nothing saved says so', async () => {
     const handlers = {}; const posted = [];
-    const app = { action: (id, fn) => { handlers[id] = fn; } };
+    const app = { action: (id, fn) => { handlers.id = id; handlers.show_campaign_summary = fn; } };
     const client = { chat: { postEphemeral: async (m) => { posted.push(m); } } };
     registerCampaignSummary(app, { load: async () => null });
     await handlers.show_campaign_summary({ ack: async () => {}, body, action: { value: '{"day":"2026-11-02"}' }, client });
     assert.match(posted[0].text, /No campaign summary saved for 2026-11-02/);
+  });
+
+  await test('a client button shows only that client, and old posts still show everything', async () => {
+    const handlers = {}; const posted = [];
+    const app = { action: (id, fn) => { handlers.id = id; handlers.fn = fn; } };
+    const client = { chat: { postEphemeral: async (m) => { posted.push(m); } } };
+    const msgs = [{ client: 'BettrData', text: 'BettrData, Tue 3 Nov', blocks: [] },
+                  { client: 'Melior', text: 'Melior, Tue 3 Nov', blocks: [] }];
+    registerCampaignSummary(app, { load: async () => ({ messages: msgs }) });
+    assert.ok(handlers.id.test('show_campaign_summary') && handlers.id.test('show_campaign_summary_2'));
+    assert.ok(!handlers.id.test('show_campaign_summary_x'));
+    await handlers.fn({ ack: async () => {}, body, action: { value: '{"day":"2026-11-03","client":"Melior"}' }, client });
+    assert.deepStrictEqual(posted.map(m => m.text), ['Melior, Tue 3 Nov']);
+    posted.length = 0;
+    await handlers.fn({ ack: async () => {}, body, action: { value: '{"day":"2026-11-03"}' }, client });
+    assert.strictEqual(posted.length, 2);
+    posted.length = 0;
+    await handlers.fn({ ack: async () => {}, body, action: { value: '{"day":"2026-11-03","client":"Acme"}' }, client });
+    assert.match(posted[0].text, /No Acme summary saved for 2026-11-03/);
   });
 
   console.log(`${passed} passed`);
