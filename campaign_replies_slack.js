@@ -72,23 +72,28 @@ function loadSummary(day) {
 }
 
 function registerCampaignSummary(app, { load = loadSummary } = {}) {
-  app.action('show_campaign_summary', async ({ ack, body, action, client }) => {
+  // One button per client since 4 Nov 2026 (action ids show_campaign_summary_0, _1, ...;
+  // value {"day","client"}). Posts before that have one button and no client: show all.
+  app.action(/^show_campaign_summary(_\d+)?$/, async ({ ack, body, action, client }) => {
     await ack();
     const { channel, user, thread_ts } = where(body);
     if (!channel || !user) return;
     const say = (m) => client.chat.postEphemeral({ channel, user, thread_ts, ...m })
       .catch(err => console.error('[campaign-summary] postEphemeral failed:', err.data ? err.data.error : err.message));
     let day = '';
-    try { day = JSON.parse(action.value).day || ''; } catch (_) { /* no day */ }
+    let who = '';
+    try { ({ day = '', client: who = '' } = JSON.parse(action.value)); } catch (_) { /* no day */ }
     let doc = null;
     try { doc = day ? await load(day) : null; } catch (err) {
       console.error('[campaign-summary] read failed:', err.message);
     }
-    if (!doc || !Array.isArray(doc.messages) || !doc.messages.length) {
-      await say({ text: `:warning: No campaign summary saved for ${day || 'this post'}.` });
+    const msgs = (doc && Array.isArray(doc.messages) ? doc.messages : [])
+      .filter(m => !who || !m.client || m.client === who);
+    if (!msgs.length) {
+      await say({ text: `:warning: No ${who ? who + ' ' : 'campaign '}summary saved for ${day || 'this post'}.` });
       return;
     }
-    for (const m of doc.messages) {
+    for (const m of msgs) {
       await say({ text: m.text || 'Campaign summary', blocks: (m.blocks || []).slice(0, 50) });
     }
   });
