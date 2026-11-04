@@ -12,7 +12,7 @@ each with a button that shows the replies behind its number.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 from smartlead.daily_stats import Period, month_name
 from smartlead.reply_view import short_names
@@ -202,7 +202,7 @@ def summary_part(day: Period, clients: list[str], no_replies: list[str] = ()) ->
     blocks: list[dict] = []
     if no_replies:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
-                       f"No replies on {weekday_day(day.start)}: {', '.join(no_replies)}."}})
+                       f"No replies on {weekday_day(day.start)} (US time): {', '.join(no_replies)}."}})
     blocks.append({"type": "section", "text": {"type": "mrkdwn",
                                                "text": "Each client's numbers, campaign by campaign:"}})
     blocks.append({"type": "actions", "elements": [
@@ -226,9 +226,11 @@ def build_post(rows: list[dict], periods: list[Period], clients: list[str],
     (PL's Waalaxy replies are logged from 30 Oct 2026).
     """
     day = next(p for p in periods if p.key == "day")
-    head = [f"📊 Campaign stats for {weekday_day(day.start)}", "",
-            "Day = 05:30 to 05:30 IST (Smartlead's day). New people reached = first emails; "
-            "emails sent includes follow-ups.",
+    nxt = day.start + timedelta(days=1)
+    head = [f"📊 Campaign stats for {weekday_day(day.start)}, US time", "",
+            f"{weekday_day(day.start)} 05:30 IST to {weekday_day(nxt)} 05:30 IST, the US working day. "
+            "A reply that reaches India before 05:30 counts for the day before.",
+            "New people reached = first emails; emails sent includes follow-ups.",
             "In the thread: the campaigns that got replies (click to read them), then a "
             "summary button per client with every campaign's numbers."]
     thread: list[dict] = []
