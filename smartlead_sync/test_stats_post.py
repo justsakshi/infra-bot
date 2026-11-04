@@ -42,8 +42,11 @@ def test_headline_names_the_day_and_each_clients_numbers_in_order():
         _r("BettrData", "Email", "B", day=_email(sent=30)),
     ])
     lines = head.split("\n")
-    assert lines[0] == "📊 Campaign stats for Fri 30 Oct"
-    assert "05:30 to 05:30 IST" in head
+    # Manveen, 4 Nov 2026: "for bettrdata would you say no replies ?" - replies that reached
+    # India at 1 AM Tuesday were Monday US evening; the label has to say which day it means.
+    assert lines[0] == "📊 Campaign stats for Fri 30 Oct, US time"
+    assert ("Fri 30 Oct 05:30 IST to Sat 31 Oct 05:30 IST, the US working day. A reply that "
+            "reaches India before 05:30 counts for the day before.") in head
     assert head.index("*BettrData*") < head.index("*Melior*") < head.index("*Precise Leads*")
     assert ("Email: 100 new people reached · 150 emails sent · 3 people replied "
             "(2 positive/neutral, 1 not interested) · 1 out-of-office · 2 bounced") in lines
@@ -53,7 +56,7 @@ def test_a_quiet_client_is_still_listed():
     head, thread = _post([])
     assert head.count("Email: nothing sent, no replies") == 3
     assert [p["text"] for p in thread] == ["Client summaries"]
-    assert "No replies on Fri 30 Oct: BettrData, Melior, Precise Leads." in part_as_text(thread[0])
+    assert "No replies on Fri 30 Oct (US time): BettrData, Melior, Precise Leads." in part_as_text(thread[0])
 
 
 def test_linkedin_line_for_clients_with_a_linkedin_source():
@@ -188,7 +191,7 @@ def test_the_thread_ends_with_a_summary_button_per_client():
     _, thread = _post([_r("Melior", "Email", "A", day=_email(sent=10, replies=1))])
     last = thread[-1]
     text = part_as_text(last)
-    assert "No replies on Fri 30 Oct: BettrData, Precise Leads." in text
+    assert "No replies on Fri 30 Oct (US time): BettrData, Precise Leads." in text
     buttons = last["blocks"][-1]["elements"]
     assert [b["text"]["text"] for b in buttons] == ["BettrData summary", "Melior summary",
                                                     "Precise Leads summary"]
