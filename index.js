@@ -1542,6 +1542,16 @@ async function start() {
       if (process.env.CAMPAIGN_STATS_POST === 'off') return;
       if (await onceToday('campaign-stats-post')) runBilling('campaign-stats-post', ['campaign_stats_post.py', '--post']);
     }, { timezone: 'Asia/Kolkata' });
+    // Started after 10:15 on a weekday (restart, deploy, Render waking up)? Run
+    // the missed post; the lock skips it if 10:15 already ran (stats_catch_up.js).
+    if (require('./stats_catch_up').missedStatsPost(new Date(), process.env)) {
+      setTimeout(async () => {
+        if (await onceToday('campaign-stats-post')) {
+          console.log('[campaign-stats-post] catching up a missed 10:15 run');
+          runBilling('campaign-stats-post', ['campaign_stats_post.py', '--post']);
+        }
+      }, 60 * 1000);
+    }
 
     // Microsoft / Proofpoint reach (Manveen, 1 Nov 2026): Mondays 10:40 IST in
     // #pl_daily, after the stats post. Real sends, each campaign against its own
