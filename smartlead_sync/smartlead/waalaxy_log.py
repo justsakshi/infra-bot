@@ -33,23 +33,25 @@ def read_log(tab: str = LOG_TAB) -> list[list[str]]:
     return SheetsWriter(LOG_SHEET_ID)._sh.worksheet(tab).get_all_values()
 
 
+def is_sample(r: dict) -> bool:
+    """Waalaxy's "test webhook" button posts a made-up prospect, John Doe at
+    Netflix on linkedin.com/in/johndoe (4 Nov 2026 it was counted as a PL
+    reply). Matched on that profile URL, which no real person has."""
+    url = str(r.get("Profile URL", "")).strip().lower().rstrip("/")
+    return url.split("linkedin.com", 1)[-1] == "/in/johndoe" and "linkedin.com" in url
+
+
 def _rows(values: list[list[str]]) -> list[dict]:
     if not values:
         return []
     head = [h.strip() for h in values[0]]
-    return [dict(zip(head, raw + [""] * (len(head) - len(raw)))) for raw in values[1:]]
+    rows = (dict(zip(head, raw + [""] * (len(head) - len(raw)))) for raw in values[1:])
+    return [r for r in rows if not is_sample(r)]
 
 
 def _records(values: list[list[str]]) -> list[dict]:
-    if not values:
-        return []
-    head = [h.strip() for h in values[0]]
-    out = []
-    for raw in values[1:]:
-        r = dict(zip(head, raw + [""] * (len(head) - len(raw))))
-        if r.get("Campaign", "").strip() and r.get("Received at", "").strip():
-            out.append(r)
-    return out
+    return [r for r in _rows(values)
+            if r.get("Campaign", "").strip() and r.get("Received at", "").strip()]
 
 
 def history_rows(values: list[list[str]], accepts: list[list[str]] | None = None) -> list[dict]:
