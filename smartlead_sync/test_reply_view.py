@@ -240,6 +240,29 @@ def test_waalaxy_accepts_join_the_reply_counts():
     assert all(r["life_accepted"] is None for r in history_rows(WX))
 
 
+def test_waalaxy_sample_webhook_row_is_not_a_reply():
+    """Waalaxy's "test webhook" button sends a made-up prospect (John Doe, CEO
+    at Netflix, list "My prospect list"). On 4 Nov 2026 it landed in the log
+    and the stats counted it as a PL LinkedIn reply."""
+    from smartlead.daily_stats import waalaxy_rows
+    from smartlead.waalaxy_log import history_rows, replies
+    sample = ["2026-11-04T11:42:14.097Z", "My prospect list", "John Doe", "CEO", "Netflix",
+              "https://linkedin.com/in/johndoe", "UNKNOWN", "2025-04-16", "6ae46eea25026d60640609b0"]
+    log = WX + [sample]
+    f = datetime(2026, 11, 4, 0, 0, tzinfo=timezone.utc)
+    t = datetime(2026, 11, 5, 0, 0, tzinfo=timezone.utc)
+    assert replies(log, "My prospect list", f, t) == []
+    assert "My prospect list" not in {r["campaign"] for r in history_rows(log)}
+    from smartlead.daily_stats import Period
+    from datetime import date
+    p = Period("day", date(2026, 11, 4), date(2026, 11, 4))
+    assert "My prospect list" not in {r["campaign"] for r in waalaxy_rows(log, [], [p])}
+    # a real John Doe on a real profile still counts
+    real = sample[:]
+    real[5] = "https://www.linkedin.com/in/john-doe-4a1b2c/"
+    assert len(replies(WX + [real], "My prospect list", f, t)) == 1
+
+
 def test_a_stats_post_period_is_labelled_by_its_days():
     from datetime import datetime, timezone
     from smartlead.reply_view import window_label
