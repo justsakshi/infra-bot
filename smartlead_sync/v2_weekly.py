@@ -1,0 +1,874 @@
+#!/usr/bin/env python3
+"""Weekly Smart Delivery v2 job: read the result CSVs, take failing inboxes out of campaigns,
+bring them back once they pass twice, and post what happened.
+
+Why it runs on Manveen's PC: v2 has no API, webhook or email (Smartlead support, 5-6 Nov 2026),
+so the results only exist as the CSVs he downloads. A Windows scheduled task runs this every hour;
+it reads new v2 CSVs in his Downloads folder (by content hash, so a file is read once).
+
+What it does (rules in smartlead/v2_results.py):
+  * every inbox gets PASS / WATCH / FAIL per provider (4 of 4 seeds / 2-3 / 0-1);
+  * FAIL, or two WATCH weeks running: removed from every live campaign that is not a test
+    campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
+    tagged "DO NOT USE - failed v2 (auto)" so gtm presend refuses it. Warm-up stays on, and it
+    stays in its DT test campaign, so next Monday tests it again;
+  * a campaign left with no good sender is not touched (sending or scheduled: the post asks a person);
+  * an inbox the job pulled comes back (same campaigns, tag removed) after two passes 6+ days apart;
+  * if nearly every inbox in a night is below 4/4 at one provider, that provider is held (test problem);
+  * it acts on a night only once its files stopped arriving for 90 minutes;
+  * state is saved after every change, half-done moves are retried, a crash posts once a day;
+  * from Tuesday 12:00 IST, if Monday's results never came in, it posts one reminder.
+
+Modes:
+    python v2_weekly.py                         # dry run: print the plan; no state, no Smartlead, no Slack
+    python v2_weekly.py --warn --post           # save state and post the plan; no Smartlead changes
+    python v2_weekly.py --apply --post          # act
+    python v2_weekly.py --apply --post --act-from 2026-11-16   # --warn until that date, then act
+    python v2_weekly.py --history-only          # file the CSVs as history: kept, never acted on
+    python v2_weekly.py --replan --apply --post # act on stored results without new files
+
+Install (Windows, once): see docs/V2_WEEKLY.md. State and a copy of every CSV live in --state-dir
+(default ..\\..\\v2-weekly, outside the repo).
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import os
+import shutil
+import sys
+import traceback
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+if sys.platform == "win32" and sys.stdout is not None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+HERE = Path(__file__).resolve().parent
+
+
+def _env_dir() -> Path:
+    """The smartlead_sync folder whose .env holds the keys (the main checkout when this runs from a
+    worktree). Read before any smartlead import: smartlead.config reads the environment on import."""
+    if "--env-dir" in sys.argv[:-1]:
+        return Path(sys.argv[sys.argv.index("--env-dir") + 1])
+    return Path(os.getenv("INFRABOT_ENV_DIR") or HERE)
+
+
+ENV_DIR = _env_dir()
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ENV_DIR / ".." / ".env")
+    load_dotenv(ENV_DIR / ".env")
+except ImportError:  # pragma: no cover
+    pass
+
+sys.path.insert(0, str(HERE))
+from smartlead import v2_results as v2  # noqa: E402
+
+TAG = "DO NOT USE - failed v2 (auto)"
+DNU = "do not use"                       # gtm presend refuses any tag starting with this
+ACCOUNTS = ("PRECISE_LEADS", "BETTRDATA")
+SENDING = {"ACTIVE", "SCHEDULED"}        # a campaign that sends, or will, without anyone touching it
+STUCK = {"PAUSED", "PENDING", "BLOCKED"}
+MAX_AGE_DAYS = 21
+MAX_BYTES = 10_000_000
+SETTLE_MINUTES = 90
+UNTESTED_AFTER_DAYS = 8
+REPAIR_DAYS = 14
+DEFAULT_FOLDER = Path(os.getenv("V2_CSV_FOLDER") or Path.home() / "Downloads")
+DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
+
+
+class FleetIncomplete(RuntimeError):
+    """An account could not be read in full: acting on part of the fleet could undo good state."""
+
+
+def now_ist() -> datetime:
+    return datetime.now(v2.IST)
+
+
+def other_dnu(tags: list[str]) -> list[str]:
+    return [t for t in tags if t != TAG and t.strip().lower().startswith(DNU)]
+
+
+# --- state ---------------------------------------------------------------------------
+
+def load_state(d: Path) -> dict:
+    p = d / "state.json"
+    s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    for k, empty in (("files", {}), ("results", {}), ("holds", {}), ("pulled", {}), ("returned", []),
+                     ("reminded", []), ("log", []), ("overrides", {}), ("repair", [])):
+        s.setdefault(k, empty)
+    s.setdefault("needs_action", False)
+    s.setdefault("since", None)
+    s.setdefault("failed_on", None)
+    s.setdefault("repair_day", None)
+    s.setdefault("unposted", [])
+    return s
+
+
+def save_state(d: Path, s: dict) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    s["log"] = s["log"][-200:]
+    tmp = d / "state.json.tmp"
+    tmp.write_text(json.dumps(s, indent=1, sort_keys=True, default=list), encoding="utf-8")
+    os.replace(tmp, d / "state.json")
+
+
+# --- files ---------------------------------------------------------------------------
+
+def scan(folder: Path, state: dict, now: datetime) -> list[tuple[Path, str, str]]:
+    """New v2 CSVs in the folder: [(path, sha256, text)]."""
+    out = []
+    cutoff = now.timestamp() - MAX_AGE_DAYS * 86400
+    for p in sorted(folder.glob("*.csv")):
+        try:
+            st = p.stat()
+            if st.st_mtime < cutoff or st.st_size > MAX_BYTES:
+                continue
+            raw = p.read_bytes()
+        except OSError:
+            continue
+        sha = hashlib.sha256(raw).hexdigest()
+        if sha in state["files"]:
+            continue
+        text = raw.decode("utf-8-sig", errors="replace")
+        if v2.is_v2_csv(text):
+            out.append((p, sha, text))
+    return out
+
+
+def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, persist: bool) -> dict:
+    """Read new files into state. Returns {ingested: [...], pending: [...], nights: set of nights to act on}.
+    A test from before the job's first day (state["since"]) is filed as history whatever the flags say."""
+    got = {"ingested": [], "pending": [], "nights": set()}
+    for path, sha, text in files:
+        rows = v2.parse(text)
+        night = v2.night_of(rows)
+        info = {"name": path.name, "night": night, "rows": len(rows), "seen": now.isoformat(timespec="minutes")}
+        if not v2.file_ready(rows) or not night:
+            state["files"][sha] = {**info, "status": "pending"}
+            got["pending"].append(path.name)
+            continue
+        summary = v2.summarise(rows)
+        sent_last = v2.last_sent(rows)
+        old = history or bool(state.get("since") and night < state["since"])
+        for mb, s in summary.items():
+            res = {"night": night, "verdict": s["verdict"], "google": s["google"], "microsoft": s["microsoft"],
+                   "sent_last": sent_last, "file": sha[:12], "history": old}
+            state["results"][mb] = v2.merge_results(state["results"].get(mb, []), [res])
+        state["files"][sha] = {**info, "status": "history" if old else "ingested", "inboxes": len(summary)}
+        if persist:
+            keep = state_dir / "runs"
+            keep.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, keep / f"{night}__{sha[:8]}__{path.name}")
+        got["ingested"].append(path.name)
+        if not old:
+            got["nights"].add(night)
+            state["needs_action"] = True
+    return got
+
+
+def unsettled(state: dict, now: datetime) -> list[str]:
+    """Nights whose newest file arrived less than SETTLE_MINUTES ago (more may still be coming)."""
+    newest: dict[str, str] = {}
+    for f in state["files"].values():
+        if f.get("status") == "ingested" and f.get("night"):
+            newest[f["night"]] = max(newest.get(f["night"], ""), f.get("seen") or "")
+    cut = (now - timedelta(minutes=SETTLE_MINUTES)).isoformat(timespec="minutes")
+    return sorted(n for n, seen in newest.items() if seen > cut)
+
+
+def compute_holds(state: dict, fleet: dict | None) -> None:
+    """Held providers per night, leaving out inboxes already known bad that night (pulled before it,
+    or carrying a person's DO NOT USE tag)."""
+    tags = {e: i["tags"] for f in (fleet or {}).values() for e, i in f["inboxes"].items()}
+    nights: dict[str, dict] = defaultdict(dict)
+    for mb, rs in state["results"].items():
+        for x in rs:
+            nights[x["night"]][mb] = x
+    for night, results in nights.items():
+        bad = {mb for mb in results
+               if str((state["pulled"].get(mb) or {}).get("on") or "9999") < night or other_dnu(tags.get(mb, []))}
+        state["holds"][night] = sorted(v2.held_providers(results, exclude=bad))
+
+
+def effective(results: list[dict], holds: dict) -> list[dict]:
+    """Results with held providers set aside."""
+    out = []
+    for x in results:
+        held = set(holds.get(x["night"]) or [])
+        out.append({**x, "verdict": v2.apply_hold(x, held) if held else x["verdict"]})
+    return out
+
+
+def plan(state: dict) -> dict[str, dict]:
+    """{mailbox: decision} for every inbox with results. An inbox whose tag a person removed is
+    not pulled again for a result they already overrode (state overrides: {email: night})."""
+    out = {}
+    for mb, rs in state["results"].items():
+        d = v2.decide(effective(rs, state["holds"]), state["pulled"].get(mb))
+        judged = [x["night"] for x in rs if x["verdict"] in v2.JUDGED]
+        if d["action"] == v2.PULL and judged and judged[-1] <= str(state["overrides"].get(mb) or ""):
+            d = {"action": None, "why": "override"}
+        out[mb] = d
+    return out
+
+
+def reconcile(state: dict, fleet: dict, today: str) -> list[str]:
+    """The tag is the truth: a pulled inbox whose tag a person removed is theirs again."""
+    notes = []
+    tags = {e: i["tags"] for f in fleet.values() for e, i in f["inboxes"].items()}
+    for e in list(state["pulled"]):
+        if e in tags and TAG not in tags[e]:
+            rs = [x["night"] for x in state["results"].get(e, []) if x["verdict"] in v2.JUDGED]
+            state["overrides"][e] = rs[-1] if rs else today
+            state["pulled"].pop(e)
+            notes.append(f"{e}: a person removed its DO NOT USE tag, so the job leaves it alone until its next result.")
+        elif e not in tags:
+            state["pulled"].pop(e)
+            notes.append(f"{e}: no longer in Smartlead, dropped from the job's list.")
+    return notes
+
+
+def still_attached(state: dict, fleet: dict) -> dict[str, list[str]]:
+    """Pulled, still tagged, yet in a live non-test campaign (one it was the only sender of, or one
+    it was added to again): {account: [emails]} to pull again."""
+    out = defaultdict(list)
+    for acc, f in fleet.items():
+        live = {i for c in f["camps"].values() for i in c["senders"]}
+        for e, inf in f["inboxes"].items():
+            if e in state["pulled"] and TAG in inf["tags"] and inf["id"] in live:
+                out[acc].append(e)
+    return out
+
+
+# --- Smartlead -----------------------------------------------------------------------
+
+def _client(account: str, key: str):
+    from smartlead.api import SmartleadClient
+    return SmartleadClient(key, account)
+
+
+async def load_fleet() -> dict:
+    """Inboxes, live non-test campaigns and DT test campaigns of the client accounts. Raises
+    FleetIncomplete if an account's key is missing, so state is never reconciled against half a fleet."""
+    from smartlead.accounts import discover_accounts
+    from smartlead.report_sheet import client_label
+    found = {a.name.upper(): a for a in discover_accounts() if a.name.upper() in ACCOUNTS}
+    missing = [a for a in ACCOUNTS if a not in found]
+    if missing:
+        raise FleetIncomplete(f"no Smartlead key loaded for {', '.join(missing)} (check --env-dir)")
+    fleet = {}
+    for name, acc in found.items():
+        async with _client(acc.name, acc.api_key) as c:
+            inboxes = {}
+            for a in await c.list_email_accounts():
+                e = str(a.get("from_email") or "").strip().lower()
+                if e and a.get("id") is not None:
+                    tags = [str(t.get("tag_name") or t.get("name") or "") for t in (a.get("tags") or []) if isinstance(t, dict)]
+                    inboxes[e] = {"id": int(a["id"]), "client": client_label(acc.name, a.get("client_id")), "tags": tags}
+            if not inboxes:
+                raise FleetIncomplete(f"{name}: Smartlead returned no inboxes")
+            camps, dt = {}, {}
+            for cp in await c.list_campaigns() or []:
+                if not v2.is_live(cp.get("status")):
+                    continue
+                ea = await c.get_campaign_email_accounts(str(cp["id"])) or []
+                row = {"name": str(cp.get("name") or cp["id"]), "status": str(cp.get("status")).upper(),
+                       "senders": {int(a["id"]) for a in ea if a.get("id") is not None}}
+                if str(cp.get("name") or "").strip().upper().startswith("DT "):
+                    dt[int(cp["id"])] = row
+                elif not v2.is_test_campaign(cp.get("name")):
+                    camps[int(cp["id"])] = row
+        fleet[acc.name] = {"key": acc.api_key, "inboxes": inboxes, "camps": camps, "dt": dt}
+    return fleet
+
+
+async def _lead_status(c, cid: int) -> dict[int, str]:
+    out = {}
+    for r in await c.get_campaign_leads(str(cid)):
+        lid = (r.get("lead") or {}).get("id")
+        if lid:
+            out[int(lid)] = str(r.get("status", "")).upper()
+    return out
+
+
+async def _tag_id(c, create: bool) -> int | None:
+    tags = {t.get("name"): t.get("id") for t in await c.list_tags()}
+    if TAG not in tags and create:
+        await c._request_json("POST", "/tags", {"name": TAG, "color": "#E53935"})   # as pull_batch.py, 4 Nov
+        tags = {t.get("name"): t.get("id") for t in await c.list_tags()}
+    return tags.get(TAG)
+
+
+async def finish_move(c, job: dict, status: str, rep: dict) -> bool:
+    """After an inbox left a campaign: move its leads, resume the ones the removal stalled.
+    True when done; False to retry later (error, or the campaign is not sending yet)."""
+    try:
+        if not job.get("reallocated"):
+            re = await c._request_json("POST", f"/campaigns/{job['cid']}/reallocate-mailboxes",
+                                       {"from_email_account_ids": job["from"]})
+            rep["leads"]["moved"] += int((re or {}).get("leads_reallocated") or 0)
+            job["reallocated"] = True
+        after = await _lead_status(c, job["cid"])
+        if "stalled" not in job:             # first look after the removal: these are the leads it stalled
+            before = {int(k): v for k, v in job.pop("before", {}).items()}
+            job["stalled"] = [lid for lid, s in after.items() if s in STUCK and before.get(lid) not in STUCK]
+        newly = [lid for lid in job["stalled"] if after.get(lid) in STUCK]   # never a lead paused later by others
+        if not newly:
+            return True
+        if status != "ACTIVE":
+            job["waiting"] = len(newly)          # resumed once the campaign is active again
+            return False
+        failed = 0
+        for lid in newly:
+            try:
+                await c.resume_lead(str(job["cid"]), lid)
+                rep["leads"]["resumed"] += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+        if failed:
+            rep["errors"].append(f"{job['name']}: {failed} lead(s) could not be resumed; retried next run")
+        return not failed
+    except Exception as exc:  # noqa: BLE001
+        rep["errors"].append(f"{job['name']}: moving leads failed ({type(exc).__name__}); retried next run")
+        return False
+
+
+def _new_rep() -> dict:
+    return {"removed": defaultdict(list), "blocked": defaultdict(list), "parked": defaultdict(list),
+            "tagged": [], "failed": [], "added": defaultdict(list), "skipped": [], "errors": [], "notes": [],
+            "leads": Counter()}
+
+
+async def do_pulls(account: str, f: dict, emails: list[str], write: bool, today: str, state: dict, save) -> dict:
+    rep = _new_rep()
+    ids = {f["inboxes"][e]["id"]: e for e in emails}
+    bad = {i["id"] for i in f["inboxes"].values() if TAG in i["tags"] or other_dnu(i["tags"])} - set(ids)
+    p = v2.pull_plan(set(ids), f["camps"], also_bad=bad)
+    for cid, mine in p["blocked"].items():
+        for i in mine:
+            rep["blocked" if f["camps"][cid]["status"] in SENDING else "parked"][ids[i]].append(cid)
+    if not write:
+        for cid, mine in p["remove"].items():
+            for i in mine:
+                rep["removed"][ids[i]].append(cid)
+        rep["tagged"] = [e for e in emails if e not in rep["removed"]]
+        return rep
+    async with _client(account, f["key"]) as c:
+        tid = await _tag_id(c, create=True)
+        if not tid:
+            rep["errors"].append(f"{account}: could not create the DO NOT USE tag, so nothing was pulled")
+            return rep
+        id_list = sorted(ids)
+        for k in range(0, len(id_list), 25):
+            await c.assign_tags(id_list[k:k + 25], [tid])
+        for i, e in ids.items():
+            rec = state["pulled"].get(e) or {"on": today, "account": account, "id": i, "campaigns": []}
+            rec["blocked"] = rep["blocked"].get(e, []) + rep["parked"].get(e, [])
+            state["pulled"][e] = rec
+            if TAG not in f["inboxes"][e]["tags"]:
+                f["inboxes"][e]["tags"].append(TAG)
+        save()
+        for cid, mine in p["remove"].items():
+            camp = f["camps"][cid]
+            try:
+                before = await _lead_status(c, cid)
+            except Exception as exc:  # noqa: BLE001
+                rep["errors"].append(f"{camp['name']}: could not read its leads ({type(exc).__name__}); nothing removed, retried next run")
+                rep["failed"] += [ids[i] for i in mine]
+                continue
+            try:
+                await c.remove_campaign_email_accounts(str(cid), mine)
+            except Exception as exc:  # noqa: BLE001
+                rep["errors"].append(f"{camp['name']}: the removal call failed ({type(exc).__name__}); checked below")
+            try:
+                attached = {int(a["id"]) for a in await c.get_campaign_email_accounts(str(cid))}
+            except Exception as exc:  # noqa: BLE001
+                rep["errors"].append(f"{camp['name']}: could not check its senders after the removal "
+                                     f"({type(exc).__name__}); check this campaign by hand")
+                rep["failed"] += [ids[i] for i in mine]
+                continue
+            still = [i for i in mine if i in attached]
+            if still:
+                rep["errors"].append(f"{camp['name']}: {len(still)} inbox(es) still attached after removal; retried next run")
+                rep["failed"] += [ids[i] for i in still]
+            mine = [i for i in mine if i not in attached]
+            if not mine:
+                continue
+            for i in mine:
+                rec = state["pulled"][ids[i]]
+                rec["campaigns"] = sorted(set(rec["campaigns"]) | {cid})
+                rep["removed"][ids[i]].append(cid)
+            camp["senders"] -= set(mine)
+            job = {"account": account, "cid": cid, "name": camp["name"], "from": mine, "on": today,
+                   "before": {str(k): v for k, v in before.items()}, "reallocated": False}
+            state["repair"].append(job)
+            save()
+            if await finish_move(c, job, camp["status"], rep):
+                state["repair"].remove(job)
+            save()
+    planned = {ids[i] for mine in p["remove"].values() for i in mine}
+    rep["tagged"] = [e for e in emails if e not in planned]
+    return rep
+
+
+async def run_repairs(fleet: dict, state: dict, today: str, save) -> dict:
+    """Retry lead moves left half-done (error, or the campaign was paused at the time)."""
+    rep = _new_rep()
+    for job in list(state["repair"]):
+        f = fleet.get(job["account"])
+        camp = (f or {}).get("camps", {}).get(int(job["cid"]))
+        age = (date.fromisoformat(today) - date.fromisoformat(job.get("on") or today)).days
+        if f is None or camp is None or age > REPAIR_DAYS:
+            state["repair"].remove(job)
+            why = "the campaign is no longer live" if camp is None else f"{REPAIR_DAYS} days passed"
+            rep["notes"].append(f"{job['name']}: stopped retrying the lead move ({why}); "
+                                f"{job.get('waiting', 'some')} lead(s) may still be paused there.")
+            save()
+            continue
+        async with _client(job["account"], f["key"]) as c:
+            if await finish_move(c, job, camp["status"], rep):
+                state["repair"].remove(job)
+        save()
+    return rep
+
+
+async def do_returns(account: str, f: dict, emails: list[str], write: bool, today: str, state: dict, save) -> dict:
+    rep = _new_rep()
+    ok = []
+    for e in emails:
+        others = other_dnu(f["inboxes"][e]["tags"])
+        if others:
+            rep["skipped"].append(f"{e} passed twice but also has the tag \"{others[0]}\", so the job left it out.")
+            continue
+        ok.append(e)
+        rep["added"][e] = [int(c) for c in state["pulled"][e].get("campaigns") or [] if int(c) in f["camps"]]
+    if not write:
+        return rep
+    async with _client(account, f["key"]) as c:
+        tid = await _tag_id(c, create=False)
+        for e in ok:
+            i = f["inboxes"][e]["id"]
+            try:
+                for cid in rep["added"].get(e, []):
+                    if i not in f["camps"][cid]["senders"]:
+                        await c.add_campaign_email_accounts(str(cid), [i])
+                        f["camps"][cid]["senders"].add(i)
+                if tid:
+                    await c._request_json("DELETE", "/email-accounts/tag-mapping",
+                                          {"email_account_ids": [i], "tag_ids": [int(tid)]})
+            except Exception as exc:  # noqa: BLE001
+                rep["errors"].append(f"{e}: return failed ({type(exc).__name__}); retried next run")
+                rep["added"].pop(e, None)
+                continue
+            state["returned"].append({"email": e, "on": today, "campaigns": rep["added"].get(e, [])})
+            state["pulled"].pop(e, None)
+            save()
+    return rep
+
+
+# --- report --------------------------------------------------------------------------
+
+def _range(vals: list[int]) -> str:
+    lo, hi = min(vals), max(vals)
+    return f"{lo}" if lo == hi else f"{lo}-{hi}"
+
+
+def _seeds(items: list[tuple[str, dict]]) -> str:
+    g = [x["google"].get("inbox", 0) for _, x in items if (x.get("google") or {}).get("reported")]
+    m = [x["microsoft"].get("inbox", 0) for _, x in items if (x.get("microsoft") or {}).get("reported")]
+    return ", ".join(p for p in (f"Google {_range(g)}/4" if g else "", f"Microsoft {_range(m)}/4" if m else "") if p)
+
+
+def _names(cids, names: dict) -> str:
+    return ", ".join(names.get(int(c), str(c)) for c in cids)
+
+
+def status_of(mb: str, x: dict, eff: str, decision: dict, acted: dict, pulled_before: set, in_fleet: bool) -> str:
+    """What happened to this inbox in this run, for the report."""
+    if mb in acted["failed"] and mb not in acted["removed"]:
+        return "pull_failed"
+    if mb in acted["removed"]:
+        return "pulled"
+    if mb in acted["blocked"]:
+        return "blocked"
+    if mb in acted["parked"]:
+        return "parked"
+    if mb in acted["tagged"]:
+        return "tagged"
+    if mb in pulled_before and x["verdict"] in (v2.FAIL, v2.WATCH):
+        return "out_before"
+    if not in_fleet and x["verdict"] in (v2.FAIL, v2.WATCH, v2.NOT_SENT):
+        return "missing"
+    if eff != x["verdict"] and x["verdict"] in (v2.FAIL, v2.WATCH):
+        return "held"
+    if decision.get("why") == "override":
+        return "override"
+    return {v2.FAIL: "fail_idle", v2.WATCH: "watch", v2.NOT_SENT: "not_sent", v2.INCOMPLETE: "incomplete"}.get(x["verdict"], "")
+
+
+def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, acted: dict, write: bool,
+                 pulled_before: set, act_from: str | None = None) -> tuple[list[str], list[str]]:
+    nights = sorted(got["nights"])
+    latest = {mb: rs[-1] for mb, rs in state["results"].items() if rs and rs[-1]["night"] in got["nights"]}
+    count = Counter(x["verdict"] for x in latest.values())
+    tonight = dict(latest)
+    for e in set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["tagged"]) | set(acted["failed"]):
+        if e not in latest and state["results"].get(e):
+            latest[e] = state["results"][e][-1]             # acted on from an older result: still named
+    fleet = fleet or {}
+    client_of = {e: i["client"] for f in fleet.values() for e, i in f["inboxes"].items()}
+    names = {cid: c["name"] for f in fleet.values() for cid, c in {**f["camps"], **f.get("dt", {})}.items()}
+    would = "" if write else "would be "
+    per_dom = Counter(e.split("@")[1] for e in latest)
+
+    groups = defaultdict(list)
+    for mb, x in sorted(latest.items()):
+        eff = v2.apply_hold(x, set(state["holds"].get(x["night"]) or []))
+        st = status_of(mb, x, eff, decisions.get(mb, {}), acted, pulled_before, mb in client_of)
+        if st:
+            groups[(client_of.get(mb, "Not in Smartlead"), st, x["verdict"], mb.split("@")[1])].append((mb, x))
+
+    n_out = len(acted["removed"])
+    n_camps = len({c for cs in acted["removed"].values() for c in cs})
+    n_tag = len([e for e in acted["tagged"] if e not in acted["blocked"] and e not in acted["parked"]])
+    n_park = len([e for e in acted["parked"] if e not in acted["removed"]])
+    no_full = count[v2.INCOMPLETE] + count[v2.NOT_SENT]
+    when = " and ".join(f"{date.fromisoformat(n):%a} {date.fromisoformat(n).day} {date.fromisoformat(n):%b}" for n in nights)
+    head = [f"v2 placement results, tests of {when or '-'}",
+            f"{len(tonight)} inboxes · {count[v2.PASS]} pass · {count[v2.WATCH]} watch · {count[v2.FAIL]} fail"
+            + (f" · {no_full} no full result" if no_full else ""),
+            f"{'Took' if write else 'Would take'} {n_out} inbox{'es' if n_out != 1 else ''} out of {n_camps} live "
+            f"campaign{'s' if n_camps != 1 else ''} · {'tagged' if write else 'would tag'} "
+            + (f"{n_park} left in paused/draft campaigns and " if n_park else "")
+            + f"{n_tag} in no campaign · {'returned' if write else 'would return'} {len(acted['added'])}"]
+    if not write and act_from:
+        head.append(f"Watch week: nothing is changed in Smartlead until {act_from}, then the job acts on its own.")
+
+    needs, info = [], list(acted["notes"]) + list(acted["skipped"])
+    for night in nights:
+        if state["holds"].get(night):
+            needs.append(f"{' and '.join(p.title() for p in state['holds'][night])} results for {night} held: nearly every "
+                         f"inbox was below 4/4 there, which looks like a test problem, so nothing was pulled for it. "
+                         f"Re-run that test in Smart Delivery today.")
+    stuck = defaultdict(list)
+    for e, cids in acted["blocked"].items():
+        for cid in cids:
+            stuck[cid].append(e)
+    for cid, es in sorted(stuck.items()):
+        needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
+                     f"Not changed: pause it or add a good sender.")
+    needs += [f"Error: {err}" for err in acted["errors"]]
+    if got["pending"]:
+        needs.append(f"Downloaded before the results were in (download again later): {', '.join(got['pending'])}")
+    dead = Counter()
+    for k, items in groups.items():
+        if k[1] == "not_sent":
+            dead[k[3]] += len(items)
+    for dom, n in sorted(dead.items()):
+        needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test. Check "
+                     f"{'they are' if n != 1 else 'it is'} connected in Smartlead.")
+    tested = set(tonight)
+    no_result, waiting, in_dt = [], set(), set()
+    for acc, f in fleet.items():
+        for c in f.get("dt", {}).values():
+            in_dt |= {(acc, i) for i in c["senders"]}
+            if c["senders"] and not any(e in tested for e, i in f["inboxes"].items() if i["id"] in c["senders"]):
+                no_result.append(c["name"])
+                waiting |= {(acc, i) for i in c["senders"]}
+    if no_result and nights:
+        needs.append(f"No result this week from {', '.join(sorted(no_result))} ({len(waiting)} inboxes): "
+                     f"download their CSVs into Downloads.")
+    untested, missed = defaultdict(list), defaultdict(list)
+    if nights:
+        newest = date.fromisoformat(max(nights))
+        for acc, f in fleet.items():
+            live = {i for c in f["camps"].values() if c["status"] in SENDING for i in c["senders"]}
+            for e, inf in f["inboxes"].items():
+                if inf["id"] not in live or TAG in inf["tags"] or other_dnu(inf["tags"]) or (acc, inf["id"]) in waiting:
+                    continue
+                rs = state["results"].get(e) or []
+                last = rs[-1]["night"] if rs else None
+                if not last or (newest - date.fromisoformat(last)).days > UNTESTED_AFTER_DAYS:
+                    (missed if (acc, inf["id"]) in in_dt else untested)[(inf["client"], e.split("@")[1])].append(last or "never tested")
+    if missed:
+        n = sum(len(v) for v in missed.values())
+        needs.append(f"{n} inbox{'es' if n != 1 else ''} sit in a DT campaign but were missing from its v2 test results: "
+                     f"the test may hold an old list of inboxes, so re-create that test from the campaign. List below.")
+    if untested:
+        n = sum(len(v) for v in untested.values())
+        d = len(untested)
+        needs.append(f"{n} inbox{'es' if n != 1 else ''} on {d} domain{'s' if d != 1 else ''} send in live campaigns but "
+                     f"are in no DT test: add {'the domains' if d != 1 else 'the domain'} to the deliverability sheet "
+                     f"(dt_senders fills the DT tests from it). List below.")
+    head.append("\n" + (f"*Needs you: {len(needs)}*" if needs else "Nothing needs you."))
+
+    parts = []
+    if needs:
+        parts.append("*Needs you*\n\n" + "\n".join(f"• {x}" for x in needs))
+    by_client = defaultdict(list)
+    out_before = defaultdict(lambda: [0, set()])
+    order = {"pull_failed": -1, "pulled": 0, "blocked": 1, "parked": 2, "tagged": 3, "held": 4, "override": 5, "fail_idle": 6,
+             "watch": 7, "not_sent": 8, "incomplete": 9, "missing": 10}
+    for (client, st, verdict, dom), items in sorted(groups.items(), key=lambda kv: (kv[0][0], order.get(kv[0][1], 99), kv[0][3])):
+        es = [e for e, _ in items]
+        if st == "out_before":
+            out_before[client][0] += len(items)
+            out_before[client][1].add(dom)
+            continue
+        if st == "pulled":
+            cids = sorted({c for e in es for c in acted["removed"].get(e, [])})
+            pre = "below 4/4 two weeks running: " if verdict == v2.WATCH else ""
+            tail = f"{pre}{'taken' if write else 'would be taken'} out of {_names(cids, names)}; {would}tagged DO NOT USE"
+        elif st == "pull_failed":
+            tail = "removal failed (see Needs you), retried next run; tagged DO NOT USE"
+        elif st == "blocked":
+            cids = sorted({c for e in es for c in acted["blocked"][e]})
+            tail = f"last good sender of live {_names(cids, names)}: not removed (see Needs you); {would}tagged DO NOT USE"
+        elif st == "parked":
+            cids = sorted({c for e in es for c in acted["parked"][e]})
+            tail = (f"only failed senders left in paused/draft {_names(cids, names)}: left there, sends nothing while "
+                    f"paused; add a good sender before resuming it; {would}tagged DO NOT USE")
+        elif st == "tagged":
+            tail = f"in no campaign; {would}tagged DO NOT USE so it is not used"
+        elif st == "held":
+            tail = "not pulled: that provider's results are held as a test problem; still in its campaigns"
+        elif st == "override":
+            tail = "not pulled: a person removed its DO NOT USE tag; still in its campaigns"
+        elif st == "fail_idle":
+            tail = "not pulled (no action decided)"
+        elif st == "watch":
+            tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; taken out automatically if below 4/4 again next Monday"
+        elif st == "not_sent":
+            tail = "did not send in the test (see Needs you)"
+        elif st == "incomplete":
+            tail = "too few seeds answered; nothing done"
+        else:
+            tail = "not in Smartlead"
+        who = items[0][0] if len(items) == 1 else f"{len(items)} of {per_dom[dom]} inboxes"
+        label = verdict.lower().replace("_", " ")
+        by_client[client].append(" · ".join(x for x in (f"• {label}", dom, who, _seeds(items)) if x) + f" → {tail}")
+    for client in sorted(set(by_client) | set(out_before)):
+        lines = list(by_client.get(client, []))
+        if client in out_before:
+            n, doms = out_before[client]
+            lines.append(f"• Still failing, already out from an earlier run: {n} inbox{'es' if n != 1 else ''} "
+                         f"on {len(doms)} domain{'s' if len(doms) != 1 else ''}")
+        parts.append(f"*{client}*\n\n" + "\n".join(lines))
+    if acted["added"]:
+        parts.append("*Back in campaigns* (passed twice, 6+ days apart)\n\n"
+                     + "\n".join(f"• {e} → {_names(c, names) or 'no live campaign left'}" for e, c in sorted(acted["added"].items())))
+    if missed:
+        parts.append("*In a DT campaign but missing from its v2 test*\n\n" + "\n".join(
+            f"• {dom} ({client}): {len(v)} inbox{'es' if len(v) != 1 else ''}, last v2 {max(v)}"
+            for (client, dom), v in sorted(missed.items())))
+    if untested:
+        parts.append("*Sending but in no DT test*\n\n" + "\n".join(
+            f"• {dom} ({client}): {len(v)} inbox{'es' if len(v) != 1 else ''}, last v2 {max(v)}"
+            for (client, dom), v in sorted(untested.items())))
+    if info:
+        parts.append("*For info*\n\n" + "\n".join(f"• {x}" for x in info))
+    return head, parts
+
+
+def post_or_queue(state: dict, head: list[str], parts: list[str]) -> bool:
+    """Post; if Slack refuses, keep it in state so the next run tries again (the job is never silent)."""
+    if post(head, parts):
+        return True
+    state["unposted"] = (state["unposted"] + [{"head": head, "parts": parts}])[-5:]
+    return False
+
+
+def post(head: list[str], parts: list[str]) -> bool:
+    from smartlead.config import HEALTH_NOTIFY_CHANNEL
+    from smartlead.notify import post_with_thread
+    token = os.getenv("SLACK_BOT_TOKEN", "")
+    if not token or not HEALTH_NOTIFY_CHANNEL:
+        print("  SLACK_BOT_TOKEN / HEALTH_NOTIFY_CHANNEL missing: not posted")
+        return False
+    return bool(post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, parts))
+
+
+# --- main ----------------------------------------------------------------------------
+
+def _merge(into: dict, rep: dict) -> None:
+    for k in ("removed", "blocked", "parked", "added"):
+        for e, v in rep[k].items():
+            into[k][e] = into[k].get(e, []) + list(v)
+    for k in ("tagged", "failed", "skipped", "errors", "notes"):
+        into[k] += rep[k]
+    into["leads"].update(rep["leads"])
+
+
+async def run(args) -> int:
+    state_dir = Path(args.state_dir)
+    persist = bool(args.apply or args.warn or args.history_only)
+    lock = state_dir / "run.lock"
+    if lock.exists() and datetime.now().timestamp() - lock.stat().st_mtime < 50 * 60:
+        print("[v2-weekly] another run is in progress; skipping")
+        return 0
+    if persist:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        lock.write_text(datetime.now().isoformat(), encoding="utf-8")
+    try:
+        return await _run(args, state_dir, persist)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        if persist and getattr(args, "post", False):
+            from smartlead.notify import redact
+            state = load_state(state_dir)
+            today = now_ist().date().isoformat()
+            if state.get("failed_on") != today:
+                post(["v2 weekly job failed",
+                      "\n" + redact(f"{type(exc).__name__}: {str(exc)[:200]}"),
+                      f"\nIt tries again every hour and says so here once a day while it keeps failing. "
+                      f"Log: {state_dir / 'task.log'}"], [])
+                state["failed_on"] = today
+                save_state(state_dir, state)
+        return 2
+    finally:
+        if persist and lock.exists():
+            lock.unlink()
+
+
+async def _run(args, state_dir: Path, persist: bool) -> int:
+    state = load_state(state_dir)
+    now = now_ist()
+    today = now.date().isoformat()
+    state["since"] = state["since"] or today
+    write = bool(args.apply) and not (args.act_from and today < args.act_from)
+    can_post = bool(args.post) and persist
+
+    def save():
+        if persist:
+            save_state(state_dir, state)
+
+    if can_post and state["unposted"]:
+        for item in list(state["unposted"]):
+            if post(item["head"], item["parts"]):
+                state["unposted"].remove(item)
+        save()
+    got = ingest(scan(Path(args.folder), state, now), state, state_dir, args.history_only, now, persist)
+    print(f"[v2-weekly] {now:%Y-%m-%d %H:%M} IST ({'act' if write else 'warn' if persist else 'dry run'}): "
+          f"{len(got['ingested'])} new file(s), {len(got['pending'])} not ready"
+          + (f": {', '.join(got['ingested'])}" if got["ingested"] else ""))
+    save()
+    if args.history_only:
+        print(f"[v2-weekly] filed as history: {', '.join(got['ingested']) or '-'}; no action")
+        return 0
+
+    acting = state["needs_action"] or args.replan or (got["ingested"] and not persist)
+    if acting and persist and not args.replan and unsettled(state, now):
+        print(f"[v2-weekly] waiting: files for {', '.join(unsettled(state, now))} arrived in the last "
+              f"{SETTLE_MINUTES} minutes; acting once no more come")
+        return 0
+    if not acting:
+        nights_in = {i.get("night") for i in state["files"].values() if i.get("status") in ("ingested", "history")}
+        due = v2.reminder_due((now.date(), now.hour), {n for n in nights_in if n}, set(state["reminded"]), state["since"])
+        if due and can_post and post([f"v2 results for Monday {date.fromisoformat(due).day} "
+                                      f"{date.fromisoformat(due):%b}'s tests are not in yet",
+                                      "\nDownload each test's CSV from Smart Delivery v2 into Downloads on Manveen's PC. "
+                                      "The job reads them within the hour. Until then nothing is pulled or returned."], []):
+            state["reminded"].append(due)
+        if got["pending"] and can_post:
+            post([f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
+                  "\nDownload them again in a few hours. Nothing was read from them."], [])
+        if state["repair"] and write and state["repair_day"] != today:
+            fleet = await load_fleet()
+            rep = await run_repairs(fleet, state, today, save)
+            state["repair_day"] = today
+            print(f"[v2-weekly] repairs: {dict(rep['leads'])}, notes {rep['notes']}, errors {rep['errors']}")
+            if (rep["notes"] or rep["errors"]) and can_post:
+                post_or_queue(state, ["v2 job: leads in campaigns it pulled inboxes from",
+                                      "\n" + "\n".join(f"• {x}" for x in rep["errors"] + rep["notes"])], [])
+        save()
+        return 0
+
+    if not persist and not args.replan and not got["nights"]:
+        print("[v2-weekly] dry run: only history files (tests from before the job's first day); nothing to act on")
+        return 0
+    nights_now = set(got["nights"])
+    if not nights_now:
+        known = {f["night"] for f in state["files"].values() if f.get("status") == "ingested" and f.get("night")}
+        nights_now = {max(known)} if known else set()
+    got["nights"] = nights_now
+
+    fleet = await load_fleet()
+    acted = _new_rep()
+    if write and state["repair"]:
+        _merge(acted, await run_repairs(fleet, state, today, save))
+    if write:
+        acted["notes"] += reconcile(state, fleet, today)
+    pulled_before = set(state["pulled"])
+    compute_holds(state, fleet)
+    decisions = plan(state)
+    where = {e: acc for acc, f in fleet.items() for e in f["inboxes"]}
+    pulls, returns = defaultdict(list), defaultdict(list)
+    for mb, d in sorted(decisions.items()):
+        if d["action"] == v2.PULL and mb in where:
+            pulls[where[mb]].append(mb)
+        elif d["action"] == v2.RETURN and mb in where:
+            returns[where[mb]].append(mb)
+    for acc, emails in still_attached(state, fleet).items():
+        pulls[acc] += [e for e in emails if e not in pulls[acc] and decisions.get(e, {}).get("action") != v2.RETURN]
+
+    for acc, emails in pulls.items():
+        if emails:
+            _merge(acted, await do_pulls(acc, fleet[acc], emails, write, today, state, save))
+    for acc, emails in returns.items():
+        _merge(acted, await do_returns(acc, fleet[acc], emails, write, today, state, save))
+    if acted["leads"]:
+        print(f"  leads moved {acted['leads']['moved']}, resumed {acted['leads']['resumed']}")
+
+    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from)
+    text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
+    print(text)
+    state["log"].append({"at": now.isoformat(timespec="minutes"), "write": write, "nights": sorted(got["nights"]),
+                         "pulled": dict(acted["removed"]), "tagged": acted["tagged"], "returned": dict(acted["added"]),
+                         "blocked": dict(acted["blocked"]), "errors": acted["errors"]})
+    state["needs_action"] = False
+    if persist:
+        reports = state_dir / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / f"{now:%Y-%m-%d_%H%M}{'' if write else '_warn'}.md").write_text(text, encoding="utf-8")
+        if can_post:
+            post_or_queue(state, head, parts)
+        save()
+    else:
+        print("[v2-weekly] dry run: nothing changed in Smartlead, state not saved, nothing posted")
+    return 1 if acted["errors"] else 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--folder", default=str(DEFAULT_FOLDER))
+    ap.add_argument("--state-dir", default=str(DEFAULT_STATE))
+    ap.add_argument("--apply", action="store_true", help="change Smartlead and save state (default: dry run)")
+    ap.add_argument("--warn", action="store_true", help="save state and post the plan, change nothing in Smartlead")
+    ap.add_argument("--act-from", help="with --apply: behave like --warn before this date (YYYY-MM-DD)")
+    ap.add_argument("--post", action="store_true", help="post to Slack (with --apply or --warn)")
+    ap.add_argument("--history-only", action="store_true", help="file new CSVs as history, act on nothing")
+    ap.add_argument("--replan", action="store_true", help="decide again from stored results without new files")
+    ap.add_argument("--env-dir", help="smartlead_sync folder holding the .env (read before anything else)")
+    ap.add_argument("--log", help="append all output to this file (the scheduled task runs windowless)")
+    args = ap.parse_args(argv)
+    if args.act_from:
+        date.fromisoformat(args.act_from)
+    if args.log or sys.stdout is None:
+        log = Path(args.log or Path(args.state_dir) / "task.log")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(log, "a", encoding="utf-8", buffering=1)
+    return asyncio.run(run(args))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
