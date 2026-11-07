@@ -103,6 +103,7 @@ DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
 # Ryan's path until he agrees to automatic ones). --act-clients overrides this for a run.
 REPORT_ONLY_CLIENTS = {"Melior"}
 REPORT_ONLY_WHY = {"Melior": "until Ryan agrees"}
+REPORT_ONLY_OWNER = {"Melior": "Ryan"}   # who decides a report-only client's stuck campaign
 # Mongo (db smartlead.config.HEALTH_HISTORY_DB), read on Render: is the PC job alive, and what did v2 say.
 HEARTBEAT_COLLECTION = "v2_heartbeat"
 VERDICTS_COLLECTION = "v2_verdicts"
@@ -586,7 +587,7 @@ def _names(cids, names: dict) -> str:
 def status_of(mb: str, x: dict, eff: str, decision: dict, acted: dict, pulled_before: set, in_fleet: bool) -> str:
     """What happened to this inbox in this run, for the report."""
     if mb in acted.get("report_only", {}):
-        return "report_only"
+        return "report_only_" + _ro_kind(acted["report_only"][mb])
     if mb in acted["failed"] and mb not in acted["removed"]:
         return "pull_failed"
     if mb in acted["removed"]:
@@ -608,21 +609,59 @@ def status_of(mb: str, x: dict, eff: str, decision: dict, acted: dict, pulled_be
     return {v2.FAIL: "fail_idle", v2.WATCH: "watch", v2.NOT_SENT: "not_sent", v2.INCOMPLETE: "incomplete"}.get(x["verdict"], "")
 
 
-def _report_only_tail(client: str, items: list[dict], names: dict) -> str:
-    """What the job would have done to a report-only client's inboxes; nothing was done."""
-    def cids(k):
-        return sorted({c for r in items for c in r.get(k, [])})
-    bits = []
-    if cids("removed"):
-        bits.append(f"would be taken out of {_names(cids('removed'), names)}")
-    if cids("blocked"):
-        bits.append(f"last good sender of live {_names(cids('blocked'), names)}, so it would stay there")
-    if cids("parked"):
-        bits.append(f"would stay in paused/draft {_names(cids('parked'), names)}")
-    if not bits:
-        bits.append("in no campaign; would be tagged DO NOT USE")
+def _ro_kind(rec: dict) -> str:
+    """What the job would do to one report-only inbox, in the order the acting path reports it: take it out
+    of a campaign, leave it as the last good sender of a live one, leave it in a paused/draft one, or only tag it."""
+    return next((k for k in ("removed", "blocked", "parked") if rec.get(k)), "tagged")
+
+
+def _report_only_tail(kind: str, client: str, items: list[dict], names: dict) -> str:
+    """What the job would have done to a group of a report-only client's inboxes, all of one kind (review V2-S2:
+    one mixed group said '2 of 2 inboxes ... would stay there' for an inbox in no campaign). Nothing was done."""
+    cids = _names(sorted({c for r in items for c in r.get(kind, [])}), names)
+    tail = {"removed": f"would be taken out of {cids}",
+            "blocked": f"last good sender of live {cids}, so it would stay there",
+            "parked": f"only failed senders left in paused/draft {cids}, so it would stay there; add a good sender "
+                      f"before resuming it",
+            "tagged": "in no campaign; would be tagged DO NOT USE"}[kind]
     why = REPORT_ONLY_WHY.get(client, "")
-    return "; ".join(bits) + f" ({client}: report-only{' ' + why if why else ''}); nothing changed in Smartlead"
+    return f"{tail} ({client}: report-only{' ' + why if why else ''}); nothing changed in Smartlead"
+
+
+def _inboxes(n: int) -> str:
+    return f"{n} inbox{'es' if n != 1 else ''}"
+
+
+def _and(bits: list[str]) -> str:
+    return bits[0] if len(bits) == 1 else ", ".join(bits[:-1]) + " and " + bits[-1]
+
+
+def _ro_would(kinds: Counter) -> str:
+    """'take 1 inbox out of campaigns and tag 1 inbox that is in no campaign': counted by what would happen."""
+    bits = []
+    if kinds["removed"]:
+        bits.append(f"take {_inboxes(kinds['removed'])} out of campaigns")
+    n = kinds["blocked"]
+    if n:
+        bits.append(f"leave {_inboxes(n)} in {'a live campaign where it is the last good sender' if n == 1 else 'live campaigns where they are the last good senders'}")
+    n = kinds["parked"]
+    if n:
+        bits.append(f"leave {_inboxes(n)} in {'a paused/draft campaign that has' if n == 1 else 'paused/draft campaigns that have'} no good sender")
+    n = kinds["tagged"]
+    if n:
+        bits.append(f"tag {_inboxes(n)} that {'is' if n == 1 else 'are'} in no campaign")
+    return _and(bits)
+
+
+def _unjudged_why(x: dict) -> list[str]:
+    """Why a result that was not judged needs the test fixed: 'bounced' (a seed bounced), or the provider with
+    no seed rows at all. A pending seed or a short test is reported by its own Needs-you line."""
+    out = []
+    provs = [(p, x.get(p) or {}) for p in ("google", "microsoft")]
+    if any(int(d.get("bounced") or 0) and d.get("verdict") == v2.INCOMPLETE for _, d in provs):
+        out.append("bounced")
+    out += [p for p, d in provs if not int(d.get("sent") or 0) and d.get("verdict") != v2.NOT_SENT]
+    return out
 
 
 def _incomplete_tail(items: list[tuple[str, dict]]) -> str:
@@ -700,18 +739,29 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             needs.append(f"{' and '.join(p.title() for p in extra)} results in {f.get('name', fid)} ({f['night']}) held: "
                          f"nearly every inbox in that test was below 4/4 there, which looks like a test problem, so "
                          f"nothing was pulled for it. Re-run that test in Smart Delivery today.")
-    ro_count = Counter(client_of.get(e, "Not in Smartlead") for e in report_only)
-    for client, n in sorted(ro_count.items()):
+    ro_kinds: dict[str, Counter] = defaultdict(Counter)
+    for e, rec in report_only.items():
+        ro_kinds[client_of.get(e, "Not in Smartlead")][_ro_kind(rec)] += 1
+    for client, kinds in sorted(ro_kinds.items()):
         why = REPORT_ONLY_WHY.get(client, "")
-        needs.append(f"{client} is report-only{' ' + why if why else ''}: the job would take {n} of its "
-                     f"inboxes out of campaigns and changed nothing. List under *{client}* below.")
-    stuck = defaultdict(list)
+        needs.append(f"{client} is report-only{' ' + why if why else ''}, so nothing changed in Smartlead for it. "
+                     f"The job would {_ro_would(kinds)}. List under *{client}* below.")
+    stuck, ro_stuck = defaultdict(list), defaultdict(list)
     for e, cids in acted["blocked"].items():
         for cid in cids:
             stuck[cid].append(e)
+    for e, rec in report_only.items():
+        for cid in rec.get("blocked", []):
+            ro_stuck[cid].append(e)
     for cid, es in sorted(stuck.items()):
         needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
                      f"Not changed: pause it or add a good sender.")
+    for cid, es in sorted(ro_stuck.items()):
+        client = client_of.get(sorted(es)[0], "Not in Smartlead")
+        why, owner = REPORT_ONLY_WHY.get(client, ""), REPORT_ONLY_OWNER.get(client)
+        needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
+                     f"Not changed, as {client} is report-only{' ' + why if why else ''}: "
+                     f"{'ask ' + owner + ' to ' if owner else ''}pause it or add a good sender.")
     needs += [f"Error: {err}" for err in acted["errors"]]
     if got["pending"]:
         needs.append(f"Downloaded before the results were in (download again later): {', '.join(got['pending'])}")
@@ -735,6 +785,21 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     for name, n in partial:
         needs.append(f"{name}: {n} seed result{'s' if n != 1 else ''} had not come in when it was downloaded, so "
                      f"those inboxes were not judged. Download it again later today.")
+    # A bounced seed, or a provider with no seed rows, leaves inboxes not judged at all: no fail is pulled and no
+    # pulled inbox comes back until the test is fixed, so it always needs a person (review V2-S1).
+    unjudged = defaultdict(set)
+    for mb, rs in state["results"].items():
+        for x in rs:
+            if x["night"] in got["nights"] and not x.get("history") and x["verdict"] == v2.INCOMPLETE:
+                for why in _unjudged_why(x):
+                    unjudged[(x.get("file") or "", why)].add(mb)
+    for (fid, why), es in sorted(unjudged.items()):
+        name, n = (file_of.get(fid) or {}).get("name") or "a test file", len(es)
+        what = (f"a seed bounced for {_inboxes(n)}" if why == "bounced"
+                else f"no {why.title()} seed results for {_inboxes(n)}")
+        needs.append(f"{name}: {what}, so {'it was' if n == 1 else 'they were'} not judged. Check the test's seed list "
+                     f"in Smart Delivery{'' if why == 'bounced' else ' (it needs 4 Google and 4 Microsoft seeds)'} "
+                     f"and re-run it.")
     weekly = any(v2.is_weekly_night(n) for n in nights)
     if nights and not weekly:
         info.append("Not a Monday test, so the weekly checks (missing tests, untested senders) were skipped.")
@@ -778,7 +843,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         parts.append("*Needs you*\n\n" + "\n".join(f"• {x}" for x in needs))
     by_client = defaultdict(list)
     out_before = defaultdict(lambda: [0, set()])
-    order = {"pull_failed": -1, "pulled": 0, "report_only": 0.5, "blocked": 1, "parked": 2, "tagged": 3, "held": 4,
+    order = {"pull_failed": -1, "pulled": 0, "report_only_removed": 0.5, "blocked": 1, "report_only_blocked": 1.5,
+             "parked": 2, "report_only_parked": 2.5, "tagged": 3, "report_only_tagged": 3.5, "held": 4,
              "override": 5, "fail_idle": 6, "watch": 7, "not_sent": 8, "incomplete": 9, "missing": 10}
     for (client, st, verdict, dom), items in sorted(groups.items(), key=lambda kv: (kv[0][0], order.get(kv[0][1], 99), kv[0][3])):
         es = [e for e, _ in items]
@@ -786,9 +852,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             out_before[client][0] += len(items)
             out_before[client][1].add(dom)
             continue
-        if st == "report_only":
+        if st.startswith("report_only_"):
             pre = "below 4/4 two weeks running: " if verdict == v2.WATCH else ""
-            tail = pre + _report_only_tail(client, [report_only[e] for e in es], names)
+            tail = pre + _report_only_tail(st[len("report_only_"):], client, [report_only[e] for e in es], names)
         elif st == "pulled":
             cids = sorted({c for e in es for c in acted["removed"].get(e, [])})
             pre = "below 4/4 two weeks running: " if verdict == v2.WATCH else ""

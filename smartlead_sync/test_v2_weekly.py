@@ -556,6 +556,88 @@ def test_a_midweek_test_skips_the_weekly_checks(tmp_path):
     assert "Not a Monday test" in text and head[-1] == "\nNothing needs you."
 
 
+def write_rows(folder: Path, name: str, rows: list[tuple[str, str, str]]):
+    """rows: (mailbox, provider, landed), all sent Monday 9 Nov 20:01 IST."""
+    p = folder / name
+    p.write_text(HEAD + "".join(f"{mb},{prov},{landed},2026-11-09T14:31:00.000Z,SENT\n" for mb, prov, landed in rows),
+                 encoding="utf-8")
+    t = NOW.timestamp() - 3600
+    os.utime(p, (t, t))
+
+
+def test_a_bounced_seed_needs_a_person_and_never_says_nothing_needs_you(tmp_path):
+    # review V2-S1: 12 inboxes with one Microsoft seed BOUNCED each said "12 no full result" and "Nothing needs you."
+    rows = []
+    for n in range(12):
+        rows += [(f"b{n}@x.com", "GOOGLE_WORKSPACE", "Inbox")] * 4
+        rows += [(f"b{n}@x.com", "MICROSOFT_365", x) for x in ("Inbox", "Inbox", "Inbox", "BOUNCED")]
+    write_rows(tmp_path, "dt-pl-1.csv", rows)
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    wk.compute_holds(st, None)
+    assert all(d["action"] is None for d in wk.plan(st).values())
+    head, parts = wk.build_report(st, got, wk.plan(st), None, acted(), False, set())
+    assert head[1] == "12 inboxes · 0 pass · 0 watch · 0 fail · 12 no full result"
+    assert head[-1] == "\n*Needs you: 1*" and "Nothing needs you." not in "\n".join(head + parts)
+    assert ("• dt-pl-1.csv: a seed bounced for 12 inboxes, so they were not judged. Check the test's seed list in "
+            "Smart Delivery and re-run it.") in parts[0]
+
+
+def test_a_provider_with_no_seed_rows_needs_a_person(tmp_path):
+    rows = [(f"g{n}@x.com", "GOOGLE_WORKSPACE", "Inbox") for n in range(3) for _ in range(4)]
+    rows += [("g0@x.com", "MICROSOFT_365", "Inbox")] * 4
+    write_rows(tmp_path, "dt-pl-2.csv", rows)
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    wk.compute_holds(st, None)
+    head, parts = wk.build_report(st, got, wk.plan(st), None, acted(), False, set())
+    assert head[1] == "3 inboxes · 1 pass · 0 watch · 0 fail · 2 no full result"
+    assert ("• dt-pl-2.csv: no Microsoft seed results for 2 inboxes, so they were not judged. Check the test's seed "
+            "list in Smart Delivery (it needs 4 Google and 4 Microsoft seeds) and re-run it.") in parts[0]
+    assert "a provider has no result, so it was not judged; nothing done" in "\n".join(parts)
+
+
+def melior_fleet():
+    return {"PRECISE_LEADS": {"key": "k", "inboxes": {
+        "idle@y.com": {"id": 30, "client": "Melior", "tags": []},
+        "last@y.com": {"id": 31, "client": "Melior", "tags": []}},
+        "camps": {5: {"name": "Melior | Solo", "status": "ACTIVE", "senders": {31}}}, "dt": {}}}
+
+
+def test_report_only_lines_say_what_would_happen_to_each_inbox(tmp_path):
+    # review V2-S2: two Melior fails on one domain, one in no campaign and one the last good sender of a live
+    # campaign, read "would take 2 of its inboxes out of campaigns" and "2 of 2 inboxes ... would stay there".
+    st = fresh_state(tmp_path)
+    st["results"]["idle@y.com"] = [result(v2.FAIL, 4, 1)]
+    st["results"]["last@y.com"] = [result(v2.FAIL, 0, 4)]
+    a = acted(report_only={"idle@y.com": {"removed": [], "blocked": [], "parked": []},
+                           "last@y.com": {"removed": [], "blocked": [5], "parked": []}})
+    head, parts = wk.build_report(st, GOT, wk.plan(st), melior_fleet(), a, False, set(), report_only_clients={"Melior"})
+    text = "\n".join(parts)
+    assert "out of campaigns" not in parts[0] and "2 of 2" not in text
+    assert ("• Melior is report-only until Ryan agrees, so nothing changed in Smartlead for it. The job would leave 1 "
+            "inbox in a live campaign where it is the last good sender and tag 1 inbox that is in no campaign. "
+            "List under *Melior* below.") in parts[0]
+    assert ("• Melior | Solo (5) is live with only failed inboxes left (last@y.com). Not changed, as Melior is "
+            "report-only until Ryan agrees: ask Ryan to pause it or add a good sender.") in parts[0]
+    melior = next(p for p in parts if p.startswith("*Melior*"))
+    assert ("• fail · y.com · last@y.com · Google 0/4, Microsoft 4/4 → last good sender of live Melior | Solo, so it "
+            "would stay there (Melior: report-only until Ryan agrees); nothing changed in Smartlead") in melior
+    assert ("• fail · y.com · idle@y.com · Google 4/4, Microsoft 1/4 → in no campaign; would be tagged DO NOT USE "
+            "(Melior: report-only until Ryan agrees); nothing changed in Smartlead") in melior
+    assert head[2] == "Would take 0 inboxes out of 0 live campaigns · would tag 0 in no campaign · would return 0"
+
+
+def test_report_only_counts_add_up_by_kind():
+    kinds = wk.Counter(removed=2, blocked=2, parked=1, tagged=3)
+    assert wk._ro_would(kinds) == ("take 2 inboxes out of campaigns, leave 2 inboxes in live campaigns where they "
+                                   "are the last good senders, leave 1 inbox in a paused/draft campaign that has no "
+                                   "good sender and tag 3 inboxes that are in no campaign")
+    assert wk._ro_kind({"removed": [1], "blocked": [2]}) == "removed"
+    assert wk._ro_kind({"removed": [], "blocked": [], "parked": [3]}) == "parked"
+    assert wk._ro_kind({}) == "tagged"
+
+
 def test_posts_go_to_the_infra_channel_not_the_archived_fallback(monkeypatch):
     import smartlead.notify as notify
     seen = {}

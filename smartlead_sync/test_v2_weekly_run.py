@@ -44,6 +44,7 @@ class FakeSL:
 
     def __init__(self):
         self.senders = {1: {10, 11, 20}, 2: {30, 31}}
+        self.names = {1: "PL | A", 2: "Melior | B"}
         self.tagged = set()
         self.tags = []
         self.calls = []
@@ -91,8 +92,8 @@ class FakeSL:
 def fleet_from(sl):
     inboxes = {e: {"id": i, "client": c, "tags": [wk.TAG] if i in sl.tagged else []} for e, (i, c) in INBOXES.items()}
     return {"PRECISE_LEADS": {"key": "k", "inboxes": inboxes,
-                              "camps": {1: {"name": "PL | A", "status": "ACTIVE", "senders": set(sl.senders[1])},
-                                        2: {"name": "Melior | B", "status": "ACTIVE", "senders": set(sl.senders[2])}},
+                              "camps": {cid: {"name": sl.names[cid], "status": "ACTIVE", "senders": set(ids)}
+                                        for cid, ids in sl.senders.items()},
                               "dt": {9: {"name": "DT PL #1", "status": "ACTIVE", "senders": {10, 11, 20}},
                                      8: {"name": "DT Melior #1", "status": "ACTIVE", "senders": {30, 31}},
                                      7: {"name": "DT PL #2", "status": "ACTIVE", "senders": {40}}}}}
@@ -241,6 +242,42 @@ def test_melior_is_acted_on_only_when_named_in_act_clients(job):
     assert ("remove", 1, [20]) in job.sl.calls and ("remove", 2, [30]) in job.sl.calls
     assert set(job.state()["pulled"]) == {"pl-bad@x.com", "mel-bad@y.com"}
     assert "report-only" not in "\n".join(job.posts[-1][1])
+
+
+def test_report_only_melior_is_reported_by_what_would_happen_and_never_touched(job, monkeypatch):
+    # review V2-S2: an acting run with one failing Melior inbox of each kind: in a campaign with a good sender
+    # left, the last good sender of a live campaign, and in no campaign. PL is acted on; Melior only reported.
+    monkeypatch.setitem(INBOXES, "mel-solo@y.com", (32, "Melior"))
+    monkeypatch.setitem(INBOXES, "mel-idle@y.com", (33, "Melior"))
+    job.sl.senders[3], job.sl.names[3] = {32}, "Melior | Solo"
+    write_csv(job.downloads, "dt-pl-1.csv", DT_PL_1)
+    write_csv(job.downloads, "dt-melior-1.csv", {**DT_MELIOR_1, "mel-solo@y.com": (0, 4), "mel-idle@y.com": (4, 1)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert [c for c in job.sl.calls if c[0] in ("tag", "remove")] == [("tag", [20], [77]), ("remove", 1, [20])]
+    assert not any("/campaigns/2/" in str(c) or "/campaigns/3/" in str(c) for c in job.sl.calls)
+    assert job.sl.senders[2] == {30, 31} and job.sl.senders[3] == {32} and job.sl.tagged == {20}
+    assert set(job.state()["pulled"]) == {"pl-bad@x.com"}
+    head, parts = job.posts[-1]
+    assert head[1] == "7 inboxes · 3 pass · 0 watch · 4 fail"
+    assert head[2] == "Took 1 inbox out of 1 live campaign · tagged 0 in no campaign · returned 0"
+    assert head[-1] == "\n*Needs you: 3*"
+    assert parts[0].split("\n")[2:] == [
+        "• Melior is report-only until Ryan agrees, so nothing changed in Smartlead for it. The job would take 1 inbox "
+        "out of campaigns, leave 1 inbox in a live campaign where it is the last good sender and tag 1 inbox that is "
+        "in no campaign. List under *Melior* below.",
+        "• Melior | Solo (3) is live with only failed inboxes left (mel-solo@y.com). Not changed, as Melior is "
+        "report-only until Ryan agrees: ask Ryan to pause it or add a good sender.",
+        "• No result this week from DT PL #2 (1 inbox): download its CSV into Downloads."]
+    ro = " (Melior: report-only until Ryan agrees); nothing changed in Smartlead"
+    melior = next(p for p in parts if p.startswith("*Melior*"))
+    assert melior.split("\n")[2:] == [
+        "• fail · y.com · mel-bad@y.com · Google 4/4, Microsoft 0/4 → would be taken out of Melior | B" + ro,
+        "• fail · y.com · mel-solo@y.com · Google 0/4, Microsoft 4/4 → last good sender of live Melior | Solo, so it "
+        "would stay there" + ro,
+        "• fail · y.com · mel-idle@y.com · Google 4/4, Microsoft 1/4 → in no campaign; would be tagged DO NOT USE" + ro]
+    assert job.verdicts()["mel-solo@y.com|2026-11-09"]["pulled_on"] is None
 
 
 def test_a_refused_post_exits_non_zero_is_logged_and_queued_then_sent(job, capsys):
