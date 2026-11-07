@@ -645,3 +645,17 @@ def test_posts_go_to_the_infra_channel_not_the_archived_fallback(monkeypatch):
     monkeypatch.delenv("V2_WEEKLY_CHANNEL", raising=False)
     monkeypatch.setattr(notify, "post_with_thread", lambda tok, ch, head, parts: seen.setdefault("ch", ch) or "1.0")
     assert wk.post(["t"], []) and seen["ch"] == wk.INFRA_CHANNEL == "C0AGVSUNEFP"
+
+
+
+def test_an_inbox_pulled_by_hand_with_no_v2_result_is_still_named(tmp_path):
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4)]
+    a = acted(removed={"hand@x.com": [1]})
+    f = fleet()
+    f["PRECISE_LEADS"]["inboxes"]["hand@x.com"] = {"id": 40, "client": "Bettrdata", "tags": [wk.TAG]}
+    head, parts = wk.build_report(st, GOT, wk.plan(st), f, a, False, {"hand@x.com"})
+    assert "Would take 1 inbox out of 1 live campaign" in head[2]
+    text = "\n".join(parts)
+    assert "*Pulled earlier and still in campaigns*" in text
+    assert "• hand@x.com (Bettrdata) → would be taken out of PL | A" in text
