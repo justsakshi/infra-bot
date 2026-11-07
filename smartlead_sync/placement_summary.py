@@ -14,6 +14,11 @@ than a setup problem, which is a different fix and a different owner.
 
 Usage:
     python3 placement_summary.py [--client NAME] [--threshold 80]
+
+Exit codes (index.js logs anything but 0 and 2 as a failure):
+    0  every account read, no mailbox below the threshold
+    2  at least one mailbox below the threshold
+    1  an account could not be read (and none below), no account is configured, or a crash
 """
 from __future__ import annotations
 
@@ -56,6 +61,9 @@ def esp_split(rows: list[dict]) -> dict[str, list[dict]]:
 
 async def run(client: str | None, threshold: float) -> int:
     accounts = discover_accounts()
+    if not accounts:
+        print("[Summary] no Smartlead accounts configured")
+        return 1
     if client:
         accounts = [a for a in accounts if a.name.upper() == client.upper()]
         if not accounts:
@@ -63,12 +71,14 @@ async def run(client: str | None, threshold: float) -> int:
             return 1
 
     failing_total = 0
+    unread: list[str] = []
     for acc in accounts:
         try:
             async with SmartDeliveryClient(acc.api_key) as sd:
                 rows = await sd.get_mailbox_summary()
         except SmartDeliveryError as exc:
             print(f"[Summary] {acc.name}: {exc}")
+            unread.append(acc.name)
             continue
 
         rows = [r for r in rows if not is_excluded_inbox({"email": r["email"]})]
@@ -104,7 +114,12 @@ async def run(client: str | None, threshold: float) -> int:
             print(f"  ! {domain}: {len(group)} mailbox(es) below {threshold:.0f}%")
         failing_total += len(failing)
 
-    return 2 if failing_total else 0
+    # An unread account is not "all above threshold": 1 unless a mailbox is already known to be below.
+    if unread:
+        print(f"[Summary] could not read {len(unread)} account(s): {', '.join(unread)}")
+    if failing_total:
+        return 2
+    return 1 if unread else 0
 
 
 def main() -> None:
