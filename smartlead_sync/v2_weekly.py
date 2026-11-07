@@ -7,17 +7,23 @@ so the results only exist as the CSVs he downloads. A Windows scheduled task run
 it reads new v2 CSVs in his Downloads folder (by content hash, so a file is read once).
 
 What it does (rules in smartlead/v2_results.py):
-  * every inbox gets PASS / WATCH / FAIL per provider (4 of 4 seeds / 2-3 / 0-1);
-  * FAIL, or two WATCH weeks running: removed from every live campaign that is not a test
-    campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
+  * every inbox gets PASS / WATCH / FAIL per provider (4 of 4 seeds in the inbox / 2-3 / 3+ in spam);
+    a seed still pending or BOUNCED, or a test that sent fewer than 4, is not judged and never acted on;
+  * FAIL, or WATCH in two Monday tests 6+ days apart: removed from every live campaign that is not a
+    test campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
     tagged "DO NOT USE - failed v2 (auto)" so gtm presend refuses it. Warm-up stays on, and it
     stays in its DT test campaign, so next Monday tests it again;
+  * Melior is report-only (REPORT_ONLY_CLIENTS, until Ryan agrees; --act-clients Melior to act): its
+    inboxes are listed as "would be taken out" and nothing in Smartlead changes for them;
   * a campaign left with no good sender is not touched (sending or scheduled: the post asks a person);
   * an inbox the job pulled comes back (same campaigns, tag removed) after two passes 6+ days apart;
-  * if nearly every inbox in a night is below 4/4 at one provider, that provider is held (test problem);
+  * if nearly every inbox in a night, or in one test file, is below 4/4 at one provider, that provider is
+    held (test problem);
   * it acts on a night only once its files stopped arriving for 90 minutes;
   * state is saved after every change, half-done moves are retried, a crash posts once a day;
-  * from Tuesday 12:00 IST, if Monday's results never came in, it posts one reminder.
+  * from Tuesday 12:00 IST it posts one reminder naming each DT test whose results are not in;
+  * after every saved run it writes a heartbeat and the verdicts to Mongo (v2_heartbeat, v2_verdicts),
+    so Render can see the job ran and what v2 said; a Mongo problem never stops the run.
 
 Modes:
     python v2_weekly.py                         # dry run: print the plan; no state, no Smartlead, no Slack
@@ -26,6 +32,10 @@ Modes:
     python v2_weekly.py --apply --post --act-from 2026-11-16   # --warn until that date, then act
     python v2_weekly.py --history-only          # file the CSVs as history: kept, never acted on
     python v2_weekly.py --replan --apply --post # act on stored results without new files
+    python v2_weekly.py --self-check            # Slack channel, both Smartlead keys, Downloads, Mongo; posts nothing
+
+Exit codes: 0 fine, 1 a Smartlead step failed (see the post), 2 crashed, 3 a Slack post failed
+("UNPOSTED" in the log; the report is queued and posted again next run). --self-check: 1 if a check failed.
 
 Install (Windows, once): see docs/V2_WEEKLY.md. State and a copy of every CSV live in --state-dir
 (default ..\\..\\v2-weekly, outside the repo).
@@ -37,11 +47,13 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import traceback
 from collections import Counter, defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 if sys.platform == "win32" and sys.stdout is not None:
@@ -87,6 +99,14 @@ DEFAULT_FOLDER = Path(os.getenv("V2_CSV_FOLDER") or Path.home() / "Downloads")
 # on the PC that falls back to REMINDER_CHANNEL, an archived channel, so every post failed (found 7 Nov 2026).
 INFRA_CHANNEL = "C0AGVSUNEFP"
 DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
+# Clients whose inboxes the job only reports, never changes in Smartlead (7 Nov 2026: Melior pulls go through
+# Ryan's path until he agrees to automatic ones). --act-clients overrides this for a run.
+REPORT_ONLY_CLIENTS = {"Melior"}
+REPORT_ONLY_WHY = {"Melior": "until Ryan agrees"}
+# Mongo (db smartlead.config.HEALTH_HISTORY_DB), read on Render: is the PC job alive, and what did v2 say.
+HEARTBEAT_COLLECTION = "v2_heartbeat"
+VERDICTS_COLLECTION = "v2_verdicts"
+VERDICT_DAYS = 42                        # nights older than this are no longer re-sent to Mongo
 
 
 class FleetIncomplete(RuntimeError):
@@ -107,13 +127,16 @@ def load_state(d: Path) -> dict:
     p = d / "state.json"
     s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     for k, empty in (("files", {}), ("results", {}), ("holds", {}), ("pulled", {}), ("returned", []),
-                     ("reminded", []), ("log", []), ("overrides", {}), ("repair", [])):
+                     ("reminded", []), ("log", []), ("overrides", {}), ("repair", []), ("file_holds", {}),
+                     ("clients", {}), ("dt_tests", {}), ("synced", {})):
         s.setdefault(k, empty)
     s.setdefault("needs_action", False)
     s.setdefault("since", None)
     s.setdefault("failed_on", None)
     s.setdefault("repair_day", None)
     s.setdefault("unposted", [])
+    s.setdefault("last_post_ok", None)
+    s.setdefault("rules", None)
     return s
 
 
@@ -127,8 +150,9 @@ def save_state(d: Path, s: dict) -> None:
 
 # --- files ---------------------------------------------------------------------------
 
-def scan(folder: Path, state: dict, now: datetime) -> list[tuple[Path, str, str]]:
-    """New v2 CSVs in the folder: [(path, sha256, text)]."""
+def scan(folder: Path, state: dict, now: datetime, unrecognised: list | None = None) -> list[tuple[Path, str, str]]:
+    """New v2 CSVs in the folder: [(path, sha256, text)]. A CSV with a Mailbox column but another header
+    (Smartlead changed the download?) goes to ``unrecognised`` as (path, sha256), once per file."""
     out = []
     cutoff = now.timestamp() - MAX_AGE_DAYS * 86400
     for p in sorted(folder.glob("*.csv")):
@@ -140,18 +164,21 @@ def scan(folder: Path, state: dict, now: datetime) -> list[tuple[Path, str, str]
         except OSError:
             continue
         sha = hashlib.sha256(raw).hexdigest()
-        if sha in state["files"]:
+        known = state["files"].get(sha)
+        if known and known.get("status") != "unrecognised":
             continue
         text = raw.decode("utf-8-sig", errors="replace")
         if v2.is_v2_csv(text):
             out.append((p, sha, text))
+        elif not known and unrecognised is not None and v2.looks_like_v2(text):
+            unrecognised.append((p, sha))
     return out
 
 
 def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, persist: bool) -> dict:
     """Read new files into state. Returns {ingested: [...], pending: [...], nights: set of nights to act on}.
     A test from before the job's first day (state["since"]) is filed as history whatever the flags say."""
-    got = {"ingested": [], "pending": [], "nights": set()}
+    got = {"ingested": [], "pending": [], "nights": set(), "unrecognised": []}
     for path, sha, text in files:
         rows = v2.parse(text)
         night = v2.night_of(rows)
@@ -163,6 +190,7 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
         summary = v2.summarise(rows)
         sent_last = v2.last_sent(rows)
         info["per_provider"] = v2.emails_per_provider(rows)
+        info["pending_seeds"] = v2.pending_seeds(rows)
         old = history or bool(state.get("since") and night < state["since"])
         for mb, s in summary.items():
             res = {"night": night, "verdict": s["verdict"], "google": s["google"], "microsoft": s["microsoft"],
@@ -190,27 +218,85 @@ def unsettled(state: dict, now: datetime) -> list[str]:
     return sorted(n for n, seen in newest.items() if seen > cut)
 
 
+def rejudge(state: dict, state_dir: Path) -> int:
+    """Results stored under older rules are judged again from the kept copy of their file, so a pending
+    or BOUNCED seed recorded before the 7 Nov rules is not left standing as a WATCH or FAIL (it would
+    reach Render through v2_verdicts). Once per rules version. Returns how many verdicts changed."""
+    if state.get("rules") == v2.RULES:
+        return 0
+    changed = 0
+    for sha, f in state["files"].items():
+        if f.get("status") not in ("ingested", "history") or not f.get("night") or not f.get("name"):
+            continue
+        try:
+            raw = (state_dir / "runs" / f"{f['night']}__{sha[:8]}__{f['name']}").read_bytes()
+        except OSError:
+            continue
+        for mb, s in v2.summarise(v2.parse(raw.decode("utf-8-sig", errors="replace"))).items():
+            for x in state["results"].get(mb, []):
+                if x.get("file") == sha[:12] and x["night"] == f["night"]:
+                    changed += x["verdict"] != s["verdict"]
+                    x.update(verdict=s["verdict"], google=s["google"], microsoft=s["microsoft"])
+    state["rules"] = v2.RULES
+    return changed
+
+
 def compute_holds(state: dict, fleet: dict | None) -> None:
-    """Held providers per night, leaving out inboxes already known bad that night (pulled before it,
-    or carrying a person's DO NOT USE tag)."""
+    """Held providers per night and per test file, leaving out inboxes already known bad that night
+    (pulled before it, or carrying a person's DO NOT USE tag). Per file too, so one broken test among a
+    night's good ones is held on its own (audit PLACEMENT-10)."""
     tags = {e: i["tags"] for f in (fleet or {}).values() for e, i in f["inboxes"].items()}
     nights: dict[str, dict] = defaultdict(dict)
+    files: dict[str, dict] = defaultdict(dict)
     for mb, rs in state["results"].items():
         for x in rs:
             nights[x["night"]][mb] = x
+            if x.get("file"):
+                files[x["file"]][mb] = x
+
+    def known_bad(results: dict) -> set[str]:
+        return {mb for mb, x in results.items()
+                if str((state["pulled"].get(mb) or {}).get("on") or "9999") < x["night"] or other_dnu(tags.get(mb, []))}
+
     for night, results in nights.items():
-        bad = {mb for mb in results
-               if str((state["pulled"].get(mb) or {}).get("on") or "9999") < night or other_dnu(tags.get(mb, []))}
-        state["holds"][night] = sorted(v2.held_providers(results, exclude=bad))
+        state["holds"][night] = sorted(v2.held_providers(results, exclude=known_bad(results)))
+    state["file_holds"] = {}
+    for fid, results in files.items():
+        held = v2.held_providers(results, exclude=known_bad(results))
+        if held:
+            state["file_holds"][fid] = sorted(held)
 
 
-def effective(results: list[dict], holds: dict) -> list[dict]:
+def held_for(state: dict, x: dict) -> set[str]:
+    """Providers set aside for one result: held for its night, or for its test file."""
+    return set(state["holds"].get(x["night"]) or []) | set(state.get("file_holds", {}).get(x.get("file") or "") or [])
+
+
+def effective(results: list[dict], state: dict) -> list[dict]:
     """Results with held providers set aside."""
     out = []
     for x in results:
-        held = set(holds.get(x["night"]) or [])
+        held = held_for(state, x)
         out.append({**x, "verdict": v2.apply_hold(x, held) if held else x["verdict"]})
     return out
+
+
+def remember_fleet(state: dict, fleet: dict) -> None:
+    """What the hourly runs need without reading Smartlead: each inbox's client (for v2_verdicts) and each
+    DT test campaign's inboxes (for the Tuesday reminder)."""
+    state["clients"] = {e: i["client"] for f in fleet.values() for e, i in f["inboxes"].items()}
+    dt = {}
+    for f in fleet.values():
+        email_of = {i["id"]: e for e, i in f["inboxes"].items()}
+        for c in f.get("dt", {}).values():
+            if c["senders"]:
+                dt[c["name"]] = sorted(email_of[i] for i in c["senders"] if i in email_of)
+    state["dt_tests"] = dt
+
+
+def report_only_clients(args) -> set[str]:
+    acting = {c.strip().lower() for c in str(getattr(args, "act_clients", "") or "").split(",") if c.strip()}
+    return {c for c in REPORT_ONLY_CLIENTS if c.lower() not in acting}
 
 
 def plan(state: dict) -> dict[str, dict]:
@@ -218,7 +304,7 @@ def plan(state: dict) -> dict[str, dict]:
     not pulled again for a result they already overrode (state overrides: {email: night})."""
     out = {}
     for mb, rs in state["results"].items():
-        d = v2.decide(effective(rs, state["holds"]), state["pulled"].get(mb))
+        d = v2.decide(effective(rs, state), state["pulled"].get(mb))
         judged = [x["night"] for x in rs if x["verdict"] in v2.JUDGED]
         if d["action"] == v2.PULL and judged and judged[-1] <= str(state["overrides"].get(mb) or ""):
             d = {"action": None, "why": "override"}
@@ -350,7 +436,7 @@ async def finish_move(c, job: dict, status: str, rep: dict) -> bool:
 def _new_rep() -> dict:
     return {"removed": defaultdict(list), "blocked": defaultdict(list), "parked": defaultdict(list),
             "tagged": [], "failed": [], "added": defaultdict(list), "skipped": [], "errors": [], "notes": [],
-            "leads": Counter()}
+            "leads": Counter(), "report_only": {}}
 
 
 async def do_pulls(account: str, f: dict, emails: list[str], write: bool, today: str, state: dict, save) -> dict:
@@ -499,6 +585,8 @@ def _names(cids, names: dict) -> str:
 
 def status_of(mb: str, x: dict, eff: str, decision: dict, acted: dict, pulled_before: set, in_fleet: bool) -> str:
     """What happened to this inbox in this run, for the report."""
+    if mb in acted.get("report_only", {}):
+        return "report_only"
     if mb in acted["failed"] and mb not in acted["removed"]:
         return "pull_failed"
     if mb in acted["removed"]:
@@ -520,13 +608,49 @@ def status_of(mb: str, x: dict, eff: str, decision: dict, acted: dict, pulled_be
     return {v2.FAIL: "fail_idle", v2.WATCH: "watch", v2.NOT_SENT: "not_sent", v2.INCOMPLETE: "incomplete"}.get(x["verdict"], "")
 
 
+def _report_only_tail(client: str, items: list[dict], names: dict) -> str:
+    """What the job would have done to a report-only client's inboxes; nothing was done."""
+    def cids(k):
+        return sorted({c for r in items for c in r.get(k, [])})
+    bits = []
+    if cids("removed"):
+        bits.append(f"would be taken out of {_names(cids('removed'), names)}")
+    if cids("blocked"):
+        bits.append(f"last good sender of live {_names(cids('blocked'), names)}, so it would stay there")
+    if cids("parked"):
+        bits.append(f"would stay in paused/draft {_names(cids('parked'), names)}")
+    if not bits:
+        bits.append("in no campaign; would be tagged DO NOT USE")
+    why = REPORT_ONLY_WHY.get(client, "")
+    return "; ".join(bits) + f" ({client}: report-only{' ' + why if why else ''}); nothing changed in Smartlead"
+
+
+def _incomplete_tail(items: list[tuple[str, dict]]) -> str:
+    """Why a result was not judged, from its seed counts."""
+    provs = [x.get(p) or {} for _, x in items for p in ("google", "microsoft")]
+    odd = sorted({int(p.get("sent") or 0) for p in provs if 0 < int(p.get("sent") or 0) != v2.PASS_SEEDS})
+    if odd and odd[0] < v2.PASS_SEEDS:
+        n = odd[0]
+        return f"the test sent {n} email{'s' if n != 1 else ''} per provider, too few to judge; nothing done"
+    if odd:
+        return f"the test sent {odd[0]} emails per provider; the job judges only 4-email tests; nothing done"
+    bounced = any(int(p.get("bounced") or 0) for p in provs)
+    pending = any(int(p.get("sent") or 0) - int(p.get("reported") or 0) - int(p.get("bounced") or 0) > 0 for p in provs)
+    why = [w for w, on in (("a seed bounced (a seed-side problem)", bounced),
+                           ("a seed had not answered when the file was downloaded", pending)) if on]
+    return f"{' and '.join(why) or 'a provider has no result'}, so it was not judged; nothing done"
+
+
 def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, acted: dict, write: bool,
-                 pulled_before: set, act_from: str | None = None) -> tuple[list[str], list[str]]:
+                 pulled_before: set, act_from: str | None = None, behind: int | None = None,
+                 report_only_clients: set | None = None) -> tuple[list[str], list[str]]:
     nights = sorted(got["nights"])
     latest = {mb: rs[-1] for mb, rs in state["results"].items() if rs and rs[-1]["night"] in got["nights"]}
     count = Counter(x["verdict"] for x in latest.values())
     tonight = dict(latest)
-    for e in set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["tagged"]) | set(acted["failed"]):
+    report_only = acted.get("report_only") or {}
+    for e in (set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["tagged"])
+              | set(acted["failed"]) | set(report_only)):
         if e not in latest and state["results"].get(e):
             latest[e] = state["results"][e][-1]             # acted on from an older result: still named
     fleet = fleet or {}
@@ -537,7 +661,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
 
     groups = defaultdict(list)
     for mb, x in sorted(latest.items()):
-        eff = v2.apply_hold(x, set(state["holds"].get(x["night"]) or []))
+        eff = v2.apply_hold(x, held_for(state, x))
         st = status_of(mb, x, eff, decisions.get(mb, {}), acted, pulled_before, mb in client_of)
         if st:
             groups[(client_of.get(mb, "Not in Smartlead"), st, x["verdict"], mb.split("@")[1])].append((mb, x))
@@ -556,14 +680,31 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             + (f"{n_park} left in paused/draft campaigns and " if n_park else "")
             + f"{n_tag} in no campaign · {'returned' if write else 'would return'} {len(acted['added'])}"]
     if not write and act_from:
-        head.append(f"Watch week: nothing is changed in Smartlead until {act_from}, then the job acts on its own.")
+        ro_note = f" ({', '.join(sorted(report_only_clients))} stays report-only)" if report_only_clients else ""
+        head.append(f"Watch week: nothing is changed in Smartlead until {act_from}, then the job acts on its own{ro_note}.")
 
     needs, info = [], list(acted["notes"]) + list(acted["skipped"])
+    for name in got.get("unrecognised") or []:
+        needs.append(f"unrecognised v2 CSV format: {name}. It has a Mailbox column but not the header the job reads "
+                     f"({', '.join(v2.HEADER)}), so nothing was read from it.")
     for night in nights:
         if state["holds"].get(night):
             needs.append(f"{' and '.join(p.title() for p in state['holds'][night])} results for {night} held: nearly every "
                          f"inbox was below 4/4 there, which looks like a test problem, so nothing was pulled for it. "
                          f"Re-run that test in Smart Delivery today.")
+    file_of = {sha[:12]: f for sha, f in state["files"].items()}
+    for fid, provs in sorted(state.get("file_holds", {}).items()):
+        f = file_of.get(fid) or {}
+        extra = [p for p in provs if p not in (state["holds"].get(f.get("night")) or [])]
+        if f.get("night") in got["nights"] and extra:
+            needs.append(f"{' and '.join(p.title() for p in extra)} results in {f.get('name', fid)} ({f['night']}) held: "
+                         f"nearly every inbox in that test was below 4/4 there, which looks like a test problem, so "
+                         f"nothing was pulled for it. Re-run that test in Smart Delivery today.")
+    ro_count = Counter(client_of.get(e, "Not in Smartlead") for e in report_only)
+    for client, n in sorted(ro_count.items()):
+        why = REPORT_ONLY_WHY.get(client, "")
+        needs.append(f"{client} is report-only{' ' + why if why else ''}: the job would take {n} of its "
+                     f"inboxes out of campaigns and changed nothing. List under *{client}* below.")
     stuck = defaultdict(list)
     for e, cids in acted["blocked"].items():
         for cid in cids:
@@ -587,6 +728,13 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     for name, n in thin:
         needs.append(f"{name}: this test sends {n} email{'s' if n != 1 else ''} per provider, so the job can't judge its "
                      f"inboxes (it needs 4 of 4). In Smart Delivery, set the test to 4 emails per provider.")
+    current = {x.get("file") for rs in state["results"].values() for x in rs}
+    partial = sorted((f["name"], f["pending_seeds"]) for sha, f in state["files"].items()
+                     if f.get("night") in got["nights"] and f.get("status") == "ingested" and f.get("pending_seeds")
+                     and sha[:12] in current)
+    for name, n in partial:
+        needs.append(f"{name}: {n} seed result{'s' if n != 1 else ''} had not come in when it was downloaded, so "
+                     f"those inboxes were not judged. Download it again later today.")
     weekly = any(v2.is_weekly_night(n) for n in nights)
     if nights and not weekly:
         info.append("Not a Monday test, so the weekly checks (missing tests, untested senders) were skipped.")
@@ -599,8 +747,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                 no_result.append(c["name"])
                 waiting |= {(acc, i) for i in c["senders"]}
     if no_result and weekly:
-        needs.append(f"No result this week from {', '.join(sorted(no_result))} ({len(waiting)} inboxes): "
-                     f"download their CSVs into Downloads.")
+        needs.append(f"No result this week from {', '.join(sorted(no_result))} ({len(waiting)} inbox{'es' if len(waiting) != 1 else ''}): "
+                     f"download {'their CSVs' if len(no_result) != 1 else 'its CSV'} into Downloads.")
     untested, missed = defaultdict(list), defaultdict(list)
     if weekly:
         newest = date.fromisoformat(max(nights))
@@ -630,15 +778,18 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         parts.append("*Needs you*\n\n" + "\n".join(f"• {x}" for x in needs))
     by_client = defaultdict(list)
     out_before = defaultdict(lambda: [0, set()])
-    order = {"pull_failed": -1, "pulled": 0, "blocked": 1, "parked": 2, "tagged": 3, "held": 4, "override": 5, "fail_idle": 6,
-             "watch": 7, "not_sent": 8, "incomplete": 9, "missing": 10}
+    order = {"pull_failed": -1, "pulled": 0, "report_only": 0.5, "blocked": 1, "parked": 2, "tagged": 3, "held": 4,
+             "override": 5, "fail_idle": 6, "watch": 7, "not_sent": 8, "incomplete": 9, "missing": 10}
     for (client, st, verdict, dom), items in sorted(groups.items(), key=lambda kv: (kv[0][0], order.get(kv[0][1], 99), kv[0][3])):
         es = [e for e, _ in items]
         if st == "out_before":
             out_before[client][0] += len(items)
             out_before[client][1].add(dom)
             continue
-        if st == "pulled":
+        if st == "report_only":
+            pre = "below 4/4 two weeks running: " if verdict == v2.WATCH else ""
+            tail = pre + _report_only_tail(client, [report_only[e] for e in es], names)
+        elif st == "pulled":
             cids = sorted({c for e in es for c in acted["removed"].get(e, [])})
             pre = "below 4/4 two weeks running: " if verdict == v2.WATCH else ""
             tail = f"{pre}{'taken' if write else 'would be taken'} out of {_names(cids, names)}; {would}tagged DO NOT USE"
@@ -660,13 +811,14 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         elif st == "fail_idle":
             tail = "not pulled (no action decided)"
         elif st == "watch":
-            tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; taken out automatically if below 4/4 again next Monday"
+            if all(v2.is_weekly_night(x["night"]) for _, x in items):
+                tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; if next Monday's test is below 4/4 too, it counts as failed"
+            else:
+                tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; a one-off test never counts toward two weeks running"
         elif st == "not_sent":
             tail = "did not send in the test (see Needs you)"
         elif st == "incomplete":
-            sent = max((x.get(p) or {}).get("sent", 0) for _, x in items for p in ("google", "microsoft"))
-            tail = (f"the test sent {sent} email{'s' if sent != 1 else ''} per provider, too few to judge; nothing done"
-                    if 0 < sent < v2.MIN_REPORTED else "too few seeds answered; nothing done")
+            tail = _incomplete_tail(items)
         else:
             tail = "not in Smartlead"
         who = items[0][0] if len(items) == 1 else f"{len(items)} of {per_dom[dom]} inboxes"
@@ -690,27 +842,279 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         parts.append("*Sending but in no DT test*\n\n" + "\n".join(
             f"• {dom} ({client}): {len(v)} inbox{'es' if len(v) != 1 else ''}, last v2 {max(v)}"
             for (client, dom), v in sorted(untested.items())))
+    if behind:
+        info.append(f"The job's code on the PC is {behind} commit{'s' if behind != 1 else ''} behind main (as last "
+                    f"fetched). To ship it, see 'Ship a code change' in docs/V2_WEEKLY.md.")
     if info:
         parts.append("*For info*\n\n" + "\n".join(f"• {x}" for x in info))
     return head, parts
 
 
-def post_or_queue(state: dict, head: list[str], parts: list[str]) -> bool:
+def _post_noted(state: dict, ctx: dict | None, head: list[str], parts: list[str]) -> bool:
+    """Post, and remember whether Slack took it: a refused post writes UNPOSTED to the log and makes the
+    run exit non-zero (audit PLACEMENT-1: an empty channel setting kept every post silent for a week)."""
+    ok = bool(post(head, parts))
+    state["last_post_ok"] = ok
+    if not ok:
+        print(f"UNPOSTED: {head[0] if head else '(no headline)'}")
+        if ctx is not None:
+            ctx["post_failed"] = True
+    return ok
+
+
+def post_or_queue(state: dict, head: list[str], parts: list[str], ctx: dict | None = None) -> bool:
     """Post; if Slack refuses, keep it in state so the next run tries again (the job is never silent)."""
-    if post(head, parts):
+    if _post_noted(state, ctx, head, parts):
         return True
     state["unposted"] = (state["unposted"] + [{"head": head, "parts": parts}])[-5:]
+    print("  queued: the next run tries to post it again")
     return False
+
+
+def _channel() -> str:
+    return (os.getenv("V2_WEEKLY_CHANNEL") or "").strip() or INFRA_CHANNEL
 
 
 def post(head: list[str], parts: list[str]) -> bool:
     from smartlead.notify import post_with_thread
     token = os.getenv("SLACK_BOT_TOKEN", "")
-    channel = os.getenv("V2_WEEKLY_CHANNEL") or INFRA_CHANNEL
     if not token:
         print("  SLACK_BOT_TOKEN missing: not posted")
         return False
-    return bool(post_with_thread(token, channel, head, parts))
+    return bool(post_with_thread(token, _channel(), head, parts))
+
+
+def reminder_lines(night: str, missing: list[str], some_in: bool) -> list[str]:
+    """The Tuesday reminder: which DT tests have no result for that Monday."""
+    d = date.fromisoformat(night)
+    day = f"Monday {d.day} {d:%b}"
+    if some_in:
+        n = len(missing)
+        return [f"v2 results for {day}: {n} DT test{'s' if n != 1 else ''} not in yet",
+                f"\nMissing: {', '.join(missing)}.",
+                f"\nDownload {'their CSVs' if n != 1 else 'its CSV'} from Smart Delivery v2 into Downloads on Manveen's "
+                f"PC. The job reads {'them' if n != 1 else 'it'} within the hour; {'their' if n != 1 else 'its'} inboxes get "
+                f"no verdict until then."]
+    return ([f"v2 results for {day}'s tests are not in yet"]
+            + ([f"\nMissing: {', '.join(missing)} ({len(missing)} test{'s' if len(missing) != 1 else ''})."]
+               if missing else [])
+            + ["\nDownload each test's CSV from Smart Delivery v2 into Downloads on Manveen's PC. "
+               "The job reads them within the hour. Until then nothing is pulled or returned."])
+
+
+def unrecognised_lines(names: list[str]) -> list[str]:
+    many = len(names) != 1
+    return [f"unrecognised v2 CSV format: {', '.join(names)}",
+            f"\n{'These files have' if many else 'The file has'} a Mailbox column but not the header the job reads "
+            f"({', '.join(v2.HEADER)}), so nothing was read from {'them' if many else 'it'}. If Smart Delivery changed "
+            f"its download, the job needs a code change before it can read the results."]
+
+
+def _mark_told(state: dict, names: list[str]) -> None:
+    for f in state["files"].values():
+        if f.get("status") == "unrecognised" and f.get("name") in names:
+            f["told"] = True
+
+
+# --- Mongo (read on Render), git, self-check -------------------------------------------
+
+def _short(exc: BaseException, n: int = 160) -> str:
+    """An error for the log, Slack or Mongo: no keys, tokens or connection strings."""
+    from smartlead.notify import redact
+    text = re.sub(r"mongodb(\+srv)?://\S+", "mongodb://<hidden>", redact(f"{type(exc).__name__}: {exc}"))
+    return " ".join(text.split())[:n]
+
+
+def _mongo_db():
+    """The shared Mongo database (MONGO_URI in the .env, db HEALTH_HISTORY_DB), as the other jobs reach it."""
+    from pymongo import MongoClient
+    from smartlead.config import HEALTH_HISTORY_DB
+    uri = os.getenv("MONGO_URI", "")
+    if not uri:
+        raise RuntimeError("MONGO_URI is not set")
+    client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+    client.admin.command("ping")
+    return client[HEALTH_HISTORY_DB]
+
+
+def _close(db) -> None:
+    try:
+        getattr(db, "client", None) and db.client.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _counts(p: dict | None) -> dict:
+    return {k: int((p or {}).get(k) or 0) for k in ("inbox", "reported", "sent")}
+
+
+def _fingerprint(doc: dict) -> str:
+    return hashlib.sha1(json.dumps({k: v for k, v in doc.items() if k != "updated_at"}, sort_keys=True,
+                                   default=list).encode()).hexdigest()[:12]
+
+
+def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
+    """v2_verdicts docs (shared contract), one per inbox per night: nights from the last VERDICT_DAYS days
+    whose holds an acting run has worked out and whose files stopped arriving. The verdict is the one the
+    job acts on (held providers set aside); ``held`` names them."""
+    cut = (now.date() - timedelta(days=VERDICT_DAYS)).isoformat()
+    skip = set(unsettled(state, now))
+    at = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+    out = {}
+    for mb, rs in state["results"].items():
+        pulled_on = (state["pulled"].get(mb) or {}).get("on")
+        for x in rs:
+            n = x["night"]
+            if n < cut or n in skip or n not in state["holds"]:
+                continue
+            held = held_for(state, x)
+            doc = {"_id": f"{mb}|{n}", "email": mb, "domain": mb.split("@", 1)[-1], "client": state["clients"].get(mb),
+                   "night": n, "verdict": v2.apply_hold(x, held) if held else x["verdict"],
+                   "google": _counts(x.get("google")), "microsoft": _counts(x.get("microsoft")),
+                   "history": bool(x.get("history")), "weekly": v2.is_weekly_night(n), "pulled_on": pulled_on,
+                   "held": sorted(held), "updated_at": at}
+            out[doc["_id"]] = doc
+    return out
+
+
+def write_verdicts(col, docs: list[dict]) -> None:
+    from pymongo import ReplaceOne
+    for k in range(0, len(docs), 500):
+        col.bulk_write([ReplaceOne({"_id": d["_id"]}, d, upsert=True) for d in docs[k:k + 500]], ordered=False)
+
+
+def heartbeat(state: dict, now: datetime, ctx: dict, errors: list[str]) -> dict:
+    """The v2_heartbeat doc (shared contract): Render alarms when it goes stale."""
+    read = [f for f in state["files"].values() if f.get("status") in ("ingested", "history")]
+    nights = [f["night"] for f in read if f.get("night")]
+    commit, behind = ctx.get("git") or (None, None)
+    return {"_id": "pc", "last_run": now.astimezone(timezone.utc).isoformat(timespec="seconds"),
+            "newest_night": max(nights) if nights else None, "files_read": len(read), "mode": ctx.get("mode") or "warn",
+            "last_post_ok": state.get("last_post_ok"), "commit": commit, "behind_main": behind,
+            "errors": [str(e)[:200] for e in errors][:10]}
+
+
+def record(state_dir: Path, ctx: dict) -> None:
+    """After a saved run: the verdicts that changed, then the heartbeat. Never raises; a Mongo problem is
+    printed, and put in the heartbeat's errors when the heartbeat itself can still be written."""
+    db = None
+    try:
+        state = load_state(state_dir)
+        now = now_ist()
+        errors = list(ctx["errors"])
+        if state["unposted"]:
+            errors.append(f"{len(state['unposted'])} Slack post(s) refused and queued; tried again next run")
+        try:
+            db = _mongo_db()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[v2-weekly] Mongo not reached ({_short(exc)}): heartbeat and verdicts not written")
+            return
+        try:
+            docs = verdict_docs(state, now)
+            fresh = [d for i, d in docs.items() if state["synced"].get(i) != _fingerprint(d)]
+            if fresh:
+                write_verdicts(db[VERDICTS_COLLECTION], fresh)
+                print(f"[v2-weekly] Mongo: {len(fresh)} verdict(s) written")
+            state["synced"] = {i: _fingerprint(d) for i, d in docs.items()}
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"v2_verdicts not written: {_short(exc)}")
+            print(f"[v2-weekly] {errors[-1]}")
+        try:
+            db[HEARTBEAT_COLLECTION].replace_one({"_id": "pc"}, heartbeat(state, now, ctx, errors), upsert=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[v2-weekly] v2_heartbeat not written: {_short(exc)}")
+        save_state(state_dir, state)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[v2-weekly] Mongo record failed: {_short(exc)}")
+    finally:
+        _close(db)
+
+
+def git_facts() -> tuple[str | None, int | None]:
+    """(commit, commits behind origin/main as last fetched) of the checkout the job runs from.
+    (None, None) when git is missing or fails: never a reason to stop."""
+    exe = shutil.which("git") or shutil.which("git.exe")
+    if not exe:
+        return None, None
+    kw = {"cwd": str(HERE.parent), "capture_output": True, "text": True, "timeout": 20, "stdin": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)     # pythonw: no console flash
+
+    def git(*a: str) -> str | None:
+        try:
+            r = subprocess.run([exe, *a], **kw)
+            return r.stdout.strip() if r.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+    commit = git("rev-parse", "--short", "HEAD")
+    behind = git("rev-list", "--count", "HEAD..origin/main")
+    return commit, int(behind) if behind and behind.isdigit() else None
+
+
+def _slack_api(method: str, token: str, **params) -> dict:
+    import requests
+    resp = requests.get(f"https://slack.com/api/{method}", headers={"Authorization": f"Bearer {token}"},
+                        params=params, timeout=15)
+    return resp.json()
+
+
+async def self_check(args) -> int:
+    """Everything the hourly run needs, checked without posting or changing anything (audit PLACEMENT-1:
+    a blank channel setting kept every post silent and nothing noticed). Exit 1 if any check fails."""
+    rows: list[tuple[bool, str, str]] = []
+    token, channel = os.getenv("SLACK_BOT_TOKEN", ""), _channel()
+    if not token:
+        rows.append((False, "Slack", "SLACK_BOT_TOKEN is not set"))
+    else:
+        try:
+            data = _slack_api("conversations.info", token, channel=channel)
+            ch = data.get("channel") or {}
+            name = f"#{ch.get('name') or channel}"
+            if data.get("error") == "missing_scope":
+                rows.append((False, f"Slack channel {channel}", f"the bot token lacks the {data.get('needed') or 'channels:read'} "
+                             f"scope, so the channel can't be checked without posting"))
+            elif not data.get("ok"):
+                rows.append((False, f"Slack channel {channel}", f"Slack says {data.get('error')}"))
+            elif ch.get("is_archived"):
+                rows.append((False, f"Slack channel {channel}", f"{name} is archived"))
+            elif not ch.get("is_member"):
+                rows.append((False, f"Slack channel {channel}", f"the bot is not a member of {name}: invite it"))
+            else:
+                rows.append((True, f"Slack channel {channel}", f"{name}, the bot is a member"))
+        except Exception as exc:  # noqa: BLE001
+            rows.append((False, f"Slack channel {channel}", _short(exc)))
+    from smartlead.accounts import discover_accounts
+    found = {a.name.upper(): a for a in discover_accounts() if a.name.upper() in ACCOUNTS}
+    for name in ACCOUNTS:
+        acc = found.get(name)
+        if not acc:
+            rows.append((False, f"Smartlead {name}", "no key loaded (check --env-dir)"))
+            continue
+        try:
+            async with _client(acc.name, acc.api_key) as c:
+                await c._get("/email-accounts", {"offset": 0, "limit": 1})
+            rows.append((True, f"Smartlead {name}", "key works"))
+        except Exception as exc:  # noqa: BLE001
+            rows.append((False, f"Smartlead {name}", _short(exc)))
+    folder = Path(args.folder)
+    try:
+        n = sum(1 for x in os.listdir(folder) if x.lower().endswith(".csv"))
+        rows.append((True, f"Downloads folder {folder}", f"readable, {n} CSV file{'s' if n != 1 else ''}"))
+    except OSError as exc:
+        rows.append((False, f"Downloads folder {folder}", _short(exc)))
+    db = None
+    try:
+        db = _mongo_db()
+        rows.append((True, "Mongo", f"reachable, database {getattr(db, 'name', '?')}"))
+    except Exception as exc:  # noqa: BLE001
+        rows.append((False, "Mongo", _short(exc)))
+    finally:
+        _close(db)
+    for ok, what, detail in rows:
+        print(f"{'PASS' if ok else 'FAIL'}  {what}: {detail}")
+    bad = sum(1 for ok, _, _ in rows if not ok)
+    print(f"[v2-weekly] self-check: {len(rows) - bad} passed, {bad} failed")
+    return 1 if bad else 0
 
 
 # --- main ----------------------------------------------------------------------------
@@ -722,6 +1126,28 @@ def _merge(into: dict, rep: dict) -> None:
     for k in ("tagged", "failed", "skipped", "errors", "notes"):
         into[k] += rep[k]
     into["leads"].update(rep["leads"])
+    into["report_only"].update(rep.get("report_only") or {})
+
+
+def _writes(args, today: str) -> bool:
+    """--apply, and not before --act-from."""
+    act_from = getattr(args, "act_from", None)
+    return bool(getattr(args, "apply", False)) and not (act_from and today < act_from)
+
+
+def _crash_alert(state_dir: Path, exc: BaseException, ctx: dict) -> None:
+    """One post a day while the job keeps failing; a refused post is tried again next run."""
+    try:
+        state = load_state(state_dir)
+        today = now_ist().date().isoformat()
+        if state.get("failed_on") != today:
+            if _post_noted(state, ctx, ["v2 weekly job failed", "\n" + _short(exc, 200),
+                                        f"\nIt tries again every hour and says so here once a day while it keeps "
+                                        f"failing. Log: {state_dir / 'task.log'}"], []):
+                state["failed_on"] = today
+            save_state(state_dir, state)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
 
 
 async def run(args) -> int:
@@ -734,48 +1160,66 @@ async def run(args) -> int:
     if persist:
         state_dir.mkdir(parents=True, exist_ok=True)
         lock.write_text(datetime.now().isoformat(), encoding="utf-8")
+    ctx = {"errors": [], "post_failed": False, "git": (None, None),
+           "mode": ("act" if _writes(args, now_ist().date().isoformat()) else "warn") if persist else "dry"}
     try:
-        return await _run(args, state_dir, persist)
-    except Exception as exc:  # noqa: BLE001
-        traceback.print_exc()
-        if persist and getattr(args, "post", False):
-            from smartlead.notify import redact
-            state = load_state(state_dir)
-            today = now_ist().date().isoformat()
-            if state.get("failed_on") != today:
-                post(["v2 weekly job failed",
-                      "\n" + redact(f"{type(exc).__name__}: {str(exc)[:200]}"),
-                      f"\nIt tries again every hour and says so here once a day while it keeps failing. "
-                      f"Log: {state_dir / 'task.log'}"], [])
-                state["failed_on"] = today
-                save_state(state_dir, state)
-        return 2
+        ctx["git"] = git_facts()
+        try:
+            rc = await _run(args, state_dir, persist, ctx)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            ctx["errors"].append(f"crashed: {_short(exc)}")
+            rc = 2
+            if persist and getattr(args, "post", False):
+                _crash_alert(state_dir, exc, ctx)
+        if ctx["post_failed"] and rc == 0:
+            rc = 3
+        if persist:
+            record(state_dir, ctx)
+        return rc
     finally:
         if persist and lock.exists():
             lock.unlink()
 
 
-async def _run(args, state_dir: Path, persist: bool) -> int:
+async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) -> int:
+    ctx = ctx if ctx is not None else {"errors": [], "post_failed": False, "git": (None, None)}
     state = load_state(state_dir)
     now = now_ist()
     today = now.date().isoformat()
     state["since"] = state["since"] or today
-    write = bool(args.apply) and not (args.act_from and today < args.act_from)
+    write = _writes(args, today)
     can_post = bool(args.post) and persist
+    behind = (ctx.get("git") or (None, None))[1]
 
     def save():
         if persist:
             save_state(state_dir, state)
 
+    if persist:
+        n = rejudge(state, state_dir)
+        if n:
+            print(f"[v2-weekly] {n} stored result(s) judged again under the {v2.RULES} rules")
     if can_post and state["unposted"]:
         for item in list(state["unposted"]):
-            if post(item["head"], item["parts"]):
+            if _post_noted(state, ctx, item["head"], item["parts"]):
                 state["unposted"].remove(item)
         save()
-    got = ingest(scan(Path(args.folder), state, now), state, state_dir, args.history_only, now, persist)
+    odd: list = []
+    got = ingest(scan(Path(args.folder), state, now, odd), state, state_dir, args.history_only, now, persist)
+    if persist:
+        for p, sha in odd:
+            state["files"][sha] = {"name": p.name, "status": "unrecognised", "seen": now.isoformat(timespec="minutes"),
+                                   "told": False}
+        got["unrecognised"] = sorted({f["name"] for f in state["files"].values()
+                                      if f.get("status") == "unrecognised" and not f.get("told")})
+    else:
+        got["unrecognised"] = sorted(p.name for p, _ in odd)
     print(f"[v2-weekly] {now:%Y-%m-%d %H:%M} IST ({'act' if write else 'warn' if persist else 'dry run'}): "
           f"{len(got['ingested'])} new file(s), {len(got['pending'])} not ready"
-          + (f": {', '.join(got['ingested'])}" if got["ingested"] else ""))
+          + (f", {len(odd)} unrecognised" if odd else "")
+          + (f": {', '.join(got['ingested'])}" if got["ingested"] else "")
+          + (f"; code {behind} commit(s) behind origin/main" if behind else ""))
     save()
     if args.history_only:
         print(f"[v2-weekly] filed as history: {', '.join(got['ingested']) or '-'}; no action")
@@ -787,24 +1231,29 @@ async def _run(args, state_dir: Path, persist: bool) -> int:
               f"{SETTLE_MINUTES} minutes; acting once no more come")
         return 0
     if not acting:
-        nights_in = {i.get("night") for i in state["files"].values() if i.get("status") in ("ingested", "history")}
-        due = v2.reminder_due((now.date(), now.hour), {n for n in nights_in if n}, set(state["reminded"]), state["since"])
-        if due and can_post and post([f"v2 results for Monday {date.fromisoformat(due).day} "
-                                      f"{date.fromisoformat(due):%b}'s tests are not in yet",
-                                      "\nDownload each test's CSV from Smart Delivery v2 into Downloads on Manveen's PC. "
-                                      "The job reads them within the hour. Until then nothing is pulled or returned."], []):
+        nights_in = {n for n in (i.get("night") for i in state["files"].values()
+                                 if i.get("status") in ("ingested", "history")) if n}
+        mon = v2.last_monday(now.date()).isoformat()
+        tested = {e for e, rs in state["results"].items() if any(x["night"] >= mon for x in rs)}
+        missing = v2.dt_missing(state["dt_tests"], tested)
+        due = v2.reminder_due((now.date(), now.hour), nights_in, set(state["reminded"]), state["since"], missing)
+        if due and can_post and _post_noted(state, ctx, reminder_lines(due, missing, any(n >= due for n in nights_in)), []):
             state["reminded"].append(due)
         if got["pending"] and can_post:
-            post([f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
-                  "\nDownload them again in a few hours. Nothing was read from them."], [])
+            _post_noted(state, ctx, [f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
+                                     "\nDownload them again in a few hours. Nothing was read from them."], [])
+        if got["unrecognised"] and can_post and _post_noted(state, ctx, unrecognised_lines(got["unrecognised"]), []):
+            _mark_told(state, got["unrecognised"])
         if state["repair"] and write and state["repair_day"] != today:
             fleet = await load_fleet()
+            remember_fleet(state, fleet)
             rep = await run_repairs(fleet, state, today, save)
             state["repair_day"] = today
+            ctx["errors"] += rep["errors"]
             print(f"[v2-weekly] repairs: {dict(rep['leads'])}, notes {rep['notes']}, errors {rep['errors']}")
             if (rep["notes"] or rep["errors"]) and can_post:
                 post_or_queue(state, ["v2 job: leads in campaigns it pulled inboxes from",
-                                      "\n" + "\n".join(f"• {x}" for x in rep["errors"] + rep["notes"])], [])
+                                      "\n" + "\n".join(f"• {x}" for x in rep["errors"] + rep["notes"])], [], ctx)
         save()
         return 0
 
@@ -818,6 +1267,7 @@ async def _run(args, state_dir: Path, persist: bool) -> int:
     got["nights"] = nights_now
 
     fleet = await load_fleet()
+    remember_fleet(state, fleet)
     acted = _new_rep()
     if write and state["repair"]:
         _merge(acted, await run_repairs(fleet, state, today, save))
@@ -836,27 +1286,49 @@ async def _run(args, state_dir: Path, persist: bool) -> int:
     for acc, emails in still_attached(state, fleet).items():
         pulls[acc] += [e for e in emails if e not in pulls[acc] and decisions.get(e, {}).get("action") != v2.RETURN]
 
+    # Report-only clients: planned like any other inbox, but nothing in Smartlead changes for them.
+    ro, client_of = report_only_clients(args), state["clients"]
+    ro_pulls, ro_back = defaultdict(list), []
+    for acc in list(pulls):
+        ro_pulls[acc] = [e for e in pulls[acc] if client_of.get(e) in ro]
+        pulls[acc] = [e for e in pulls[acc] if client_of.get(e) not in ro]
+    for acc in list(returns):
+        ro_back += [e for e in returns[acc] if client_of.get(e) in ro]
+        returns[acc] = [e for e in returns[acc] if client_of.get(e) not in ro]
+
     for acc, emails in pulls.items():
         if emails:
             _merge(acted, await do_pulls(acc, fleet[acc], emails, write, today, state, save))
+    for acc, emails in ro_pulls.items():
+        if emails:
+            rep = await do_pulls(acc, fleet[acc], emails, False, today, state, save)
+            for e in emails:
+                acted["report_only"][e] = {k: list(rep[k].get(e, [])) for k in ("removed", "blocked", "parked")}
     for acc, emails in returns.items():
-        _merge(acted, await do_returns(acc, fleet[acc], emails, write, today, state, save))
+        if emails:
+            _merge(acted, await do_returns(acc, fleet[acc], emails, write, today, state, save))
+    for e in ro_back:
+        acted["notes"].append(f"{e} passed twice and would go back into its campaigns, but {client_of[e]} is "
+                              f"report-only, so nothing was changed.")
     if acted["leads"]:
         print(f"  leads moved {acted['leads']['moved']}, resumed {acted['leads']['resumed']}")
+    ctx["errors"] += acted["errors"]
 
-    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from)
+    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from, behind, ro)
     text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
     print(text)
     state["log"].append({"at": now.isoformat(timespec="minutes"), "write": write, "nights": sorted(got["nights"]),
                          "pulled": dict(acted["removed"]), "tagged": acted["tagged"], "returned": dict(acted["added"]),
-                         "blocked": dict(acted["blocked"]), "errors": acted["errors"]})
+                         "blocked": dict(acted["blocked"]), "report_only": sorted(acted["report_only"]),
+                         "errors": acted["errors"]})
     state["needs_action"] = False
     if persist:
         reports = state_dir / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         (reports / f"{now:%Y-%m-%d_%H%M}{'' if write else '_warn'}.md").write_text(text, encoding="utf-8")
         if can_post:
-            post_or_queue(state, head, parts)
+            post_or_queue(state, head, parts, ctx)            # queued if refused: it counts as told
+            _mark_told(state, got["unrecognised"])
         save()
     else:
         print("[v2-weekly] dry run: nothing changed in Smartlead, state not saved, nothing posted")
@@ -870,9 +1342,14 @@ def main(argv=None) -> int:
     ap.add_argument("--apply", action="store_true", help="change Smartlead and save state (default: dry run)")
     ap.add_argument("--warn", action="store_true", help="save state and post the plan, change nothing in Smartlead")
     ap.add_argument("--act-from", help="with --apply: behave like --warn before this date (YYYY-MM-DD)")
+    ap.add_argument("--act-clients", default="",
+                    help=f"comma-separated clients to act on although they are report-only by default "
+                         f"({', '.join(sorted(REPORT_ONLY_CLIENTS))})")
     ap.add_argument("--post", action="store_true", help="post to Slack (with --apply or --warn)")
     ap.add_argument("--history-only", action="store_true", help="file new CSVs as history, act on nothing")
     ap.add_argument("--replan", action="store_true", help="decide again from stored results without new files")
+    ap.add_argument("--self-check", action="store_true",
+                    help="check the Slack channel, both Smartlead keys, the Downloads folder and Mongo; posts nothing")
     ap.add_argument("--env-dir", help="smartlead_sync folder holding the .env (read before anything else)")
     ap.add_argument("--log", help="append all output to this file (the scheduled task runs windowless)")
     args = ap.parse_args(argv)
@@ -882,6 +1359,12 @@ def main(argv=None) -> int:
         log = Path(args.log or Path(args.state_dir) / "task.log")
         log.parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(log, "a", encoding="utf-8", buffering=1)
+    unknown = [c.strip() for c in args.act_clients.split(",")
+               if c.strip() and c.strip().lower() not in {x.lower() for x in REPORT_ONLY_CLIENTS}]
+    if unknown:
+        print(f"[v2-weekly] --act-clients: {', '.join(unknown)} is not report-only; ignored")
+    if args.self_check:
+        return asyncio.run(self_check(args))
     return asyncio.run(run(args))
 
 

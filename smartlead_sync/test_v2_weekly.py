@@ -91,6 +91,74 @@ def test_a_suspect_provider_is_held_and_nothing_is_pulled(tmp_path):
     assert all(d["action"] is None for d in wk.plan(st).values())
 
 
+def test_one_broken_test_file_is_held_on_its_own(tmp_path):
+    # audit PLACEMENT-10: the hold worked per night only, so one broken DT test among good ones pulled its inboxes
+    write_csv(tmp_path, "dt-pl-1.csv", {f"g{n}@x.com": (0, 4) for n in range(12)})
+    good = {f"ok{n}@y.com": (4, 4) for n in range(40)}
+    good["real@y.com"] = (0, 4)
+    write_csv(tmp_path, "dt-pl-2.csv", good)
+    st = fresh_state(tmp_path)
+    read(tmp_path, st)
+    wk.compute_holds(st, None)
+    assert st["holds"]["2026-11-09"] == []                       # 13 of 53 below 4/4: the night is fine
+    assert list(st["file_holds"].values()) == [["google"]]       # but dt-pl-1 alone is held
+    d = wk.plan(st)
+    assert {e for e, x in d.items() if x["action"]} == {"real@y.com"}
+    head, parts = wk.build_report(st, GOT, d, None, acted(), False, set())
+    assert any("Google results in dt-pl-1.csv (2026-11-09) held" in p for p in parts)
+
+
+def test_an_unrecognised_v2_csv_is_found_once(tmp_path):
+    (tmp_path / "v2-new.csv").write_text("Mailbox,Provider,Landed,Sent at,Send status,Seed\na@x.com,G,Inbox,,SENT,1\n",
+                                         encoding="utf-8")
+    t = NOW.timestamp() - 3600
+    os.utime(tmp_path / "v2-new.csv", (t, t))
+    (tmp_path / "leads.csv").write_text("email,name\na@b.com,A\n", encoding="utf-8")
+    st, odd = fresh_state(tmp_path), []
+    assert wk.scan(tmp_path, st, NOW, odd) == [] and [p.name for p, _ in odd] == ["v2-new.csv"]
+    st["files"][odd[0][1]] = {"name": "v2-new.csv", "status": "unrecognised"}
+    again = []
+    assert wk.scan(tmp_path, st, NOW, again) == [] and again == []          # reported once, not every hour
+    head, parts = wk.build_report(st, {**GOT, "unrecognised": ["v2-new.csv"]}, {}, None, acted(), False, set())
+    assert "unrecognised v2 CSV format: v2-new.csv" in parts[0]
+
+
+def test_results_stored_under_the_old_rules_are_judged_again(tmp_path):
+    lines = [HEAD] + [f"a@x.com,GOOGLE_WORKSPACE,Inbox,2026-11-09T14:31:00.000Z,SENT\n"] * 4
+    lines += [f"a@x.com,MICROSOFT_365,{x},2026-11-09T14:31:00.000Z,SENT\n" for x in ("Inbox", "Inbox", "Inbox", "BOUNCED")]
+    p = tmp_path / "dl" / "dt.csv"
+    p.parent.mkdir()
+    p.write_text("".join(lines), encoding="utf-8")
+    t = NOW.timestamp() - 3600
+    os.utime(p, (t, t))
+    st = fresh_state(tmp_path)
+    wk.ingest(wk.scan(p.parent, st, NOW), st, tmp_path / "state", history=False, now=NOW, persist=True)
+    assert st["results"]["a@x.com"][0]["verdict"] == v2.INCOMPLETE
+    st["results"]["a@x.com"][0]["verdict"] = v2.WATCH            # what the rules before 7 Nov said
+    st["rules"] = None
+    assert wk.rejudge(st, tmp_path / "state") == 1
+    assert st["results"]["a@x.com"][0]["verdict"] == v2.INCOMPLETE and st["rules"] == v2.RULES
+    assert wk.rejudge(st, tmp_path / "state") == 0                # once per rules version
+
+
+def test_report_says_why_an_inbox_was_not_judged(tmp_path):
+    st = fresh_state(tmp_path)
+    pend = v2.provider_verdict(["Inbox"] * 3 + ["Pending"])
+    bounce = v2.provider_verdict(["Inbox"] * 3 + ["BOUNCED"])
+    full = v2.provider_verdict(["Inbox"] * 4)
+    st["results"]["p@x.com"] = [{"night": "2026-11-09", "verdict": v2.INCOMPLETE, "history": False, "google": pend,
+                                 "microsoft": full, "file": "f1" + "0" * 10}]
+    st["results"]["b@y.com"] = [{"night": "2026-11-09", "verdict": v2.INCOMPLETE, "history": False, "google": full,
+                                 "microsoft": bounce, "file": "f1" + "0" * 10}]
+    st["files"]["f1" + "0" * 62] = {"name": "dt.csv", "night": "2026-11-09", "status": "ingested", "pending_seeds": 1}
+    _, parts = wk.build_report(st, GOT, wk.plan(st), None, acted(), False, set())
+    text = "\n".join(parts)
+    assert "x.com · p@x.com · Google 3/4, Microsoft 4/4 → a seed had not answered when the file was downloaded" in text
+    assert "y.com · b@y.com · Google 4/4, Microsoft 3/4 → a seed bounced (a seed-side problem), so it was not judged" in text
+    assert "dt.csv: 1 seed result had not come in when it was downloaded" in parts[0]
+    assert all(d["action"] is None for d in wk.plan(st).values())
+
+
 def test_a_real_failure_among_passes_is_pulled(tmp_path):
     inboxes = {f"ok{n}@x.com": (4, 4) for n in range(10)}
     inboxes["bad@x.com"] = (0, 4)
@@ -405,7 +473,7 @@ def test_inboxes_whose_dt_csv_is_missing_are_not_called_untested(tmp_path):
     f = fleet()
     f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT PL #2", "status": "ACTIVE", "senders": {10}}}   # bad@x.com, no CSV
     _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
-    assert "No result this week from DT PL #2 (1 inboxes)" in parts[0]
+    assert "No result this week from DT PL #2 (1 inbox): download its CSV" in parts[0]
     assert not any("in no DT test" in p for p in parts)
 
 
