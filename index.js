@@ -8,6 +8,7 @@ const { App } = require('@slack/bolt');
 const cron = require('node-cron');
 const dayjs = require('dayjs');
 const renewalLabels = require('./renewal_labels');
+const health = require('./bot_health');
 const { spawn } = require('child_process');
 const customParseFormat = require('dayjs/plugin/customParseFormat');
 const express = require('express');
@@ -128,6 +129,107 @@ const CronLockSchema = new mongoose.Schema({
   createdAt: { type: Date, expires: '2h', default: Date.now }
 });
 const CronLock = mongoose.model('CronLock', CronLockSchema);
+
+/* -------------------- Locks and run records (bot health) -------------------- */
+const PROCESS_START = new Date();
+
+// One run per key across instances (two overlap during a deploy). The key is the cronlocks _id, which
+// Mongo keeps unique with no extra index: the unique jobName index the schema declares was never built
+// (audit 7 Nov 2026), so CronLock.create never refused a second run. A lock the code before this change
+// took (jobName only) still counts. If Mongo fails, the job runs anyway, as before.
+async function takeLock(key) {
+  try {
+    if (await CronLock.collection.findOne({ jobName: key }, { projection: { _id: 1 } })) {
+      console.log(`[lock] ${key} already taken. Skipping.`);
+      return false;
+    }
+    await CronLock.collection.insertOne({ _id: key, jobName: key, createdAt: new Date() });
+    return true;
+  } catch (e) {
+    if (e.code === 11000) {
+      console.log(`[lock] ${key} already taken on another instance. Skipping.`);
+      return false;
+    }
+    console.warn(`[lock] ${key}: could not take the lock (${e.message}); running anyway`);
+    return true;
+  }
+}
+/** Once per IST day per job (05:00 IST is still the previous day in UTC). */
+const onceToday = (job, now = new Date()) => takeLock(`${job}-${health.istDay(now)}`);
+
+// Every scheduled run writes one Mongo cron_runs doc {job, slot, started, ended, exit_code} in the
+// HEALTH_HISTORY_DB the Python jobs use; the bot-health post reads them. Recording never stops or
+// fails a job: every write is caught and only logged.
+const HEALTH_DB = process.env.HEALTH_HISTORY_DB || 'infrabot';
+const healthCol = name => mongoose.connection.getClient().db(HEALTH_DB).collection(name);
+
+function recordStart(job, slot, extra = {}) {
+  const doc = { job, slot, started: new Date(), ...extra };
+  const id = Promise.resolve()
+    .then(() => healthCol('cron_runs').insertOne({ ...doc }))
+    .then(r => r.insertedId)
+    .catch(err => { console.warn(`[cron_runs] ${job}: start not recorded (${err.message})`); return null; });
+  return { doc, id };
+}
+function recordEnd(rec, fields) {
+  return rec.id
+    .then(id => (id
+      ? healthCol('cron_runs').updateOne({ _id: id }, { $set: fields })
+      : healthCol('cron_runs').insertOne({ ...rec.doc, ...fields })))
+    .catch(err => console.warn(`[cron_runs] ${rec.doc.job}: end not recorded (${err.message})`));
+}
+
+/**
+ * Run one smartlead_sync Python job: output prefixed [name label], one cron_runs record, and the exit
+ * code explained from bot_health.JOBS (a code a job does not expect is logged as FAILED).
+ * opts: slot (the IST minute it was due; default now), label (e.g. the account).
+ * Resolves with the exit code, or null if Python could not start or was killed.
+ */
+function runJob(name, args, opts = {}) {
+  const tag = opts.label ? `${name} ${opts.label}` : name;
+  const rec = recordStart(name, opts.slot || health.slotKey(new Date()), opts.label ? { label: opts.label } : {});
+  return new Promise(resolve => {
+    let done = false;
+    const finish = (code, how = {}) => {
+      if (done) return;
+      done = true;
+      const ok = !how.error && health.exitOk(name, code);
+      (ok ? console.log : console.error)(`[${tag}] ${health.exitLine(name, code, how)}`);
+      const fields = { ended: new Date(), exit_code: code };
+      if (how.error) fields.error = String(how.error).slice(0, 300);
+      if (how.signal) fields.signal = how.signal;
+      recordEnd(rec, fields);
+      resolve(code);
+    };
+    try {
+      const proc = spawn('python', args, {
+        cwd: path.join(__dirname, 'smartlead_sync'),
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      proc.stdout.on('data', d => process.stdout.write(`[${tag}] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[${tag}] ${d}`));
+      proc.on('error', err => finish(null, { error: err.message }));
+      proc.on('close', (code, signal) => finish(code, { signal }));
+    } catch (err) {
+      finish(null, { error: err.message });
+    }
+  });
+}
+
+/** A scheduled job written in JS (renewal posts, bot health): same record; fn returning false = failed. */
+async function track(name, fn, opts = {}) {
+  const rec = recordStart(name, opts.slot === undefined ? health.slotKey(new Date()) : opts.slot, opts.extra || {});
+  let result;
+  try {
+    result = await fn();
+  } catch (err) {
+    console.error(`[${name}] ${err.message}`);
+    result = false;
+  }
+  await recordEnd(rec, { ended: new Date(), exit_code: result === false ? 1 : 0, posted: result === true,
+    ...(result === 'skipped' ? { skipped: true } : {}) });
+  return result;
+}
 
 /* -------------------- Helper Functions -------------------- */
 
@@ -871,17 +973,12 @@ async function runDailySummary() {
 }
 
 /* -------------------- 4:00 PM IST Summary (Structured) -------------------- */
+// Returns true when posted, 'skipped' when another instance already posted today, false on an error.
 async function runNoonSummary() {
   try {
-    const todayStr = dayjs().format('YYYY-MM-DD');
-    try {
-      await CronLock.create({ jobName: `noonSummary-${todayStr}` });
-    } catch (e) {
-      if (e.code === 11000) {
-        console.log('[runNoonSummary] Lock already acquired by another instance. Skipping.');
-        return;
-      }
-      throw e;
+    if (!(await onceToday('noonSummary'))) {
+      console.log('[runNoonSummary] Lock already acquired by another instance. Skipping.');
+      return 'skipped';
     }
 
     const CHANNEL = 'C0AGVSUNEFP';
@@ -961,25 +1058,20 @@ async function runNoonSummary() {
       blocks
     });
     console.log(`✅ Noon summary sent, ts: ${result.ts}`);
-
+    return true;
   } catch (error) {
     console.error('❌ Error sending noon summary:', error);
     if (error.data) console.error('Slack error data:', JSON.stringify(error.data));
+    return false;
   }
 }
 
 /* -------------------- 5:15 PM IST Simple Reminder -------------------- */
 async function runSimpleReminder() {
   try {
-    const todayStr = dayjs().format('YYYY-MM-DD');
-    try {
-      await CronLock.create({ jobName: `simpleReminder-${todayStr}` });
-    } catch (e) {
-      if (e.code === 11000) {
-        console.log('[runSimpleReminder] Lock already acquired by another instance. Skipping.');
-        return;
-      }
-      throw e;
+    if (!(await onceToday('simpleReminder'))) {
+      console.log('[runSimpleReminder] Lock already acquired by another instance. Skipping.');
+      return 'skipped';
     }
 
     const CHANNEL = 'C0AGVSUNEFP';
@@ -991,10 +1083,68 @@ async function runSimpleReminder() {
       text: renewalLabels.reminderText(baseUrl)
     });
     console.log('✅ Simple reminder sent');
+    return true;
   } catch (error) {
     console.error('❌ Error sending simple reminder:', error);
     if (error.data) console.error('Slack error data:', JSON.stringify(error.data));
+    return false;
   }
+}
+
+/* -------------------- Bot health posts (bot_health.js) -------------------- */
+// Weekdays 10:05 IST and once after a restart, to the infra channel (BOT_HEALTH_CHANNEL overrides;
+// BOT_HEALTH_POST=off records runs but posts nothing). Tue 14:00 / Wed 10:00: the v2 check.
+const healthChannel = () => process.env.BOT_HEALTH_CHANNEL || health.INFRA_CHANNEL;
+
+/** Headline, then the detail in its thread. True when the headline posted; 'off' when switched off. */
+async function postHealthMessage(tag, msg) {
+  if (process.env.BOT_HEALTH_POST === 'off') {
+    console.log(`[${tag}] BOT_HEALTH_POST=off, not posted:\n${msg.text}${msg.thread ? `\n--- thread ---\n${msg.thread}` : ''}`);
+    return 'off';
+  }
+  const channel = healthChannel();
+  const res = await app.client.chat.postMessage({ channel, text: msg.text, unfurl_links: false });
+  if (msg.thread) {
+    try {
+      await app.client.chat.postMessage({ channel, thread_ts: res.ts, text: msg.thread, unfurl_links: false });
+    } catch (err) {
+      console.error(`[${tag}] thread not posted: ${err.message}`);
+    }
+  }
+  console.log(`[${tag}] posted to ${channel}`);
+  return true;
+}
+
+/** kind 'daily' | 'restart'. Window: since the last health post that reached Slack. */
+async function postBotHealth(kind) {
+  const now = new Date();
+  const runs = healthCol('cron_runs');
+  const [last] = await runs.find({ job: 'bot-health', posted: true }).sort({ started: -1 }).limit(1).toArray();
+  const [first] = last ? [] : await runs.find({}).sort({ started: 1 }).limit(1).toArray();
+  const { since, capped, fromFirst } = health.windowStart({ lastPost: last && last.started, firstRecord: first && first.started, now });
+  const recent = await runs.find({ $or: [
+    { started: { $gt: new Date(+since - 3 * 3600 * 1000 - 5 * 60 * 1000) } },
+    { ended: { $gt: since } }
+  ] }).toArray();
+  let heartbeat = null;
+  try {
+    heartbeat = await healthCol('v2_heartbeat').findOne({ _id: 'pc' });
+  } catch (err) {
+    console.warn(`[bot-health] v2 heartbeat not read: ${err.message}`);
+  }
+  const msg = health.healthPost({ kind, now, since, capped, fromFirst, runs: recent, heartbeat, env: process.env, upSince: PROCESS_START });
+  return postHealthMessage('bot-health', msg);
+}
+
+/** Tue 14:00 / Wed 10:00: a red post only if Monday's v2 results are missing or the PC job stopped. */
+async function runV2Watch() {
+  const heartbeat = await healthCol('v2_heartbeat').findOne({ _id: 'pc' });
+  const msg = health.v2WatchPost(heartbeat, new Date());
+  if (!msg) {
+    console.log('[v2-watch] Monday v2 results are in and the PC job ran in the last 3 hours');
+    return 'quiet';
+  }
+  return postHealthMessage('v2-watch', msg);
 }
 
 /* -------------------- Startup -------------------- */
@@ -1027,82 +1177,47 @@ async function start() {
       console.log(`✅ Upload UI running at http://0.0.0.0:${PORT}`);
     });
 
-    // Schedule daily structured summary at 10:00 AM IST, Mon–Fri only
-    cron.schedule('0 10 * * 1-5', async () => {
-      const now = new Date().toISOString();
-      console.log(`[CRON] Daily summary firing at ${now}`);
-      await runNoonSummary();
-    }, {
-      timezone: 'Asia/Kolkata'
+    // Every scheduled job is in bot_health.JOBS with its cron (IST); at() schedules it from there, so the
+    // bot-health check and the real schedule are one list. fn gets { slot }: the IST minute it was due.
+    // A new cron = one JOBS line + one at() call (test_bot_health.js checks they match).
+    const at = (job, fn) => {
+      const crons = health.cronsOf(job);
+      if (!crons.length) console.error(`[cron] ${job} is not in bot_health.JOBS, so it is NOT scheduled`);
+      for (const expr of crons) {
+        cron.schedule(expr, () => {
+          const slot = health.slotKey(new Date());
+          Promise.resolve().then(() => fn({ slot })).catch(err => console.error(`[${job}] ${err.message}`));
+        }, { timezone: 'Asia/Kolkata' });
+      }
+    };
+
+    // Daily Renewal Check at 10:00 AM IST, Mon–Fri only
+    at('noon-summary', ({ slot }) => {
+      console.log(`[CRON] Daily summary firing at ${new Date().toISOString()}`);
+      return track('noon-summary', runNoonSummary, { slot });
     });
 
-    // Smartlead dashboard sync at 10:00 AM IST, every day
-    cron.schedule('0 10 * * *', async () => {
-      const now = new Date().toISOString();
-      console.log(`[CRON] Smartlead sync firing at ${now}`);
-      const todayStr = dayjs().format('YYYY-MM-DD');
-      try {
-        await CronLock.create({ jobName: `smartleadSync-${todayStr}` });
-      } catch (e) {
-        if (e.code === 11000) {
-          console.log('[CRON] Smartlead sync lock already acquired. Skipping.');
-          return;
-        }
-      }
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['run.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[smartlead] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[smartlead] ${d}`));
-      proc.on('close', code => {
-        // run.py exits 2 when any sheet tab was not written; the Last Sync tab
-        // lists which and why. Anything else non-zero is a crash before the
-        // verdict, so the ledger may be incomplete - treat as failure too.
-        if (code === 0) console.log('[smartlead] ✅ sync finished: all tabs written');
-        else if (code === 2) console.error('[smartlead] ⚠ SYNC INCOMPLETE: one or more tabs NOT written - see the Last Sync tab');
-        else console.error(`[smartlead] ❌ sync crashed with code ${code} - tabs may be stale`);
-      });
-    }, {
-      timezone: 'Asia/Kolkata'
+    // Smartlead dashboard sync at 10:00 AM IST, every day. run.py exits 2 when any sheet tab was not
+    // written (the Last Sync tab lists which and why); anything else non-zero is a crash before the
+    // verdict, so the ledger may be incomplete. Both are logged as FAILED (bot_health.JOBS codes).
+    at('smartlead-sync', async ({ slot }) => {
+      console.log(`[CRON] Smartlead sync firing at ${new Date().toISOString()}`);
+      if (await onceToday('smartleadSync')) return runJob('smartlead-sync', ['run.py'], { slot });
     });
 
     // Auto placement-test executor at 11:00 AM IST daily (1h after sync so
     // health data is fresh). Ships DRY-RUN (RETEST_ENABLED=false) — spends
     // nothing until explicitly enabled via the RETEST_ENABLED env var.
-    cron.schedule('0 11 * * *', () => {
-      console.log(`[CRON] Auto placement-test firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['retest_executor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[retest] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[retest] ${d}`));
-      proc.on('close', code => console.log(`[retest] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('retest', ({ slot }) => runJob('retest', ['retest_executor.py'], { slot }));
 
     // Weekly placement batch, Thursdays, every two hours from 10:00 IST. Each
     // run fires at most one wave (PLACEMENT_WAVE_SIZE) and only once the prior
     // wave has cleared, so ~19 domains cover in four waves without a
     // long-running process. Firing all at once starved the seed queue.
-    cron.schedule('0 10,12,14,16 * * 4', () => {
-      console.log(`[CRON] Weekly placement batch firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
+    at('placement-batch', ({ slot }) => {
       const args = ['placement_executor.py'];
       if (process.env.PLACEMENT_ENABLED !== 'true') args.push('--dry-run');
-      const proc = spawn('python', args, {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[placement] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[placement] ${d}`));
-      proc.on('close', code => console.log(`[placement] batch finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
+      return runJob('placement-batch', args, { slot });
     });
 
     // Deliverability-test copy sync: Sunday 18:30 and Monday/Tuesday 05:00 IST, i.e.
@@ -1111,21 +1226,15 @@ async function start() {
     // leads left first; nothing this week -> last week) into every test campaign,
     // the five "DT ..." ones included, so the tests send what is really running. Posts a summary to Slack.
     // Writes by default; COPY_SYNC_DISABLED=true makes it a dry run. Never writes to
-    // a live campaign.
-    cron.schedule('30 18 * * 0', () => runCopySync(), { timezone: 'Asia/Kolkata' });
-    cron.schedule('0 5 * * 1,2', () => runCopySync(), { timezone: 'Asia/Kolkata' });
-    function runCopySync() {
+    // a live campaign. Once a day (lock); a bot that starts late catches it up before the tests.
+    const runCopySync = async ({ slot }) => {
+      if (!(await onceToday('copy-sync'))) return;
       console.log(`[CRON] Test-copy sync firing at ${new Date().toISOString()}`);
       const args = ['copy_sync.py'];
       if (process.env.COPY_SYNC_DISABLED !== 'true') args.push('--apply');
-      const proc = spawn('python', args, {
-        cwd: path.join(__dirname, 'smartlead_sync'),
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[copy-sync] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[copy-sync] ${d}`));
-      proc.on('close', code => console.log(`[copy-sync] finished with code ${code}`));
-    }
+      return runJob('copy-sync', args, { slot });
+    };
+    at('copy-sync', runCopySync);
 
     // Deliverability report, Mondays and Tuesdays, hourly 08:00-12:00 IST plus a final
     // run at 13:00 (tests start 06:00). Each run reports only tests not reported before, and only once
@@ -1133,42 +1242,26 @@ async function start() {
     // before that); the 13:00 run reports whatever is in. Posts to Slack (channel
     // C0AGVSUNEFP), keeps per-inbox status in Mongo and writes the Inbox Status
     // tab Campaign Desk reads. Grid cells only with PLACEMENT_GRID_ENABLED=true.
-    // PLACEMENT_REPORT_DISABLED=true makes it print-only.
-    cron.schedule('0 8-12 * * 1,2', () => runPlacementReport(false), { timezone: 'Asia/Kolkata' });
-    cron.schedule('0 13 * * 1,2', () => runPlacementReport(true), { timezone: 'Asia/Kolkata' });
-    function runPlacementReport(final) {
+    // PLACEMENT_REPORT_DISABLED=true makes it print-only. The two accounts run one after the
+    // other: each reads, clears and rewrites the same Inbox Status tab (audit PLACEMENT-6).
+    const runPlacementReport = async (final, { slot }) => {
+      if (final && !(await onceToday('placement-report-final'))) return;
       const today = new Date().toISOString().slice(0, 10);
-      ['PRECISE_LEADS', 'BETTRDATA'].forEach(account => {
+      for (const account of ['PRECISE_LEADS', 'BETTRDATA']) {
         const args = ['placement_report.py', '--account', account, '--since', today, '--only-new'];
         if (final) args.push('--final');
         if (process.env.PLACEMENT_REPORT_DISABLED !== 'true') args.push('--post', '--save', '--status-tab');
         if (process.env.PLACEMENT_GRID_ENABLED === 'true') args.push('--grid');
-        const proc = spawn('python', args, {
-          cwd: path.join(__dirname, 'smartlead_sync'),
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-        });
-        proc.stdout.on('data', d => process.stdout.write(`[placement-report ${account}] ${d}`));
-        proc.stderr.on('data', d => process.stderr.write(`[placement-report ${account}] ${d}`));
-        proc.on('close', code => console.log(`[placement-report ${account}] finished with code ${code}`));
-      });
-    }
+        await runJob(final ? 'placement-report-final' : 'placement-report', args, { slot, label: account });
+      }
+    };
+    at('placement-report', s => runPlacementReport(false, s));
+    at('placement-report-final', s => runPlacementReport(true, s));
 
     // Placement result collector, 12:30 and 16:30 IST daily. Thursday's batch
     // lands in the first window; the later run catches stragglers, and the
     // other days pick up any on-demand test. Collect-only: never creates.
-    cron.schedule('30 12,16 * * *', () => {
-      console.log(`[CRON] Placement collector firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['placement_executor.py', '--collect-only'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[placement] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[placement] ${d}`));
-      proc.on('close', code => console.log(`[placement] collect finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('placement-collect', ({ slot }) => runJob('placement-collect', ['placement_executor.py', '--collect-only'], { slot }));
 
     // Inbox setup jobs: every 10 minutes move approved jobs forward and DM each
     // job's creator when it changes. Only approved jobs run; paid steps also
@@ -1183,44 +1276,14 @@ async function start() {
     // Fleet placement summary at 09:50 IST daily. Read-only and credit-free —
     // it reads placement already rolled up across past tests, so drift shows
     // up the next morning instead of waiting for the weekly test. Exit 2 means
-    // at least one mailbox is below threshold.
-    cron.schedule('50 9 * * *', () => {
-      console.log(`[CRON] Placement summary firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['placement_summary.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[placement-summary] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[placement-summary] ${d}`));
-      proc.on('close', code => {
-        if (code === 2) console.warn('[placement-summary] ⚠ mailbox(es) below placement threshold');
-        else console.log('[placement-summary] all mailboxes above threshold');
-      });
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    // at least one mailbox is below threshold; 1 means an account could not be
+    // read or the job crashed, which is logged as FAILED, never as all clear.
+    at('placement-summary', ({ slot }) => runJob('placement-summary', ['placement_summary.py'], { slot }));
 
     // API-key health watchdog at 09:45 IST daily — 15 minutes before the sync,
     // so a rotated/revoked key is reported BEFORE the day's jobs run blind on
     // it. Read-only, no enable flag. Exit code 2 = dead key, 1 = unreachable.
-    cron.schedule('45 9 * * *', () => {
-      console.log(`[CRON] API-key health check firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['key_health_monitor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[key-health] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[key-health] ${d}`));
-      proc.on('close', code => {
-        if (code === 2) console.error('[key-health] 🚨 DEAD API KEY(S) — clients are blind until fixed');
-        else if (code === 1) console.warn('[key-health] ⚠ Smartlead unreachable for one or more accounts');
-        else console.log('[key-health] all keys valid');
-      });
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('key-health', ({ slot }) => runJob('key-health', ['key_health_monitor.py'], { slot }));
 
     // Off the schedule since 7 Nov 2026 (mailbox-maintenance audit): EmailGuard tests (EmailGuard is not used),
     // NC placement tests (they raise an inbox's daily limit, against the never-raise rule), the warm-up executor
@@ -1238,216 +1301,120 @@ async function start() {
     // Bounce auto-protection sweep at 12:30 PM IST daily. Ships DRY-RUN
     // (BOUNCE_PROTECT_ENABLED=false) — logs ACTIVE campaigns missing the
     // Smartlead bounce auto-pause threshold, applies nothing until enabled.
-    cron.schedule('30 12 * * *', () => {
-      console.log(`[CRON] Bounce-protect sweep firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['bounce_protect_executor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[bounce-protect] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[bounce-protect] ${d}`));
-      proc.on('close', code => console.log(`[bounce-protect] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('bounce-protect', ({ slot }) => runJob('bounce-protect', ['bounce_protect_executor.py'], { slot }));
 
     // Blacklist monitor at 9:00 AM IST every Monday. Read-only (DNSBL lookups
     // via Google DoH against Spamhaus DBL / SURBL / URIBL) — no enable flag needed.
-    cron.schedule('0 9 * * 1', () => {
-      console.log(`[CRON] Blacklist monitor firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['blacklist_monitor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[blacklist] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[blacklist] ${d}`));
-      proc.on('close', code => console.log(`[blacklist] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('blacklist', ({ slot }) => runJob('blacklist', ['blacklist_monitor.py'], { slot }));
 
     // Capacity planner at 9:30 AM IST every Monday (after the blacklist run).
     // Read-only: writes the Capacity advisory tab + domain registry only.
-    cron.schedule('30 9 * * 1', () => {
-      console.log(`[CRON] Capacity planner firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['capacity_planner.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[capacity] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[capacity] ${d}`));
-      proc.on('close', code => console.log(`[capacity] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('capacity', ({ slot }) => runJob('capacity', ['capacity_planner.py'], { slot }));
 
     // Zapmail → /infra tracker sync at 9:30 AM IST: expiry dates, lapsed
     // domains, new current-client domains/inboxes. Writes only when
     // ZAPMAIL_ASSET_SYNC_ENABLED=true (otherwise logs a preview), then
     // re-syncs the tracker sheet. ScaledMail has its own sync at 9:35.
-    cron.schedule('30 9 * * *', () => {
+    at('zapmail-sync', async ({ slot }) => {
       const apply = process.env.ZAPMAIL_ASSET_SYNC_ENABLED === 'true';
       console.log(`[CRON] Zapmail tracker sync (${apply ? 'apply' : 'preview'}) firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['zapmail_asset_sync.py', ...(apply ? ['--apply'] : [])], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[zapmail-sync] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[zapmail-sync] ${d}`));
-      proc.on('close', code => {
-        console.log(`[zapmail-sync] finished with code ${code}`);
-        if (apply && code === 0) {
-          resyncAssetSheet().catch(err => console.warn('[zapmail-sync] sheet refresh failed:', err.message));
-        }
-      });
-    }, {
-      timezone: 'Asia/Kolkata'
+      const code = await runJob('zapmail-sync', ['zapmail_asset_sync.py', ...(apply ? ['--apply'] : [])], { slot });
+      if (apply && code === 0) {
+        resyncAssetSheet().catch(err => console.warn('[zapmail-sync] sheet refresh failed:', err.message));
+      }
     });
 
     // Zapmail daily digest at 9:40 AM IST (read-only): wallets, domains
     // expiring soon, purchase batches due or needing reconcile. Posts only when
     // ZAPMAIL_NOTIFY_CHANNEL is set; otherwise it just logs.
-    cron.schedule('40 9 * * *', () => {
-      console.log(`[CRON] Zapmail digest firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['zapmail_digest.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[zapmail-digest] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[zapmail-digest] ${d}`));
-      proc.on('close', code => console.log(`[zapmail-digest] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('zapmail-digest', ({ slot }) => runJob('zapmail-digest', ['zapmail_digest.py'], { slot }));
 
     // ScaledMail tracker sync at 9:35 IST: writes only when
     // SCALEDMAIL_ASSET_SYNC_ENABLED=true; skips without a key.
-    const runScaledMail = (tag, args, after) => {
+    at('scaledmail-sync', async ({ slot }) => {
       if (!process.env.SCALEDMAIL_API_KEY) return;
-      const proc = spawn('python', ['scaledmail_cli.py', ...args], {
-        cwd: path.join(__dirname, 'smartlead_sync'),
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[${tag}] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[${tag}] ${d}`));
-      proc.on('close', code => { console.log(`[${tag}] finished with code ${code}`); if (after) after(code); });
-    };
-    cron.schedule('35 9 * * *', () => {
       const apply = process.env.SCALEDMAIL_ASSET_SYNC_ENABLED === 'true';
       console.log(`[CRON] ScaledMail tracker sync (${apply ? 'apply' : 'preview'}) firing at ${new Date().toISOString()}`);
-      runScaledMail('scaledmail-sync', ['sync', ...(apply ? ['--apply'] : [])], code => {
-        if (apply && code === 0) {
-          resyncAssetSheet().catch(err => console.warn('[scaledmail-sync] sheet refresh failed:', err.message));
-        }
-      });
-    }, {
-      timezone: 'Asia/Kolkata'
+      const code = await runJob('scaledmail-sync', ['scaledmail_cli.py', 'sync', ...(apply ? ['--apply'] : [])], { slot });
+      if (apply && code === 0) {
+        resyncAssetSheet().catch(err => console.warn('[scaledmail-sync] sheet refresh failed:', err.message));
+      }
     });
     // (The ScaledMail digest is part of the 9:40 "Domains & inboxes daily".)
 
-    // ScaledMail inboxes that reached Smartlead -> signature, client, tags
-    // (smartlead/inbox_ready.py). Every 2 hours, only when
-    // INBOX_READY_ENABLED=true; posts only when something became ready.
-    cron.schedule('15 */2 * * *', () => {
-      // Inbox intake (spec 2026-10-13): every new inbox -> the team's standard,
-      // once, proven by read-back. Until INBOX_INTAKE_ENABLED=true, the old
-      // ScaledMail readiness job (signature, client, tags) keeps running.
-      if (process.env.INBOX_INTAKE_ENABLED === 'true') {
-        console.log(`[CRON] Inbox intake firing at ${new Date().toISOString()}`);
-        const proc = spawn('python', ['inbox_intake_cli.py', '--apply', '--post', '--json'], {
-          cwd: path.join(__dirname, 'smartlead_sync'), env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-        });
-        proc.stdout.on('data', d => process.stdout.write(`[inbox-intake] ${d}`));
-        proc.stderr.on('data', d => process.stderr.write(`[inbox-intake] ${d}`));
-        proc.on('close', code => console.log(`[inbox-intake] finished with code ${code}`));
-        return;
-      }
-      if (process.env.INBOX_READY_ENABLED !== 'true') return;
+    // Every 2 hours at :15. Inbox intake (spec 2026-10-13): every new inbox -> the team's
+    // standard, once, proven by read-back, when INBOX_INTAKE_ENABLED=true. Until then the
+    // old ScaledMail readiness job (smartlead/inbox_ready.py: signature, client, tags) runs
+    // when INBOX_READY_ENABLED=true and a ScaledMail key is set; it posts only when
+    // something became ready.
+    at('inbox-intake', ({ slot }) => {
+      if (process.env.INBOX_INTAKE_ENABLED !== 'true') return;
+      console.log(`[CRON] Inbox intake firing at ${new Date().toISOString()}`);
+      return runJob('inbox-intake', ['inbox_intake_cli.py', '--apply', '--post', '--json'], { slot });
+    });
+    at('inbox-ready', ({ slot }) => {
+      if (process.env.INBOX_INTAKE_ENABLED === 'true' || process.env.INBOX_READY_ENABLED !== 'true') return;
+      if (!process.env.SCALEDMAIL_API_KEY) return;
       console.log(`[CRON] Inbox readiness firing at ${new Date().toISOString()}`);
-      runScaledMail('inbox-ready', ['--json', 'ready', '--apply', '--post']);
-    }, {
-      timezone: 'Asia/Kolkata'
+      return runJob('inbox-ready', ['scaledmail_cli.py', '--json', 'ready', '--apply', '--post'], { slot });
     });
 
     // GoDaddy -> tracker at 9:37 AM IST: domains the bot bought on GoDaddy get a
     // row (client from the purchase ledger), and every GoDaddy domain's expiry
     // follows GoDaddy. Writes only with GODADDY_ASSET_SYNC_ENABLED=true; skips
     // without GODADDY_PAT.
-    cron.schedule('37 9 * * *', () => {
+    at('godaddy-sync', async ({ slot }) => {
       if (!process.env.GODADDY_PAT) return;
       const apply = process.env.GODADDY_ASSET_SYNC_ENABLED === 'true';
       console.log(`[CRON] GoDaddy tracker sync (${apply ? 'apply' : 'preview'}) firing at ${new Date().toISOString()}`);
-      const proc = spawn('python', ['godaddy_cli.py', 'sync', ...(apply ? ['--apply'] : [])], {
-        cwd: path.join(__dirname, 'smartlead_sync'),
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[godaddy-sync] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[godaddy-sync] ${d}`));
-      proc.on('close', code => {
-        console.log(`[godaddy-sync] finished with code ${code}`);
-        if (apply && code === 0) {
-          resyncAssetSheet().catch(err => console.warn('[godaddy-sync] sheet refresh failed:', err.message));
-        }
-      });
-    }, {
-      timezone: 'Asia/Kolkata'
+      const code = await runJob('godaddy-sync', ['godaddy_cli.py', 'sync', ...(apply ? ['--apply'] : [])], { slot });
+      if (apply && code === 0) {
+        resyncAssetSheet().catch(err => console.warn('[godaddy-sync] sheet refresh failed:', err.message));
+      }
     });
 
     // Infra audit at 10:20 AM IST Mon-Fri (read-only): MX / DMARC policy,
     // name-server footprint, redirects, main-domain use, mailbox and domain
     // caps, young inboxes in campaigns, warmup, signatures, provider mix, ESP
     // matching, SMTP IP blacklists. Posts only when INFRA_AUDIT_CHANNEL is set.
-    cron.schedule('20 10 * * 1-5', () => {
-      console.log(`[CRON] Infra audit firing at ${new Date().toISOString()}`);
+    at('infra-audit', ({ slot }) => {
       const args = ['infra_audit.py', ...(process.env.INFRA_AUDIT_CHANNEL ? ['--post'] : [])];
-      const proc = spawn('python', args, {
-        cwd: path.join(__dirname, 'smartlead_sync'),
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[infra-audit] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[infra-audit] ${d}`));
-      proc.on('close', code => console.log(`[infra-audit] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
+      return runJob('infra-audit', args, { slot });
     });
 
     // Inbox billing: did every Zapmail subscription / ScaledMail order renew?
     // Every 2 hours 9-21 IST; posts only changes (not renewed, payment failed,
     // cancelled, bought outside the bot) to RENEWAL_REVIEW_CHANNEL / ZAPMAIL_NOTIFY_CHANNEL.
     // Renewal review at 9:50 IST: inboxes on bills due in 3 days → keep / retire / check.
-    const runBilling = (tag, args) => {
-      const proc = spawn('python', args, {
-        cwd: path.join(__dirname, 'smartlead_sync'),
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[${tag}] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[${tag}] ${d}`));
-      proc.on('close', code => console.log(`[${tag}] finished with code ${code}`));
-    };
-    cron.schedule('5 9-21/2 * * *', () => runBilling('billing-watch', ['billing_watch.py']), { timezone: 'Asia/Kolkata' });
+    at('billing-watch', ({ slot }) => runJob('billing-watch', ['billing_watch.py'], { slot }));
     // --flag-tracker marks DROP / CHECK on the tracker rows, so the 10:00 Daily
     // Renewal Check shows "don't renew" next to them (7 days ahead).
-    cron.schedule('50 9 * * *', () => runBilling('renewal-review', ['renewal_review.py', '--days', '7', '--post', '--flag-tracker']), { timezone: 'Asia/Kolkata' });
+    at('renewal-review', ({ slot }) => runJob('renewal-review', ['renewal_review.py', '--days', '7', '--post', '--flag-tracker'], { slot }));
 
     // Kill warnings, Tuesday 13:30 IST, after the Mon/Tue placement reports:
     // which inboxes SHOULD be killed by the team's rule (two strikes, <50% on
-    // 20+ seeds, or a dead domain) and which to watch. Warning only.
-    cron.schedule('30 13 * * 2', () => runBilling('kill-report', ['kill_report.py', '--post']), { timezone: 'Asia/Kolkata' });
+    // 20+ seeds, or a dead domain) and which to watch. Warning only. Once a day
+    // (lock); a bot that starts late catches it up the same afternoon.
+    const runKillReport = async ({ slot }) => {
+      if (await onceToday('kill-report')) return runJob('kill-report', ['kill_report.py', '--post'], { slot });
+    };
+    at('kill-report', runKillReport);
 
     // Fleet watch (spec 2026-10-15): daily record of every inbox, new problems
-    // with what to do (10:30 IST, #test-channel), scorecard Mondays 10:50.
-    // Never writes to Smartlead.
-    cron.schedule('30 10 * * *', () => runBilling('fleet-watch', ['fleet_watch.py', '--post']), { timezone: 'Asia/Kolkata' });
-    cron.schedule('50 10 * * 1', () => runBilling('fleet-scorecard', ['fleet_watch.py', '--scorecard', '--post']), { timezone: 'Asia/Kolkata' });
+    // with what to do (10:30 IST), scorecard Mondays 10:50. Never writes to Smartlead.
+    // Once a day each, like the other daily jobs: two instances overlap during a deploy.
+    at('fleet-watch', async ({ slot }) => {
+      if (await onceToday('fleet-watch')) return runJob('fleet-watch', ['fleet_watch.py', '--post'], { slot });
+    });
+    at('fleet-scorecard', async ({ slot }) => {
+      if (await onceToday('fleet-scorecard')) return runJob('fleet-scorecard', ['fleet_watch.py', '--scorecard', '--post'], { slot });
+    });
 
     // Every current-client inbox on its client's deliverability test campaigns
     // (paused only), daily 06:00 IST, so any inbox can go into the Monday test.
-    cron.schedule('0 6 * * *', () => runBilling('dt-senders', ['dt_senders.py', '--apply']), { timezone: 'Asia/Kolkata' });
+    at('dt-senders', async ({ slot }) => {
+      if (await onceToday('dt-senders')) return runJob('dt-senders', ['dt_senders.py', '--apply'], { slot });
+    });
 
     // Campaign stats (Manveen, 29 Oct 2026). 09:00 IST every day: Campaign
     // Metrics tabs + today's Campaign History rows (one row per campaign per
@@ -1455,77 +1422,91 @@ async function start() {
     // email + LinkedIn numbers (and week / month), in #pl_daily before the 11:00 standup.
     // The Mongo lock keeps a second instance (during a deploy) from posting twice.
     // CAMPAIGN_STATS_POST=off stops the post; the 09:00 history keeps running.
-    const onceToday = async (job) => {
-      try {
-        await CronLock.create({ jobName: `${job}-${dayjs().format('YYYY-MM-DD')}` });
-      } catch (e) {
-        if (e.code === 11000) {
-          console.log(`[${job}] already ran today on another instance. Skipping.`);
-          return false;
-        }
-      }
-      return true;
-    };
-    cron.schedule('0 9 * * *', async () => {
-      if (await onceToday('campaign-metrics')) runBilling('campaign-metrics', ['metrics_only.py']);
-    }, { timezone: 'Asia/Kolkata' });
+    at('campaign-metrics', async ({ slot }) => {
+      if (await onceToday('campaign-metrics')) return runJob('campaign-metrics', ['metrics_only.py'], { slot });
+    });
     // 10:15 since 2 Nov: the post now counts by date from the platforms
     // (several minutes), so it still lands before the 11:00 standup.
-    cron.schedule('15 10 * * 1-5', async () => {
+    const runStatsPost = async ({ slot }) => {
       if (process.env.CAMPAIGN_STATS_POST === 'off') return;
-      if (await onceToday('campaign-stats-post')) runBilling('campaign-stats-post', ['campaign_stats_post.py', '--post']);
-    }, { timezone: 'Asia/Kolkata' });
-    // Started after 10:15 on a weekday (restart, deploy, Render waking up)? Run
-    // the missed post; the lock skips it if 10:15 already ran (stats_catch_up.js).
-    if (require('./stats_catch_up').missedStatsPost(new Date(), process.env)) {
-      setTimeout(async () => {
-        if (await onceToday('campaign-stats-post')) {
-          console.log('[campaign-stats-post] catching up a missed 10:15 run');
-          runBilling('campaign-stats-post', ['campaign_stats_post.py', '--post']);
-        }
-      }, 60 * 1000);
-    }
+      if (await onceToday('campaign-stats-post')) return runJob('campaign-stats-post', ['campaign_stats_post.py', '--post'], { slot });
+    };
+    at('campaign-stats-post', runStatsPost);
 
     // Microsoft / Proofpoint reach (Manveen, 1 Nov 2026): Mondays 10:40 IST in
     // #pl_daily, after the stats post. Real sends, each campaign against its own
     // Google recipients (seed tests said 7/7 inbox while BettrData's Microsoft
     // recipients answered at 0.11x). Report only. PROVIDER_WATCH_POST=off stops it.
-    cron.schedule('40 10 * * 1', async () => {
+    at('provider-watch', async ({ slot }) => {
       if (process.env.PROVIDER_WATCH_POST === 'off') return;
-      if (await onceToday('provider-watch')) runBilling('provider-watch', ['provider_reply_watch.py', '--post']);
-    }, { timezone: 'Asia/Kolkata' });
+      if (await onceToday('provider-watch')) return runJob('provider-watch', ['provider_reply_watch.py', '--post'], { slot });
+    });
 
-    // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: raise, hold
-    // or step back daily limits per domain (spec 2026-10-15). Changes only the
-    // pilot domains (volume_review.py --pilot-add); every other domain is reported.
-    cron.schedule('45 13 * * 2', () => {
+    // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: hold or step back
+    // daily limits per domain; it never raises one (smartlead/volume_rule.py). Changes only the pilot
+    // domains (volume_review.py --pilot-add); every other domain is reported.
+    at('volume-review', ({ slot }) => {
       if (process.env.VOLUME_REVIEW_ENABLED !== 'true') return;
-      runBilling('volume-review', ['volume_review.py', '--post', '--json']);
-    }, { timezone: 'Asia/Kolkata' });
+      return runJob('volume-review', ['volume_review.py', '--post', '--json'], { slot });
+    });
 
     // Per-domain reply-rate early warning at 1:00 PM IST daily (read-only).
-    cron.schedule('0 13 * * *', () => {
-      console.log(`[CRON] Reply monitor firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['reply_monitor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[reply-mon] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[reply-mon] ${d}`));
-      proc.on('close', code => console.log(`[reply-mon] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    at('reply-monitor', ({ slot }) => runJob('reply-monitor', ['reply_monitor.py'], { slot }));
 
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
-    cron.schedule('0 16 * * 1-5', async () => {
-      const now = new Date().toISOString();
-      console.log(`[CRON] Simple reminder firing at ${now}`);
-      await runSimpleReminder();
-    }, {
-      timezone: 'Asia/Kolkata'
+    at('reminder', ({ slot }) => {
+      console.log(`[CRON] Simple reminder firing at ${new Date().toISOString()}`);
+      return track('reminder', runSimpleReminder, { slot });
     });
+
+    // Bot health, weekdays 10:05 IST (bot_health.js): runs that did not happen or failed since the
+    // last health post, the PC v2 job's heartbeat, and the live-write flags that are on.
+    at('bot-health', async ({ slot }) => {
+      if (await onceToday('bot-health')) {
+        return track('bot-health', () => postBotHealth('daily'), { slot, extra: { kind: 'daily' } });
+      }
+    });
+    // Tue 14:00 and Wed 10:00 IST: a red post if Monday's v2 results are not in Mongo or the
+    // hourly PC job has not run for 3 hours. Quiet otherwise.
+    at('v2-watch', async ({ slot }) => {
+      if (await onceToday('v2-watch')) return track('v2-watch', runV2Watch, { slot });
+    });
+
+    // Started late (restart, deploy, Render waking up)? Catch up the runs still worth doing
+    // (stats_catch_up.js); each runner's once-a-day lock skips a slot that already ran.
+    const CATCH_UP = {
+      'campaign-stats-post': runStatsPost,
+      'kill-report': runKillReport,
+      'placement-report-final': s => runPlacementReport(true, s),
+      'copy-sync': runCopySync
+    };
+    const missedAtStart = require('./stats_catch_up').missedRuns(new Date(), process.env);
+    if (missedAtStart.length) {
+      setTimeout(() => {
+        for (const { job, slot } of missedAtStart) {
+          console.log(`[${job}] the bot started after its ${slot} run: catching it up unless it already ran`);
+          Promise.resolve().then(() => CATCH_UP[job]({ slot }))
+            .catch(err => console.error(`[${job}] catch-up failed: ${err.message}`));
+        }
+      }, 60 * 1000);
+    }
+
+    // Once after a restart, 3 minutes in (after the catch-ups started): the bot-health post for
+    // the time since the last one. On a weekday after 10:05 with no 10:05 post yet, it is that
+    // day's post. At most one restart post an hour, so a crash loop cannot flood the channel.
+    setTimeout(async () => {
+      try {
+        const now = new Date();
+        const daily = health.dueDailySlot(now);
+        if (daily && (await onceToday('bot-health'))) {
+          await track('bot-health', () => postBotHealth('restart'), { slot: daily, extra: { kind: 'restart' } });
+        } else if (await takeLock(`bot-health-restart-${health.slotKey(now).slice(0, 13)}`)) {
+          await track('bot-health', () => postBotHealth('restart'), { slot: null, extra: { kind: 'restart' } });
+        }
+      } catch (err) {
+        console.error(`[bot-health] restart post failed: ${err.message}`);
+      }
+    }, 3 * 60 * 1000);
 
     const nowUtc = new Date().toISOString();
     const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
