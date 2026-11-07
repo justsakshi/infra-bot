@@ -291,7 +291,8 @@ def _alert_parts(serious: list[dict], surbl_only: int = 0) -> tuple[list[str], l
                 by_client[c] = by_client.get(c, 0) + 1
         head.append(" · ".join(f"{c} {k}" for c, k in sorted(by_client.items(), key=lambda kv: -kv[1])))
         thread.append("\n".join(lines))
-    advice = ("Pause campaigns on these domains and file a delisting request. "
+    advice = ("Decide with the client lead whether these domains keep sending. Spamhaus removal asks for confirmed "
+              "opt-in and listings expire once the sending stops, so don't file a removal request without a change. "
               "Domains under 30 days old: replace instead.")
     if surbl_only:
         advice += (f"\n_Also {surbl_only} domain{'s' if surbl_only != 1 else ''} on SURBL only (link reputation; "
@@ -329,7 +330,7 @@ async def main() -> None:
         for r in listed:
             print(f"    {r['domain']:35} {', '.join(r['listed_on']):30} "
                   f"clients: {', '.join(r['clients'])}")
-        print("  ACTION: pause campaigns on these domains, submit delisting request, "
+        print("  ACTION: decide whether these domains keep sending (no blind removal requests), "
               "escalate to Zapmail if DNS-related. Domain <30d old -> replace instead.")
         # Alert on Spamhaus DBL ONLY. DBL listings genuinely suppress inbox
         # placement and are rare (0 of 121 as of 2026-07-27). SURBL ABUSE hits

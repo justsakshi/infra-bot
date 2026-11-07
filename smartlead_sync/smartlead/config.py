@@ -184,7 +184,10 @@ SMARTLEAD_WRONG_PERSON_CATEGORY_IDS: set[int] = {7}
 
 # ── Inbox Health workbook ────────────────────────────────────────────────────
 INBOX_HEALTH_TAB_NAME: str = os.getenv("INBOX_HEALTH_TAB_NAME", "Inbox Health")
-HEALTH_NOTIFY_CHANNEL: str = os.getenv("HEALTH_NOTIFY_CHANNEL", os.getenv("REMINDER_CHANNEL", ""))
+# The infra channel (#domain-inboxes-expiry-reminder). An empty or unset value used to fall back to REMINDER_CHANNEL,
+# the archived #testing-4866, so every health alert since at least Oct 2026 went nowhere (audit 7 Nov 2026).
+INFRA_CHANNEL: str = "C0AGVSUNEFP"
+HEALTH_NOTIFY_CHANNEL: str = (os.getenv("HEALTH_NOTIFY_CHANNEL") or "").strip() or INFRA_CHANNEL
 HEALTH_HISTORY_DB: str = os.getenv("HEALTH_HISTORY_DB", "infrabot")
 HEALTH_HISTORY_COLLECTION: str = os.getenv("HEALTH_HISTORY_COLLECTION", "inbox_health_history")
 # Daily snapshots of Expandi's all-time campaign counters. The API has no date

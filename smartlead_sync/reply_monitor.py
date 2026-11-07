@@ -188,6 +188,10 @@ async def main() -> None:
             from smartlead.config import HEALTH_NOTIFY_CHANNEL
             from smartlead.notify import post_with_thread
             token = os.getenv("SLACK_BOT_TOKEN", "")
+            # Off until the one-day rule is replaced: replayed over 21 days it raised 91 alerts, 89 of them noise
+            # (audit 7 Nov 2026). REPLY_MONITOR_POST=on posts them anyway.
+            if os.getenv("REPLY_MONITOR_POST", "").strip().lower() != "on":
+                token = ""
             if token and HEALTH_NOTIFY_CHANNEL:
                 head, thread = _alert_parts(alert_lines)
                 post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, thread)

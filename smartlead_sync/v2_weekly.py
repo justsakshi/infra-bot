@@ -83,6 +83,9 @@ SETTLE_MINUTES = 90
 UNTESTED_AFTER_DAYS = 8
 REPAIR_DAYS = 14
 DEFAULT_FOLDER = Path(os.getenv("V2_CSV_FOLDER") or Path.home() / "Downloads")
+# #domain-inboxes-expiry-reminder, where the renewal checks and classic placement posts go. Not HEALTH_NOTIFY_CHANNEL:
+# on the PC that falls back to REMINDER_CHANNEL, an archived channel, so every post failed (found 7 Nov 2026).
+INFRA_CHANNEL = "C0AGVSUNEFP"
 DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
 
 
@@ -159,6 +162,7 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             continue
         summary = v2.summarise(rows)
         sent_last = v2.last_sent(rows)
+        info["per_provider"] = v2.emails_per_provider(rows)
         old = history or bool(state.get("since") and night < state["since"])
         for mb, s in summary.items():
             res = {"night": night, "verdict": s["verdict"], "google": s["google"], "microsoft": s["microsoft"],
@@ -577,6 +581,15 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     for dom, n in sorted(dead.items()):
         needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test. Check "
                      f"{'they are' if n != 1 else 'it is'} connected in Smartlead.")
+    thin = sorted((f["name"], f["per_provider"]) for f in state["files"].values()
+                  if f.get("night") in got["nights"] and f.get("status") == "ingested"
+                  and 0 < int(f.get("per_provider") or v2.PASS_SEEDS) < v2.PASS_SEEDS)
+    for name, n in thin:
+        needs.append(f"{name}: this test sends {n} email{'s' if n != 1 else ''} per provider, so the job can't judge its "
+                     f"inboxes (it needs 4 of 4). In Smart Delivery, set the test to 4 emails per provider.")
+    weekly = any(v2.is_weekly_night(n) for n in nights)
+    if nights and not weekly:
+        info.append("Not a Monday test, so the weekly checks (missing tests, untested senders) were skipped.")
     tested = set(tonight)
     no_result, waiting, in_dt = [], set(), set()
     for acc, f in fleet.items():
@@ -585,11 +598,11 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             if c["senders"] and not any(e in tested for e, i in f["inboxes"].items() if i["id"] in c["senders"]):
                 no_result.append(c["name"])
                 waiting |= {(acc, i) for i in c["senders"]}
-    if no_result and nights:
+    if no_result and weekly:
         needs.append(f"No result this week from {', '.join(sorted(no_result))} ({len(waiting)} inboxes): "
                      f"download their CSVs into Downloads.")
     untested, missed = defaultdict(list), defaultdict(list)
-    if nights:
+    if weekly:
         newest = date.fromisoformat(max(nights))
         for acc, f in fleet.items():
             live = {i for c in f["camps"].values() if c["status"] in SENDING for i in c["senders"]}
@@ -651,7 +664,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         elif st == "not_sent":
             tail = "did not send in the test (see Needs you)"
         elif st == "incomplete":
-            tail = "too few seeds answered; nothing done"
+            sent = max((x.get(p) or {}).get("sent", 0) for _, x in items for p in ("google", "microsoft"))
+            tail = (f"the test sent {sent} email{'s' if sent != 1 else ''} per provider, too few to judge; nothing done"
+                    if 0 < sent < v2.MIN_REPORTED else "too few seeds answered; nothing done")
         else:
             tail = "not in Smartlead"
         who = items[0][0] if len(items) == 1 else f"{len(items)} of {per_dom[dom]} inboxes"
@@ -689,13 +704,13 @@ def post_or_queue(state: dict, head: list[str], parts: list[str]) -> bool:
 
 
 def post(head: list[str], parts: list[str]) -> bool:
-    from smartlead.config import HEALTH_NOTIFY_CHANNEL
     from smartlead.notify import post_with_thread
     token = os.getenv("SLACK_BOT_TOKEN", "")
-    if not token or not HEALTH_NOTIFY_CHANNEL:
-        print("  SLACK_BOT_TOKEN / HEALTH_NOTIFY_CHANNEL missing: not posted")
+    channel = os.getenv("V2_WEEKLY_CHANNEL") or INFRA_CHANNEL
+    if not token:
+        print("  SLACK_BOT_TOKEN missing: not posted")
         return False
-    return bool(post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, parts))
+    return bool(post_with_thread(token, channel, head, parts))
 
 
 # --- main ----------------------------------------------------------------------------

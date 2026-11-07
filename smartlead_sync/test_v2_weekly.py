@@ -455,3 +455,43 @@ def test_load_fleet_refuses_a_missing_account(monkeypatch):
     monkeypatch.setattr(accs, "discover_accounts", lambda: [])
     with pytest.raises(wk.FleetIncomplete):
         asyncio.run(wk.load_fleet())
+
+
+def test_a_one_email_test_is_reported_not_judged(tmp_path):
+    lines = [HEAD] + [f"{mb},{p},{l},2026-11-09T14:31:00.000Z,SENT\n"
+                      for mb, l in (("a@x.com", "Spam"), ("b@x.com", "Inbox"))
+                      for p in ("GOOGLE_WORKSPACE", "MICROSOFT_365")]
+    p = tmp_path / "bd-run-1.csv"
+    p.write_text("".join(lines), encoding="utf-8")
+    t = NOW.timestamp() - 3600
+    os.utime(p, (t, t))
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    assert st["results"]["a@x.com"][0]["verdict"] == v2.INCOMPLETE         # never pulled on one email
+    assert wk.plan(st)["a@x.com"]["action"] is None
+    f = fleet()
+    f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
+    head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
+    assert "bd-run-1.csv: this test sends 1 email per provider" in parts[0]
+    assert any("the test sent 1 email per provider, too few to judge; nothing done" in x for x in parts)
+
+
+def test_a_midweek_test_skips_the_weekly_checks(tmp_path):
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4, "2026-11-07")]
+    f = fleet()
+    f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT Melior #3", "status": "ACTIVE", "senders": {55}}}
+    got = {"ingested": ["a.csv"], "pending": [], "nights": {"2026-11-07"}}
+    head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), True, set())
+    text = "\n".join(parts)
+    assert "No result this week" not in text and "in no DT test" not in text
+    assert "Not a Monday test" in text and head[-1] == "\nNothing needs you."
+
+
+def test_posts_go_to_the_infra_channel_not_the_archived_fallback(monkeypatch):
+    import smartlead.notify as notify
+    seen = {}
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.delenv("V2_WEEKLY_CHANNEL", raising=False)
+    monkeypatch.setattr(notify, "post_with_thread", lambda tok, ch, head, parts: seen.setdefault("ch", ch) or "1.0")
+    assert wk.post(["t"], []) and seen["ch"] == wk.INFRA_CHANNEL == "C0AGVSUNEFP"
