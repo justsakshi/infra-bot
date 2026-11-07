@@ -9,20 +9,23 @@ decision 4, 7 Nov 2026; until then every inbox came out CHECK because only
 classic tests were read):
 
   DROP      (code "RETIRE") only for a Smart Delivery v2 FAIL on two weekly
-            nights with no pass since, or a person's DO NOT USE tag in
-            Smartlead. A DROP flag can lead a person to cancel, so one bad
-            test never makes one.
-  CHECK     one v2 FAIL (or a WATCH, below 4 of 4) with no pass since, a pull
-            from campaigns less than 30 days old, still carrying the v2 job's
-            own DO NOT USE tag, the domain on Spamhaus DBL in its newest
-            blocklist check, Smartlead connection broken, warmup reputation
+            nights with no pass since, the newer of them in the last 8 days,
+            or a person's DO NOT USE tag in Smartlead. A DROP flag can lead a
+            person to cancel, so one bad test, or old tests, never make one.
+  CHECK     one v2 FAIL (or a WATCH, below 4 of 4) with no pass since, two
+            weekly FAILs older than 8 days (it may have been fixed or rested
+            since), a pull from campaigns less than 30 days old, still
+            carrying the v2 job's own DO NOT USE tag, the domain on Spamhaus
+            DBL in its newest blocklist check that could read DBL (or no
+            check could), Smartlead connection broken, warmup reputation
             under 70%, a source that could not be read, or not in Smartlead
             (new and not connected yet, or abandoned: a person decides).
   UNTESTED  no v2 result in the last 8 days: never KEEP without a test.
   KEEP      only a v2 PASS in the last 8 days and none of the above.
 
 Classic (v1) seed tests are an early warning only: they add a WATCH note to
-the row, never a verdict. The v2 job's auto tag ("DO NOT USE - failed v2
+the row, never a verdict, so a failed classic read only loses the notes. The
+v2 job's auto tag ("DO NOT USE - failed v2
 (auto)") marks a pull after ONE failed test, so it counts as a pull (CHECK),
 not as a person's DO NOT USE.
 
@@ -69,8 +72,54 @@ def _day(iso: str) -> str:
 
 
 def is_dbl(listed_on) -> bool:
-    """A blacklist_checks ``listed_on`` list that includes Spamhaus DBL."""
-    return any("spamhaus" in str(s).lower() and "dbl" in str(s).lower() for s in listed_on or [])
+    """A blacklist_checks zone list (``listed_on``, ``lookup_errors``, ``inconclusive_zones``)
+    that includes Spamhaus DBL."""
+    if not isinstance(listed_on, (list, tuple)):
+        return False
+    return any("spamhaus" in str(s).lower() and "dbl" in str(s).lower() for s in listed_on)
+
+
+def _dbl_unread(row: dict) -> bool:
+    """This blacklist_checks row could not see Spamhaus DBL: the lookup failed, the zone's
+    control probe failed (blacklist_monitor puts the label in lookup_errors / inconclusive_zones),
+    or listed_on is not a list. A listing it did see still counts."""
+    if is_dbl(row.get("listed_on")):
+        return False
+    return (not isinstance(row.get("listed_on"), list) or is_dbl(row.get("lookup_errors"))
+            or is_dbl(row.get("inconclusive_zones")))
+
+
+def dbl_status(rows: list[dict]) -> dict:
+    """One domain's blacklist_checks rows -> ``{date, listed_on, unknown_on}``.
+
+    ``date`` / ``listed_on``: the newest row that could read Spamhaus DBL (None / [] when no row
+    could). ``unknown_on``: the newest row's date when that row could not read DBL, else None.
+    An unread check is never clean (audit BLOCKLIST-4): judge_inbox then falls back to the newest
+    readable check, and with none, or a listing there, the inbox is CHECK."""
+    rows = sorted((r for r in rows or [] if isinstance(r, dict)), key=lambda r: str(r.get("date") or ""))
+    if not rows:
+        return {}
+    seen = [r for r in rows if not _dbl_unread(r)]
+    return {"date": str(seen[-1].get("date") or "") if seen else None,
+            "listed_on": [str(x) for x in seen[-1].get("listed_on") or []] if seen else [],
+            "unknown_on": str(rows[-1].get("date") or "") if _dbl_unread(rows[-1]) else None}
+
+
+def dbl_reason(dbl: dict) -> str:
+    """Why the domain's blocklist state stops a KEEP ('' when it does not)."""
+    listed, unknown = is_dbl(dbl.get("listed_on")), dbl.get("unknown_on")
+    seen = f"the check of {_day(dbl['date'])}" if _iso(dbl.get("date")) else "an earlier check"
+    if unknown is not None:
+        when = f"the check of {_day(unknown)}" if _iso(unknown) else "the newest check"
+        if listed:
+            return f"Spamhaus DBL could not be read in {when}; {seen} listed the domain"
+        if not dbl.get("date"):
+            return f"Spamhaus DBL could not be read in {when}, and no earlier check read it"
+        return ""          # the newest check that could read DBL found the domain clean
+    if listed:
+        return (f"domain on Spamhaus DBL (check of {_day(dbl['date'])})" if _iso(dbl.get("date"))
+                else "domain on Spamhaus DBL")
+    return ""
 
 
 def v2_summary(docs: list[dict], today: date) -> dict:
@@ -79,7 +128,8 @@ def v2_summary(docs: list[dict], today: date) -> dict:
 
     ``fails``: FAIL nights after the newest PASS; ``weekly_fails``: the two nights when the two
     newest weekly-night results after the newest PASS are both FAIL, else []; ``latest_recent``:
-    the newest result from the last V2_FRESH_DAYS days (or None); ``pulled_on``: the newest pull."""
+    the newest result from the last V2_FRESH_DAYS days (or None); ``latest``: the newest result
+    of any age (or None); ``pulled_on``: the newest pull."""
     judged = []
     for d in docs or []:
         night = _iso(d.get("night"))
@@ -99,6 +149,7 @@ def v2_summary(docs: list[dict], today: date) -> dict:
             "weekly_fails": [x["night"] for x in weekly] if len(weekly) == 2
             and all(x["verdict"] == FAIL for x in weekly) else [],
             "latest_recent": recent[-1] if recent else None,
+            "latest": judged[-1] if judged else None,
             "pulled_on": max(pulls) if pulls else None}
 
 
@@ -109,7 +160,7 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
 
     ``facts``: Smartlead {in_smartlead, connected, reputation, tags, ...}. ``v2``: this inbox's
     v2_verdicts rows ([] = none; None = the collection could not be read). ``dbl``: its domain's
-    newest blacklist_checks row ({} = none; None = could not be read). ``kill`` (the classic
+    dbl_status ({} = no check; None = could not be read). ``kill`` (the classic
     kill rule) is not used here: classic tests only add a note (review_bill)."""
     f = facts or {}
     if not f.get("in_smartlead"):
@@ -123,12 +174,21 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
     if own:
         return "RETIRE", f'tagged "{own[0]}" in Smartlead'
     s = v2_summary(v2, today) if v2 is not None else None
+    stale = ""                  # two weekly fails, the newer too old to cancel on
+    none_since = False
     if s and s["weekly_fails"]:
         a, b = s["weekly_fails"]
-        return "RETIRE", f"{V2_DROP}{_day(a.isoformat())} and {_day(b.isoformat())}"
+        pair = f"{V2_DROP}{_day(a.isoformat())} and {_day(b.isoformat())}"
+        if (today - b).days <= V2_FRESH_DAYS:
+            return "RETIRE", pair
+        # Old fails never cancel an inbox: it may have been fixed or rested since (review R1).
+        none_since = s["latest"]["night"] == b
+        stale = pair + (", no v2 result since" if none_since else ", no pass since")
     why: list[str] = []
     pulled = s and s["pulled_on"] and (today - s["pulled_on"]).days < PULL_CHECK_DAYS
-    if s and s["fails"]:
+    if stale:
+        why.append(stale)
+    elif s and s["fails"]:
         why.append(f"failed v2 on {_day(s['fails'][-1].isoformat())}, no pass since")
     elif s and s["latest_recent"] and s["latest_recent"]["verdict"] == WATCH:
         why.append(f"v2 below 4 of 4 on {_day(s['latest_recent']['night'].isoformat())}")
@@ -137,16 +197,15 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
                    f"under {PULL_CHECK_DAYS} days ago")
     if not pulled and any(t.lower() == AUTO_DNU_TAG.lower() for t in tags):
         why.append("still tagged DO NOT USE by the v2 job, waiting for two passes")
-    if dbl and is_dbl(dbl.get("listed_on")):
-        why.append(f"domain on Spamhaus DBL (check of {_day(dbl['date'])})" if _iso(dbl.get("date"))
-                   else "domain on Spamhaus DBL")
+    if dbl and dbl_reason(dbl):
+        why.append(dbl_reason(dbl))
     if not f.get("connected", True):
         why.append("Smartlead connection broken")
     rep = _rep(f.get("reputation"))
     if rep is not None and rep < MIN_REPUTATION:
         why.append(f"warmup reputation {rep:.0f}%")
     if why:
-        if s is not None and not s["latest_recent"]:
+        if s is not None and not s["latest_recent"] and not none_since:
             why.append(NO_V2)
         return "CHECK", "; ".join(why)
     if s is None:
@@ -386,9 +445,20 @@ def format_review(reviews: list[dict], days: int) -> tuple[list[str], list[str]]
     return head, parts
 
 
+CLASSIC_SOURCE = "classic tests"       # SmartDelivery v1 reports: notes only
+CAMPAIGNS_SOURCE = "campaign lists"    # which campaigns an inbox is in: notes only
+NOTE_ONLY = (CLASSIC_SOURCE, CAMPAIGNS_SOURCE)
 READ_EFFECT = (("Zapmail", "a bill may be missing"), ("ScaledMail", "a bill may be missing"),
                ("Smartlead", "some inboxes have no verdict"), ("v2 results", "no inbox is marked keep"),
-               ("blocklist checks", "no inbox is marked keep"))
+               ("blocklist checks", "no inbox is marked keep"),
+               (CLASSIC_SOURCE, "classic early warnings are missing"),
+               (CAMPAIGNS_SOURCE, "an inbox to drop may still be in a campaign without a warning"))
+
+
+def decision_errors(errors: list[str]) -> list[str]:
+    """The read errors that can change a verdict: all but the note-only sources (classic tests,
+    campaign lists), which never decide KEEP / CHECK / DROP / UNTESTED."""
+    return [e for e in errors or [] if not str(e).startswith(NOTE_ONLY)]
 
 
 def read_warning(errors: list[str], days: int, reviewed: bool) -> str:

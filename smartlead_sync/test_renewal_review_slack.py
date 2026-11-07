@@ -331,6 +331,35 @@ def test_unread_v2_keeps_nothing_says_so_and_writes_no_flags(monkeypatch):
     assert "1 of its inboxes is not working for us" in res["reviews"][0]["support_message"]
 
 
+def test_a_classic_only_failure_still_gives_verdicts_a_true_headline_and_flags(monkeypatch):
+    """Review R3: /email-accounts read, SmartDelivery classic raised 502. Every inbox has a
+    verdict, so the post must not say Smartlead could not be read, and the flags are written."""
+    import renewal_review as cli
+    import smartlead.zapmail_asset_sync as zas
+    due, bills = _bills()
+    night = (date.today() - timedelta(days=3)).isoformat()
+    _fake_run(monkeypatch, cli, bills, {}, v2={e: _v2(e, (night, "PASS")) for e in ("a@x.com", "b@x.com")})
+    facts = {"a@x.com": _facts(), "b@x.com": _facts()}
+    monkeypatch.setattr(cli, "smartlead_facts", lambda e: e.append("classic tests PRECISE_LEADS: 502") or facts)
+    res = cli.run(7)
+    assert [x["verdict"] for x in res["reviews"][0]["rows"]] == ["KEEP", "KEEP"]
+    assert res["headline"] == ["⚠️ Bills in the next 7 days: 1 bill, $7.00",
+                               "Of 2 inboxes: nothing to drop, 2 to keep",
+                               ":warning: Could not read classic tests, so classic early warnings are missing "
+                               "(details in the thread)"]
+    assert "Smartlead" not in "\n".join(res["headline"])
+    assert ":warning: could not read: classic tests PRECISE_LEADS: 502" in res["thread"]
+
+    class Assets:
+        def bulk_write(self, ops, ordered):
+            return type("R", (), {"modified_count": len(ops)})()
+    monkeypatch.setattr(zas, "_db", lambda: {"assets": Assets()})
+    sent = _capture_posts(monkeypatch, cli, "--post", "--flag-tracker")
+    monkeypatch.setattr(cli, "run", lambda days: res)
+    assert cli.main() == 0 and res["flagged"] == {"written": 2}
+    assert not any("Tracker renewal flags were not updated" in p for p in sent[0][3])
+
+
 def test_unused_and_setting_up_are_not_called_drop():
     facts = {"k1@dead.com": _facts(tags=[DNU]), "k2@dead.com": _facts(tags=[DNU])}
     b = rr.review_bill({"provider": "ScaledMail", "label": "7 × Google", "bills_on": "2026-11-12", "price": 31.5,

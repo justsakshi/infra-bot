@@ -120,6 +120,33 @@ def test_judge_inbox_rule_decision_4():
     assert _judge(None, _v2(PASS_5)) == "CHECK"
 
 
+def test_old_weekly_fails_are_check_never_drop():
+    """Review R1: two weekly fails only DROP when the newer one is in the last 8 days. An inbox
+    that failed in August and dropped out of the test sheet may have been fixed or rested."""
+    t = date(2026, 11, 10)                                     # a Tuesday
+    judge = lambda rows, f=None: rr.judge_inbox("a@x.com", f or _facts(), None, t, True, rows, {})   # noqa: E731
+    aug = _v2(("2026-08-03", "FAIL"), ("2026-08-10", "FAIL"))
+    assert judge(aug) == ("CHECK", "failed v2 on the weekly tests of 3 Aug and 10 Aug, no v2 result since")
+    # the newer fail 8 days old still drops; 9 days old is CHECK
+    assert judge(_v2(("2026-10-26", "FAIL"), ("2026-11-02", "FAIL")))[0] == "RETIRE"
+    assert rr.judge_inbox("a@x.com", _facts(), None, date(2026, 11, 11), True,
+                          _v2(("2026-10-26", "FAIL"), ("2026-11-02", "FAIL")), {})[0] == "CHECK"
+    # a later non-weekly result that is not a pass: still CHECK, and the reason stays true
+    later = _v2(("2026-08-03", "FAIL"), ("2026-08-10", "FAIL"), ("2026-11-05", "WATCH"))
+    assert judge(later) == ("CHECK", "failed v2 on the weekly tests of 3 Aug and 10 Aug, no pass since")
+    older = _v2(("2026-08-03", "FAIL"), ("2026-08-10", "FAIL"), ("2026-08-12", "WATCH"))
+    assert judge(older) == ("CHECK", "failed v2 on the weekly tests of 3 Aug and 10 Aug, no pass since; "
+                                     "no v2 result in the last 8 days")
+    # other reasons still join it; a person's tag still drops
+    assert judge(aug, _facts(reputation="55%"))[1] == ("failed v2 on the weekly tests of 3 Aug and 10 Aug, "
+                                                       "no v2 result since; warmup reputation 55%")
+    assert judge(aug, _facts(tags=["do not use"]))[0] == "RETIRE"
+    # on a bill: CHECK, no support message asking the provider to remove it
+    r = rr.review_bill({"provider": "Zapmail", "label": "L", "bills_on": "2026-11-12", "price": 3.0,
+                        "inboxes": ["a@x.com"]}, {"a@x.com": _facts()}, t, v2={"a@x.com": aug}, dbl={})
+    assert r["counts"]["CHECK"] == 1 and r["counts"]["RETIRE"] == 0 and r["support_message"] == ""
+
+
 def test_unread_v2_or_blocklist_keeps_nothing():
     v, why = rr.judge_inbox("a@x.com", _facts(), None, T, True, None, {})
     assert (v, why) == ("CHECK", "v2 results could not be read, so not kept")
@@ -247,6 +274,24 @@ def test_tracker_flags_refuse_a_half_read_review():
     assert out["written"] == 0 and "not written" in out["skipped"]
     out = cli.flag_tracker({"errors": ["v2 results (Mongo v2_verdicts): timed out"], "reviews": []})
     assert out["written"] == 0 and "v2 results" in out["skipped"]
+    out = cli.flag_tracker({"errors": ["classic tests PRECISE_LEADS: 502", "Zapmail X: 500"], "reviews": []})
+    assert out["written"] == 0 and out["skipped"] == "not written: Zapmail X: 500"
+
+
+def test_tracker_flags_ignore_note_only_read_errors(monkeypatch):
+    """Review R3: classic tests and campaign lists never decide, so they don't stop the flags."""
+    import renewal_review as cli
+    import smartlead.zapmail_asset_sync as zas
+
+    class Assets:
+        def bulk_write(self, ops, ordered):
+            return type("R", (), {"modified_count": len(ops)})()
+
+    monkeypatch.setattr(zas, "_db", lambda: {"assets": Assets()})
+    rows = [{"email": "a@x.com", "verdict": "KEEP", "why": "passed v2 on 5 Oct"}]
+    errors = ["classic tests PRECISE_LEADS: 502", "campaign lists BETTRDATA: timed out"]
+    assert rr.decision_errors(errors) == []
+    assert cli.flag_tracker({"errors": errors, "reviews": [{"rows": rows}]}) == {"written": 1}
 
 
 def test_tracker_flags_keep_their_shape(monkeypatch):

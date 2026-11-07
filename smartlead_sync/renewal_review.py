@@ -122,7 +122,11 @@ def _tag_names(tags) -> list[str]:
 
 
 def smartlead_facts(errors: list[str]) -> dict[str, dict]:
-    """{email: {in_smartlead, connected, reputation, tags, pct, tested_on, campaigns}}."""
+    """{email: {in_smartlead, connected, reputation, tags, pct, tested_on, campaigns}}.
+
+    Errors name what failed: "Smartlead <acc>" for /email-accounts (inboxes missing), and the
+    note-only "campaign lists <acc>" / "classic tests <acc>" (rr.NOTE_ONLY), which never stop a
+    verdict. Every error lands in ``errors``, so kill_report, fleet_watch and volume_review see it."""
     from placement_report import attachments
     facts: dict[str, dict] = {}
     for acc in discover_accounts():
@@ -145,10 +149,17 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                 if len(page) < 100:
                     break
                 off += 100
+        except Exception as exc:  # noqa: BLE001 - one account must not hide the others
+            errors.append(f"Smartlead {acc.name}: {str(exc)[:150]}")
+            continue
+        try:
             for email, at in attachments(key, sending_days=7).items():
                 if email in facts:
                     facts[email]["campaigns"] = at["campaigns"]
                     facts[email]["sending"] = at["sending"]
+        except Exception as exc:  # noqa: BLE001 - only the still-in-a-campaign notes are lost
+            errors.append(f"{rr.CAMPAIGNS_SOURCE} {acc.name}: {str(exc)[:150]}")
+        try:
             r = httpx.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": key},
                            json={"limit": 50}, headers=UA, timeout=60)
             tests = sorted((t for t in r.json() if t.get("status") == "COMPLETED"),
@@ -188,8 +199,8 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                     if facts[em].get("tested_on") is None:      # newest first
                         facts[em]["pct"] = round(100.0 * (seeds - spam) / seeds, 1)
                         facts[em]["tested_on"] = t["created_at"][:10]
-        except Exception as exc:  # noqa: BLE001 - one account must not hide the others
-            errors.append(f"Smartlead {acc.name}: {str(exc)[:150]}")
+        except Exception as exc:  # noqa: BLE001 - classic tests are an early warning only
+            errors.append(f"{rr.CLASSIC_SOURCE} {acc.name}: {str(exc)[:150]}")
     return facts
 
 
@@ -286,19 +297,19 @@ def v2_results(domains: set[str], emails: set[str], today: date, errors: list[st
 
 
 def dbl_listings(domains: set[str], errors: list[str]) -> dict[str, dict] | None:
-    """{domain: {date, listed_on}} from each domain's newest blacklist_checks row. None,
-    with an error, when the collection cannot be read."""
+    """{domain: rr.dbl_status(its blacklist_checks rows)}: the newest check that could read
+    Spamhaus DBL, and whether the newest check could not (lookup_errors / inconclusive_zones).
+    None, with an error, when the collection cannot be read."""
     if not domains:
         return {}
     try:
-        latest: dict[str, dict] = {}
-        for d in _collection(BLACKLIST_COLLECTION).find({"domain": {"$in": sorted(domains)}},
-                                                        {"_id": 0, "domain": 1, "date": 1, "listed_on": 1}):
-            dom, day = str((d or {}).get("domain") or "").lower(), str((d or {}).get("date") or "")
-            if dom and (dom not in latest or day > latest[dom]["date"]):
-                listed = d.get("listed_on")
-                latest[dom] = {"date": day, "listed_on": [str(x) for x in listed] if isinstance(listed, list) else []}
-        return latest
+        rows: dict[str, list[dict]] = {}
+        fields = {"_id": 0, "domain": 1, "date": 1, "listed_on": 1, "lookup_errors": 1, "inconclusive_zones": 1}
+        for d in _collection(BLACKLIST_COLLECTION).find({"domain": {"$in": sorted(domains)}}, fields):
+            dom = str((d or {}).get("domain") or "").lower()
+            if dom:
+                rows.setdefault(dom, []).append(d)
+        return {dom: rr.dbl_status(rs) for dom, rs in rows.items()}
     except Exception as exc:  # noqa: BLE001
         errors.append(f"blocklist checks (Mongo {BLACKLIST_COLLECTION}): {str(exc)[:150]}")
         return None
@@ -317,7 +328,8 @@ def run(days: int) -> dict:
     bills = zapmail_bills(days, errors) + scaledmail_bills(days, errors)
     n_before = len(errors)
     facts = smartlead_facts(errors) if bills else {}
-    complete = len(errors) == n_before        # every Smartlead account was read
+    # every account's /email-accounts was read (classic tests and campaign lists only add notes)
+    complete = not any(e.startswith("Smartlead ") for e in errors[n_before:])
     today = date.today()
     v2, dbl = {}, {}
     if bills:
@@ -350,10 +362,12 @@ def _text(headline: list[str], thread: list[str]) -> str:
 
 
 def flag_tracker(res: dict) -> dict:
-    """Write renewalFlag on tracker inbox rows. Refuses when any source could
-    not be read (a half-read review must never mark good inboxes DROP)."""
-    if res.get("errors"):
-        return {"written": 0, "skipped": "not written: " + "; ".join(res["errors"])[:200]}
+    """Write renewalFlag on tracker inbox rows. Refuses when a source that can change a verdict
+    could not be read (a half-read review must never mark good inboxes DROP); classic tests and
+    campaign lists only add notes, so they don't stop it."""
+    blocking = rr.decision_errors(res.get("errors") or [])
+    if blocking:
+        return {"written": 0, "skipped": "not written: " + "; ".join(blocking)[:200]}
     from datetime import datetime, timezone
     from smartlead.zapmail_asset_sync import _db
     db = _db()
@@ -402,7 +416,8 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             res["flagged"] = {"written": 0, "skipped": f"tracker write failed: {type(exc).__name__}: {str(exc)[:150]}"}
         if res["flagged"].get("skipped") and res["reviews"]:
-            why = "some sources could not be read" if res["errors"] else res["flagged"]["skipped"]
+            why = ("some sources could not be read" if rr.decision_errors(res["errors"])
+                   else res["flagged"]["skipped"])
             res["thread"].insert(len(res["thread"]) - 1, f"_Tracker renewal flags were not updated this run ({why})._")
             res["text"] = _text(res["headline"], res["thread"])
     if args.post and (res["reviews"] or res["errors"]):     # read errors post even when no bill is due
