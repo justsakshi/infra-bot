@@ -221,13 +221,53 @@ def test_old_cases_without_an_account_find_it_by_client():
     assert closed[0]["closed_why"] == "cleared"
 
 
+def roster(present=(), dropped=(), tracked=("d.com",)):
+    return {"tracked": set(tracked) if tracked is not None else None, "present": set(present),
+            "dropped": set(dropped)}
+
+
 def test_an_inbox_no_longer_watched_closes_as_gone_and_is_not_scored_as_cleared():
     cases = opened([rec(warmup_on=False)])
     _, still, closed = fl.update_cases(cases, [], [rec("b@d.com")], date(2026, 10, 21), read={"PRECISE_LEADS"},
-                                       blocklist={})
+                                       blocklist={}, roster=roster(present={"b@d.com"}))    # a@d.com left Smartlead
     assert still == [] and closed[0]["closed_why"] == "gone" and closed[0]["acted_on"] is None
     t = fl.scorecard_text(closed, date(2026, 11, 9), pilot=set(), control=set())
     assert "Warmup off: 1 opened, 0 acted on; cleared within 14 days: 0 of 0 acted on, 0 of 1 not" in t
+
+
+def test_an_inbox_missing_from_the_records_but_still_in_smartlead_and_the_sheet_stays_open():
+    """Audit 7 Nov (F1): the account was read without an error, but the inbox list stopped early."""
+    cases = opened([rec(warmup_on=False)])
+    later = date(2026, 10, 21)
+    for r in (roster(present={"a@d.com", "b@d.com"}), None):                  # still listed / no roster at all
+        _, still, closed = fl.update_cases(cases, [], [rec("b@d.com")], later, read={"PRECISE_LEADS"},
+                                           blocklist={}, roster=r)
+        assert closed == [] and still[0]["unknown"] is True and still[0]["acted_on"] is None
+
+
+def test_gone_needs_the_domain_out_of_the_sheet_or_the_inbox_left_out_on_purpose():
+    cases = opened([rec(warmup_on=False)])
+    later = date(2026, 10, 21)
+    for r in (roster(present={"a@d.com"}, tracked={"e.com"}),                  # domain left the sheet
+              roster(present={"a@d.com"}, dropped={"a@d.com"})):              # listed, left out on purpose
+        _, still, closed = fl.update_cases(cases, [], [rec("b@d.com")], later, read={"PRECISE_LEADS"},
+                                           blocklist={}, roster=r)
+        assert still == [] and closed[0]["closed_why"] == "gone"
+    _, still, _ = fl.update_cases(cases, [], [rec("b@d.com")], later, read={"PRECISE_LEADS"}, blocklist={},
+                                  roster=roster(present={"a@d.com"}, tracked=None))  # sheet unread: no evidence
+    assert still[0]["unknown"] is True
+
+
+def test_a_blocklist_case_whose_domain_is_missing_closes_only_when_its_inboxes_left():
+    cases = opened([rec()], listed={"d.com": DBL})
+    later = date(2026, 10, 21)
+    others = [rec("x@x.com")]
+    _, still, closed = fl.update_cases(cases, [], others, later, read={"PRECISE_LEADS"}, blocklist={"d.com": DBL},
+                                       roster=roster(present={"a@d.com", "x@x.com"}, tracked={"d.com", "x.com"}))
+    assert closed == [] and still[0]["unknown"] is True
+    _, still, closed = fl.update_cases(cases, [], others, later, read={"PRECISE_LEADS"}, blocklist={"d.com": DBL},
+                                       roster=roster(present={"x@x.com"}, tracked={"d.com", "x.com"}))
+    assert still == [] and closed[0]["closed_why"] == "gone"
 
 
 def test_a_warmup_case_on_an_inbox_that_then_disconnects_is_superseded_not_cleared():

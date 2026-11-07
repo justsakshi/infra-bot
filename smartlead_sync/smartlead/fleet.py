@@ -255,11 +255,33 @@ def _shows_fixed(kind: str, mine: list[dict]) -> bool:
     return True
 
 
-def evidence(case: dict, mine: list[dict], account_read: bool, fired_keys: set[str], blocklist: dict | None) -> str:
+def left(case: dict, roster: dict | None) -> bool:
+    """Evidence that the case's inbox or domain really left the inboxes we watch, rather than went missing
+    from one day's read (audit 7 Nov: the inbox list can stop early without an error, 77 PL inboxes went
+    missing that way on 31 Oct). ``roster`` (fleet_watch.gather): ``tracked`` = the deliverability sheet's
+    domains (None = sheet not read), ``present`` = every inbox Smartlead lists today (the facts read, which
+    fails loudly on a bad page, plus the inbox list), ``dropped`` = inboxes listed today but left out on
+    purpose (past client, excluded tag, domain not in the sheet). Evidence: the domain left the sheet,
+    the inbox (every inbox of the domain) is gone from Smartlead, or it is left out on purpose."""
+    if not roster:
+        return False
+    dom = case["domain"]
+    tracked = roster.get("tracked")
+    if tracked is not None and dom not in tracked:
+        return True
+    present, dropped = set(roster.get("present") or ()), set(roster.get("dropped") or ())
+    if case["scope"] == "inbox":
+        return case["target"] not in present or case["target"] in dropped
+    here = {e for e in present if e.split("@")[-1] == dom}
+    return not here or here <= dropped
+
+
+def evidence(case: dict, mine: list[dict], account_read: bool, fired_keys: set[str], blocklist: dict | None,
+             roster: dict | None = None) -> str:
     """For an open case whose check did not fire today: 'cleared' (today's data shows the problem gone),
-    'superseded' (a stronger case on the same inbox fired), 'gone' (its account was read in full and the
-    inbox or domain is no longer among the inboxes we watch), or 'unknown' (no evidence: the case stays open).
-    ``blocklist`` = {domain: newest row}, None when it could not be read."""
+    'superseded' (a stronger case on the same inbox fired), 'gone' (its account was read in full, the inbox
+    or domain is not in today's records, and ``left`` has evidence it really left), or 'unknown' (no
+    evidence: the case stays open). ``blocklist`` = {domain: newest row}, None when it could not be read."""
     kind = case["kind"]
     stronger = SUPERSEDED_BY.get(kind)
     if stronger and f"{stronger}:{case['target']}" in fired_keys:
@@ -271,22 +293,25 @@ def evidence(case: dict, mine: list[dict], account_read: bool, fired_keys: set[s
             return "cleared"                  # a check on or after the day the case opened shows it clean
         if kind == "listed_live" and mine and account_read and not any(r.get("live_campaigns") for r in mine):
             return "cleared"                  # no longer in a live campaign
-        return "gone" if account_read and not mine else "unknown"
+        return "gone" if account_read and not mine and left(case, roster) else "unknown"
     if not account_read:
         return "unknown"
     if not mine:
-        return "gone"
+        return "gone" if left(case, roster) else "unknown"
     return "cleared" if _shows_fixed(kind, mine) else "unknown"
 
 
 def update_cases(open_cases: dict[str, dict], fired: list[dict], records: list[dict], today: date,
                  baseline: bool = False, *, read: set[str] | None = None,
-                 blocklist: dict | None = None) -> tuple[list[dict], list[dict], list[dict]]:
+                 blocklist: dict | None = None, roster: dict | None = None
+                 ) -> tuple[list[dict], list[dict], list[dict]]:
     """(opened today, open after today, closed today).
 
     A case closes only on evidence (see ``evidence``); without it, it stays open with ``unknown`` set for
     the day. ``read``: the Smartlead accounts read in full today (default: the accounts in ``records``).
     ``blocklist``: {domain: newest blacklist_checks row}, or None when it could not be read.
+    ``roster``: what Smartlead and the sheet hold today (see ``left``); None = no evidence that anything left,
+    so a case missing from today's records stays open.
     'acted_on' is the first day what changed shows it was handled, read only from real data.
     A new case starts with ``announced`` False; the caller sets it once Slack accepts the post.
     ``baseline``: record what is already wrong without reporting it (Manveen, 15 Oct: act on what happens
@@ -308,7 +333,7 @@ def update_cases(open_cases: dict[str, dict], fired: list[dict], records: list[d
             c.update({k: f[k] for k in ("line", "action", "listed_on") if k in f})   # what it is today
             why = None
         else:
-            why = evidence(c, mine, c["account"] in read if c["account"] else False, keys, blocklist)
+            why = evidence(c, mine, c["account"] in read if c["account"] else False, keys, blocklist, roster)
         if why in (None, "cleared") and not c.get("acted_on") and \
                 acted(c["kind"], c.get("at_open") or {}, observe(c, records, keys)):
             c["acted_on"] = t

@@ -46,6 +46,7 @@ from smartlead import inbox_standard as st
 CHANNEL = "C0AGVSUNEFP"          # the infra channel; #test-channel (C0AV3HTPP0S) is gone (audit 7 Nov 2026)
 METRIC_DAYS = 10                 # Smartlead's per-day numbers arrive ~6 days late: re-read and fill in
 HISTORY_DAYS = 8
+READ_DROP = 0.15                 # an account's inbox count down more than this since the last run: closes nothing today
 LIVE_STATUSES = ("ACTIVE", "SCHEDULED")   # campaigns that send, or will, without anyone touching them
 
 
@@ -108,6 +109,15 @@ class FleetStore:
             if "rep" in d:                       # state documents only (metric-only days have no state)
                 out[d["email"]].append(d)
         return {e: sorted(v, key=lambda d: d["date"]) for e, v in out.items()}
+
+    def last_counts(self, before: str, since: str) -> dict[str, int]:
+        """{account: inboxes recorded} on the latest day before ``before`` (back to ``since``)."""
+        by_day: dict[str, Counter] = defaultdict(Counter)
+        for d in self.daily.find({"date": {"$gte": since, "$lt": before}},
+                                 {"_id": 0, "date": 1, "account": 1, "rep": 1}):
+            if "rep" in d and str(d.get("date")) < before:      # state documents only
+                by_day[d["date"]][d.get("account")] += 1
+        return dict(by_day[max(by_day)]) if by_day else {}
 
     def open_cases(self) -> dict[str, dict]:
         return {c["key"]: c for c in self.cases.find({"closed_on": None}, {"_id": 0})}
@@ -186,9 +196,11 @@ def _read_ok(names, errors: list[str]) -> set[str]:
     return {n for n in names if not any(str(e).startswith(f"Smartlead {n}:") for e in errors)}
 
 
-def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str]]:
-    """(records, per-day metrics, the accounts read in full). A case on an account not read in full
-    never closes that day."""
+def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str], dict]:
+    """(records, per-day metrics, the accounts read in full, roster). A case on an account not read in full
+    never closes that day. roster (smartlead.fleet.left): the sheet's domains, every inbox Smartlead lists
+    today (facts read + inbox list) and the ones left out on purpose; a case missing from the records
+    closes as 'gone' only when the roster shows it left."""
     from renewal_review import smartlead_facts
     from smartlead import kill_rule as kr
     from smartlead.client_filter import is_excluded_inbox
@@ -203,10 +215,12 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str]]:
     if tracked is None:
         errors.append("deliverability sheet (judging every inbox today)")
     records, metrics = [], {}
+    present, dropped = set(facts), set()      # facts: its own inbox read fails loudly on a bad page
     clients = _clients()
     for name, acc in clients.items():
         try:
-            accts = only_tracked([a for a in asyncio.run(_list(acc))
+            listed = asyncio.run(_list(acc))
+            accts = only_tracked([a for a in listed
                                   if not is_excluded_inbox({"email": a.get("from_email") or "", "tags": a.get("tags", [])})],
                                  tracked)
             live = asyncio.run(_live_campaigns(acc))
@@ -216,11 +230,17 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str]]:
             errors.append(f"Smartlead {name}: {redact(str(exc))[:150]}")
             continue
         per_domain = Counter(str(a.get("from_email", "")).lower().split("@")[-1] for a in accts)
+        kept = set()
         for a in accts:
             r = record(name, a, facts, verdicts, per_domain, approved, health, today, live)
             if r["client"] in CURRENT_CLIENTS:
                 records.append(r)
-    return records, metrics, _read_ok(list(clients), errors)
+                kept.add(r["email"])
+        emails = {str(a.get("from_email") or "").lower() for a in listed} - {""}
+        present |= emails
+        dropped |= emails - kept
+    roster = {"tracked": tracked, "present": present, "dropped": dropped}
+    return records, metrics, _read_ok(list(clients), errors), roster
 
 
 def _post(headline, thread=()) -> bool:
@@ -237,23 +257,39 @@ def _post(headline, thread=()) -> bool:
     return bool(ok)
 
 
+def _short_reads(read: set[str], records: list[dict], last: dict[str, int]) -> dict[str, tuple[int, int]]:
+    """{account: (inboxes today, at the last run)} for accounts read today whose count fell by more than
+    READ_DROP: the inbox list may have stopped early, so none of their cases close today."""
+    now = Counter(r.get("account") for r in records)
+    return {a: (now.get(a, 0), last[a]) for a in sorted(read)
+            if last.get(a) and now.get(a, 0) < last[a] * (1 - READ_DROP)}
+
+
 def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: dict | None, today: date,
-          errors: list[str], *, post: bool = False, baseline: bool = False, poster=None) -> dict:
+          errors: list[str], *, post: bool = False, baseline: bool = False, poster=None,
+          roster: dict | None = None) -> dict:
     """Save the day, update the cases, and post. Cases are saved first with announced=False and marked
     announced only when Slack accepts the post, so a refused post goes out again the next run. Open cases
-    from before that field existed are posted once as a backlog. ``store`` None = dry run."""
+    from before that field existed are posted once as a backlog. ``store`` None = dry run. ``roster``: see
+    gather; without it a case missing from today's records stays open."""
     poster = poster or _post
+    read = set(read)
     if store:
+        since = (today - timedelta(days=HISTORY_DAYS)).isoformat()
+        for a, (k, was) in _short_reads(read, records, store.last_counts(today.isoformat(), since)).items():
+            errors.append(f"Smartlead {a} in full: {k} inboxes today, {was} at the last run, "
+                          f"so none of its cases close today")
+            read.discard(a)
         store.save_state(records)
         store.save_metrics(metrics)
-        history = store.history([r["email"] for r in records], (today - timedelta(days=HISTORY_DAYS)).isoformat())
+        history = store.history([r["email"] for r in records], since)
         open_before = store.open_cases()
     else:
         history = {r["email"]: [r] for r in records}
         open_before = {}
     fired = fl.checks(records, history, blocklist or {}, today)
     opened, open_now, closed = fl.update_cases(open_before, fired, records, today, baseline=baseline, read=read,
-                                               blocklist=blocklist)
+                                               blocklist=blocklist, roster=roster)
     if store:
         store.save_cases(open_now + closed)
     new_keys = {c["key"] for c in opened}
@@ -305,7 +341,7 @@ def main() -> int:
         return 1 if posted is False else 0
 
     errors: list[str] = []
-    records, metrics, read = gather(today, errors)
+    records, metrics, read, roster = gather(today, errors)
     blocklist = _blocklisted()
     if blocklist is None:
         errors.append("blocklist history (Mongo)")
@@ -315,7 +351,8 @@ def main() -> int:
         store.save_metrics(metrics)
         print(json.dumps({"records": len(records), "metric_inboxes": len(metrics), "errors": errors}))
         return 0
-    out = daily(store, records, metrics, read, blocklist, today, errors, post=args.post, baseline=args.baseline)
+    out = daily(store, records, metrics, read, blocklist, today, errors, post=args.post, baseline=args.baseline,
+                roster=roster)
     print(json.dumps(out, default=str) if args.json
           else out["text"] + ("\n\n" + out["backlog_text"] if out.get("backlog_text") else ""))
     return 1 if out["failed"] else 0

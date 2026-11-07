@@ -42,8 +42,8 @@ class FakeCol:
     def __init__(self): self.docs = []
     def _match(self, d, q):
         for k, v in q.items():
-            if isinstance(v, dict) and "$gte" in v:
-                if not d.get(k) or d[k] < v["$gte"]:
+            if isinstance(v, dict) and ("$gte" in v or "$lt" in v):
+                if not d.get(k) or ("$gte" in v and d[k] < v["$gte"]) or ("$lt" in v and d[k] >= v["$lt"]):
                     return False
             elif isinstance(v, dict) and "$in" in v:
                 if d.get(k) not in v["$in"]:
@@ -118,9 +118,9 @@ class Poster:
         return self.results.pop(0) if self.results else True
 
 
-def day(store, records, today, poster, read=("PRECISE_LEADS",), blocklist=None, errors=()):
+def day(store, records, today, poster, read=("PRECISE_LEADS",), blocklist=None, errors=(), roster=None):
     return fw.daily(store, records, {}, set(read), blocklist if blocklist is not None else {}, today, list(errors),
-                    post=True, poster=poster)
+                    post=True, poster=poster, roster=roster)
 
 
 def test_a_refused_post_leaves_cases_unannounced_and_the_next_run_sends_them_again():
@@ -202,7 +202,78 @@ def test_gather_puts_live_campaigns_and_tags_on_the_record_and_leaves_a_failed_a
     monkeypatch.setattr(ii.IntakeStore, "__init__", lambda self, collection=None: None)
     monkeypatch.setattr(ii.IntakeStore, "approved_limits", lambda self: {})
     errors = []
-    records, _, read = fw.gather(TODAY, errors)
+    records, _, read, _ = fw.gather(TODAY, errors)
     assert read == {"PRECISE_LEADS"} and any(e.startswith("Smartlead BETTRDATA:") for e in errors)
     assert [(r["account"], r["live_campaigns"], r["tags"]) for r in records] == \
         [("PRECISE_LEADS", ["PL | Outbound"], ["DO NOT USE - failed v2 (auto)"])]
+
+
+def test_gather_lists_what_smartlead_holds_and_what_was_left_out_on_purpose(monkeypatch):
+    from types import SimpleNamespace
+
+    import renewal_review
+    import smartlead.inbox_intake as ii
+    import smartlead.tracked
+    import volume_review
+    monkeypatch.setattr(renewal_review, "smartlead_facts", lambda errors: {"f@d.com": {"client": "Precise Leads"}})
+    monkeypatch.setattr(volume_review, "_clients",
+                        lambda: {"PRECISE_LEADS": SimpleNamespace(name="PRECISE_LEADS", api_key="k1")})
+
+    async def listing(acc):
+        return [acct(), acct(from_email="u@other.com")]          # other.com is not in the sheet
+
+    async def live(acc):
+        return {}
+    monkeypatch.setattr(volume_review, "_list", listing)
+    monkeypatch.setattr(volume_review, "_health", lambda key, start, end: {})
+    monkeypatch.setattr(fw, "_live_campaigns", live)
+    monkeypatch.setattr(fw, "_day_metrics", lambda key, today: {})
+    monkeypatch.setattr(smartlead.tracked, "tracked_domains", lambda: {"d.com"})
+    monkeypatch.setattr(ii.IntakeStore, "__init__", lambda self, collection=None: None)
+    monkeypatch.setattr(ii.IntakeStore, "approved_limits", lambda self: {})
+    records, _, read, roster = fw.gather(TODAY, [])
+    assert [r["email"] for r in records] == ["a@d.com"] and read == {"PRECISE_LEADS"}
+    assert roster == {"tracked": {"d.com"}, "present": {"a@d.com", "u@other.com", "f@d.com"},
+                      "dropped": {"u@other.com"}}
+
+
+def test_an_inbox_missing_from_one_days_list_stays_open_and_is_not_announced_twice():
+    """Audit 7 Nov (F1): the inbox list can stop early without an error. An inbox still in Smartlead
+    (the facts read has it) and still in the sheet is not 'gone': its case stays open, and when the inbox
+    is back the next day nothing is posted again as new."""
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    p = Poster()
+    fleet = [rec(f"i{n}@d.com", date="2026-10-20") for n in range(9)]
+    day(s, fleet + [rec(warmup_on=False, date="2026-10-20")], date(2026, 10, 20), p)
+    assert len(p.calls) == 1
+    roster = {"tracked": {"d.com"}, "present": {"a@d.com"} | {r["email"] for r in fleet}, "dropped": set()}
+    out = day(s, [dict(r, date="2026-10-21") for r in fleet], date(2026, 10, 21), p, roster=roster)
+    assert out["closed"] == 0 and s.cases.docs[0]["closed_on"] is None and s.cases.docs[0]["unknown"] is True
+    out = day(s, [dict(r, date="2026-10-22") for r in fleet] + [rec(warmup_on=False, date="2026-10-22")],
+              date(2026, 10, 22), p, roster=roster)
+    assert out["opened"] == 0 and len(p.calls) == 1 and len(s.cases.docs) == 1      # no second "new problem"
+
+
+def test_an_account_whose_inbox_count_drops_closes_nothing_that_day():
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    p = Poster()
+    fleet = [rec(f"i{n}@d.com", date="2026-10-20") for n in range(9)]
+    day(s, fleet + [rec(warmup_on=False, date="2026-10-20")], date(2026, 10, 20), p)
+    left = {"tracked": {"d.com"}, "present": set(), "dropped": set()}       # the roster even says it left
+    half = [dict(r, date="2026-10-21") for r in fleet[:5]]
+    out = day(s, half, date(2026, 10, 21), p, roster=left)
+    assert out["closed"] == 0 and s.cases.docs[0]["closed_on"] is None
+    assert ":warning: Could not read: Smartlead PRECISE_LEADS in full: 5 inboxes today, 10 at the last run, " \
+           "so none of its cases close today" in p.calls[-1][0]
+    out = day(s, [dict(r, date="2026-10-22") for r in fleet[:5]], date(2026, 10, 22), p, roster=left)
+    assert out["closed"] == 1 and s.cases.docs[0]["closed_why"] == "gone"       # same count two runs running
+
+
+def test_the_store_counts_inboxes_per_account_on_the_last_day_recorded():
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    s.save_state([rec("a@d.com", date="2026-10-18"), rec("b@d.com", date="2026-10-18"),
+                  rec("c@d.com", date="2026-10-19"), rec("x@x.com", date="2026-10-19", account="BETTRDATA"),
+                  rec("t@d.com", date="2026-10-20")])
+    s.save_metrics({"z@d.com": {"2026-10-19": {"sent": 3}}})                  # metric-only: not an inbox record
+    assert s.last_counts("2026-10-20", "2026-10-12") == {"PRECISE_LEADS": 1, "BETTRDATA": 1}
+    assert s.last_counts("2026-10-18", "2026-10-12") == {}
