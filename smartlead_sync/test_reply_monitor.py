@@ -196,7 +196,15 @@ def test_a_long_alert_list_goes_to_the_thread():
 def test_monday_summary_counts_add_up_and_names_every_flagged_domain():
     fleet = _fleet(MON)
     fleet["new.com"] = {**fleet["ok0.com"], "domain": "new.com"}           # first day: nothing to judge yet
-    verdicts, posts = rm.run(MON, fleet, {"BETTRDATA": "HTTP 401 Plan expired!"}, _history(MON), weekly=True)
+    hist = _history(MON)
+    for i in range(15, -1, -1):                                             # few.com: 3 sends a day, under 50
+        doc = {**fleet["ok0.com"], "domain": "few.com", "sent": 1000 - 3 * i, "replies": 0,
+               "campaigns": {"1": {"sent": 1000 - 3 * i, "replies": 0, "client": "Precise Leads"}}}
+        if i:
+            hist.append({**doc, "date": (MON - timedelta(days=i)).isoformat()})
+        else:
+            fleet["few.com"] = doc
+    verdicts, posts = rm.run(MON, fleet, {"BETTRDATA": "HTTP 401 Plan expired!"}, hist, weekly=True)
     assert len(posts) == 1
     head, thread = posts[0]
     _headline_ok(head)
@@ -204,11 +212,39 @@ def test_monday_summary_counts_add_up_and_names_every_flagged_domain():
                         "Not checked today: Bettrdata (HTTP 401 Plan expired!)"]
     assert head[2].startswith("• *bad.com* (Precise Leads): new ALERT today, 1 reply on 308 sends") and len(head) == 3
     body = thread[0]
-    assert body.startswith("*Precise Leads*: ") and "5 domains sending today" in body
+    sending = [v for v in verdicts.values() if v["verdict"] not in (rs.NO_SENDS, rs.NOT_COUNTED)]
+    sent, replies = sum(v["sent"] for v in sending), sum(v["replies"] for v in sending)
+    assert (sent, replies) == (308 + 3 * 350 + 42, 1 + 3 * 8)              # the sends shown are these domains'
+    assert body.startswith(f"*Precise Leads*: {sent:,} sends, {replies} replies (1.8%) in 14 days from "
+                           "5 sending domains\n")
     assert "• *bad.com*: ALERT, 1 reply on 308 sends in 14 days" in body
     assert "• 3 in line with the other domains, 1 under 50 sends (not judged)" in body
-    assert 1 + 3 + 1 == len(verdicts) == 5                                   # alert + fine + not judged
+    assert "• Also listed in active campaigns: 1 new or moved with no sends counted yet" in body
+    assert 1 + 3 + 1 == len(sending) == 5 and len(verdicts) == 6            # alert + fine + under 50, + new
+    assert verdicts["new.com"]["verdict"] == rs.NOT_COUNTED
     assert thread[1] == rm.HOW
+
+
+def test_a_domain_whose_totals_never_move_is_not_counted_as_sending():
+    # review 7 Nov: idle domains keep their rows in ACTIVE campaigns' stats; "1 domain sending today" next to
+    # "0 sends" contradicted itself. idle.com (PL, campaign 1) and bd.com (Bettrdata) stay at 40 lifetime sends.
+    fleet, hist = _fleet(MON), _history(MON)
+    for dom, client, cid in (("idle.com", "Precise Leads", "1"), ("bd.com", "Bettrdata", "9")):
+        doc = {"domain": dom, "client": client, "account": "X", "sent": 40, "replies": 0, "bounce_count": 0,
+               "sender_bounce_count": 0, "campaigns": {cid: {"sent": 40, "replies": 0, "client": client}}}
+        fleet[dom] = doc
+        hist += [{**doc, "date": (MON - timedelta(days=i)).isoformat()} for i in range(15, 0, -1)]
+    verdicts, posts = rm.run(MON, fleet, {}, hist, weekly=True)
+    assert verdicts["idle.com"]["verdict"] == verdicts["bd.com"]["verdict"] == rs.NO_SENDS
+    head, thread = posts[0]
+    assert head[0] == "⚠️ Reply check, 14 days to 9 Nov: 4 sending domains, 1 alert, 0 to watch"
+    bd, pl = thread[0].split("\n\n")
+    assert bd == ("*Bettrdata*: no sends counted in 14 days\n"
+                  "• Also listed in active campaigns: 1 with no sends in 14 days")
+    assert pl.startswith("*Precise Leads*: 1,358 sends, 25 replies (1.8%) in 14 days from 4 sending domains\n")
+    assert pl.endswith("• 3 in line with the other domains\n"
+                       "• Also listed in active campaigns: 1 with no sends in 14 days")
+    assert "sending today" not in thread[0]
 
 
 def test_without_history_it_says_nothing_was_judged_instead_of_a_clean_week():
@@ -324,7 +360,8 @@ def test_the_job_end_to_end_with_fakes(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[ALERT] bad.com (Precise Leads): 1 reply on 308 sends in 14 days" in out
     assert "the client's other domains" in out                     # old snapshots: judged at the client's rate
-    assert "[ReplyMon] 4 domain(s): ALERT 1, WATCH 0, OK 3, TOO FEW 0, NO REFERENCE 0" in out
+    assert ("[ReplyMon] 4 domain(s): ALERT 1, WATCH 0, OK 3, TOO FEW 0, NO REFERENCE 0, NO SENDS 0, "
+            "NOT COUNTED YET 0") in out
     assert col.queries[0]["date"]["$lt"] == "2026-11-10"
     assert {op._doc["$set"]["verdict"] for op in col.ops} == {rs.ALERT, rs.OK} and len(col.ops) == 4
 

@@ -13,6 +13,10 @@ Rule (provider_watch style, critic fix 12):
   * Judged only with >= MIN_SENT sends that have a reference.
   * ALERT: Poisson P(X <= replies) <= ALERT_P. WATCH: replies under WATCH_RATIO x expected and
     P(X <= replies) <= WATCH_P (so 0 replies on 1.2 expected is not a watch). Else OK.
+  * A domain with no sends counted in the window is not a sending domain (review 7 Nov: idle domains still
+    have rows in ACTIVE campaigns' mailbox-statistics). NO_SENDS: its totals never rose in the window, so it
+    sent nothing. NOT_COUNTED: it or one of its campaigns was first seen inside the window with lifetime
+    totals (or an old-format jump was dropped), so sends may have happened that the window could not place.
 REPORT ONLY: nothing here pauses or changes anything.
 
 Snapshots. GET /campaigns/{id}/mailbox-statistics returns campaign-lifetime totals per sender, so the job
@@ -42,6 +46,8 @@ LEGACY_MAX_DAY = 200        # domain-total snapshots: a bigger daily change is a
 LOOKBACK_DAYS = 60          # how far back to read snapshots (a paused campaign's last totals)
 
 ALERT, WATCH, OK, TOO_FEW, NO_REFERENCE = "ALERT", "WATCH", "OK", "TOO FEW", "NO REFERENCE"
+NO_SENDS, NOT_COUNTED = "NO SENDS", "NOT COUNTED YET"   # no sends in the window: not a sending domain
+VERDICTS = (ALERT, WATCH, OK, TOO_FEW, NO_REFERENCE, NO_SENDS, NOT_COUNTED)
 COUNTS = ("sent", "replies", "bounce_count", "sender_bounce_count")
 
 
@@ -92,7 +98,9 @@ def merge_campaign(fleet: dict[str, dict], campaign_id, client: str, account: st
 def window_stats(docs: list[dict], today: date, days: int = WINDOW_DAYS) -> dict[str, dict]:
     """Stored daily snapshots (any domains, any order) -> what each domain sent and got back in
     (today - days, today]: {domain: {"sent", "replies", "client", "by_campaign": {id: [sent, replies]},
-    "unattributed": [sent, replies]}}. "unattributed" comes from the older domain-total snapshots."""
+    "unattributed": [sent, replies], "uncounted": bool}}. "unattributed" comes from the older domain-total
+    snapshots. "uncounted" is True when the totals show sends the window could not place: the domain or one
+    of its campaigns first seen inside the window with lifetime sends, or an old-format jump that was dropped."""
     start, end = (today - timedelta(days=days)).isoformat(), today.isoformat()
     by_dom: dict[str, list[dict]] = defaultdict(list)
     for d in docs:
@@ -105,12 +113,16 @@ def window_stats(docs: list[dict], today: date, days: int = WINDOW_DAYS) -> dict
         legacy = [0, 0]
         last: dict[str, tuple[int, int]] = {}          # campaign -> its last stored (sent, replies)
         prev = None
+        uncounted = False
         for doc in ds:
             camps = doc.get("campaigns") or {}
+            if prev is None and doc["date"] > start:   # the domain first seen inside the window
+                uncounted = uncounted or _int(doc.get("sent")) > 0
             if prev is not None and doc["date"] > start:
                 if camps and last:
                     for cid, c in camps.items():
                         if cid not in last:            # first sighting: lifetime totals, not this window's sends
+                            uncounted = uncounted or _int(c.get("sent")) > 0
                             continue
                         sent = _int(c.get("sent")) - last[cid][0]
                         if sent < 0:                   # totals went down (leads deleted): restart from here
@@ -123,13 +135,15 @@ def window_stats(docs: list[dict], today: date, days: int = WINDOW_DAYS) -> dict
                     if 0 <= sent <= LEGACY_MAX_DAY * gap:
                         legacy[0] += sent
                         legacy[1] += max(0, _int(doc.get("replies")) - _int(prev.get("replies")))
+                    elif sent > 0:                     # a campaign rejoining ACTIVE, dropped
+                        uncounted = True
             for cid, c in camps.items():
                 last[cid] = (_int(c.get("sent")), _int(c.get("replies")))
             prev = doc
         sent = legacy[0] + sum(v[0] for v in by_campaign.values())
         replies = legacy[1] + sum(v[1] for v in by_campaign.values())
         out[dom] = {"sent": sent, "replies": replies, "client": ds[-1].get("client") or "",
-                    "by_campaign": dict(by_campaign), "unattributed": legacy}
+                    "by_campaign": dict(by_campaign), "unattributed": legacy, "uncounted": uncounted}
     return out
 
 
@@ -146,7 +160,8 @@ def judge(window: dict[str, dict], domains) -> dict[str, dict]:
     """Verdict for each of `domains` (the ones sending today), judged against window_stats output for every
     domain. -> {domain: {"verdict", "client", "sent", "replies", "judged_sent", "observed", "expected",
     "reference", "ratio", "p"}}; reference says what `expected` came from: "campaigns" (the other domains in
-    its campaigns), "client" (the client's other domains) or "mixed"."""
+    its campaigns), "client" (the client's other domains) or "mixed". A domain with no sends counted in the
+    window is NO_SENDS or NOT_COUNTED, never a judged or TOO_FEW sending domain."""
     camp = defaultdict(lambda: [0, 0])
     for w in window.values():
         for cid, (s, r) in w["by_campaign"].items():
@@ -155,7 +170,8 @@ def judge(window: dict[str, dict], domains) -> dict[str, dict]:
     clients = client_totals(window)
     out: dict[str, dict] = {}
     for dom in sorted(domains):
-        w = window.get(dom) or {"sent": 0, "replies": 0, "client": "", "by_campaign": {}, "unattributed": [0, 0]}
+        w = window.get(dom) or {"sent": 0, "replies": 0, "client": "", "by_campaign": {}, "unattributed": [0, 0],
+                                "uncounted": True}
         n = obs = 0
         exp = 0.0
         rest = list(w["unattributed"])                  # sends judged at the client's rate
@@ -173,7 +189,9 @@ def judge(window: dict[str, dict], domains) -> dict[str, dict]:
             n, obs, exp = n + rest[0], obs + rest[1], exp + rest[0] * c_r / c_s
         reference = "campaigns" if n == by_campaigns else "client" if not by_campaigns else "mixed"
         p = poisson_le(obs, exp)
-        if w["sent"] < MIN_SENT:
+        if w["sent"] <= 0:
+            verdict = NOT_COUNTED if w.get("uncounted") else NO_SENDS
+        elif w["sent"] < MIN_SENT:
             verdict = TOO_FEW
         elif n < MIN_SENT:
             verdict = NO_REFERENCE

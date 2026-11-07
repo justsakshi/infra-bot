@@ -188,6 +188,44 @@ def test_a_thin_campaign_falls_back_to_the_clients_other_domains():
     assert rs.judge(rs.window_stats(alone, TODAY), ["solo.com"])["solo.com"]["verdict"] == rs.NO_REFERENCE
 
 
+def _verdict(docs, dom="x.com"):
+    return rs.judge(rs.window_stats(docs, TODAY), [dom])[dom]
+
+
+def test_a_domain_whose_totals_never_move_sent_nothing():
+    # review 7 Nov: an idle domain still has rows in an ACTIVE campaign's stats; it is not a sending domain
+    assert _verdict([snap("x.com", i, {"1": (40, 0)}) for i in range(20, -1, -1)])["verdict"] == rs.NO_SENDS
+    assert _verdict([snap("x.com", i, sent=40, replies=0) for i in range(20, -1, -1)])["verdict"] == rs.NO_SENDS
+    # a late reply on an idle domain is still no sends
+    late = [snap("x.com", i, {"1": (40, 0 if i > 3 else 1)}) for i in range(20, -1, -1)]
+    assert _verdict(late)["verdict"] == rs.NO_SENDS
+
+
+def test_a_campaign_that_pauses_and_comes_back_unchanged_sent_nothing():
+    docs = [snap("x.com", i, {"1": (40, 0), **({} if 4 <= i <= 8 else {"2": (900, 9)})}) for i in range(20, -1, -1)]
+    assert _verdict(docs)["verdict"] == rs.NO_SENDS
+
+
+def test_sends_the_window_cannot_place_are_not_called_no_sends():
+    # first seen today with lifetime sends: they may be today's
+    assert _verdict([snap("x.com", 0, {"1": (500, 4)})])["verdict"] == rs.NOT_COUNTED
+    # first seen inside the window with nothing sent yet, and still nothing: no sends
+    assert _verdict([snap("x.com", i, {"1": (0, 0)}) for i in range(5, -1, -1)])["verdict"] == rs.NO_SENDS
+    # idle in campaign 1, then moved to campaign 2, first seen there with sends
+    moved = [snap("x.com", i, {"1": (40, 0)}) for i in range(20, 0, -1)] + [snap("x.com", 0, {"1": (40, 0),
+                                                                                              "2": (30, 0)})]
+    assert _verdict(moved)["verdict"] == rs.NOT_COUNTED
+    # old-format totals: a jump too big for one day is dropped, so the domain is not called idle
+    jump = [snap("x.com", i, sent=40, replies=0) for i in range(20, 0, -1)] + [snap("x.com", 0, sent=900, replies=0)]
+    assert _verdict(jump)["verdict"] == rs.NOT_COUNTED
+
+
+def test_a_domain_that_sent_a_little_is_sending_not_idle():
+    docs = [snap("x.com", i, {"1": (40 + (1 if i == 0 else 0), 0)}) for i in range(20, -1, -1)]
+    v = _verdict(docs)
+    assert v["sent"] == 1 and v["verdict"] == rs.TOO_FEW
+
+
 @pytest.mark.parametrize("prior,expected", [({}, ["bad.com"]), ({"bad.com": rs.WATCH}, ["bad.com"]),
                                             ({"bad.com": rs.ALERT}, [])])
 def test_an_alert_is_new_only_on_its_first_day(prior, expected):

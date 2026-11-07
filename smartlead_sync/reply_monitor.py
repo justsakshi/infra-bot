@@ -216,16 +216,20 @@ def daily_parts(verdicts: dict[str, dict], fresh: list[str], unread: dict[str, s
     return None
 
 
-def weekly_parts(verdicts: dict[str, dict], window: dict[str, dict], unread: dict[str, str],
+_NOT_SENDING = (rs.NO_SENDS, rs.NOT_COUNTED)
+
+
+def weekly_parts(verdicts: dict[str, dict], unread: dict[str, str],
                  today: date, fresh: list[str] = ()) -> tuple[list[str], list[str]]:
-    """Mondays: every client, every domain sending today, in one count that adds up. An ALERT that is new
-    today is also in the headline when it fits, as it would be on any other day."""
-    totals = rs.client_totals(window)
+    """Mondays: every client, every domain listed in an ACTIVE campaign today. A domain counts as sending only
+    when it sent in the window (review 7 Nov: idle domains keep their rows); the rest are listed apart, so
+    alert + watch + in line + under 50 = sending domains, and the sends shown are those domains' sends.
+    An ALERT that is new today is also in the headline when it fits, as it would be on any other day."""
     by_client: dict[str, list[str]] = {}
     for d, v in verdicts.items():
         by_client.setdefault(v["client"], []).append(d)
     count = {k: sum(v["verdict"] == k for v in verdicts.values()) for k in (rs.ALERT, rs.WATCH)}
-    n = len(verdicts)
+    n = sum(v["verdict"] not in _NOT_SENDING for v in verdicts.values())
     title = (f"{'⚠️ ' if count[rs.ALERT] else ''}Reply check, {rs.WINDOW_DAYS} days to {_day(today)}: "
              f"{_n(n, 'sending domain', 'sending domains')}, {_n(count[rs.ALERT], 'alert', 'alerts')}, "
              f"{count[rs.WATCH]} to watch")
@@ -237,25 +241,32 @@ def weekly_parts(verdicts: dict[str, dict], window: dict[str, dict], unread: dic
     blocks = []
     for client in sorted(by_client):
         doms = sorted(by_client[client])
-        t = totals.get(client, {"sent": 0, "replies": 0})
-        rate = f" ({100 * t['replies'] / t['sent']:.1f}%)" if t["sent"] else ""
-        lines = [f"*{client or 'No client'}*: {_n(t['sent'], 'send', 'sends')}, "
-                 f"{_n(t['replies'], 'reply', 'replies')}{rate} in {rs.WINDOW_DAYS} days, "
-                 f"{_n(len(doms), 'domain', 'domains')} sending today"]
+        k = {v: sum(verdicts[d]["verdict"] == v for d in doms) for v in rs.VERDICTS}
+        sending = [d for d in doms if verdicts[d]["verdict"] not in _NOT_SENDING]
+        sent = sum(verdicts[d]["sent"] for d in sending)
+        replies = sum(verdicts[d]["replies"] for d in sending)
+        rate = f" ({100 * replies / sent:.1f}%)" if sent else ""
+        if sending:
+            lines = [f"*{client or 'No client'}*: {_n(sent, 'send', 'sends')}, {_n(replies, 'reply', 'replies')}"
+                     f"{rate} in {rs.WINDOW_DAYS} days from {_n(len(sending), 'sending domain', 'sending domains')}"]
+        else:
+            lines = [f"*{client or 'No client'}*: no sends counted in {rs.WINDOW_DAYS} days"]
         for verdict in (rs.ALERT, rs.WATCH):
             lines += [_alert_line(d, "", f"{verdict}, {verdict_text(verdicts[d])}")
                       for d in doms if verdicts[d]["verdict"] == verdict]
-        ok = sum(verdicts[d]["verdict"] == rs.OK for d in doms)
-        few = sum(verdicts[d]["verdict"] == rs.TOO_FEW for d in doms)
-        noref = sum(verdicts[d]["verdict"] == rs.NO_REFERENCE for d in doms)
-        rest = [f"{ok} in line with the other domains"] if ok else []
-        rest += [f"{few} under {rs.MIN_SENT} sends (not judged)"] if few else []
-        rest += [f"{noref} with too few sends on other domains to compare (not judged)"] if noref else []
+        rest = [f"{k[rs.OK]} in line with the other domains"] if k[rs.OK] else []
+        rest += [f"{k[rs.TOO_FEW]} under {rs.MIN_SENT} sends (not judged)"] if k[rs.TOO_FEW] else []
+        rest += ([f"{k[rs.NO_REFERENCE]} with too few sends on other domains to compare (not judged)"]
+                 if k[rs.NO_REFERENCE] else [])
         if rest:
             lines.append("• " + ", ".join(rest))
+        idle = [f"{k[rs.NO_SENDS]} with no sends in {rs.WINDOW_DAYS} days"] if k[rs.NO_SENDS] else []
+        idle += [f"{k[rs.NOT_COUNTED]} new or moved with no sends counted yet"] if k[rs.NOT_COUNTED] else []
+        if idle:
+            lines.append("• Also listed in active campaigns: " + ", ".join(idle))
         blocks.append("\n".join(lines))
     if not blocks:
-        blocks.append("No domain sent from an ACTIVE campaign today.")
+        blocks.append("No domain is listed in an ACTIVE campaign today.")
     return head, ["\n\n".join(blocks), HOW]
 
 
@@ -288,7 +299,7 @@ def run(today: date, fleet: dict[str, dict], unread: dict[str, str], history: li
     fresh = rs.new_alerts(verdicts, prior_verdicts(history))
     posts = []
     if weekly:                                            # the weekly post names every ALERT, new or not
-        posts.append(weekly_parts(verdicts, window, unread, today, fresh))
+        posts.append(weekly_parts(verdicts, unread, today, fresh))
     else:
         daily = daily_parts(verdicts, fresh, unread, today)
         if daily:
@@ -322,8 +333,7 @@ async def main() -> int:
     for d, v in verdicts.items():
         if v["verdict"] in (rs.ALERT, rs.WATCH):
             print(f"  [{v['verdict']}] {d} ({v['client']}): {verdict_text(v)}, p={v['p']}")
-    counts = {k: sum(v["verdict"] == k for v in verdicts.values())
-              for k in (rs.ALERT, rs.WATCH, rs.OK, rs.TOO_FEW, rs.NO_REFERENCE)}
+    counts = {k: sum(v["verdict"] == k for v in verdicts.values()) for k in rs.VERDICTS}
     print(f"[ReplyMon] {len(verdicts)} domain(s): " + ", ".join(f"{k} {n}" for k, n in counts.items()))
     if unread:
         print(f"[ReplyMon] {unread_line(unread)}")
