@@ -897,6 +897,24 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             lines.append(f"• Still failing, already out from an earlier run: {n} inbox{'es' if n != 1 else ''} "
                          f"on {len(doms)} domain{'s' if len(doms) != 1 else ''}")
         parts.append(f"*{client}*\n\n" + "\n".join(lines))
+    # Inboxes acted on with no stored v2 result (pulled by hand, e.g. after a one-off test) are not in any
+    # group above, so name them here: every inbox the headline counts must be listed.
+    no_result = sorted(e for e in (set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["failed"]))
+                       if e not in latest)
+    if no_result:
+        lines = []
+        for e in no_result:
+            if e in acted["removed"]:
+                what = f"{'taken' if write else 'would be taken'} out of {_names(acted['removed'][e], names)}"
+            elif e in acted["blocked"]:
+                what = f"last good sender of live {_names(acted['blocked'][e], names)}: not removed (see Needs you)"
+            elif e in acted["parked"]:
+                what = f"only failed senders left in paused/draft {_names(acted['parked'][e], names)}: left there"
+            else:
+                what = "removal failed (see Needs you), retried next run"
+            lines.append(f"• {e} ({client_of.get(e, 'not in Smartlead')}) → {what}")
+        parts.append("*Pulled earlier and still in campaigns* (tagged DO NOT USE, no v2 result stored)\n\n"
+                     + "\n".join(lines))
     if acted["added"]:
         parts.append("*Back in campaigns* (passed twice, 6+ days apart)\n\n"
                      + "\n".join(f"• {e} → {_names(c, names) or 'no live campaign left'}" for e, c in sorted(acted["added"].items())))
