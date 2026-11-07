@@ -4,8 +4,10 @@
 Checks every sending domain of every client against the domain blocklists that
 matter (Spamhaus DBL, SURBL, URIBL: BLACKLIST_ZONES). Pay-to-delist lists
 (UCEProtect etc.) are deliberately not checked. Lookups go straight to each
-list's own name server, or through Google DNS-over-HTTPS when that server can't
-be used (each list's published test domain decides, every run).
+list's own name server, which must show the list's published test domain as
+listed, every run. When that server can't be used, Google DNS-over-HTTPS is
+asked instead, but it misses some listings, so there only a listing counts: a
+domain it shows as not listed is UNKNOWN on that list, never clean.
 
 Every weekly run posts ONE summary to the infra channel (BLACKLIST_CHANNEL
 overrides it), clean or not (audit 7 Nov 2026, BLOCKLIST-1/3/4/8/9/10/12):
@@ -24,7 +26,8 @@ unknown) or the save or post failed, so the cron log shows a failure.
 
 Mongo blacklist_checks keeps one row per domain per day: {domain, date,
 listed_on, lookup_errors, inconclusive_zones, clients (Smartlead account names,
-as before), client_names, inboxes, unknown, run, source}.
+as before), client_names, inboxes, unknown, run, source, read_from (the accounts
+whose Smartlead inbox list showed the domain that day)}.
 
 Usage:
     python3 blacklist_monitor.py                    # weekly run: save + post
@@ -104,8 +107,12 @@ async def _listed_ips(client: httpx.AsyncClient, domain: str, zone: str) -> list
         resp = await client.get(_DOH_URL, params={"name": f"{domain}.{zone}", "type": "A"})
         resp.raise_for_status()
         data = resp.json()
-        if data.get("Status") == 3:  # NXDOMAIN = not listed
+        status = data.get("Status")
+        if status == 3:  # NXDOMAIN = not listed
             return []
+        if status != 0:  # SERVFAIL, REFUSED, ...: no answer from the list, so no verdict
+            print(f"  [Blacklist] {domain} @ {zone}: DNS status {status} - unknown", file=sys.stderr)
+            return None
         ips = [a.get("data", "") for a in data.get("Answer", []) or [] if a.get("type") == 1]
         ips = [ip for ip in ips if ip]
         if any(_is_error_answer(ip) for ip in ips):
@@ -124,8 +131,9 @@ async def _listed_ips(client: httpx.AsyncClient, domain: str, zone: str) -> list
 # own authoritative nameserver directly bypasses the block. Raw UDP (no deps).
 
 def _udp_query_a(name: str, server_ip: str, timeout: float = 5.0) -> list[str] | None:
-    """Minimal DNS A query over UDP. Returns answer IPs, [] for NXDOMAIN/none,
-    None on network error."""
+    """Minimal DNS A query over UDP. Returns answer IPs, [] for NXDOMAIN or no A
+    record, None on a network error, an error rcode (SERVFAIL, REFUSED, ...) or a
+    truncated reply: a failed answer is never clean."""
     import random
     import socket
     import struct
@@ -143,8 +151,11 @@ def _udp_query_a(name: str, server_ip: str, timeout: float = 5.0) -> list[str] |
         return None
     if len(data) < 12 or data[:2] != pkt[:2]:
         return None
-    if (data[3] & 0x0F) == 3:  # NXDOMAIN
+    rcode = data[3] & 0x0F
+    if rcode == 3:  # NXDOMAIN
         return []
+    if rcode != 0 or data[2] & 0x02:  # error rcode, or truncated (TC bit): no verdict
+        return None
     ancount = struct.unpack(">H", data[6:8])[0]
     ips: list[str] = []
     i = 12
@@ -205,13 +216,19 @@ _CONTROLS = {
     "multi.uribl.com": "test.uribl.com",
 }
 
-# The DoH fallback path must pass EVERY control probe to be trusted for the run.
+# Google DoH answers these lists only some of the time (7 Nov 2026: Spamhaus's
+# own test listing on 6 of 8 tries, the rest NXDOMAIN, and its cache repeats a
+# miss), so for a list with a control domain a DoH "not listed" is never trusted:
+# mode 'hits_only' counts what DoH shows as listed and makes every other domain
+# UNKNOWN on that list. Up to this many probes decide whether DoH sees it at all.
 _CONTROL_PROBES: int = 3
 
 
 async def _pick_strategies(client: httpx.AsyncClient) -> dict[str, dict]:
-    """Per zone: {'mode': 'auth'|'doh', 'ns_ip': str|None} for the first lookup
-    path whose control domain fires; mode 'broken' if neither works."""
+    """Per zone: {'mode', 'ns_ip'}. 'auth': the list's own name server (its control
+    fired there). 'hits_only': Google DoH, whose listings count but whose
+    not-listed answers are unknown. 'broken': the control was seen on no path.
+    'doh': a list with no control domain (none today)."""
     out: dict[str, dict] = {}
     for zone in BLACKLIST_ZONES:
         control = _CONTROLS.get(zone)
@@ -227,14 +244,15 @@ async def _pick_strategies(client: httpx.AsyncClient) -> dict[str, dict]:
                 out[zone] = {"mode": "auth", "ns_ip": ns_ip}
                 print(f"  [Blacklist] {zone}: using its authoritative NS {ns_ip}")
                 continue
-            doh_hits = 0
+            seen = False
             for _ in range(_CONTROL_PROBES):
                 if await _listed_ips(client, control, zone):
-                    doh_hits += 1
-            if doh_hits == _CONTROL_PROBES:
-                out[zone] = {"mode": "doh", "ns_ip": None}
-                print(f"  [Blacklist] {zone}: authoritative NS not usable -> Google DoH "
-                      "(passed every control probe)")
+                    seen = True
+                    break
+            if seen:
+                out[zone] = {"mode": "hits_only", "ns_ip": None}
+                print(f"  [Blacklist] ⚠ {zone}: authoritative NS not usable -> Google DoH, listings only "
+                      "(a not-listed answer there is unknown, not clean)")
                 continue
             out[zone] = {"mode": "broken", "ns_ip": None}
             print(f"  [Blacklist] ⚠ {zone}: control domain '{control}' not detected "
@@ -268,6 +286,8 @@ async def _check_domain(client: httpx.AsyncClient, sem: asyncio.Semaphore,
             if ips:
                 codes = ",".join(_decode(zone, ip) for ip in ips)
                 hits.append(f"{label} ({codes})")
+            elif strat["mode"] == "hits_only":
+                inconclusive.append(label)          # DoH misses some listings: not seen is not clean
             elif ips is None:
                 errors.append(label)
         return {"domain": domain, "listed_on": hits, "lookup_errors": errors,
@@ -328,13 +348,20 @@ def _fill_from_last_lists(inventory: dict, per_account: dict, failed: list[dict]
     """Add each unreadable account's domains from its last saved check, so they are still
     checked (BLOCKLIST-3: an unreadable account used to be skipped silently). An account
     that answered with no inboxes, when its last check had some, counts as unreadable too.
-    Returns the skipped accounts: [{account, error, list_date, domains}]."""
+    Returns the skipped accounts: [{account, error, list_date, domains, mongo_ok}];
+    mongo_ok False = Mongo could not be read, so there was no list to fall back on."""
     todo = list(failed) + [{"account": n, "error": "Smartlead returned no inboxes", "empty": True}
                            for n, count in per_account.items() if not count]
     skipped = []
     for f in todo:
-        when, rows = store.last_list(f["account"]) if store is not None else (None, [])
-        if f.get("empty") and not rows:
+        when, rows, mongo_ok = None, [], store is not None
+        if mongo_ok:
+            try:
+                when, rows = store.last_list(f["account"])
+            except Exception as exc:  # noqa: BLE001 - say so, keep checking the rest
+                print(f"  [Blacklist] ⚠ Mongo read failed for {f['account']}'s last list ({redact(str(exc))[:150]})")
+                mongo_ok = False
+        if f.get("empty") and mongo_ok and not rows:
             continue                       # no inboxes then, none now: nothing was missed
         for r in rows:
             e = inventory.get(r["domain"])
@@ -343,7 +370,8 @@ def _fill_from_last_lists(inventory: dict, per_account: dict, failed: list[dict]
                 e["stale"] = True
             e["accounts"].add(f["account"])
             e["clients"].update(r.get("client_names") or [])
-        skipped.append({"account": f["account"], "error": f["error"], "list_date": when, "domains": len(rows)})
+        skipped.append({"account": f["account"], "error": f["error"], "list_date": when, "domains": len(rows),
+                        "mongo_ok": mongo_ok})
     return skipped
 
 
@@ -362,6 +390,15 @@ def _is_adhoc(row: dict) -> bool:
     return row.get("run") == "adhoc" or list(row.get("clients") or []) == ["adhoc"]
 
 
+def _read_live(row: dict, account: str) -> bool:
+    """Did this account's own Smartlead inbox list show the row's domain that day? A row
+    checked only from an earlier list (source 'last list') did not, so it never becomes
+    the next 'last list'. Rows saved before read_from existed count by their clients."""
+    if "read_from" in row:
+        return account in (row.get("read_from") or [])
+    return row.get("source") != "last list"
+
+
 _RESULT_FIELDS = ("domain", "date", "listed_on", "lookup_errors", "inconclusive_zones", "unknown")
 
 
@@ -378,10 +415,13 @@ class Store:
         return out
 
     def last_list(self, account: str) -> tuple[str | None, list[dict]]:
-        """(date, rows) of the newest weekly check that included this Smartlead account."""
+        """(date, rows) of the newest weekly check that read this Smartlead account's own
+        inbox list. Weeks it was skipped don't count, so the date stays that of the last
+        real read and a second skipped week doesn't hide domains added in between."""
         rows = [r for r in self.col.find({"clients": account},
-                                         {"_id": 0, "domain": 1, "date": 1, "clients": 1, "client_names": 1, "run": 1})
-                if not _is_adhoc(r) and r.get("date")]
+                                         {"_id": 0, "domain": 1, "date": 1, "clients": 1, "client_names": 1,
+                                          "run": 1, "source": 1, "read_from": 1})
+                if not _is_adhoc(r) and r.get("date") and _read_live(r, account)]
         if not rows:
             return None, []
         when = max(r["date"] for r in rows)
@@ -460,10 +500,11 @@ _RANK = {"sending": 0, "idle": 1, "unknown": 2, "none": 3, None: 4}
 
 
 def analyse(results: list[dict], inventory: dict, history: dict | None, today: str, *,
-            surbl_all: bool = False) -> dict:
+            surbl_all: bool = False, modes: dict[str, str] | None = None) -> dict:
     """Pure. Counts for the headline and one hit per listed domain worth showing:
     every DBL/URIBL listing, and SURBL only when new since the last check (all SURBL
-    when surbl_all, for a check by hand). history None = Mongo unreadable."""
+    when surbl_all, for a check by hand). history None = Mongo unreadable.
+    modes = {list label: lookup mode} from _check_all, to say why a list is unknown."""
     hits, surbl, unknown = [], [], []
     counts = {"total": len(results), "dbl": 0, "dbl_new": 0, "uribl": 0, "surbl": 0, "surbl_new": 0}
     for r in results:
@@ -493,7 +534,8 @@ def analyse(results: list[dict], inventory: dict, history: dict | None, today: s
             surbl.append({**base, "lists": [s for s in r["listed_on"] if s.startswith(SURBL)], "age": ages[SURBL]})
     counts["unknown"] = len(unknown)
     counts["checked"] = counts["total"] - counts["unknown"]
-    return {"counts": counts, "hits": hits, "surbl": surbl, "unknown": unknown, "history_ok": history is not None}
+    return {"counts": counts, "hits": hits, "surbl": surbl, "unknown": unknown, "history_ok": history is not None,
+            "modes": dict(modes or {})}
 
 
 def _combine(ages: list[dict | None]) -> dict | None:
@@ -620,7 +662,7 @@ def summary(found: dict, today: str, *, skipped: list[dict] = (), accounts: int 
     if skipped:
         bits = [f"skipped {s['account']}: " + (f"its {_plural(s['domains'], 'domain')} came from the "
                                                f"{day(s['list_date'])} check" if s["domains"]
-                                               else "no saved list, so its domains were not checked")
+                                               else _not_checked(s))
                 for s in skipped]
         head.append(f"Read {accounts - len(skipped)} of {_plural(accounts, 'Smartlead account')} · " + "; ".join(bits))
     if live:
@@ -639,13 +681,12 @@ def summary(found: dict, today: str, *, skipped: list[dict] = (), accounts: int 
                       + "\n".join(hit_line(h, today) for h in surbl))
     if found["unknown"]:
         zones = sorted({z for r in found["unknown"] for z in r.get("inconclusive_zones") or []})
-        lines = [f"• {z}: its test domain was not seen on any lookup path, so every domain is unknown on it"
-                 for z in zones]
+        lines = [f"• {z}: " + _ZONE_WHY.get(found.get("modes", {}).get(z), _ZONE_WHY["broken"]) for z in zones]
         errs = [r for r in found["unknown"] if r.get("lookup_errors")]
         lines += [f"• {r['domain']}: {', '.join(r['lookup_errors'])} lookup failed" for r in errs[:30]]
         if len(errs) > 30:
             lines.append(f"… and {len(errs) - 30} more")
-        thread.append(f"Unknown ({c['unknown']}): a list could not be read for these, so they are not clean:\n"
+        thread.append(f"Unknown ({c['unknown']}): a list could not be read fully for these, so they don't count as clean:\n"
                       + "\n".join(lines))
     if skipped:
         thread.append("Could not read from Smartlead:\n" + "\n".join(_skip_line(s) for s in skipped)
@@ -656,10 +697,24 @@ def summary(found: dict, today: str, *, skipped: list[dict] = (), accounts: int 
     return head, thread
 
 
+_ZONE_WHY = {
+    "broken": "its test domain was not seen on any lookup path, so every domain is unknown on it",
+    "hits_only": ("its own name server could not be used, and Google DNS misses some of its listings, "
+                  "so a domain not seen listed there is unknown on it, not clean"),
+}
+
+
+def _not_checked(s: dict) -> str:
+    """Why a skipped account's domains were not checked at all."""
+    why = "no saved list" if s.get("mongo_ok", True) else "Mongo unreadable"
+    return f"{why}, so its domains were not checked"
+
+
 def _skip_line(s: dict) -> str:
     n = s["domains"]
     if not n:
-        return f"• {s['account']}: {s['error']}. No saved list, so its domains were not checked."
+        why = _not_checked(s)
+        return f"• {s['account']}: {s['error']}. {why[0].upper()}{why[1:]}."
     return (f"• {s['account']}: {s['error']}. Its {_plural(n, 'domain')} from the {day(s['list_date'])} check "
             f"{'was' if n == 1 else 'were'} checked; inbox counts, sending and any domain added since are missing.")
 
@@ -678,11 +733,13 @@ def _post(head: list[str], thread: list[str]) -> bool:
 
 # ── run ──────────────────────────────────────────────────────────────────────
 
-async def _check_all(domains: list[str]) -> list[dict]:
+async def _check_all(domains: list[str]) -> tuple[list[dict], dict[str, str]]:
+    """(one result per domain, {list label: lookup mode})."""
     sem = asyncio.Semaphore(_CONCURRENCY)
     async with httpx.AsyncClient(timeout=10.0) as client:
         strategies = await _pick_strategies(client)
-        return list(await asyncio.gather(*(_check_domain(client, sem, d, strategies) for d in domains)))
+        results = list(await asyncio.gather(*(_check_domain(client, sem, d, strategies) for d in domains)))
+    return results, {BLACKLIST_ZONES[z]: st["mode"] for z, st in strategies.items() if z in BLACKLIST_ZONES}
 
 
 def _args(argv: list[str] | None):
@@ -713,14 +770,14 @@ async def main(argv: list[str] | None = None) -> int:
     print(f"[Blacklist] checking {len(inventory)} domain(s) against {', '.join(BLACKLIST_ZONES.values())}"
           + (f" ({len(accounts) - len(skipped)} of {len(accounts)} Smartlead accounts read)" if not adhoc else ""))
 
-    results = await _check_all(sorted(inventory)) if inventory else []
+    results, modes = await _check_all(sorted(inventory)) if inventory else ([], {})
     history = None
     if store is not None:
         try:
             history = store.history(inventory) if inventory else {}
         except Exception as exc:  # noqa: BLE001
             print(f"  [Blacklist] ⚠ Mongo history read failed ({redact(str(exc))[:150]})")
-    found = analyse(results, inventory, history, today, surbl_all=adhoc)
+    found = analyse(results, inventory, history, today, surbl_all=adhoc, modes=modes)
     if not adhoc:
         await _fill_status(found, inventory, accounts)
 
@@ -741,6 +798,7 @@ async def main(argv: list[str] | None = None) -> int:
                                 "client_names": sorted(e["clients"]),
                                 "inboxes": None if e["stale"] or not e["emails"] else len(e["emails"]),
                                 "unknown": bool(r.get("lookup_errors") or r.get("inconclusive_zones")),
+                                "read_from": sorted(set(e["emails"].values())),
                                 "run": "adhoc" if adhoc else "weekly",
                                 "source": "last list" if e["stale"] else ("by hand" if adhoc else "smartlead")})
             ok = store.save(records, adhoc=adhoc) and ok

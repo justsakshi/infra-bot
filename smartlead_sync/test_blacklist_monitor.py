@@ -1,8 +1,11 @@
-"""Blocklist monitor (audit 7 Nov 2026: BLOCKLIST-1/3/4/8/9/10/12). Fakes only, no network.
+"""Blocklist monitor (audit 7 Nov 2026: BLOCKLIST-1/3/4/8/9/10/12; review BL-R1/R2). Fakes only, no network.
 
     .venv\\Scripts\\python.exe -m pytest test_blacklist_monitor.py -q
 """
 import asyncio
+import socket
+import struct
+from datetime import date as _date
 
 import pytest
 
@@ -94,6 +97,8 @@ class _DoH:
             raise a
         if a == "NX":
             return _Resp({"Status": 3})
+        if isinstance(a, int):                                  # a bare DNS status: 2 SERVFAIL, 5 REFUSED
+            return _Resp({"Status": a})
         return _Resp({"Status": 0, "Answer": [{"type": 1, "data": ip} for ip in a]})
 
 
@@ -106,6 +111,51 @@ def test_listing_clean_and_failure():
     assert asyncio.run(bm._listed_ips(_DoH(["127.0.1.2"]), "x.com", "dbl.spamhaus.org")) == ["127.0.1.2"]
     assert asyncio.run(bm._listed_ips(_DoH("NX"), "x.com", "dbl.spamhaus.org")) == []
     assert asyncio.run(bm._listed_ips(_DoH(RuntimeError("timeout")), "x.com", "dbl.spamhaus.org")) is None
+
+
+@pytest.mark.parametrize("status", [2, 5])
+def test_doh_error_status_is_unknown_not_clean(status):
+    """BL-R1: Google DoH SERVFAIL / REFUSED came back as [] (clean)."""
+    assert asyncio.run(bm._listed_ips(_DoH(status), "x.com", "dbl.spamhaus.org")) is None
+
+
+def _dns_reply(query: bytes, rcode=0, ips=(), tc=False) -> bytes:
+    """A DNS reply to `query`: same id and question, compressed-name A answers."""
+    flags = 0x8180 | rcode | (0x0200 if tc else 0)
+    head = query[:2] + struct.pack(">HHHHH", flags, 1, len(ips), 0, 0)
+    answers = b"".join(struct.pack(">HHHIH", 0xC00C, 1, 1, 60, 4) + bytes(int(x) for x in ip.split("."))
+                       for ip in ips)
+    return head + query[12:] + answers
+
+
+def _udp(monkeypatch, **reply):
+    class Sock:
+        def __init__(self, *a):
+            self.q = b""
+
+        def settimeout(self, t):
+            pass
+
+        def sendto(self, pkt, addr):
+            self.q = pkt
+
+        def recvfrom(self, n):
+            return _dns_reply(self.q, **reply), ("1.2.3.4", 53)
+
+        def close(self):
+            pass
+    monkeypatch.setattr(socket, "socket", Sock)
+    return bm._udp_query_a("x.com.dbl.spamhaus.org", "1.2.3.4")
+
+
+def test_udp_reply_codes(monkeypatch):
+    """BL-R1: the list's own server answering SERVFAIL or REFUSED is unknown, never clean."""
+    assert _udp(monkeypatch, rcode=0, ips=["127.0.1.2"]) == ["127.0.1.2"]
+    assert _udp(monkeypatch, rcode=3) == []                     # NXDOMAIN: not listed
+    assert _udp(monkeypatch, rcode=0) == []                     # no A record: not listed
+    assert _udp(monkeypatch, rcode=2) is None                   # SERVFAIL
+    assert _udp(monkeypatch, rcode=5) is None                   # REFUSED
+    assert _udp(monkeypatch, rcode=0, tc=True) is None          # truncated
 
 
 def test_authoritative_error_answer_is_unknown(monkeypatch):
@@ -148,14 +198,28 @@ def test_strategy_prefers_the_lists_own_name_server(monkeypatch):
     assert got == {"mode": "auth", "ns_ip": "1.2.3.4"} and doh.calls == 0
 
 
-def test_strategy_falls_back_to_doh_only_when_every_probe_passes(monkeypatch):
+def test_strategy_doh_fallback_counts_listings_only(monkeypatch):
+    """BL-R1: DoH drops about a quarter of Spamhaus answers, so passing probes never make its NXDOMAIN clean."""
     got, _ = _strategy(monkeypatch, ns_ip="1.2.3.4", auth_answer=None, doh_answers=[["127.0.1.2"]])
-    assert got["mode"] == "doh"
-    got, _ = _strategy(monkeypatch, ns_ip=None, auth_answer=None,
-                       doh_answers=[["127.0.1.2"], "NX", ["127.0.1.2"]])          # flaky: 2 of 3
-    assert got["mode"] == "broken"
+    assert got["mode"] == "hits_only"
+    got, _ = _strategy(monkeypatch, ns_ip=None, auth_answer=None, doh_answers=["NX", ["127.0.1.2"]])
+    assert got["mode"] == "hits_only"                                             # seen once is enough
+    got, doh = _strategy(monkeypatch, ns_ip=None, auth_answer=None, doh_answers=["NX"])
+    assert got["mode"] == "broken" and doh.calls == bm._CONTROL_PROBES            # never seen
     got, _ = _strategy(monkeypatch, ns_ip="1.2.3.4", auth_answer=["127.255.255.254"], doh_answers=["NX"])
     assert got["mode"] == "broken"                                                # refused everywhere
+
+
+def test_hits_only_zone_counts_listings_and_nothing_else(monkeypatch):
+    _zone_only(monkeypatch)
+    strat = {"dbl.spamhaus.org": {"mode": "hits_only", "ns_ip": None}}
+    sem = asyncio.Semaphore(1)
+    r = asyncio.run(bm._check_domain(_DoH(["127.0.1.2"]), sem, "x.com", strat))
+    assert r["listed_on"] == ["Spamhaus DBL (127.0.1.2)"] and r["inconclusive_zones"] == []
+    r = asyncio.run(bm._check_domain(_DoH("NX"), sem, "y.com", strat))
+    assert r["listed_on"] == [] and r["inconclusive_zones"] == ["Spamhaus DBL"]  # not seen is not clean
+    r = asyncio.run(bm._check_domain(_DoH(2), sem, "z.com", strat))
+    assert r["inconclusive_zones"] == ["Spamhaus DBL"] and r["lookup_errors"] == []
 
 
 def test_broken_zone_is_inconclusive(monkeypatch):
@@ -204,7 +268,7 @@ def test_unreadable_account_checked_from_its_last_weekly_list():
     ])
     inv = {"m1.com": bm._entry()}
     skipped = bm._fill_from_last_lists(inv, {PL: 1}, [{"account": BD, "error": "401"}], bm.Store(col))
-    assert skipped == [{"account": BD, "error": "401", "list_date": "2026-11-02", "domains": 2}]
+    assert skipped == [{"account": BD, "error": "401", "list_date": "2026-11-02", "domains": 2, "mongo_ok": True}]
     assert set(inv) == {"m1.com", "b1.com", "b2.com"}
     assert inv["b1.com"]["stale"] and inv["b1.com"]["clients"] == {"Bettrdata"} and inv["b1.com"]["accounts"] == {BD}
 
@@ -217,9 +281,36 @@ def test_account_with_no_inboxes_counts_as_skipped_only_if_it_had_some():
     assert "b1.com" in inv
 
 
-def test_no_mongo_means_no_saved_list():
-    skipped = bm._fill_from_last_lists({}, {}, [{"account": BD, "error": "401"}], None)
-    assert skipped == [{"account": BD, "error": "401", "list_date": None, "domains": 0}]
+def test_no_mongo_says_mongo_not_no_saved_list():
+    """BL-R2: with Mongo down the list exists but can't be read; and an empty account can't be ruled out."""
+    skipped = bm._fill_from_last_lists({}, {BD: 0}, [{"account": "MELIOR", "error": "401"}], None)
+    assert [s["account"] for s in skipped] == ["MELIOR", BD]
+    assert skipped[0] == {"account": "MELIOR", "error": "401", "list_date": None, "domains": 0, "mongo_ok": False}
+
+    class Down(FakeCol):
+        def find(self, *a, **k):
+            raise RuntimeError("connection reset")
+    skipped = bm._fill_from_last_lists({}, {}, [{"account": BD, "error": "401"}], bm.Store(Down()))
+    assert skipped[0]["mongo_ok"] is False
+    found = bm.analyse([_result("m1.com")], {}, {}, TODAY)
+    head, thread = bm.summary(found, TODAY, skipped=skipped, accounts=2)
+    assert head[1] == "Read 1 of 2 Smartlead accounts · skipped BettrData: Mongo unreadable, so its domains were not checked"
+    assert "• BettrData: 401. Mongo unreadable, so its domains were not checked." in "\n".join(thread)
+    assert "no saved list" not in "\n".join(head + thread)
+
+
+def test_last_list_skips_weeks_the_account_was_not_read():
+    """BL-R2: a fallback week's rows are not the account's list; a shared domain read from another account isn't either."""
+    col = FakeCol([
+        _row("b1.com", "2026-11-02", clients=[BD], source="smartlead", read_from=[BD]),
+        _row("s1.com", "2026-11-02", clients=[BD, PL], source="smartlead", read_from=[BD, PL]),
+        _row("b1.com", "2026-11-09", clients=[BD], source="last list", read_from=[]),
+        _row("s1.com", "2026-11-09", clients=[BD, PL], source="smartlead", read_from=[PL]),
+        _row("b9.com", "2026-11-09", clients=[BD], source="last list"),            # no read_from: source decides
+    ])
+    when, rows = bm.Store(col).last_list(BD)
+    assert when == "2026-11-02" and [r["domain"] for r in rows] == ["b1.com", "s1.com"]
+    assert bm.Store(col).last_list(PL)[0] == "2026-11-09"
 
 
 # ── history: new vs ongoing, first seen ──────────────────────────────────────
@@ -316,8 +407,20 @@ def test_unknown_is_never_clean():
     head, thread = bm.summary(found, TODAY, accounts=2)
     assert head[0].startswith("⚠️ Blocklists 9 Nov: checked 0 of 3 domains") and head[0].endswith("unknown 3")
     body = "\n".join(thread)
-    assert "not clean" in body and "Spamhaus DBL: its test domain was not seen" in body
+    assert "Unknown (3): a list could not be read fully for these, so they don't count as clean:" in body
+    assert "Spamhaus DBL: its test domain was not seen" in body
     assert "• c.com: URIBL lookup failed" in body
+
+
+def test_hits_only_zone_says_why_it_is_unknown():
+    results = [_result("a.com", ["Spamhaus DBL (127.0.1.2)"]), _result("b.com", inconclusive=["Spamhaus DBL"])]
+    found = bm.analyse(results, {}, {}, TODAY, modes={"Spamhaus DBL": "hits_only", "URIBL": "auth"})
+    head, thread = bm.summary(found, TODAY, accounts=2)
+    assert "checked 1 of 2 domains · Spamhaus DBL 1 (1 new)" in head[0] and head[0].endswith("unknown 1")
+    body = "\n".join(thread)
+    assert ("• Spamhaus DBL: its own name server could not be used, and Google DNS misses some of its listings, "
+            "so a domain not seen listed there is unknown on it, not clean") in body
+    assert "test domain was not seen" not in body
 
 
 def test_skipped_account_named_in_headline():
@@ -365,7 +468,7 @@ class _Run:
         monkeypatch.setattr(bm, "_open_store", lambda: bm.Store(self.col) if self.col is not False else None)
 
         async def check_all(domains):
-            return [dict(results.get(d) or _result(d), domain=d) for d in domains]
+            return [dict(results.get(d) or _result(d), domain=d) for d in domains], {}
         monkeypatch.setattr(bm, "_check_all", check_all)
 
         def attach(key):
@@ -389,7 +492,7 @@ def test_weekly_run_clean_posts_saves_and_exits_0(monkeypatch, capsys):
     assert saved["m1.com"]["clients"] == [PL] and saved["m1.com"]["client_names"] == ["Melior"]
     assert saved["b1.com"]["clients"] == [BD] and saved["b1.com"]["inboxes"] == 1
     assert saved["m1.com"]["unknown"] is False and saved["m1.com"]["run"] == "weekly"
-    assert saved["m1.com"]["source"] == "smartlead"
+    assert saved["m1.com"]["source"] == "smartlead" and saved["m1.com"]["read_from"] == [PL]
     assert "checked 3 of 3 domains" in capsys.readouterr().out
 
 
@@ -406,6 +509,40 @@ def test_weekly_run_with_unreadable_account_still_checks_and_exits_1(monkeypatch
     assert "sending unknown" in thread[0]
     b2 = next(r for r in col.rows if r["domain"] == "b2.com" and r["date"] != "2026-11-02")
     assert b2["source"] == "last list" and b2["clients"] == [BD] and b2["inboxes"] is None
+
+
+class _Today:
+    def __init__(self, iso):
+        self.iso = iso
+
+    def today(self):
+        return _date.fromisoformat(self.iso)
+
+
+def _week(monkeypatch, iso, col, inboxes):
+    monkeypatch.setattr(bm, "date", _Today(iso))
+    run = _Run(monkeypatch, inboxes=inboxes, results={}, col=col)
+    return asyncio.run(bm.main([])), run.posts[0]
+
+
+@pytest.mark.parametrize("bd_later", [RuntimeError("401 plan expired"), []], ids=["unreadable", "no inboxes"])
+def test_two_skipped_weeks_still_name_the_last_real_list(monkeypatch, bd_later):
+    """BL-R2: on 16 Nov the post said 'from the 9 Nov check' (last week's fallback), hiding domains added after 2 Nov."""
+    col = FakeCol()
+    pl = [_inbox("a@m1.com", 12256), _inbox("s@s1.com")]
+    code, _ = _week(monkeypatch, "2026-11-02", col,
+                    {PL: pl, BD: [_inbox("c@b1.com"), _inbox("d@b2.com"), _inbox("e@s1.com")]})
+    assert code == 0
+    for iso in ("2026-11-09", "2026-11-16"):
+        code, (head, thread) = _week(monkeypatch, iso, col, {PL: pl, BD: bd_later})
+        assert code == 1
+        assert head[0].startswith("⚠️ Blocklists") and "checked 4 of 4 domains" in head[0]
+        assert head[1] == "Read 1 of 2 Smartlead accounts · skipped BettrData: its 3 domains came from the 2 Nov check"
+        assert "Its 3 domains from the 2 Nov check were checked" in "\n".join(thread)
+    s1 = next(r for r in col.rows if r["domain"] == "s1.com" and r["date"] == "2026-11-09")
+    assert s1["clients"] == [BD, PL] and s1["read_from"] == [PL] and s1["source"] == "smartlead"
+    b1 = next(r for r in col.rows if r["domain"] == "b1.com" and r["date"] == "2026-11-16")
+    assert b1["source"] == "last list" and b1["read_from"] == [] and b1["clients"] == [BD]
 
 
 def test_weekly_run_reads_campaigns_only_for_listed_domains_account(monkeypatch):
