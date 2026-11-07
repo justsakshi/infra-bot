@@ -74,9 +74,9 @@ def test_key_alert_never_shows_any_part_of_a_key():
     assert "ab12" not in text and "plan is paid" in text
 
 
-def test_reply_alerts_stay_off_unless_switched_on():
+def test_reply_alerts_have_an_off_switch():
     src = open("reply_monitor.py", encoding="utf-8").read()
-    assert 'os.getenv("REPLY_MONITOR_POST", "").strip().lower() != "on"' in src
+    assert 'os.getenv("REPLY_MONITOR_POST", "").strip().lower() == "off"' in src
 
 
 def test_fleet_watch_posts_to_the_infra_channel_through_notify(monkeypatch, slack):

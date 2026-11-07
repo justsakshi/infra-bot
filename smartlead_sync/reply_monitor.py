@@ -5,7 +5,7 @@ Each day: read every ACTIVE campaign's per-sender totals, store one snapshot per
 per-campaign breakdown) in Mongo domain_reply_stats, then judge each domain's last 14 days against the
 reply rate of the other domains in its campaigns (smartlead/reply_stats.py has the rule and why).
 
-What it says, behind REPLY_MONITOR_POST=on (off by default, as before):
+What it posts to the infra channel (on by default since the 7 Nov rule; REPLY_MONITOR_POST=off silences it):
   * any day: a domain that newly reached ALERT, and "Not checked today: <client>" for an account it
     could not read;
   * Mondays: the weekly summary, every client, every judged domain counted.
@@ -273,11 +273,12 @@ def weekly_parts(verdicts: dict[str, dict], unread: dict[str, str],
 # ── the job ─────────────────────────────────────────────────────────────────
 
 def _post(head: list[str], thread: list[str]) -> bool | None:
-    """Post when REPLY_MONITOR_POST=on. True posted, False failed, None not asked to post."""
+    """Post unless REPLY_MONITOR_POST=off. True posted, False failed, None not asked to post."""
     from smartlead.notify import infra_channel, post_with_thread
     token = os.getenv("SLACK_BOT_TOKEN", "")
-    # Off unless switched on (audit 7 Nov 2026: the old one-day rule was 89 noise alerts in 91). REPLY_MONITOR_POST=on posts.
-    if os.getenv("REPLY_MONITOR_POST", "").strip().lower() != "on":
+    # On by default: replayed over 17 Oct-7 Nov the pooled 14-day rule made 5 posts in 22 days, one of them a real
+    # alert two days before v2 caught the same domain (the old one-day rule: 91 alerts, 89 noise). =off silences it.
+    if os.getenv("REPLY_MONITOR_POST", "").strip().lower() == "off":
         token = ""
     if not token:
         return None

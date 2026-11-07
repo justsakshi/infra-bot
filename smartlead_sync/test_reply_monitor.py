@@ -300,11 +300,20 @@ def slack(monkeypatch):
     return install
 
 
-def test_nothing_is_posted_unless_switched_on(monkeypatch, slack):
+def test_nothing_is_posted_when_switched_off(monkeypatch, slack):
+    fake = slack()
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "tok")
+    monkeypatch.setenv("REPLY_MONITOR_POST", "off")
+    assert rm._post(["Reply check"], []) is None and fake.calls == []
+
+
+def test_it_posts_by_default(monkeypatch, slack):
     fake = slack()
     monkeypatch.setenv("SLACK_BOT_TOKEN", "tok")
     monkeypatch.delenv("REPLY_MONITOR_POST", raising=False)
-    assert rm._post(["Reply check"], []) is None and fake.calls == []
+    monkeypatch.delenv("REPLY_MONITOR_CHANNEL", raising=False)
+    monkeypatch.delenv("HEALTH_NOTIFY_CHANNEL", raising=False)
+    assert rm._post(["Reply check"], []) is True and fake.calls[0]["channel"] == "C0AGVSUNEFP"
 
 
 def test_switched_on_it_posts_to_the_infra_channel(monkeypatch, slack):
@@ -351,7 +360,7 @@ def test_the_job_end_to_end_with_fakes(monkeypatch, capsys):
     col = FakeCol(hist)
     monkeypatch.setattr(rm, "_col", lambda: col)
     monkeypatch.setattr(rm, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: _at(TUE))}))
-    monkeypatch.delenv("REPLY_MONITOR_POST", raising=False)
+    monkeypatch.setenv("REPLY_MONITOR_POST", "off")
 
     async def collect():
         return _fleet(TUE), {}
