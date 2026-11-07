@@ -364,7 +364,7 @@ def _report(args, acc, key, tests, posted) -> tuple[int, set[str]]:
     tested_on = max(str(t.get("created_at", ""))[:10] for t in tests) or date.today().isoformat()
     do_grid, do_status = args.grid or args.sheet, args.status_tab or args.sheet
     names = [str(t["test_name"]) for t in tests]
-    labels = set(client_by_email.values()) | {acc.name, fallback}
+    gone_all = {e for es in gone_by_client.values() for e in es}
     code, covered = 0, set()
     for client in reported:
         group = by_client.get(client, {})
@@ -383,8 +383,8 @@ def _report(args, acc, key, tests, posted) -> tuple[int, set[str]]:
             print(part)
         cmap = {e: client for e in group}
         grid = grid_writes(report, cmap, tested_on, apply=do_grid)
-        status = write_status_tab(report, cmap, tested_on, apply=do_status, account_clients=labels,
-                                  account_emails=set(accts))
+        status = write_status_tab(report, cmap, tested_on, apply=do_status, account_name=acc.name,
+                                  account_emails=set(accts), gone=gone_all)
         print(f"\n[Sheet] {client}: test date {tested_on}; grid {'WROTE' if do_grid else 'dry-run'} "
               f"({sum(g.get('writes', 0) for g in grid)} cells), "
               f"Inbox Status {'WROTE' if status.get('written') else 'dry-run'} ({status['rows']} rows)")

@@ -228,11 +228,32 @@ def test_a_retested_inbox_replaces_only_its_own_row():
 def test_inboxes_no_longer_in_the_account_leave_the_tab():
     old = [["a@m.example", "m.example", "Melior", "YES", "2026-11-09"],
            ["gone@p.example", "p.example", "PRECISE_LEADS", "YES", "2026-11-03"],      # old fallback label
+           ["old@m.example", "m.example", "Melior", "YES", "2026-11-03"],              # this run's gone sender
            ["x@b.example", "b.example", "Bettrdata", "YES", "2026-11-03"]]             # another account
-    body, kept = merge_status_rows([HDR] + old, [], account_clients={"Melior", "Precise Leads", "PRECISE_LEADS"},
-                                   account_emails={"a@m.example"})
-    assert body == [old[0], old[2]] and kept == 2
-    assert merge_status_rows([HDR] + old, [], account_clients={"PRECISE_LEADS"}, account_emails=set())[0] == old
+    body, kept = merge_status_rows([HDR] + old, [], account_name="PRECISE_LEADS",
+                                   account_emails={"a@m.example"}, gone={"OLD@m.example"})
+    assert body == [old[0], old[3]] and kept == 2
+    # an empty or failed account read prunes nothing
+    assert merge_status_rows([HDR] + old, [], account_name="PRECISE_LEADS", account_emails=set())[0] == old
+
+
+def test_a_shared_client_label_never_prunes_the_other_accounts_rows():
+    # Review CLASSIC-1: the PRECISE_LEADS account can label an inbox "Bettrdata" (client 456214),
+    # and so can the BETTRDATA account. Neither account's run may delete the other's rows.
+    from smartlead.report_sheet import client_label
+    assert client_label("PRECISE_LEADS", 456214) == client_label("BETTRDATA", None) == "Bettrdata"
+    tab = [["b1@bd.example", "bd.example", "Bettrdata", "YES", "2026-11-03"],          # BETTRDATA account
+           ["b2@bd.example", "bd.example", "Bettrdata", "YES", "2026-11-03"],          # BETTRDATA account
+           ["p1@pl.example", "pl.example", "Bettrdata", "YES", "2026-11-03"],          # PL account, client 456214
+           ["m1@mel.example", "mel.example", "Melior", "YES", "2026-11-03"]]           # PL account
+    pl_run = [["m1@mel.example", "mel.example", "Melior", "NO", "2026-11-10"]]
+    body, kept = merge_status_rows([HDR] + tab, pl_run, account_name="PRECISE_LEADS",
+                                   account_emails={"p1@pl.example", "m1@mel.example"}, gone=set())
+    assert body == tab[:3] + pl_run and kept == 3
+    bd_run = [["b1@bd.example", "bd.example", "Bettrdata", "NO", "2026-11-10"]]
+    body, kept = merge_status_rows([HDR] + tab, bd_run, account_name="BETTRDATA",
+                                   account_emails={"b1@bd.example", "b2@bd.example"}, gone=set())
+    assert body == [tab[1], tab[2], tab[3]] + bd_run and kept == 3
 
 
 # ── placement_report.py end to end (fakes) ───────────────────────────────────
@@ -318,11 +339,12 @@ def test_final_run_reports_the_weekly_test_and_warns_for_the_missing_client(monk
     assert warn_head == [f"⚠️ {LABEL}, Precise Leads, 10 Nov: no result today",
                          "Expected the scheduled test on DT PL #1, #2 and #3."]
 
-    # the gone sender is not in the tab; old rows of inboxes not in the account can be pruned
+    # the gone sender is not in the tab, and its old row is dropped; nothing is pruned by label
     [(inboxes, kw)] = status_calls
     assert inboxes == ["m1@mel.example", "m2@mel.example"]
     assert kw["account_emails"] == {"m1@mel.example", "m2@mel.example", "p1@pl.example"}
-    assert {"Melior", "Precise Leads", "PRECISE_LEADS"} <= kw["account_clients"]
+    assert kw["account_name"] == "PRECISE_LEADS" and kw["gone"] == {"old@gone.example"}
+    assert "account_clients" not in kw                  # never prune by a shared client label
 
     [rec] = cols["placement_reports_posted"].docs
     assert (rec["test_id"], rec["run_no"], rec["run_day"], rec["test_type"], rec["clients"]) == \
@@ -366,3 +388,4 @@ def test_an_empty_inbox_list_still_marks_the_test_reported(monkeypatch):
     assert posts[0][0][0].startswith(f"{LABEL}, Precise Leads, 10 Nov: no mailbox flagged (3 tested)")
     assert [d["test_id"] for d in cols["placement_reports_posted"].docs] == [900001]   # not re-posted next hour
     assert status_calls[0][1]["account_emails"] == set()                                 # nothing pruned
+    assert status_calls[0][1]["gone"] == set()
