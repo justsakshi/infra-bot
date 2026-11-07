@@ -90,13 +90,14 @@ def test_blacklist_alert_advice_in_thread_and_long_lists_moved():
     assert head[0].startswith("🚨") and "8 domains" in head[0]
     body = "\n".join(thread)
     assert all(f"d{i}.com" in body for i in range(8))
-    assert "Pause campaigns" not in "\n".join(head) and body.count("Pause campaigns") == 1
+    assert "Decide with the client lead" not in "\n".join(head) and body.count("Decide with the client lead") == 1
+    assert "removal request" in body and "file a delisting request" not in body          # no blind delisting (7 Nov)
     assert "SURBL" in "\n".join(head + thread)
     # a short list stays in the headline
     head, thread = _alert_parts(serious[:2], surbl_only=0)
     _headline_ok(head)
     assert "d0.com" in "\n".join(head) and "d1.com" in "\n".join(head)
-    assert "Pause campaigns" in "\n".join(thread)
+    assert "Decide with the client lead" in "\n".join(thread)
 
 
 def test_reply_alert_long_list_in_thread():

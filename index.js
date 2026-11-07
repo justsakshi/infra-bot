@@ -1222,77 +1222,10 @@ async function start() {
       timezone: 'Asia/Kolkata'
     });
 
-    // EmailGuard placement tests at 11:20 IST daily (after the Smartlead
-    // retest job). Credit-free testing that works for every client from one
-    // workspace pool — Pass A scores finished tests, Pass B creates new ones
-    // worst-first. Ships DRY-RUN (EG_TEST_ENABLED=false).
-    cron.schedule('20 11 * * *', () => {
-      console.log(`[CRON] EmailGuard placement test firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['eg_test_executor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[eg-test] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[eg-test] ${d}`));
-      proc.on('close', code => console.log(`[eg-test] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
-
-    // Non-connected (Anjali-style) placement tests: hourly 9:00-21:00 IST at
-    // :15. Watches the "NC Tests" sheet tab — a human creates the non-connected
-    // test in the PL UI and pastes seed list + Track-ID; this executor sends
-    // from the inbox via its own account's campaign, polls the PL test, and
-    // writes results. Ships DRY-RUN (NC_TEST_ENABLED=false) — logs the plan,
-    // mutates nothing until explicitly enabled via the NC_TEST_ENABLED env var.
-    cron.schedule('15 9-21 * * *', () => {
-      console.log(`[CRON] NC placement-test firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['nc_test_executor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[nc-test] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[nc-test] ${d}`));
-      proc.on('close', code => console.log(`[nc-test] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
-
-    // Auto-warmup executor at 11:30 AM IST daily. Ships DRY-RUN
-    // (WARMUP_AUTO_ENABLED=false) — logs would-change, applies nothing until
-    // explicitly enabled via the WARMUP_AUTO_ENABLED env var.
-    cron.schedule('30 11 * * *', () => {
-      console.log(`[CRON] Auto-warmup firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['warmup_executor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[warmup] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[warmup] ${d}`));
-      proc.on('close', code => console.log(`[warmup] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
-
-    // Auto inbox-rotation at 12:00 PM IST daily. Ships DRY-RUN
-    // (ROTATION_ENABLED=false) — logs planned swaps, applies nothing until
-    // validated on a dummy campaign and enabled via the ROTATION_ENABLED env var.
-    cron.schedule('0 12 * * *', () => {
-      console.log(`[CRON] Inbox rotation firing at ${new Date().toISOString()}`);
-      const syncDir = path.join(__dirname, 'smartlead_sync');
-      const proc = spawn('python', ['rotation_executor.py'], {
-        cwd: syncDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-      });
-      proc.stdout.on('data', d => process.stdout.write(`[rotation] ${d}`));
-      proc.stderr.on('data', d => process.stderr.write(`[rotation] ${d}`));
-      proc.on('close', code => console.log(`[rotation] finished with code ${code}`));
-    }, {
-      timezone: 'Asia/Kolkata'
-    });
+    // Off the schedule since 7 Nov 2026 (mailbox-maintenance audit): EmailGuard tests (EmailGuard is not used),
+    // NC placement tests (they raise an inbox's daily limit, against the never-raise rule), the warm-up executor
+    // and inbox rotation (both judged unsafe in docs/AUDIT_2026-10-08.md). Each was one env flag away from
+    // writing to live Smartlead. The scripts stay in smartlead_sync/ and can be run by hand.
 
     // NOTE: the warmup-headroom job that used to run at 12:15 IST was REMOVED
     // on 2026-07-10. It raised max_email_per_day to make room for warmup inside

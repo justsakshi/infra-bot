@@ -237,7 +237,10 @@ async def main() -> None:
             primary = accounts[0].sheet_id
             sheet_url = f"https://docs.google.com/spreadsheets/d/{primary}"
             digest = _notify.build_digest(all_health_rows, sheet_url)
-            if _notify.post_digest(digest, _notify.build_full_lists(all_health_rows)):
+            # Opt-in: fleet_watch.py is the one daily inbox post. This older digest repeats the same items
+            # every day, so it posts only with HEALTH_DIGEST_POST=on (audit 7 Nov 2026).
+            if os.getenv("HEALTH_DIGEST_POST", "").strip().lower() == "on" and \
+                    _notify.post_digest(digest, _notify.build_full_lists(all_health_rows)):
                 print("[*] Inbox Health Slack digest posted")
         except Exception as exc:
             print(f"[!] Inbox Health notify failed: {exc}")

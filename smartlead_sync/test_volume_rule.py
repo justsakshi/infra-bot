@@ -77,14 +77,12 @@ def sig(**over):
 
 # Decision --------------------------------------------------------------------
 
-def test_raise_by_scaledmail_step_up_to_the_maximum():
-    d = vr.decide("google", [15, 15, 15], sig(), last_change=None, today=TODAY)
-    assert (d["action"], d["to"]) == (vr.RAISE, [17, 17, 17])
-    assert vr.decide("google", [19, 20], sig(), last_change=None, today=TODAY)["to"] == [20, 20]
-    assert vr.decide("outlook_dense", [5], sig(), last_change=None, today=TODAY)["to"] == [6]
-    assert vr.decide("smtp", [7], sig(), last_change=None, today=TODAY)["to"] == [8]
-    d = vr.decide("outlook", [10, 10], sig(), last_change=None, today=TODAY)
-    assert d["action"] == vr.HOLD and "maximum" in d["why"]
+def test_a_healthy_inbox_is_never_raised():
+    # Manveen 3 Nov 2026: per-inbox daily limits are never raised. Healthy means hold, at any level, any type.
+    for kind, limits in (("google", [15, 15, 15]), ("google", [19, 20]), ("outlook_dense", [5]), ("smtp", [7]),
+                         ("outlook", [10, 10])):
+        d = vr.decide(kind, limits, sig(), last_change=None, today=TODAY)
+        assert (d["action"], d["to"]) == (vr.HOLD, limits) and "never raised" in d["why"]
 
 
 def test_raise_waits_a_week_and_needs_the_limit_used():

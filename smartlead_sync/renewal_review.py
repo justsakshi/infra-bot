@@ -300,7 +300,8 @@ def main() -> int:
     if args.post and res["reviews"]:
         from smartlead.notify import post_with_thread
         token = os.getenv("SLACK_BOT_TOKEN", "")
-        channel = os.getenv("RENEWAL_REVIEW_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "")
+        from smartlead.notify import infra_channel
+        channel = infra_channel("RENEWAL_REVIEW_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
         res["posted"] = bool(token and channel and post_with_thread(token, channel, [res["text"]], []))   # one message
     print(json.dumps(res, default=str) if args.json else res["text"])
     return 0

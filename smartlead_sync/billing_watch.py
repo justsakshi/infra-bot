@@ -131,7 +131,8 @@ def main() -> int:
         if text and (any(e["event"] in bw.ALERT for e in events) or errors):
             from smartlead.notify import post_with_thread
             token = os.getenv("SLACK_BOT_TOKEN", "")
-            channel = os.getenv("RENEWAL_REVIEW_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "")
+            from smartlead.notify import infra_channel
+            channel = infra_channel("RENEWAL_REVIEW_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
             posted = bool(token and channel and post_with_thread(token, channel, headline, thread))
     out = {"rows": len(rows), "events": events, "headline": headline, "thread": thread, "text": text, "errors": errors, "posted": posted,
            "first_run": not prev, "mongo": col is not None}

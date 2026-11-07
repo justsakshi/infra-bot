@@ -77,6 +77,28 @@ def last_sent(rows: list[dict]) -> str:
     return max(times).isoformat() if times else ""
 
 
+def emails_per_provider(rows: list[dict]) -> int:
+    """How many emails the test sent each inbox per provider (the most common count). Smart Delivery lets a test
+    send 1-4; the job needs 4 to judge (pass = 4 of 4), so a 1-email test is reported, never judged."""
+    per: dict[tuple[str, str], int] = {}
+    for r in rows:
+        if r["provider"] in PROVIDERS and r["landed"] != "NOT_SENT":
+            k = (r["mailbox"], r["provider"])
+            per[k] = per.get(k, 0) + 1
+    if not per:
+        return 0
+    counts: dict[int, int] = {}
+    for n in per.values():
+        counts[n] = counts.get(n, 0) + 1
+    return max(counts, key=lambda n: (counts[n], n))
+
+
+def is_weekly_night(night: str) -> bool:
+    """The DT tests run every Monday 20:00 IST; any other night is a one-off test, so 'missing this week'
+    checks do not apply to it."""
+    return date.fromisoformat(night).weekday() == 0
+
+
 def file_ready(rows: list[dict]) -> bool:
     """False when too many seeds have not answered yet (downloaded before the results came in)."""
     sent = [r for r in rows if r["landed"] != "NOT_SENT"]

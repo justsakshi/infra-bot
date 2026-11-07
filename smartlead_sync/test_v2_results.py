@@ -218,3 +218,14 @@ def test_monday_of_week_and_reminder_due():
     # never for a Monday before the job's first run (no false alarm on day one)
     assert v2.reminder_due(now_ist=(date(2026, 11, 6), 23), nights_in=set(), reminded=set(), since="2026-11-06") is None
     assert v2.reminder_due(now_ist=(date(2026, 11, 10), 12), nights_in=set(), reminded=set(), since="2026-11-06") == "2026-11-09"
+
+
+def test_emails_per_provider_reads_the_test_setting():
+    one = v2.parse(csv_text([("a@x.com", G, "Spam"), ("a@x.com", M, "Inbox"), ("b@x.com", G, "Inbox"), ("b@x.com", M, "Inbox")]))
+    assert v2.emails_per_provider(one) == 1
+    assert v2.emails_per_provider(v2.parse(csv_text(seeds("a@x.com", 4, 4)))) == 4
+    assert v2.emails_per_provider([]) == 0
+
+
+def test_only_monday_nights_are_the_weekly_run():
+    assert v2.is_weekly_night("2026-11-09") and not v2.is_weekly_night("2026-11-07")

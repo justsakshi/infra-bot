@@ -8,7 +8,7 @@ messages: smartlead/fleet.py.
 
     python fleet_watch.py                 # dry run: print what would be posted, save nothing
     python fleet_watch.py --post          # save the day's record and cases, post new problems
-                                          #   (FLEET_WATCH_CHANNEL, default #test-channel C0AV3HTPP0S)
+                                          #   (FLEET_WATCH_CHANNEL, default the infra channel C0AGVSUNEFP)
     python fleet_watch.py --save          # save the day's record only
     python fleet_watch.py --baseline      # record what is already wrong as known; never posted
     python fleet_watch.py --scorecard [--post]
@@ -41,7 +41,7 @@ from smartlead.api import raise_for_status
 from smartlead import fleet as fl
 from smartlead import inbox_standard as st
 
-CHANNEL = "C0AV3HTPP0S"          # #test-channel during the trial (Manveen, 15 Oct)
+CHANNEL = "C0AGVSUNEFP"          # the infra channel; #test-channel (C0AV3HTPP0S) is gone (audit 7 Nov 2026)
 METRIC_DAYS = 10                 # Smartlead's per-day numbers arrive ~6 days late: re-read and fill in
 HISTORY_DAYS = 8
 BLOCKLIST_FRESH_DAYS = 8
@@ -184,17 +184,14 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict]:
 
 
 def _post(text: str) -> bool:
-    import requests
-    from smartlead.notify import redact, tidy
+    from smartlead import notify
     token = os.getenv("SLACK_BOT_TOKEN", "").strip()
     if not token:
         return False
-    r = requests.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {token}"},
-                      json={"channel": os.getenv("FLEET_WATCH_CHANNEL") or CHANNEL, "text": redact(tidy(text))[:3900]},
-                      timeout=20).json()
-    if not r.get("ok"):
-        print(f"  [fleet-watch] post failed: {r.get('error')}", file=sys.stderr)
-    return bool(r.get("ok"))
+    ok = notify._post(token, os.getenv("FLEET_WATCH_CHANNEL") or CHANNEL, str(text)[:3900])
+    if not ok:
+        print("  [fleet-watch] post failed", file=sys.stderr)
+    return bool(ok)
 
 
 def main() -> int:

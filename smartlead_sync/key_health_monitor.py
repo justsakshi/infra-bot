@@ -86,13 +86,13 @@ def _alert_parts(dead: list[dict], unreachable: list[dict]) -> tuple[list[str], 
     n = len(dead) + len(unreachable)
     head = [f"{icon} Smartlead API key alert: {n} account{'s' if n != 1 else ''}"]
     if dead:
-        head.append("Key rejected: " + ", ".join(f"*{r['client']}* (`…{r.get('key_tail', '')}`)" for r in dead))
+        head.append("Key rejected: " + ", ".join(f"*{r['client']}*" for r in dead))
     if unreachable:
         head.append("Smartlead unreachable: " + ", ".join(f"*{r['client']}* ({r['detail']})" for r in unreachable))
     thread = []
     if dead:
-        thread.append("Every job is blind for these clients until a new key is set "
-                      "in `.env` AND on Render.")
+        thread.append("Every job is blind for these clients until this is fixed. First check the Smartlead plan "
+                      "is paid (an expired plan rejects the key too); only then set a new key in `.env` AND on Render.")
     return head, thread
 
 

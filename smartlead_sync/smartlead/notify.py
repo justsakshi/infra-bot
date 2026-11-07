@@ -8,7 +8,21 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from smartlead.config import HEALTH_NOTIFY_CHANNEL
+from smartlead.config import HEALTH_NOTIFY_CHANNEL, INFRA_CHANNEL
+
+# Slack errors that mean "this channel can't take posts from the bot". A post that gets one is sent again to the
+# infra channel with a first line saying where it was meant to go, so a wrong channel setting is loud, not silent.
+_DEAD_CHANNEL = {"channel_not_found", "is_archived", "not_in_channel"}
+_REROUTED: dict[str, str] = {}
+
+
+def infra_channel(*env_names: str) -> str:
+    """The first of these env vars that is set, else the infra channel."""
+    for name in env_names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return INFRA_CHANNEL
 
 _PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 
@@ -143,7 +157,10 @@ def redact(text: str) -> str:
 
 def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> str | None:
     """Post one message; returns its ts on success, None on failure. A channel
-    post gets the title layout (tidy); a thread reply only the spacing."""
+    post gets the title layout (tidy); a thread reply only the spacing. A channel
+    the bot can't post to is replaced by the infra channel (see _DEAD_CHANNEL)."""
+    if channel in _REROUTED:
+        channel = _REROUTED[channel]
     body = {"channel": channel, "text": redact(tidy(text, headline=not thread_ts)), "unfurl_links": False}
     if thread_ts:
         body["thread_ts"] = thread_ts
@@ -156,6 +173,11 @@ def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> 
         data = resp.json()
         if not data.get("ok"):
             print(f"  [Notify] Slack error: {data.get('error')}")
+            if data.get("error") in _DEAD_CHANNEL and channel != INFRA_CHANNEL and not thread_ts:
+                _REROUTED[channel] = INFRA_CHANNEL
+                note = f"_(meant for <#{channel}>, which Slack refused: {data.get('error')}. Fix the channel setting.)_"
+                lines = str(text or "").split("\n", 1)
+                return _post(token, INFRA_CHANNEL, lines[0] + "\n" + note + ("\n" + lines[1] if len(lines) > 1 else ""))
             return None
         return data.get("ts")
     except requests.RequestException as exc:
@@ -167,6 +189,7 @@ def _post_blocks(token: str, channel: str, text: str, blocks: list[dict],
                  thread_ts: str | None = None) -> str | None:
     """Post one Block Kit message (buttons need blocks); `text` is the
     notification fallback. Returns its ts, or None on failure."""
+    channel = _REROUTED.get(channel, channel)
     body = {"channel": channel, "text": redact(text), "blocks": blocks, "unfurl_links": False}
     if thread_ts:
         body["thread_ts"] = thread_ts
@@ -203,6 +226,7 @@ def post_with_thread(token: str, channel: str, headline_lines: list[str],
     ts = _post(token, channel, "\n".join(l for l in headline_lines if l))
     if not ts:
         return None
+    channel = _REROUTED.get(channel, channel)          # replies follow a rerouted headline
     for part in thread_parts:
         if isinstance(part, dict):            # a Block Kit message (stats post)
             time.sleep(_REPLY_PAUSE_S)

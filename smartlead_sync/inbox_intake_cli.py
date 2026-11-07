@@ -102,7 +102,7 @@ def scaledmail_tracker(tracker: dict, problems: list[str]) -> dict:
         return tracker
 
 
-READY_CHANNEL = "C0AV3HTPP0S"   # #test-channel (Manveen, 15 Oct; #testing-4866 is archived); INBOX_READY_CHANNEL overrides
+READY_CHANNEL = "C0AGVSUNEFP"   # the infra channel (#test-channel C0AV3HTPP0S is gone, audit 7 Nov); INBOX_READY_CHANNEL overrides
 
 
 def ready_message(announcements: list[dict]) -> str:
@@ -270,7 +270,8 @@ def main() -> int:
     posted = False
     if args.post and should_post(results, store.posted_problems()):
         from smartlead.notify import post_with_thread
-        channel = (os.getenv("SCALEDMAIL_NOTIFY_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL") or "").strip()
+        from smartlead.notify import infra_channel
+        channel = infra_channel("SCALEDMAIL_NOTIFY_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
         token = (os.getenv("SLACK_BOT_TOKEN") or "").strip()
         posted = bool(channel and token and post_with_thread(token, channel, head, parts))
         if posted:

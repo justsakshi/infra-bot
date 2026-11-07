@@ -129,10 +129,9 @@ def decide(kind: str, limits: list[int], sig: dict, *, last_change: date | None,
         return {**out, "action": HOLD, "why": f"{s['label']}: no weekly step set"}
     if last_change and (today - last_change).days < COOLDOWN_DAYS:
         return {**out, "action": HOLD, "why": f"changed {(today - last_change).days} days ago"}
-    to = [max(x, min(top, x + step)) for x in limits]
-    if to == list(limits):
-        return {**out, "action": HOLD, "why": f"at the maximum ({top})"}
-    return {**out, "action": RAISE, "to": to, "why": "; ".join(why for _, why in sig.values() if why)}
+    # Never raise (Manveen, 3 Nov 2026: per-inbox daily limits are never raised; gtm client.yaml). The review
+    # can only hold or step back; RAISE stays defined so old records still read.
+    return {**out, "action": HOLD, "why": f"limits are never raised (standing rule); healthy at {max(limits) if limits else start}"}
 
 
 def eligible(account: dict, kind: str, today: date, *, sending: bool, approved: int | None,

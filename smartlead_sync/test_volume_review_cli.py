@@ -27,13 +27,13 @@ def build(accounts, fx, health=None, daily=None, approved=None, verdicts=None, p
 THREE = ["a@pl.com", "b@pl.com", "c@pl.com"]
 
 
-def test_healthy_full_domain_is_raised_as_one_row():
+def test_healthy_full_domain_is_held_never_raised():
     rows, _ = build([box(i, e) for i, e in enumerate(THREE)], facts(*THREE),
                     health={e: (100, 0) for e in THREE}, daily={e: FULL for e in THREE})
     assert len(rows) == 1
     r = rows[0]
     assert (r["domain"], r["action"], r["from"], r["to"], r["client"], r["pilot"]) == (
-        "pl.com", vr.RAISE, [15, 15, 15], [17, 17, 17], "Melior", False)
+        "pl.com", vr.HOLD, [15, 15, 15], [15, 15, 15], "Melior", False)      # never-raise rule, 3 Nov 2026
     assert [b["email"] for b in r["inboxes"]] == THREE
 
 

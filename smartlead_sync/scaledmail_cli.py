@@ -173,7 +173,7 @@ def post_lines(title: str, lines: list[str]) -> bool:
     """Post to SCALEDMAIL_NOTIFY_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL); False when not set up.
     Headline in the channel, one line per order in its thread (spec 2026-10-13)."""
     from smartlead.notify import post_with_thread
-    channel = (os.getenv("SCALEDMAIL_NOTIFY_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL") or "").strip()
+    channel = __import__("smartlead.notify", fromlist=["infra_channel"]).infra_channel("SCALEDMAIL_NOTIFY_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
     token = (os.getenv("SLACK_BOT_TOKEN") or os.getenv("DOMAINS_SLACK_BOT_TOKEN") or "").strip()
     if not channel or not token:
         return False
@@ -302,7 +302,7 @@ def run(args) -> dict:
         if c == "digest":
             out = digest(sm)
             if args.post and out["text"]:
-                channel = (os.getenv("SCALEDMAIL_NOTIFY_CHANNEL") or os.getenv("ZAPMAIL_NOTIFY_CHANNEL") or "").strip()
+                channel = __import__("smartlead.notify", fromlist=["infra_channel"]).infra_channel("SCALEDMAIL_NOTIFY_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
                 token = os.getenv("SLACK_BOT_TOKEN") or os.getenv("DOMAINS_SLACK_BOT_TOKEN") or ""
                 if channel and token:
                     from smartlead.notify import _post
