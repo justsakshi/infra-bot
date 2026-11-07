@@ -165,7 +165,7 @@ def test_inboxes_we_do_not_use_come_off_the_dt_campaigns():
 def test_apply_drops_with_read_back():
     sl = FakeSL({101: {1000, 1002}})
     r = run_apply(sl, {"adds": {}, "drops": {101: [1002]}})
-    assert sl.attached == {101: {1000}} and r["dropped"] == 1
+    assert sl.attached == {101: {1000}} and r["dropped"] == 1 and r["dropped_ids"] == {101: [1002]}
 
 
 def test_dm_names_only_the_inboxes_added_today_and_new_campaigns():
@@ -178,3 +178,113 @@ def test_dm_names_only_the_inboxes_added_today_and_new_campaigns():
     assert "DT PL #3 (new campaign): create a weekly test with all 25 inboxes on it." in t
     assert "old@x.com" not in t and "Melior" not in t
     assert ts.new_inbox_text(gaps, added=set(), created=[]) == ""
+
+
+
+# Audit 7 Nov 2026: the DM is kept until Slack accepts it; drops and domains outside the sheet are told --------
+
+from datetime import date
+
+GAPS = [{"campaign": "DT PL #1", "test": "PL spam test 1", "add": ["new@x.com", "old@x.com"], "count": 50}]
+
+
+def test_the_dm_is_kept_until_slack_accepts_it():
+    sent, keep = ts.deliver_dm(GAPS, {"new@x.com"}, [], {}, complete=True, send=lambda t: False)
+    assert sent is False and keep == {"added": ["new@x.com"], "created": []}
+    texts = []
+    sent, keep = ts.deliver_dm(GAPS, set(), [], keep, complete=True, send=lambda t: texts.append(t) or True)
+    assert sent is True and "new@x.com" in texts[0] and "old@x.com" not in texts[0]
+    assert keep == {"added": [], "created": []}
+
+
+def test_a_kept_inbox_that_is_on_its_test_now_is_dropped_but_only_when_every_account_was_read():
+    pending = {"added": ["done@x.com"], "created": []}
+    assert ts.deliver_dm(GAPS, set(), [], pending, complete=True, send=lambda t: True) == (None, {"added": [], "created": []})
+    assert ts.deliver_dm(GAPS, set(), [], pending, complete=False, send=lambda t: True) == (None, pending)
+
+
+RESULTS = {"PRECISE_LEADS": {"dropped": ["a@x.com (DT PL #1)"],
+                             "untracked": {"x.com": {"client": "Precise Leads", "inboxes": 3},
+                                           "old.com": {"client": "Melior", "inboxes": 2}}},
+           "BETTRDATA": {"error": "402 plan expired"}}
+
+
+def test_infra_report_names_drops_new_domains_outside_the_sheet_and_errors():
+    head, thread, now = ts.infra_report(RESULTS, known={"old.com"}, errors=["BETTRDATA: 402 plan expired"],
+                                        dm_failed=True, today=date(2026, 11, 8))
+    assert head[0] == "🧪 Test campaigns, 8 Nov: 1 inbox taken off, 1 domain not in the deliverability sheet"
+    assert "Could not finish: BETTRDATA (details in the thread)" in head
+    assert any("DM about new inboxes did not go out" in l for l in head)
+    text = "\n".join(thread)
+    assert "• a@x.com (DT PL #1)" in text and "• x.com (Precise Leads, 3 inboxes)" in text and "old.com" not in text
+    assert "• BETTRDATA: 402 plan expired" in text
+    assert now == {"x.com", "old.com"}
+
+
+def test_infra_report_is_empty_when_nothing_changed():
+    quiet = {"PRECISE_LEADS": {"untracked": {"old.com": {"client": "Melior", "inboxes": 2}}}}
+    head, thread, now = ts.infra_report(quiet, known={"old.com"}, errors=[], dm_failed=False, today=date(2026, 11, 8))
+    assert head == [] and thread == [] and now == {"old.com"}
+    head, _, now = ts.infra_report({"PRECISE_LEADS": {}}, known=None, errors=[], dm_failed=False,
+                                   today=date(2026, 11, 8))
+    assert head == [] and now is None                            # sheet unread: nothing known about it
+
+
+
+class FakeState:
+    def __init__(self): self.docs = {}
+    def find_one(self, q): return self.docs.get(q["_id"])
+    def update_one(self, q, upd, upsert=False): self.docs[q["_id"]] = {"_id": q["_id"], **upd["$set"]}
+    def delete_one(self, q): self.docs.pop(q["_id"], None)
+
+
+class FakeClient:
+    """One account: t.com is in the sheet, u.com is not and sits on DT PL #1."""
+    attached = {}
+
+    def __init__(self, key, name): pass
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    async def list_email_accounts(self):
+        return [{"id": 1, "from_email": "a@t.com", "client_id": None, "tags": []},
+                {"id": 2, "from_email": "b@u.com", "client_id": None, "tags": []}]
+    async def list_campaigns(self): return [{"id": 101, "name": "DT PL #1", "status": "PAUSED"}]
+    async def get_campaign_email_accounts(self, cid): return [{"id": i} for i in sorted(self.attached.get(int(cid), set()))]
+    async def add_campaign_email_accounts(self, cid, ids): self.attached.setdefault(int(cid), set()).update(ids)
+    async def remove_campaign_email_accounts(self, cid, ids): self.attached[int(cid)] -= set(ids)
+
+
+def test_the_daily_run_keeps_a_failed_dm_and_tells_the_infra_channel(monkeypatch, capsys):
+    import sys
+    from types import SimpleNamespace
+
+    import smartlead.accounts
+    import smartlead.api
+    import smartlead.tracked
+    FakeClient.attached = {101: {2}}
+    state, dms, posts = FakeState(), [], []
+    monkeypatch.setattr(smartlead.accounts, "discover_accounts",
+                        lambda: [SimpleNamespace(name="PRECISE_LEADS", api_key="k")])
+    monkeypatch.setattr(smartlead.api, "SmartleadClient", FakeClient)
+    monkeypatch.setattr(smartlead.tracked, "tracked_domains", lambda: {"t.com"})
+
+    async def no_tests(key):
+        return [{"id": 9, "name": "PL spam test 1", "campaign_id": 101, "senders": set()}]
+    monkeypatch.setattr(ts, "_scheduled_tests", no_tests)
+    monkeypatch.setattr(ts, "_state_col", lambda: state)
+    monkeypatch.setattr(ts, "_post_infra", lambda head, thread: posts.append((head, thread)) or True)
+    monkeypatch.setattr(sys, "argv", ["dt_senders.py", "--apply"])
+
+    monkeypatch.setattr(ts, "_dm", lambda text: dms.append(text) and False)        # Slack refuses the DM
+    assert ts.main() == 1
+    assert state.docs["pending_dm"]["added"] == ["a@t.com"] and state.docs["untracked"]["domains"] == ["u.com"]
+    head, thread = posts[0]
+    assert head[0].endswith(": 1 inbox taken off, 1 domain not in the deliverability sheet")
+    assert "• b@u.com (DT PL #1)" in "\n".join(thread) and "• u.com (Precise Leads, 1 inbox)" in "\n".join(thread)
+    assert any("did not go out" in l for l in head)
+
+    monkeypatch.setattr(ts, "_dm", lambda text: dms.append(text) or True)          # next day: accepted
+    assert ts.main() == 0
+    assert "a@t.com" in dms[-1] and "pending_dm" not in state.docs
+    assert len(posts) == 1                                                       # nothing new for the channel
+    capsys.readouterr()
