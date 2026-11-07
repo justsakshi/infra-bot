@@ -5,13 +5,17 @@ v2 has no API (Smartlead support, 5 and 6 Nov 2026): the only way out is the CSV
 v2_weekly.py reads the files Manveen downloads and acts on what this module decides.
 
 Rules (pipeline doc PL_INBOX_FLEET_PIPELINE_SHORT_2026-11-06, Manveen 4 Nov: "remove all inboxes
-affected from any future campaign unless they improve"):
-  * per provider: PASS = 4 of 4 seeds in the inbox, WATCH = 2-3, FAIL = 0-1.
+affected from any future campaign unless they improve"; 7 Nov audit PLACEMENT-10: never pull on a
+result that is not complete):
+  * per provider, 4 seeds: PASS = all 4 in the inbox, FAIL = 3 or more of 4 in spam, WATCH = all 4
+    answered with 2-3 in the inbox. Anything else (a seed still pending, a BOUNCED seed, which is a
+    seed-side problem, or a test that sent fewer than 4) is not judged and never acted on.
   * an inbox FAILS if either provider fails; PASSES only if both pass.
-  * FAIL -> pull it from live campaigns. Two WATCH weeks in a row -> pull.
+  * FAIL -> pull it from live campaigns. WATCH twice running -> pull, but only when both are Monday
+    (weekly) tests from new files, 6+ days apart; a one-off or history result never counts.
   * a pulled inbox comes back after two passes, at least 6 days apart, both after the pull.
-  * if nearly every inbox in one night's tests is below 4 of 4 at one provider, the test is suspect: hold
-    (inboxes already known bad are left out of that count).
+  * if nearly every inbox in one night's tests, or in one test file, is below 4 of 4 at one provider, the
+    test is suspect: hold (inboxes already known bad are left out of that count).
 """
 from __future__ import annotations
 
@@ -21,19 +25,20 @@ from datetime import date, datetime, timedelta, timezone
 
 HEADER = ["Mailbox", "Provider", "Landed", "Sent at", "Send status"]
 PROVIDERS = {"GOOGLE_WORKSPACE": "google", "MICROSOFT_365": "microsoft"}
-REPORTED = {"Inbox", "Spam", "BOUNCED"}         # a seed that answered (BOUNCED counts against the inbox)
+REPORTED = {"Inbox", "Spam"}                    # a seed that answered with a placement
+FINAL = REPORTED | {"BOUNCED"}                  # a seed whose result will not change any more
 
 PASS, WATCH, FAIL = "PASS", "WATCH", "FAIL"
 UNKNOWN, INCOMPLETE, NOT_SENT = "UNKNOWN", "INCOMPLETE", "NOT_SENT"
 JUDGED = {PASS, WATCH, FAIL}
 PULL, RETURN = "PULL", "RETURN"
 
-MIN_REPORTED = 3            # seeds that must answer before a provider is judged
-PASS_SEEDS = 4
-FAIL_AT_MOST = 1
+PASS_SEEDS = 4              # seeds per provider; a test that sent another number is reported, never judged
+FAIL_SPAM = 3               # this many of 4 seeds in spam: fail
 PENDING_SHARE = 0.2         # more results than this still pending: the file was downloaded too early
 HOLD_SHARE, HOLD_MIN = 0.8, 10
-RETURN_GAP_DAYS = 6
+RETURN_GAP_DAYS = 6         # two results 6+ days apart: two different weeks (return, and WATCH-WATCH pull)
+RULES = "2026-11-07"        # results stored under older rules are judged again from the kept CSV copies
 IST = timezone(timedelta(hours=5, minutes=30))
 
 LIVE = {"ACTIVE", "PAUSED", "DRAFTED", "SCHEDULED"}
@@ -42,9 +47,19 @@ TEST_WORDS = ("deliverability", "spam test", "placement test", "placement-test")
 
 # --- reading ---------------------------------------------------------------------
 
-def is_v2_csv(text: str) -> bool:
+def _header(text: str) -> list[str]:
     first = text.lstrip("﻿").split("\n", 1)[0].strip().strip("\r")
-    return [c.strip() for c in first.split(",")] == HEADER
+    return [c.strip().strip('"') for c in first.split(",")]
+
+
+def is_v2_csv(text: str) -> bool:
+    return _header(text) == HEADER
+
+
+def looks_like_v2(text: str) -> bool:
+    """A CSV with a Mailbox column that is not the v2 header: likely a v2 download whose format changed.
+    Reported, never read (a silent skip made the Tuesday reminder say 'not in yet' forever)."""
+    return not is_v2_csv(text) and any(c.lower() == "mailbox" for c in _header(text))
 
 
 def parse(text: str) -> list[dict]:
@@ -99,31 +114,41 @@ def is_weekly_night(night: str) -> bool:
     return date.fromisoformat(night).weekday() == 0
 
 
+def pending_seeds(rows: list[dict]) -> int:
+    """Seeds sent but with no final result yet (neither Inbox, Spam nor BOUNCED)."""
+    return sum(1 for r in rows if r["landed"] != "NOT_SENT" and r["landed"] not in FINAL)
+
+
 def file_ready(rows: list[dict]) -> bool:
     """False when too many seeds have not answered yet (downloaded before the results came in)."""
     sent = [r for r in rows if r["landed"] != "NOT_SENT"]
     if not sent:
         return True
-    pending = sum(1 for r in sent if r["landed"] not in REPORTED)
-    return pending / len(sent) <= PENDING_SHARE
+    return pending_seeds(rows) / len(sent) <= PENDING_SHARE
 
 
 # --- verdicts --------------------------------------------------------------------
 
 def provider_verdict(landed: list[str]) -> dict:
-    inbox = sum(1 for x in landed if x == "Inbox")
-    reported = sum(1 for x in landed if x in REPORTED)
-    if landed and all(x == "NOT_SENT" for x in landed):
+    """One provider's seeds for one inbox. PASS = 4 of 4 in the inbox; FAIL = 3+ of 4 in spam; WATCH = all
+    4 answered Inbox/Spam with 2-3 in the inbox. Not judged, so never acted on: a test that sent a number
+    other than 4 (UNKNOWN), or a seed still pending or BOUNCED (INCOMPLETE; a bounce at a seed address is
+    the seed's problem, not the sender's)."""
+    inbox, spam, bounced = landed.count("Inbox"), landed.count("Spam"), landed.count("BOUNCED")
+    sent = sum(1 for x in landed if x != "NOT_SENT")
+    if landed and not sent:
         v = NOT_SENT
-    elif reported < MIN_REPORTED:
+    elif sent != PASS_SEEDS:
         v = UNKNOWN
-    elif inbox <= FAIL_AT_MOST:
+    elif spam >= FAIL_SPAM:
         v = FAIL
-    elif inbox == reported and inbox >= PASS_SEEDS:
+    elif inbox + spam < sent:
+        v = INCOMPLETE
+    elif inbox == sent:
         v = PASS
     else:
         v = WATCH
-    return {"inbox": inbox, "reported": reported, "sent": sum(1 for x in landed if x != "NOT_SENT"), "verdict": v}
+    return {"inbox": inbox, "reported": inbox + spam, "sent": sent, "bounced": bounced, "verdict": v}
 
 
 def combine(google: str, microsoft: str) -> str:
@@ -158,9 +183,9 @@ def summarise(rows: list[dict]) -> dict[str, dict]:
 
 
 def held_providers(night: dict[str, dict], exclude: set[str] = frozenset()) -> set[str]:
-    """Providers where at least 80% of one night's judged inboxes (10+) were below 4 of 4: a seed or
-    test problem (one dead seed costs every sender a seed) is likelier than every sender going bad
-    at once. ``exclude``: inboxes already known bad, which would push a good night toward a hold."""
+    """Providers where at least 80% of one night's (or one test file's) judged inboxes (10+) were below
+    4 of 4: a seed or test problem (one dead seed costs every sender a seed) is likelier than every sender
+    going bad at once. ``exclude``: inboxes already known bad, which would push a good night toward a hold."""
     held = set()
     for p in ("google", "microsoft"):
         judged = [s[p]["verdict"] for mb, s in night.items()
@@ -191,6 +216,14 @@ def merge_results(results: list[dict], new: list[dict]) -> list[dict]:
 
 # --- decisions ---------------------------------------------------------------------
 
+def two_weeks_running(a: dict, b: dict) -> bool:
+    """a then b count as two weeks running: both Monday (weekly) tests from new files, 6+ days apart.
+    A one-off midweek test, or a history file, never pairs (audit PLACEMENT-10)."""
+    if a.get("history") or b.get("history") or not (is_weekly_night(a["night"]) and is_weekly_night(b["night"])):
+        return False
+    return (date.fromisoformat(b["night"]) - date.fromisoformat(a["night"])).days >= RETURN_GAP_DAYS
+
+
 def decide(results: list[dict], pulled: dict | None) -> dict:
     """results: oldest first, each {night, verdict, history}. pulled: {on: date} if the bot pulled it.
     Only a result from a new file (not history) can start an action."""
@@ -211,7 +244,9 @@ def decide(results: list[dict], pulled: dict | None) -> dict:
     if last["verdict"] == FAIL:
         return {"action": PULL, "why": f"failed {last['night']}"}
     if last["verdict"] == WATCH and len(judged) >= 2 and judged[-2]["verdict"] in (WATCH, FAIL):
-        return {"action": PULL, "why": f"below 4 of 4 two tests running ({judged[-2]['night']}, {last['night']})"}
+        if two_weeks_running(judged[-2], last):
+            return {"action": PULL, "why": f"below 4 of 4 two weeks running ({judged[-2]['night']}, {last['night']})"}
+        return {"action": None, "why": "watch; the result before it is not last week's Monday test"}
     return {"action": None, "why": last["verdict"].lower()}
 
 
@@ -250,15 +285,22 @@ def last_monday(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
+def dt_missing(dt_tests: dict[str, list[str]], tested: set[str]) -> list[str]:
+    """The DT test campaigns (name -> sender emails) none of whose inboxes has a result: each one's CSV
+    was not downloaded (or its test did not run)."""
+    return sorted(name for name, emails in dt_tests.items() if emails and not set(emails) & tested)
+
+
 def reminder_due(now_ist: tuple[date, int], nights_in: set[str], reminded: set[str],
-                 since: str = "") -> str | None:
-    """From Tuesday 12:00 IST (the pipeline doc's upload time), the Monday whose results never came
-    in; once per Monday, and only for Mondays from ``since`` (the job's first run) on."""
+                 since: str = "", missing: list[str] | None = None) -> str | None:
+    """From Tuesday 12:00 IST (the pipeline doc's upload time), the Monday whose results never came in,
+    or whose expected DT tests (``missing``) did not all come in; once per Monday, and only for Mondays
+    from ``since`` (the job's first run) on."""
     today, hour = now_ist
     mon = last_monday(today)
     if (today - mon).days < 1 or ((today - mon).days == 1 and hour < 12):
         return None
     night = mon.isoformat()
-    if night < since or night in reminded or any(n >= night for n in nights_in):
+    if night < since or night in reminded or (any(n >= night for n in nights_in) and not missing):
         return None
     return night
