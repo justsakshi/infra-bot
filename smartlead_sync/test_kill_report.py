@@ -122,8 +122,8 @@ def test_without_bills_no_bill_text():
 def test_nothing_to_take_out():
     facts = {"a@ok.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 0)]}}
     head, parts = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY)
-    assert head == ["✅ Kill warnings, 13 Oct: no domain is landing in spam"]
-    assert parts[-1].startswith("_" + RULE)
+    assert head == ["Kill warnings, 13 Oct: no classic strikes"]          # no green tick: classic can't clear
+    assert parts[-1].startswith("_" + RULE) and kp.EARLY in parts[-1]
 
 
 def test_no_green_tick_when_most_inboxes_were_not_tested():
@@ -131,7 +131,7 @@ def test_no_green_tick_when_most_inboxes_were_not_tested():
     facts = {"a@ok.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 0)]},
              "b@n.com": {"client": "Melior", "tests": []}, "c@n.com": {"client": "Melior", "tests": []}}
     head, _ = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY)
-    assert head == ["⚠️ Kill warnings, 13 Oct: none of the 1 tested inbox is landing in spam; 2 inboxes have no recent test"]
+    assert head == ["⚠️ Kill warnings, 13 Oct: no classic strikes in the 1 tested inbox; 2 inboxes have no recent classic test"]
 
 
 def test_none_sending_says_wait_for_the_bill():
@@ -166,3 +166,46 @@ def test_bill_read_errors_are_not_called_missing_inboxes():
     head, parts = kp.format_report(_build(), [], TODAY, BILLS, bill_errors=["ScaledMail: 429"])
     assert "Bill dates may be missing (could not read ScaledMail: 429)" in head
     assert not any("inboxes there are missing" in h for h in head)
+
+
+def _bl(listed=(), read=True, domains=3, unknown=(), day="2026-10-12"):
+    return {"read": read, "domains": domains, "listed": {d: ["Spamhaus DBL"] for d in listed},
+            "listed_dates": [day] if listed else [], "checked_dates": [day], "unknown": list(unknown), "notes": {}}
+
+
+def test_a_listed_domain_takes_away_the_all_clear():
+    # 3 Nov: "no domain is landing in spam" while 18 of the account's domains were on Spamhaus DBL
+    facts = {"a@ok.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 0)]}}
+    head, parts = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY,
+                                   blocklist={"Melior": _bl(["x.com", "y.com"]), "Bettrdata": _bl()})
+    assert head == ["⚠️ Kill warnings, 13 Oct: no classic strikes",
+                    "Also 2 domains on Spamhaus DBL or URIBL (check of 12 Oct): Melior 2"]
+    assert "*On Spamhaus DBL or URIBL* (check of 12 Oct)\n• Melior: x.com, y.com" in parts
+    assert parts[-1].startswith("_" + RULE)
+
+
+def test_unreadable_blocklist_is_said_not_skipped():
+    facts = {"a@ok.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 0)]}}
+    head, _ = kp.format_report(kp.build(facts, TODAY, {}), [], TODAY, blocklist={"Melior": _bl(read=False)})
+    assert head == ["Kill warnings, 13 Oct: no classic strikes",
+                    "Blocklist status unknown: could not read the blocklist checks."]
+
+
+def test_clean_blocklist_adds_nothing_and_kills_still_lead():
+    head, _ = kp.format_report(_build(), [], TODAY, BILLS, blocklist={"Melior": _bl()})
+    assert head[0] == "🚨 Kill warnings, 13 Oct: 6 domains are landing in spam, stop using them" and len(head) == 2
+
+
+def test_blocklist_read_uses_each_clients_domains(monkeypatch):
+    from smartlead import classic_blocklist as cb
+    seen = {}
+
+    def read_latest(domains, today, collection=None):
+        seen["domains"] = set(domains)
+        return {"x.com": {"domain": "x.com", "date": "2026-10-12", "listed_on": ["URIBL (127.0.0.2)"]}}
+    monkeypatch.setattr(cb, "read_latest", read_latest)
+    facts = {"a@x.com": {"client": "Melior"}, "b@y.com": {"client": "Bettrdata"},
+             "c@z.com": {"client": "Belardi Wong"}}
+    out = kp._blocklists(facts, TODAY)
+    assert seen["domains"] == {"x.com", "y.com"}                     # past client left out
+    assert out["Melior"]["listed"] == {"x.com": ["URIBL"]} and out["Bettrdata"]["unknown"] == ["y.com"]

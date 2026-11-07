@@ -9,7 +9,7 @@ PROV = {"g.com": "Google", "o.com": "Outlook"}
 
 
 def precise_leads():
-    """Precise Leads, 13 Oct: all 30 mailboxes land in the inbox."""
+    """Precise Leads, 13 Oct: all 30 mailboxes reached the inbox at the seeds."""
     senders = {f"m{i}@pl{i // 3}.com": [{"seed": "x@g.com", "folder": "Inbox"},
                                          {"seed": "y@o.com", "folder": "Inbox"}] for i in range(30)}
     return build_report(senders, {e: "GMAIL" for e in senders}, lambda d: PROV.get(d, "other"))
@@ -46,19 +46,21 @@ def bettrdata():
     return {"inboxes": inboxes, "domains": domains, "pairs": pairs}
 
 
-def test_all_clear_headline_is_one_line():
+def test_all_clear_headline_is_one_line_without_a_green_tick():
     head, parts = format_slack("Precise Leads", precise_leads(), ["t"], "2026-10-13")
-    assert head == ["✅ Precise Leads, 13 Oct: all 30 mailboxes land in the inbox"]
-    assert len(parts) == 1 and "Where the test emails landed" in parts[0]
-    assert "Google → Google: 0 of 30 in spam (0%)" in parts[0]
+    assert head == ["Classic seed test (early warning, not proof), Precise Leads, 13 Oct: no mailbox flagged (30 tested)"]
+    assert len(parts) == 2 and "Where the test emails landed" in parts[0]
+    assert "Google → Google (Smartlead's own seeds): 0 of 30 in spam (0%)" in parts[0]
+    assert parts[1].startswith("_Early warning only") and "does not clear a mailbox" in parts[1]
+    assert "✅" not in "\n".join(head + parts)
 
 
 def test_spam_headline_counts_and_routes_over_5_percent():
     head, _ = format_slack("Bettrdata", bettrdata(), ["t"], "2026-10-13")
     # spam mailboxes still in live campaigns: act today (same rule as kill warnings)
-    assert head[0] == "\U0001f6a8 Bettrdata, 13 Oct: 11 of 71 mailboxes in spam (3 domains in spam)"
+    assert head[0] == "\U0001f6a8 Classic seed test (early warning, not proof), Bettrdata, 13 Oct: 11 of 71 mailboxes flagged (3 domains in spam)"
     assert head[1] == "3 still in live campaigns"
-    assert head[2] == "Google→Google 16% spam · Outlook→Google 14%"
+    assert head[2] == "Google→Google 16% spam · Outlook→Google 14% (Google = Smartlead's own seeds)"
     assert len(head) <= 4
     assert not any(EMAIL.search(l) for l in head), "no mailbox address in the channel message"
 
@@ -76,12 +78,14 @@ def test_every_spam_mailbox_is_in_the_thread_with_its_action():
 
 def test_thread_order_mailboxes_domains_routes():
     _, parts = format_slack("Bettrdata", bettrdata(), ["t"], "2026-10-13")
-    assert len(parts) == 3
-    assert parts[0].startswith("*Mailboxes in spam (11)*")
+    assert len(parts) == 4
+    assert parts[0].startswith("*Flagged mailboxes (11)*")
     assert "a1.com, a2.com, a3.com" in parts[1] and "s1.com, s2.com, s3.com" in parts[1]
     assert parts[1].index("out of new campaigns") < parts[1].index("in spam")
-    assert "Google → Google: 43 of 268 in spam (16%)" in parts[2]
-    assert "Outlook → Google: 16 of 113 in spam (14%)" in parts[2]
+    assert "Google → Google (Smartlead's own seeds): 43 of 268 in spam (16%)" in parts[2]
+    assert "Outlook → Google (Smartlead's own seeds): 16 of 113 in spam (14%)" in parts[2]
+    assert "Google → Outlook: 0 of 247 in spam (0%)" in parts[2]
+    assert parts[3].startswith("_Early warning only")
 
 
 def test_rule_text_said_once():
@@ -96,7 +100,7 @@ def test_spam_but_none_in_a_live_campaign_is_a_warning():
     for i in list(rep["inboxes"].values())[:40]:
         i.update(status="bad", pct=10.0)
     head, _ = format_slack("Bettrdata", rep, ["t"], "2026-10-13")
-    assert head[0].startswith("⚠️ Bettrdata, 13 Oct:") and "live campaigns" not in "\n".join(head)
+    assert head[0].startswith("⚠️ Classic seed test (early warning, not proof), Bettrdata, 13 Oct:") and "live campaigns" not in "\n".join(head)
 
 
 def test_no_route_line_when_all_routes_under_5_percent():
