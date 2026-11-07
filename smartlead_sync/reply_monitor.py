@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
-"""Per-domain reply-rate early warning (daily, read-only).
+"""Reply check per sending domain (daily 13:00 IST, read-only on Smartlead).
 
-Pulls per-mailbox stats for every ACTIVE campaign, aggregates sent/replies
-per SENDING DOMAIN, and alerts when a domain's reply rate falls >30% below
-its own trailing baseline (leading indicator — fires ~48h before opens/
-bounces move) or breaks the 1% rule.
+Each day: read every ACTIVE campaign's per-sender totals, store one snapshot per sending domain (with a
+per-campaign breakdown) in Mongo domain_reply_stats, then judge each domain's last 14 days against the
+reply rate of the other domains in its campaigns (smartlead/reply_stats.py has the rule and why).
 
-Endpoint verified LIVE on 2026-07-08 (Task 4 Step 1) — see
-smartlead/api.py::get_campaign_mailbox_statistics and
-smartlead/reply_stats.py for the exact path + field names checked.
-
-IMPORTANT: Smartlead's mailbox-statistics endpoint returns CUMULATIVE
-campaign-lifetime totals, not daily counts. This job stores one cumulative
-snapshot per domain per day, then computes DAILY DELTAS by diffing
-consecutive snapshots before handing anything to evaluate_alerts() — summing
-raw cumulative snapshots across days (the original design) would n-count
-the same sends and badly distort the baseline. A domain's first-ever
-snapshot has no prior cumulative to diff against, so it contributes zero
-delta (not a false spike) until the next run."""
+What it says, behind REPLY_MONITOR_POST=on (off by default, as before):
+  * any day: a domain that newly reached ALERT, and "Not checked today: <client>" for an account it
+    could not read;
+  * Mondays: the weekly summary, every client, every judged domain counted.
+Everything is printed to the log as well. Report only: it never pauses or changes anything."""
 from __future__ import annotations
 
 import asyncio
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 if sys.platform == "win32":
     try:
@@ -32,16 +24,18 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+from smartlead import reply_stats as rs
 from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.config import HEALTH_HISTORY_DB, REPLY_STATS_COLLECTION
-from smartlead.reply_stats import aggregate_domain_stats, evaluate_alerts
 
 try:
     from pymongo import MongoClient, UpdateOne
     from pymongo.errors import PyMongoError
 except ImportError:  # pragma: no cover
     MongoClient = None
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _col():
@@ -64,38 +58,100 @@ def _col():
         return None
 
 
-async def _fleet_domain_stats() -> dict[str, dict]:
-    """{domain: {sent, replies, client}} across all ACTIVE campaigns."""
+def _why(exc: Exception, key: str = "") -> str:
+    """Status and Smartlead's short message only (the request URL holds the key)."""
+    import httpx
+    from smartlead.notify import redact
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            msg = str(exc.response.json().get("message") or "")
+        except Exception:  # noqa: BLE001 - not JSON: the raw text, short
+            msg = ""
+        msg = " ".join((msg or exc.response.text).split())[:80]
+        msg = msg.replace(key, "<key>") if key else msg
+        return redact(f"HTTP {exc.response.status_code} {msg}".strip())
+    return type(exc).__name__
+
+
+def clients_of(account: str) -> str:
+    """Who an account's domains belong to, for a "Not checked today" line."""
+    from smartlead.report_sheet import client_label
+    if account.strip().lower().replace("_", " ") == "precise leads":
+        return "Precise Leads and Melior"
+    return client_label(account, None)
+
+
+async def collect() -> tuple[dict[str, dict], dict[str, str]]:
+    """Today's snapshot {domain: doc} across all ACTIVE campaigns, and {account: why} for accounts not read.
+    An account is merged only when every one of its campaigns was read, so a half-read account never
+    looks like a domain that stopped sending."""
+    from smartlead.client_filter import is_past_client_campaign
+    from smartlead.report_sheet import client_label
     fleet: dict[str, dict] = {}
+    unread: dict[str, str] = {}
     for acc in discover_accounts():
+        mine: dict[str, dict] = {}
         try:
             async with SmartleadClient(acc.api_key, acc.name) as c:
-                camps = [x for x in await c.list_campaigns()
-                         if str(x.get("status", "")).upper() == "ACTIVE"]
+                camps = [x for x in await c.list_campaigns() or []
+                         if str(x.get("status", "")).upper() == "ACTIVE" and not is_past_client_campaign(x)]
                 for camp in camps:
                     rows = await c.get_campaign_mailbox_statistics(str(camp["id"]))
-                    for dom, s in aggregate_domain_stats(rows).items():
-                        d = fleet.setdefault(dom, {"sent": 0, "replies": 0,
-                                                   "client": acc.name})
-                        d["sent"] += s["sent"]
-                        d["replies"] += s["replies"]
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [ReplyMon] {acc.name} failed: {exc}")
-    return fleet
+                    rs.merge_campaign(mine, camp["id"], client_label(acc.name, camp.get("client_id")), acc.name,
+                                      rs.aggregate_domain_stats(rows))
+        except Exception as exc:  # noqa: BLE001 - one dead account must not hide the others
+            unread[acc.name] = _why(exc, acc.api_key)
+            print(f"  [ReplyMon] Not checked today: {clients_of(acc.name)} ({unread[acc.name]})")
+            continue
+        for dom, doc in mine.items():
+            if dom in fleet:                             # the same domain in two accounts: keep both totals
+                for k in rs.COUNTS:
+                    fleet[dom][k] += doc[k]
+                fleet[dom]["campaigns"].update(doc["campaigns"])
+            else:
+                fleet[dom] = doc
+    return fleet, unread
 
 
-def _yesterdays_cumulative(col, dom: str, yesterday: str) -> dict:
-    """Most recent stored cumulative snapshot for `dom` on or before
-    `yesterday`. {} if none on record (first-ever run for this domain)."""
+def legacy_client(doc: dict) -> dict:
+    """An older snapshot (no "account" field) has the account name as its client; give it the client label
+    the new snapshots use (the latest snapshot of a domain decides its client anyway)."""
+    if "account" in doc:
+        return doc
+    from smartlead.report_sheet import client_label
+    acc = str(doc.get("client") or "")
+    return {**doc, "account": acc, "client": client_label(acc, None) if acc else ""}
+
+
+def _history(col, today: date) -> list[dict] | None:
+    """Stored snapshots before today, or None when there is no history to read (nothing can be judged)."""
     if col is None:
-        return {}
+        return None
+    since = (today - timedelta(days=rs.WINDOW_DAYS + rs.LOOKBACK_DAYS)).isoformat()
     try:
-        doc = col.find_one({"domain": dom, "date": {"$lte": yesterday}},
-                           sort=[("date", -1)])
-        return doc or {}
+        return [legacy_client(d) for d in col.find({"date": {"$gte": since, "$lt": today.isoformat()}}, {"_id": 0})]
     except PyMongoError as exc:
-        print(f"  [ReplyMon] Mongo read failed for {dom}: {exc}")
-        return {}
+        print(f"  [ReplyMon] Mongo read failed: {exc}")
+        return None
+
+
+def prior_verdicts(history: list[dict]) -> dict[str, str]:
+    """{domain: verdict on its last judged day before today}."""
+    out: dict[str, tuple[str, str]] = {}
+    for d in history:
+        if d.get("verdict") and d["date"] > out.get(d["domain"], ("", ""))[0]:
+            out[d["domain"]] = (d["date"], d["verdict"])
+    return {k: v for k, (_, v) in out.items()}
+
+
+# ── Slack text ──────────────────────────────────────────────────────────────
+
+def _day(d: date) -> str:
+    return f"{d.day} {d:%b}"
+
+
+def _n(k: int, one: str, many: str) -> str:
+    return f"{k:,} {one if k == 1 else many}"
 
 
 def _alert_line(dom: str, client: str, alert: str) -> str:
@@ -103,101 +159,183 @@ def _alert_line(dom: str, client: str, alert: str) -> str:
     return f"• *{dom}*" + (f" ({client})" if client else "") + f": {alert}"
 
 
-def _alert_parts(alert_lines: list[str]) -> tuple[list[str], list[str]]:
-    """(headline_lines, thread_parts). Up to 3 alerts sit in the headline; a
-    longer list goes in the thread (all of it, split by post_with_thread)."""
+_REFERENCE = {"campaigns": "the other domains in its campaigns", "client": "the client's other domains",
+              "mixed": "its campaigns' other domains and the client's"}
+
+
+def verdict_text(v: dict, days: int = rs.WINDOW_DAYS) -> str:
+    """'1 reply on 304 sends in 14 days, 7.5 expected at the reply rate of the other domains in its
+    campaigns (0.13x)'. Names the reference actually used; no '(0.0x)' for zero replies."""
+    ratio = f" ({v['ratio']}x)" if v["observed"] and v.get("ratio") is not None else ""
+    return (f"{_n(v['observed'], 'reply', 'replies')} on {_n(v['judged_sent'], 'send', 'sends')} in {days} days, "
+            f"{v['expected']} expected at the reply rate of {_REFERENCE.get(v.get('reference'), 'the other domains')}"
+            f"{ratio}")
+
+
+def _alert_parts(alert_lines: list[str], today: date | None = None, note: str = "") -> tuple[list[str], list[str]]:
+    """(headline_lines, thread_parts). The headline is at most 4 lines: the title, the note if any, then the
+    alerts if they fit; a longer list goes in the thread (all of it, split by post_with_thread)."""
     n = len(alert_lines)
-    head = [f"⚠️ Reply-rate alert: {n} drop{'s' if n != 1 else ''}, "
-            "earliest deliverability warning"]
-    if n <= 3:
+    when = f", {_day(today)}" if today else ""
+    head = [f"⚠️ Reply-rate alert{when}: {n} drop{'s' if n != 1 else ''}, "
+            f"{'a sending domain' if n == 1 else 'sending domains'} with far fewer replies than expected "
+            f"over {rs.WINDOW_DAYS} days"]
+    if note:
+        head.append(note)
+    if n <= 4 - len(head):
         return head + alert_lines, []
-    return head + ["Pause or investigate per the daily P0 flow; the list is in the thread."], \
-        ["\n".join(alert_lines)]
+    return head + ["The list is in the thread."], ["\n".join(alert_lines)]
 
 
-async def main() -> None:
-    today = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
-    fleet = await _fleet_domain_stats()
-    print(f"[ReplyMon] collected stats for {len(fleet)} domain(s)")
+def unread_line(unread: dict[str, str]) -> str:
+    return "Not checked today: " + "; ".join(f"{clients_of(a)} ({why})" for a, why in sorted(unread.items()))
 
-    col = _col()
 
-    # evaluate_alerts needs DAILY deltas, not Smartlead's cumulative
-    # campaign-lifetime totals (raw `fleet` values). Convert each domain's
-    # cumulative snapshot into today's delta by diffing against the most
-    # recent stored cumulative snapshot, BEFORE writing today's own
-    # cumulative snapshot (order matters: read prior state first).
-    alerts_total = 0
-    alert_lines: list[str] = []
-    baseline_start = (date.today() - timedelta(days=14)).isoformat()
-    for dom, cur in sorted(fleet.items()):
-        prior = _yesterdays_cumulative(col, dom, yesterday)
-        delta_sent = max(0, cur["sent"] - int(prior.get("sent", 0) or 0))
-        delta_replies = max(0, cur["replies"] - int(prior.get("replies", 0) or 0))
-        # first-ever snapshot for this domain: no prior cumulative to diff
-        # against, so there's no meaningful "today's activity" yet -> skip
-        # alerting on it (avoids a false alert seeded by lifetime totals).
-        current_delta = ({"sent": delta_sent, "replies": delta_replies}
-                         if prior else {"sent": 0, "replies": 0})
+HOW = (f"How this is judged: each sending domain's replies over the last {rs.WINDOW_DAYS} days are compared with "
+       "the reply rate of the other domains in the same campaigns, so a weak list or weak copy does not count "
+       "against the domain. Where there is not enough campaign data, the client's other domains are used. "
+       "ALERT: this few replies would happen by chance less than 1 time in 90. WATCH: under "
+       f"{int(rs.WATCH_RATIO * 100)}% of expected, and less than 1 time in 10 by chance. Domains with under "
+       f"{rs.MIN_SENT} sends are not judged.\n\n"
+       "Far fewer replies can mean the domain's mail is going to spam for some recipients. Check the domain in "
+       "the latest Smart Delivery v2 test before pulling it.\n\n"
+       "Report only: nothing was paused or changed.")
 
-        history: list[dict] = []
-        if col is not None:
-            try:
-                history = list(col.find(
-                    {"domain": dom, "date": {"$gte": baseline_start, "$lte": yesterday}},
-                    sort=[("date", 1)]))
-            except PyMongoError as exc:
-                print(f"  [ReplyMon] Mongo read failed for {dom}: {exc}")
-        # history docs are cumulative snapshots too -> diff consecutive pairs
-        # into daily deltas so evaluate_alerts sees the same units as `cur`.
-        daily_history: list[dict] = []
-        for prev_doc, next_doc in zip(history, history[1:]):
-            daily_history.append({
-                "sent": max(0, int(next_doc.get("sent", 0) or 0) - int(prev_doc.get("sent", 0) or 0)),
-                "replies": max(0, int(next_doc.get("replies", 0) or 0) - int(prev_doc.get("replies", 0) or 0)),
-            })
 
-        for alert in evaluate_alerts(dom, current_delta, daily_history):
-            alerts_total += 1
-            print(f"  [ALERT] {dom} ({cur.get('client', '')}): {alert}")
-            alert_lines.append(_alert_line(dom, cur.get("client", ""), alert))
+def daily_parts(verdicts: dict[str, dict], fresh: list[str], unread: dict[str, str],
+                today: date) -> tuple[list[str], list[str]] | None:
+    """Any day: new ALERTs and unread accounts. None when there is nothing to say."""
+    note = unread_line(unread) if unread else ""
+    if fresh:
+        lines = [_alert_line(d, verdicts[d]["client"], verdict_text(verdicts[d])) for d in fresh]
+        head, thread = _alert_parts(lines, today, note)
+        return head, thread + [HOW]
+    if unread:
+        return [f"⚠️ Reply check, {_day(today)}: {_n(len(unread), 'Smartlead account', 'Smartlead accounts')} "
+                "not read", note], []
+    return None
 
-    if col is not None and fleet:
-        # store today's CUMULATIVE snapshot (as Smartlead reports it) after
-        # alert evaluation, so tomorrow's diff-against-prior sees today's raw
-        # totals — daily_history is derived on read, not stored pre-diffed.
-        ops = [UpdateOne({"domain": d, "date": today},
-                         {"$set": {"domain": d, "date": today, **s}}, upsert=True)
-               for d, s in fleet.items()]
-        try:
-            col.bulk_write(ops, ordered=False)
-        except PyMongoError as exc:
-            print(f"  [ReplyMon] Mongo write failed: {exc}")
 
-    if alerts_total == 0:
-        print("[ReplyMon] OK - no reply-rate alerts.")
+def weekly_parts(verdicts: dict[str, dict], window: dict[str, dict], unread: dict[str, str],
+                 today: date, fresh: list[str] = ()) -> tuple[list[str], list[str]]:
+    """Mondays: every client, every domain sending today, in one count that adds up. An ALERT that is new
+    today is also in the headline when it fits, as it would be on any other day."""
+    totals = rs.client_totals(window)
+    by_client: dict[str, list[str]] = {}
+    for d, v in verdicts.items():
+        by_client.setdefault(v["client"], []).append(d)
+    count = {k: sum(v["verdict"] == k for v in verdicts.values()) for k in (rs.ALERT, rs.WATCH)}
+    n = len(verdicts)
+    title = (f"{'⚠️ ' if count[rs.ALERT] else ''}Reply check, {rs.WINDOW_DAYS} days to {_day(today)}: "
+             f"{_n(n, 'sending domain', 'sending domains')}, {_n(count[rs.ALERT], 'alert', 'alerts')}, "
+             f"{count[rs.WATCH]} to watch")
+    head = [title] + ([unread_line(unread)] if unread else [])
+    if fresh and len(head) + len(fresh) <= 4:
+        head += [_alert_line(d, verdicts[d]["client"], f"new ALERT today, {verdict_text(verdicts[d])}") for d in fresh]
+    elif fresh:
+        head.append(f"New ALERT today: {_n(len(fresh), 'domain', 'domains')}, in the thread.")
+    blocks = []
+    for client in sorted(by_client):
+        doms = sorted(by_client[client])
+        t = totals.get(client, {"sent": 0, "replies": 0})
+        rate = f" ({100 * t['replies'] / t['sent']:.1f}%)" if t["sent"] else ""
+        lines = [f"*{client or 'No client'}*: {_n(t['sent'], 'send', 'sends')}, "
+                 f"{_n(t['replies'], 'reply', 'replies')}{rate} in {rs.WINDOW_DAYS} days, "
+                 f"{_n(len(doms), 'domain', 'domains')} sending today"]
+        for verdict in (rs.ALERT, rs.WATCH):
+            lines += [_alert_line(d, "", f"{verdict}, {verdict_text(verdicts[d])}")
+                      for d in doms if verdicts[d]["verdict"] == verdict]
+        ok = sum(verdicts[d]["verdict"] == rs.OK for d in doms)
+        few = sum(verdicts[d]["verdict"] == rs.TOO_FEW for d in doms)
+        noref = sum(verdicts[d]["verdict"] == rs.NO_REFERENCE for d in doms)
+        rest = [f"{ok} in line with the other domains"] if ok else []
+        rest += [f"{few} under {rs.MIN_SENT} sends (not judged)"] if few else []
+        rest += [f"{noref} with too few sends on other domains to compare (not judged)"] if noref else []
+        if rest:
+            lines.append("• " + ", ".join(rest))
+        blocks.append("\n".join(lines))
+    if not blocks:
+        blocks.append("No domain sent from an ACTIVE campaign today.")
+    return head, ["\n\n".join(blocks), HOW]
+
+
+# ── the job ─────────────────────────────────────────────────────────────────
+
+def _post(head: list[str], thread: list[str]) -> bool | None:
+    """Post when REPLY_MONITOR_POST=on. True posted, False failed, None not asked to post."""
+    from smartlead.notify import infra_channel, post_with_thread
+    token = os.getenv("SLACK_BOT_TOKEN", "")
+    # Off unless switched on (audit 7 Nov 2026: the old one-day rule was 89 noise alerts in 91). REPLY_MONITOR_POST=on posts.
+    if os.getenv("REPLY_MONITOR_POST", "").strip().lower() != "on":
+        token = ""
+    if not token:
+        return None
+    return bool(post_with_thread(token, infra_channel("REPLY_MONITOR_CHANNEL", "HEALTH_NOTIFY_CHANNEL"), head, thread))
+
+
+def run(today: date, fleet: dict[str, dict], unread: dict[str, str], history: list[dict] | None,
+        weekly: bool) -> tuple[dict[str, dict], list[tuple[list[str], list[str]]]]:
+    """Pure: verdicts for today's domains, and the posts to make (headline lines, thread parts).
+    history None = Mongo could not be read: nothing is judged, and that is said rather than a clean week."""
+    if history is None:
+        head = [f"⚠️ Reply check, {_day(today)}: nothing judged today",
+                "No stored history to compare with (Mongo not reachable)."]
+        return {}, [(head + ([unread_line(unread)] if unread else []), [])]
+    stamp = today.isoformat()
+    todays = [{**doc, "date": stamp} for doc in fleet.values()]
+    window = rs.window_stats(history + todays, today)
+    verdicts = rs.judge(window, fleet)
+    fresh = rs.new_alerts(verdicts, prior_verdicts(history))
+    posts = []
+    if weekly:                                            # the weekly post names every ALERT, new or not
+        posts.append(weekly_parts(verdicts, window, unread, today, fresh))
     else:
-        print(f"[ReplyMon] {alerts_total} alert(s) - check the domains above "
-              "(pause/investigate per OPERATOR_PLAYBOOK daily P0 flow).")
-        # A reply-rate collapse is the EARLIEST warning this system produces —
-        # roughly 48h ahead of opens/bounces moving. Printing it to a cron log
-        # nobody reads wasted that lead time entirely, so push it to Slack.
-        # Silent when no channel is configured.
-        try:
-            from smartlead.config import HEALTH_NOTIFY_CHANNEL
-            from smartlead.notify import post_with_thread
-            token = os.getenv("SLACK_BOT_TOKEN", "")
-            # Off until the one-day rule is replaced: replayed over 21 days it raised 91 alerts, 89 of them noise
-            # (audit 7 Nov 2026). REPLY_MONITOR_POST=on posts them anyway.
-            if os.getenv("REPLY_MONITOR_POST", "").strip().lower() != "on":
-                token = ""
-            if token and HEALTH_NOTIFY_CHANNEL:
-                head, thread = _alert_parts(alert_lines)
-                post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, thread)
-        except Exception as exc:  # noqa: BLE001 - alerting must never break the job
-            print(f"  [ReplyMon] Slack alert failed (non-fatal): {exc}")
+        daily = daily_parts(verdicts, fresh, unread, today)
+        if daily:
+            posts.append(daily)
+    return verdicts, posts
+
+
+def _save(col, today: date, fleet: dict[str, dict], verdicts: dict[str, dict]) -> None:
+    if col is None or not fleet:
+        return
+    stamp = today.isoformat()
+    ops = []
+    for d, doc in fleet.items():
+        v = verdicts.get(d, {})
+        ops.append(UpdateOne({"domain": d, "date": stamp}, {"$set": {
+            **doc, "date": stamp, "verdict": v.get("verdict"), "window_sent": v.get("sent"),
+            "window_replies": v.get("replies"), "expected": v.get("expected"), "p": v.get("p")}}, upsert=True))
+    try:
+        col.bulk_write(ops, ordered=False)
+    except PyMongoError as exc:
+        print(f"  [ReplyMon] Mongo write failed: {exc}")
+
+
+async def main() -> int:
+    today = datetime.now(IST).date()
+    fleet, unread = await collect()
+    print(f"[ReplyMon] collected stats for {len(fleet)} domain(s)")
+    col = _col()
+    history = _history(col, today)
+    verdicts, posts = run(today, fleet, unread, history, weekly=today.weekday() == 0)
+    for d, v in verdicts.items():
+        if v["verdict"] in (rs.ALERT, rs.WATCH):
+            print(f"  [{v['verdict']}] {d} ({v['client']}): {verdict_text(v)}, p={v['p']}")
+    counts = {k: sum(v["verdict"] == k for v in verdicts.values())
+              for k in (rs.ALERT, rs.WATCH, rs.OK, rs.TOO_FEW, rs.NO_REFERENCE)}
+    print(f"[ReplyMon] {len(verdicts)} domain(s): " + ", ".join(f"{k} {n}" for k, n in counts.items()))
+    if unread:
+        print(f"[ReplyMon] {unread_line(unread)}")
+    _save(col, today, fleet, verdicts)
+    failed = False
+    for head, thread in posts:
+        print("[ReplyMon] post:\n" + "\n".join(head) + "\n---\n" + "\n---\n".join(thread))
+        if _post(head, thread) is False:
+            print("[ReplyMon] Slack post failed.")
+            failed = True
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
