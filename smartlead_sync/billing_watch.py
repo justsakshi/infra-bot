@@ -8,8 +8,10 @@ nowhere. READ-ONLY on the providers; remembers state in Mongo
     python billing_watch.py --dry      # print only (no post, no save)
     python billing_watch.py --json
 
-Posts to RENEWAL_REVIEW_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL). Rules:
-smartlead/billing_watch.py.
+Posts to RENEWAL_REVIEW_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL, else the infra
+channel). The state is saved only after Slack accepted the post, or when there
+was nothing to post: a refused alert goes out again next run (audit 7 Nov 2026).
+Exits 1 when the post was refused. Rules: smartlead/billing_watch.py.
 """
 from __future__ import annotations
 
@@ -116,28 +118,34 @@ def main() -> int:
             headline = [f"⚠️ Inbox billing watch, {today.day} {today:%b}"]
         headline.append(":warning: could not read: " + "; ".join(errors))
     text = "\n".join(headline) + ("\n\n" + "\n\n".join(thread) if thread else "")
-    posted = False
+    posted = saved = False
+    to_post = bool(text) and (any(e["event"] in bw.ALERT for e in events) or bool(errors))
     if not args.dry:
-        new_state = bw.remember(prev, rows, events, today)
-        for k, p in prev.items():          # keep unreadable providers' rows as they were
-            if k not in new_state and p["provider"] in failed:
-                new_state[k] = p
-        if col is not None:
-            col.update_one({"_id": STATE_ID}, {"$set": {"rows": new_state, "at": today.isoformat()}}, upsert=True)
-        records = bw.history_records(events, rows, today)
-        hist = _history_col() if records else None
-        if hist is not None:
-            hist.insert_many(records)
-        if text and (any(e["event"] in bw.ALERT for e in events) or errors):
-            from smartlead.notify import post_with_thread
+        if to_post:
+            from smartlead import notify
             token = os.getenv("SLACK_BOT_TOKEN", "")
-            from smartlead.notify import infra_channel
-            channel = infra_channel("RENEWAL_REVIEW_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
-            posted = bool(token and channel and post_with_thread(token, channel, headline, thread))
-    out = {"rows": len(rows), "events": events, "headline": headline, "thread": thread, "text": text, "errors": errors, "posted": posted,
-           "first_run": not prev, "mongo": col is not None}
+            channel = notify.infra_channel("RENEWAL_REVIEW_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
+            posted = bool(token and channel and notify.post_with_thread(token, channel, headline, thread))
+        if posted or not to_post:
+            # Only now is it told: save what was seen and alerted, and add the events to the bill history.
+            new_state = bw.remember(prev, rows, events, today)
+            for k, p in prev.items():          # keep unreadable providers' rows as they were
+                if k not in new_state and p["provider"] in failed:
+                    new_state[k] = p
+            if col is not None:
+                col.update_one({"_id": STATE_ID}, {"$set": {"rows": new_state, "at": today.isoformat()}}, upsert=True)
+            records = bw.history_records(events, rows, today)
+            hist = _history_col() if records else None
+            if hist is not None:
+                hist.insert_many(records)
+            saved = True
+        else:
+            print("  [billing-watch] Slack did not accept the post: state not saved, the same alerts go out next run",
+                  file=sys.stderr)
+    out = {"rows": len(rows), "events": events, "headline": headline, "thread": thread, "text": text, "errors": errors,
+           "posted": posted, "saved": saved, "first_run": not prev, "mongo": col is not None}
     print(json.dumps(out, default=str) if args.json else (text or f"No billing changes ({len(rows)} subscriptions / orders watched)."))
-    return 0
+    return 1 if (to_post and not args.dry and not posted) else 0
 
 
 if __name__ == "__main__":

@@ -16,6 +16,11 @@ addresses only through Smart Delivery, never to leads. Each add is read back.
     python dt_senders.py --gaps     # also: which scheduled tests miss inboxes (read-only)
     python dt_senders.py --apply    # attach; runs daily 06:00 IST, and DMs Manveen only about the
                                     #   inboxes it added (and campaigns it created) that run
+
+The DM is kept in Mongo (dt_senders.pending_dm) until Slack accepts it, so a failed DM goes out with the
+next run. Inboxes taken off the test campaigns, current-client domains outside the deliverability sheet
+(once each) and errors go to the infra channel (audit 7 Nov 2026: they were only printed). Exits 1 when
+a DM or post was refused.
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import date
 
 if sys.platform == "win32":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -40,6 +46,8 @@ except Exception:
 SAFE_STATUSES = {"PAUSED", "DRAFTED"}
 BATCH = 50
 DT_CAP = 50          # inboxes per DT campaign: one scheduled test each (Manveen, 15 Oct)
+PENDING_DM = "pending_dm"    # Mongo dt_senders: the DM's inboxes and campaigns until Slack accepts it
+UNTRACKED = "untracked"      # Mongo dt_senders: domains outside the sheet already reported
 
 
 def _dt_number(name: str) -> int:
@@ -176,6 +184,7 @@ async def apply(sl, p: dict, batch: int = BATCH) -> dict:
             await sl.remove_campaign_email_accounts(str(cid), gone[k:k + batch])
         still = await _on(sl, cid)
         out["dropped"] += sum(i not in still for i in gone)
+        out.setdefault("dropped_ids", {})[cid] = [i for i in gone if i not in still]
         out["missing"] += [f"{i} still on campaign {cid} after the drop" for i in gone if i in still]
     ids = {}
     for c in p.get("create") or []:
@@ -257,6 +266,73 @@ def new_inbox_text(gaps: list[dict], added: set[str], created: list[str]) -> str
             + "\n\n_The bot cannot edit scheduled tests in Smart Delivery, so these are for you to add._")
 
 
+def deliver_dm(gaps: list[dict], added: set[str], created: list[str], pending: dict, *, complete: bool,
+               send) -> tuple[bool | None, dict]:
+    """Send the DM about this run's inboxes and campaigns plus any kept from runs whose DM failed.
+    Returns (True / False = Slack accepted it or not, None = nothing to tell; what to keep for next run).
+    A kept inbox that no longer misses its test is dropped quietly, but only when every account was read
+    (``complete``): an unread account's gaps are unknown."""
+    added_all = set(added) | set(pending.get("added") or [])
+    created_all = list(dict.fromkeys(list(pending.get("created") or []) + list(created)))
+    text = new_inbox_text(gaps, added_all, created_all)
+    in_gaps = {e for g in gaps for e in g["add"]}
+    gap_camps = {g["campaign"] for g in gaps}
+    unshown = {"added": sorted(added_all - in_gaps) if not complete else [],
+               "created": [n for n in created_all if n not in gap_camps] if not complete else []}
+    if not text:
+        return None, unshown
+    if send(text):
+        return True, unshown
+    return False, {"added": sorted(added_all), "created": created_all}
+
+
+def infra_report(results: dict, known: set[str] | None, errors: list[str], dm_failed: bool,
+                 today: date) -> tuple[list[str], list[str], set[str] | None]:
+    """(headline, thread, every domain outside the sheet now) for the infra channel. ``results`` = per
+    account {dropped: ["email (campaign)"], untracked: {domain: {client, inboxes}}, error}. Domains outside
+    the sheet are told once (``known`` = already told; None = unknown, so none are told). Empty headline =
+    nothing to post. Pure."""
+    rows = [r for r in results.values() if isinstance(r, dict)]
+    drops = [d for r in rows for d in r.get("dropped") or []]
+    untracked: dict = {}
+    for r in rows:
+        untracked.update(r.get("untracked") or {})
+    now = set(untracked) if any("untracked" in r for r in rows) else None
+    new = sorted(d for d in untracked if known is not None and d not in known)
+    parts, thread = [], []
+    if drops:
+        parts.append(f"{_n(len(drops))} taken off")
+        thread.append("Taken off the DT test campaigns: their domain is not in the deliverability sheet, so they "
+                      "leave the weekly placement test:\n" + "\n".join(f"• {d}" for d in drops))
+    if new:
+        parts.append(f"{len(new)} domain{'s' if len(new) != 1 else ''} not in the deliverability sheet")
+        thread.append("In Smartlead for a current client but not in the deliverability sheet, so kept off the DT "
+                      "test campaigns. Add the domain to the sheet if we use it (each domain is told once):\n"
+                      + "\n".join(f"• {d} ({untracked[d]['client']}, {_n(untracked[d]['inboxes'])})" for d in new))
+    head = []
+    if parts or errors or dm_failed:
+        head.append(f"🧪 Test campaigns, {today.day} {today:%b}: " + (", ".join(parts) if parts else "could not finish"))
+        if errors:
+            names = sorted({e.split(":", 1)[0] for e in errors})
+            head.append(f"Could not finish: {', '.join(names)} (details in the thread)")
+            thread.append("Errors:\n" + "\n".join(f"• {e}" for e in errors))
+        if dm_failed:
+            head.append("The DM about new inboxes did not go out; it is kept and sent again next run.")
+    return head, thread, now
+
+
+def _state_col():
+    from smartlead.zapmail_asset_sync import _db
+    db = _db()
+    return db["dt_senders"] if db is not None else None
+
+
+def _post_infra(head: list[str], thread: list[str]) -> bool:
+    from smartlead import notify
+    token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    return bool(token and notify.post_with_thread(token, notify.infra_channel("DT_SENDERS_CHANNEL"), head, thread))
+
+
 async def _scheduled_tests(key: str) -> list[dict]:
     """Active scheduled (recurring) tests with their senders. Read-only, no credit."""
     import httpx
@@ -291,7 +367,7 @@ def _dm(text: str) -> bool:
         r = requests.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {token}"},
                           json={"channel": user, "text": redact(text)[:3900]}, timeout=15).json()
         return bool(r.get("ok"))
-    except Exception:  # noqa: BLE001 - tried again next run (the text is not saved as sent)
+    except Exception:  # noqa: BLE001 - kept in Mongo and tried again next run (deliver_dm)
         return False
 
 
@@ -323,7 +399,7 @@ def main() -> int:
     from smartlead.accounts import discover_accounts
     from smartlead.api import SmartleadClient
     from smartlead.client_filter import is_excluded_inbox
-    from smartlead.inbox_intake import CURRENT_ACCOUNTS
+    from smartlead.inbox_intake import CURRENT_ACCOUNTS, CURRENT_CLIENTS
     from smartlead.notify import redact
     from smartlead.report_sheet import client_label
     from smartlead.tracked import only_tracked, tracked_domains
@@ -334,8 +410,9 @@ def main() -> int:
 
     async def one(acc):
         async with SmartleadClient(acc.api_key, acc.name) as c:
+            listed = await c.list_email_accounts()
             boxes = [{"id": a["id"], "email": a.get("from_email"), "client": client_label(acc.name, a.get("client_id"))}
-                     for a in await c.list_email_accounts()
+                     for a in listed
                      if not is_excluded_inbox({"email": a.get("from_email") or "", "tags": a.get("tags", [])})]
             camps = await _campaigns(c, acc.name)
             p = plan(only_tracked(boxes, tracked), camps, drop_others=tracked is not None)
@@ -344,8 +421,19 @@ def main() -> int:
                    "would_remove": {names.get(k, k): len(v) for k, v in p["removes"].items()},
                    "would_drop": {names.get(k, k): len(v) for k, v in p["drops"].items()},
                    "would_create": [x["name"] for x in p["create"]], "problems": p["problems"]}
+            if tracked is not None:
+                unt: dict = {}
+                for b in boxes:
+                    d = str(b.get("email") or "").lower().split("@")[-1]
+                    if b["client"] in CURRENT_CLIENTS and d and d not in tracked:
+                        u = unt.setdefault(d, {"client": b["client"], "inboxes": 0})
+                        u["inboxes"] += 1
+                res["untracked"] = unt
             if args.apply and (p["adds"] or p["removes"] or p["drops"] or p["create"]):
                 res.update(await apply(c, p))
+                every = {int(a["id"]): str(a.get("from_email") or a["id"]) for a in listed}
+                res["dropped"] = [f"{every.get(int(i), i)} ({names.get(int(cid), cid)})"
+                                  for cid, ids in (res.get("dropped_ids") or {}).items() for i in ids]
             if args.apply or args.gaps:
                 emails = {int(a["id"]): str(a.get("from_email") or "").lower() for a in await c.list_email_accounts()}
                 camps_now = await _campaigns(c, acc.name)
@@ -363,17 +451,42 @@ def main() -> int:
             out[acc.name] = asyncio.run(one(acc))
         except Exception as exc:  # noqa: BLE001 - say so, keep the other account
             out[acc.name] = {"error": redact(str(exc))[:200]}
+    failed = False
     if args.apply:
         # DM only about inboxes added and campaigns created by THIS run (Manveen, 15 Oct: tell me
-        # about new inboxes; a standing gap is not repeated). `--gaps` prints the full list on demand.
+        # about new inboxes; a standing gap is not repeated), plus any whose DM did not go out.
+        # `--gaps` prints the full list on demand.
+        errors = [f"{n}: {r['error']}" for n, r in out.items() if isinstance(r, dict) and r.get("error")]
+        if tracked is None:
+            errors.append("deliverability sheet: unreadable, so every inbox was kept and none taken off")
         gaps = [g for r in out.values() if isinstance(r, dict) for g in r.get("gaps") or []]
         added = {e for r in out.values() if isinstance(r, dict) for e in r.get("new_on_dt") or []}
         created = [n for r in out.values() if isinstance(r, dict) for n in r.get("created") or []]
-        text = new_inbox_text(gaps, added, created)
-        if text:
-            out["dm_sent"] = _dm(text)
+        col = _state_col()
+        if col is None:
+            errors.append("Mongo: unavailable, so a failed DM is not kept and domains outside the sheet are not checked")
+        pending = (col.find_one({"_id": PENDING_DM}) or {}) if col is not None else {}
+        complete = not any(isinstance(r, dict) and r.get("error") for r in out.values())
+        sent, keep = deliver_dm(gaps, added, created, pending, complete=complete, send=_dm)
+        if sent is not None:
+            out["dm_sent"] = sent
+            failed |= not sent
+        if col is not None:
+            if keep["added"] or keep["created"]:
+                col.update_one({"_id": PENDING_DM}, {"$set": {**keep, "at": date.today().isoformat()}}, upsert=True)
+            elif pending:
+                col.delete_one({"_id": PENDING_DM})
+        known = set((col.find_one({"_id": UNTRACKED}) or {}).get("domains") or []) if col is not None else None
+        head, thread, now = infra_report(out, known, errors, sent is False, date.today())
+        posted = True
+        if head:
+            posted = out["infra_posted"] = _post_infra(head, thread)
+            failed |= not posted
+        if col is not None and now is not None and posted:
+            told = now if complete else now | (known or set())      # an unread account's domains stay known
+            col.update_one({"_id": UNTRACKED}, {"$set": {"domains": sorted(told)}}, upsert=True)
     print(json.dumps(out, indent=1, default=sorted))
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
