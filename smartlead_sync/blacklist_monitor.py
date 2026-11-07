@@ -1,23 +1,43 @@
 #!/usr/bin/env python3
-"""Blacklist monitor (plan §5.6). Weekly cron; read-only (no Smartlead writes).
+"""Blocklist monitor (plan §5.6). Weekly cron, Mondays 09:00 IST; read-only (no Smartlead writes).
 
-Checks every sending domain across all clients against the SERIOUS
-domain-reputation blacklists (Spamhaus DBL, SURBL, URIBL — configured in
-BLACKLIST_ZONES). Pay-to-delist noise lists (UCEProtect etc.) are deliberately
-not checked. Uses Google DNS-over-HTTPS, same as check_dns.py.
+Checks every sending domain of every client against the domain blocklists that
+matter (Spamhaus DBL, SURBL, URIBL: BLACKLIST_ZONES). Pay-to-delist lists
+(UCEProtect etc.) are deliberately not checked. Lookups go straight to each
+list's own name server, or through Google DNS-over-HTTPS when that server can't
+be used (each list's published test domain decides, every run).
 
-A domain is "listed" when {domain}.{zone} resolves to an A record. Results are
-printed (Slack-digest friendly) and upserted to Mongo (blacklist_checks) so the
-health workbook / trend queries can pick them up later.
+Every weekly run posts ONE summary to the infra channel (BLACKLIST_CHANNEL
+overrides it), clean or not (audit 7 Nov 2026, BLOCKLIST-1/3/4/8/9/10/12):
+
+    Blocklists 9 Nov: checked 40 of 40 domains · Spamhaus DBL 2 (1 new) · URIBL 0 · SURBL new 1 · unknown 0
+
+The thread names each listed domain's client (Melior vs Precise Leads from the
+inbox's client_id, not the Smartlead account), its inboxes, whether it sends in
+live campaigns, when it was first seen listed, and new vs ongoing, live senders
+first. SURBL shows only when new since the last check (SURBL listings tend to
+be long-running, and repeating them every week would be noise). A list that could not be read, or answered
+with an error code, is UNKNOWN, never clean. A Smartlead account that cannot be
+read still has its domains checked, from its last saved list, and is named as
+skipped. The run exits 1 when coverage is partial (an account skipped, a domain
+unknown) or the save or post failed, so the cron log shows a failure.
+
+Mongo blacklist_checks keeps one row per domain per day: {domain, date,
+listed_on, lookup_errors, inconclusive_zones, clients (Smartlead account names,
+as before), client_names, inboxes, unknown, run, source}.
 
 Usage:
-    python3 blacklist_monitor.py             # all client domains
-    python3 blacklist_monitor.py example.com # ad-hoc single domain
+    python3 blacklist_monitor.py                    # weekly run: save + post
+    python3 blacklist_monitor.py --dry-run          # weekly checks, print only
+    python3 blacklist_monitor.py a.com b.com        # by hand: print only
+    python3 blacklist_monitor.py a.com --save --post
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
+import re
 import sys
 from datetime import date
 
@@ -35,19 +55,32 @@ from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
 from smartlead.client_filter import is_excluded_inbox
 from smartlead.config import BLACKLIST_ZONES, BLACKLIST_COLLECTION, HEALTH_HISTORY_DB
+from smartlead.notify import day, infra_channel, redact
 from smartlead.processing import get_domain_from_email
+from smartlead.report_sheet import client_label
+from smartlead.v2_results import is_test_campaign
 
 try:
     from pymongo import MongoClient, UpdateOne
 except ImportError:  # pragma: no cover
     MongoClient = None
+    UpdateOne = None
 
 _DOH_URL = "https://dns.google/resolve"
 _CONCURRENCY = 10
+_RETRY_PAUSE_S = 1.0        # one retry per failed lookup, after this pause
 
-# DNSBL sentinel answers that mean "your resolver is blocked / invalid query",
-# NOT a listing (public resolvers like Google DoH trip these intermittently).
-_SENTINEL_IPS = {"127.0.0.1", "127.0.0.255", "127.255.255.254", "127.255.255.255"}
+# DNSBL answers that mean "query refused / invalid", NEVER a listing: Spamhaus
+# 127.255.255.252 (typo in the list name), .254 (query via a public resolver),
+# .255 (too many queries) and 127.0.1.255 (IP query to DBL); URIBL and SURBL
+# answer 127.0.0.1 to a refused resolver. Any of these makes the lookup an
+# ERROR, so the domain is UNKNOWN on that list, not clean (BLOCKLIST-12).
+_SENTINEL_IPS = {"127.0.0.1", "127.0.0.255", "127.0.1.255",
+                 "127.255.255.252", "127.255.255.254", "127.255.255.255"}
+
+
+def _is_error_answer(ip: str) -> bool:
+    return ip in _SENTINEL_IPS or ip.startswith("127.255.255.")
 
 # SURBL multi bitmask (last octet) -> which SURBL sub-list fired
 _SURBL_BITS = {8: "PH-phishing", 16: "MW-malware", 64: "ABUSE", 128: "CR-cracked"}
@@ -66,7 +99,7 @@ def _decode(zone: str, ip: str) -> str:
 
 
 async def _listed_ips(client: httpx.AsyncClient, domain: str, zone: str) -> list[str] | None:
-    """Listing answer IPs (sentinels filtered), [] = clean, None = lookup error."""
+    """Listing answer IPs, [] = clean, None = lookup error (an error-code answer included)."""
     try:
         resp = await client.get(_DOH_URL, params={"name": f"{domain}.{zone}", "type": "A"})
         resp.raise_for_status()
@@ -74,7 +107,11 @@ async def _listed_ips(client: httpx.AsyncClient, domain: str, zone: str) -> list
         if data.get("Status") == 3:  # NXDOMAIN = not listed
             return []
         ips = [a.get("data", "") for a in data.get("Answer", []) or [] if a.get("type") == 1]
-        return [ip for ip in ips if ip and ip not in _SENTINEL_IPS]
+        ips = [ip for ip in ips if ip]
+        if any(_is_error_answer(ip) for ip in ips):
+            print(f"  [Blacklist] {domain} @ {zone}: refused ({', '.join(ips)}) - unknown", file=sys.stderr)
+            return None
+        return ips
     except Exception as exc:  # noqa: BLE001
         print(f"  [Blacklist] lookup error {domain} @ {zone}: {exc}", file=sys.stderr)
         return None
@@ -154,9 +191,9 @@ async def _zone_ns_ip(client: httpx.AsyncClient, zone: str) -> str | None:
 
 async def _listed_ips_auth(ns_ip: str, domain: str, zone: str) -> list[str] | None:
     ips = await asyncio.to_thread(_udp_query_a, f"{domain}.{zone}", ns_ip)
-    if ips is None:
+    if ips is None or any(_is_error_answer(ip) for ip in ips):
         return None
-    return [ip for ip in ips if ip and ip not in _SENTINEL_IPS]
+    return [ip for ip in ips if ip]
 
 
 # Control domains each list PUBLISHES as permanently listed. If a zone's lookup
@@ -168,39 +205,36 @@ _CONTROLS = {
     "multi.uribl.com": "test.uribl.com",
 }
 
-# A zone's DoH path must pass EVERY control probe to be trusted for the run;
-# anything less means intermittent blocking and we use the authoritative NS.
+# The DoH fallback path must pass EVERY control probe to be trusted for the run.
 _CONTROL_PROBES: int = 3
 
 
 async def _pick_strategies(client: httpx.AsyncClient) -> dict[str, dict]:
-    """Per zone: {'mode': 'doh'|'auth', 'ns_ip': str|None} for the first lookup
+    """Per zone: {'mode': 'auth'|'doh', 'ns_ip': str|None} for the first lookup
     path whose control domain fires; mode 'broken' if neither works."""
     out: dict[str, dict] = {}
     for zone in BLACKLIST_ZONES:
         control = _CONTROLS.get(zone)
         if control:
-            # DoH answers for these zones are INTERMITTENT (measured 2026-07-10:
-            # dbltest.com resolved on 4 of 6 consecutive attempts, NXDOMAIN on
-            # the rest). One failed probe must not silently disable a zone, and
-            # one lucky probe must not certify a flaky path — retry before
-            # falling back, and prefer the stable authoritative path when DoH
-            # proves unreliable.
+            # The list's own name server FIRST. Public resolvers answer these
+            # lists intermittently (2026-07-10: dbltest.com on 4 of 6 DoH tries;
+            # 2026-11-07: 6 of 8, the rest NXDOMAIN), so three lucky probes
+            # used to certify DoH and a quarter of real listings then read as
+            # clean (a by-hand check of dbltest.com came back clean that day).
+            # The authoritative answer was the same on every try.
+            ns_ip = await _zone_ns_ip(client, zone)
+            if ns_ip and await _listed_ips_auth(ns_ip, control, zone):
+                out[zone] = {"mode": "auth", "ns_ip": ns_ip}
+                print(f"  [Blacklist] {zone}: using its authoritative NS {ns_ip}")
+                continue
             doh_hits = 0
             for _ in range(_CONTROL_PROBES):
                 if await _listed_ips(client, control, zone):
                     doh_hits += 1
             if doh_hits == _CONTROL_PROBES:
                 out[zone] = {"mode": "doh", "ns_ip": None}
-                continue
-            if doh_hits:
-                print(f"  [Blacklist] {zone}: DoH flaky ({doh_hits}/{_CONTROL_PROBES} "
-                      "control probes) - preferring authoritative NS")
-            ns_ip = await _zone_ns_ip(client, zone)
-            if ns_ip and await _listed_ips_auth(ns_ip, control, zone):
-                out[zone] = {"mode": "auth", "ns_ip": ns_ip}
-                print(f"  [Blacklist] {zone}: public resolver blocked -> using "
-                      f"authoritative NS {ns_ip} directly")
+                print(f"  [Blacklist] {zone}: authoritative NS not usable -> Google DoH "
+                      "(passed every control probe)")
                 continue
             out[zone] = {"mode": "broken", "ns_ip": None}
             print(f"  [Blacklist] ⚠ {zone}: control domain '{control}' not detected "
@@ -221,10 +255,16 @@ async def _check_domain(client: httpx.AsyncClient, sem: asyncio.Semaphore,
             if strat["mode"] == "broken":
                 inconclusive.append(label)
                 continue
-            if strat["mode"] == "auth":
-                ips = await _listed_ips_auth(strat["ns_ip"], domain, zone)
-            else:
-                ips = await _listed_ips(client, domain, zone)
+            ips = None
+            for attempt in range(2):                 # one retry: a timeout must not make a domain unknown
+                if strat["mode"] == "auth":
+                    ips = await _listed_ips_auth(strat["ns_ip"], domain, zone)
+                else:
+                    ips = await _listed_ips(client, domain, zone)
+                if ips is not None:
+                    break
+                if attempt == 0:
+                    await asyncio.sleep(_RETRY_PAUSE_S)
             if ips:
                 codes = ",".join(_decode(zone, ip) for ip in ips)
                 hits.append(f"{label} ({codes})")
@@ -234,132 +274,483 @@ async def _check_domain(client: httpx.AsyncClient, sem: asyncio.Semaphore,
                 "inconclusive_zones": inconclusive}
 
 
-async def _collect_domains() -> dict[str, set[str]]:
-    """{domain: {client, ...}} across all Smartlead accounts (excluded clients dropped)."""
-    domains: dict[str, set[str]] = {}
-    for acc in discover_accounts():
+# ── which domains to check ────────────────────────────────────────────────────
+
+DBL, SURBL, URIBL = "Spamhaus DBL", "SURBL", "URIBL"       # labels in BLACKLIST_ZONES / listed_on
+SERIOUS = (DBL, URIBL)      # judge the sending domain; SURBL judges links in the body (chronic, info only)
+
+
+def _entry() -> dict:
+    """One domain in the run: Smartlead accounts, client names, {inbox: account}; stale = from a saved list."""
+    return {"accounts": set(), "clients": set(), "emails": {}, "stale": False}
+
+
+async def _list_inboxes(acc) -> list[dict]:
+    async with SmartleadClient(acc.api_key, acc.name) as c:
+        return await c.list_email_accounts()
+
+
+async def _collect_domains(accounts: list) -> tuple[dict[str, dict], dict[str, int], list[dict]]:
+    """Every sending domain on the accounts that could be read (excluded-client inboxes dropped).
+
+    Returns (inventory, per_account, failed): inventory {domain: _entry()}, per_account
+    {account: inboxes Smartlead returned} for each account read, failed [{account, error}]
+    for each that was not.
+    The client is client_label on the inbox's client_id, so a Melior inbox in the Precise
+    Leads account reads Melior (BLOCKLIST-8)."""
+    inventory: dict[str, dict] = {}
+    per_account: dict[str, int] = {}
+    failed: list[dict] = []
+    for acc in accounts:
         try:
-            async with SmartleadClient(acc.api_key, acc.name) as c:
-                accounts = await c.list_email_accounts()
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [Blacklist] {acc.name}: account list failed: {exc}")
+            inboxes = await _list_inboxes(acc)
+        except Exception as exc:  # noqa: BLE001 - one account must not hide the others
+            msg = redact(str(exc))[:150] or type(exc).__name__
+            print(f"  [Blacklist] ⚠ {acc.name}: could not read its inboxes ({msg})")
+            failed.append({"account": acc.name, "error": msg})
             continue
-        for a in accounts:
-            email = str(a.get("from_email", "")).strip()
+        for a in inboxes or []:
+            email = str(a.get("from_email", "")).strip().lower()
             if not email or is_excluded_inbox(a):
                 continue
             dom = get_domain_from_email(email)
-            if dom:
-                domains.setdefault(dom, set()).add(acc.name)
-    return domains
+            if not dom:
+                continue
+            e = inventory.setdefault(dom, _entry())
+            e["accounts"].add(acc.name)
+            e["clients"].add(client_label(acc.name, a.get("client_id")))
+            e["emails"][email] = acc.name
+        per_account[acc.name] = len(inboxes or [])
+    return inventory, per_account, failed
 
 
-def _save(results: list[dict], today: str) -> None:
+def _fill_from_last_lists(inventory: dict, per_account: dict, failed: list[dict], store) -> list[dict]:
+    """Add each unreadable account's domains from its last saved check, so they are still
+    checked (BLOCKLIST-3: an unreadable account used to be skipped silently). An account
+    that answered with no inboxes, when its last check had some, counts as unreadable too.
+    Returns the skipped accounts: [{account, error, list_date, domains}]."""
+    todo = list(failed) + [{"account": n, "error": "Smartlead returned no inboxes", "empty": True}
+                           for n, count in per_account.items() if not count]
+    skipped = []
+    for f in todo:
+        when, rows = store.last_list(f["account"]) if store is not None else (None, [])
+        if f.get("empty") and not rows:
+            continue                       # no inboxes then, none now: nothing was missed
+        for r in rows:
+            e = inventory.get(r["domain"])
+            if e is None:
+                e = inventory[r["domain"]] = _entry()
+                e["stale"] = True
+            e["accounts"].add(f["account"])
+            e["clients"].update(r.get("client_names") or [])
+        skipped.append({"account": f["account"], "error": f["error"], "list_date": when, "domains": len(rows)})
+    return skipped
+
+
+def _adhoc_domains(raw: list[str]) -> list[str]:
+    out: list[str] = []
+    for x in raw:
+        d = str(x).strip().lower().split("//")[-1].split("/")[0].split("@")[-1].strip(".")
+        if "." in d and d not in out:
+            out.append(d)
+    return out
+
+
+# ── Mongo history (blacklist_checks) ─────────────────────────────────────────
+
+def _is_adhoc(row: dict) -> bool:
+    return row.get("run") == "adhoc" or list(row.get("clients") or []) == ["adhoc"]
+
+
+_RESULT_FIELDS = ("domain", "date", "listed_on", "lookup_errors", "inconclusive_zones", "unknown")
+
+
+class Store:
+    """blacklist_checks: one row per domain per day (unique on domain + date)."""
+
+    def __init__(self, col) -> None:
+        self.col = col
+
+    def history(self, domains) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for r in self.col.find({"domain": {"$in": sorted(domains)}}, {"_id": 0}):
+            out.setdefault(r["domain"], []).append(r)
+        return out
+
+    def last_list(self, account: str) -> tuple[str | None, list[dict]]:
+        """(date, rows) of the newest weekly check that included this Smartlead account."""
+        rows = [r for r in self.col.find({"clients": account},
+                                         {"_id": 0, "domain": 1, "date": 1, "clients": 1, "client_names": 1, "run": 1})
+                if not _is_adhoc(r) and r.get("date")]
+        if not rows:
+            return None, []
+        when = max(r["date"] for r in rows)
+        return when, sorted((r for r in rows if r["date"] == when), key=lambda r: r["domain"])
+
+    def save(self, records: list[dict], adhoc: bool = False) -> bool:
+        """Upsert today's rows. A check by hand never overwrites a weekly row's clients."""
+        try:
+            self.col.create_index([("domain", 1), ("date", 1)], unique=True)
+            ops = []
+            for r in records:
+                key = {"domain": r["domain"], "date": r["date"]}
+                if adhoc:
+                    fields = {k: r[k] for k in _RESULT_FIELDS if k in r}
+                    ops.append(UpdateOne(key, {"$set": fields, "$setOnInsert": {
+                        "clients": ["adhoc"], "client_names": [], "inboxes": None, "run": "adhoc",
+                        "source": "by hand"}}, upsert=True))
+                else:
+                    ops.append(UpdateOne(key, {"$set": r}, upsert=True))
+            if ops:
+                self.col.bulk_write(ops, ordered=False)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [Blacklist] ⚠ Mongo write failed: {redact(str(exc))[:200]}")
+            return False
+
+
+def _open_store() -> Store | None:
     uri = os.getenv("MONGO_URI", "")
     if not uri or MongoClient is None:
-        print("  [Blacklist] Mongo unavailable - results not persisted.")
-        return
+        print("  [Blacklist] ⚠ Mongo unavailable: no history, nothing saved.")
+        return None
     try:
         client = MongoClient(uri, serverSelectionTimeoutMS=5000)
         client.admin.command("ping")
-        col = client[HEALTH_HISTORY_DB][BLACKLIST_COLLECTION]
-        col.create_index([("domain", 1), ("date", 1)], unique=True)
-        ops = [
-            UpdateOne({"domain": r["domain"], "date": today}, {"$set": r}, upsert=True)
-            for r in results
-        ]
-        col.bulk_write(ops, ordered=False)
+        return Store(client[HEALTH_HISTORY_DB][BLACKLIST_COLLECTION])
     except Exception as exc:  # noqa: BLE001
-        print(f"  [Blacklist] Mongo write failed: {exc}")
+        print(f"  [Blacklist] ⚠ Mongo unavailable ({redact(str(exc))[:150]}): no history, nothing saved.")
+        return None
 
 
-def _alert_parts(serious: list[dict], surbl_only: int = 0) -> tuple[list[str], list[str]]:
-    """(headline_lines, thread_parts). Up to 3 domains sit in the headline; a
-    longer list and the advice go in the thread."""
-    n = len(serious)
-    head = [f"🚨 Domain blacklisted (Spamhaus / URIBL): {n} domain{'s' if n != 1 else ''}, "
-            "inbox placement at risk"]
-    lines = [f"• *{r['domain']}*" + (f" ({', '.join(r['clients'])})" if r['clients'] else "")
-             + f" · {', '.join(r['listed_on'])}" for r in serious]
-    thread = []
-    if n <= 3:
-        head += lines
+def _on(row: dict, label: str) -> bool:
+    return any(str(s).startswith(label) for s in row.get("listed_on") or [])
+
+
+def _unknown_on(row: dict, label: str) -> bool:
+    return label in (row.get("lookup_errors") or []) or label in (row.get("inconclusive_zones") or [])
+
+
+def listing_age(rows: list[dict], label: str, today: str) -> dict:
+    """For a domain on `label` today: {new, since, clean_on}. Pure.
+
+    new: the last weekly check before today that could read `label` did not show it
+    (or there is none). clean_on: that check's date. since: the first day of the unbroken
+    run of checks (weekly or by hand) ending today that showed it, i.e. first seen."""
+    earlier = sorted((r for r in rows if str(r.get("date", "")) < today), key=lambda r: r["date"], reverse=True)
+    new, clean_on = True, None
+    for r in earlier:
+        if _is_adhoc(r) or _unknown_on(r, label):
+            continue
+        new = not _on(r, label)
+        clean_on = r["date"] if new else None
+        break
+    since = today
+    for r in earlier:
+        if _on(r, label):
+            since = r["date"]
+        elif not _unknown_on(r, label):
+            break
+    return {"new": new, "since": since, "clean_on": clean_on}
+
+
+# ── what the run found ───────────────────────────────────────────────────────
+
+_RANK = {"sending": 0, "idle": 1, "unknown": 2, "none": 3, None: 4}
+
+
+def analyse(results: list[dict], inventory: dict, history: dict | None, today: str, *,
+            surbl_all: bool = False) -> dict:
+    """Pure. Counts for the headline and one hit per listed domain worth showing:
+    every DBL/URIBL listing, and SURBL only when new since the last check (all SURBL
+    when surbl_all, for a check by hand). history None = Mongo unreadable."""
+    hits, surbl, unknown = [], [], []
+    counts = {"total": len(results), "dbl": 0, "dbl_new": 0, "uribl": 0, "surbl": 0, "surbl_new": 0}
+    for r in results:
+        e = inventory.get(r["domain"]) or _entry()
+        if r.get("lookup_errors") or r.get("inconclusive_zones"):
+            unknown.append(r)
+        ages = {}
+        for label in (DBL, URIBL, SURBL):
+            if _on(r, label):
+                ages[label] = listing_age(history.get(r["domain"], []), label, today) if history is not None else None
+        base = {"domain": r["domain"], "clients": sorted(e["clients"]), "accounts": sorted(e["accounts"]),
+                "inboxes": None if e["stale"] or not e["emails"] else len(e["emails"]),
+                "status": "unknown" if e["stale"] else None, "campaigns": 0, "sending": 0}
+        if DBL in ages:
+            counts["dbl"] += 1
+            counts["dbl_new"] += bool(ages[DBL] and ages[DBL]["new"])
+        if URIBL in ages:
+            counts["uribl"] += 1
+        if SURBL in ages:
+            counts["surbl"] += 1
+            counts["surbl_new"] += bool(ages[SURBL] and ages[SURBL]["new"])
+        serious = [l for l in SERIOUS if l in ages]
+        if serious:
+            hits.append({**base, "lists": [s for s in r["listed_on"] if any(s.startswith(l) for l in serious)],
+                         "age": _combine([ages[l] for l in serious])})
+        if SURBL in ages and (surbl_all or (ages[SURBL] and ages[SURBL]["new"])):
+            surbl.append({**base, "lists": [s for s in r["listed_on"] if s.startswith(SURBL)], "age": ages[SURBL]})
+    counts["unknown"] = len(unknown)
+    counts["checked"] = counts["total"] - counts["unknown"]
+    return {"counts": counts, "hits": hits, "surbl": surbl, "unknown": unknown, "history_ok": history is not None}
+
+
+def _combine(ages: list[dict | None]) -> dict | None:
+    """One age for a domain on DBL and URIBL: new if either is new."""
+    if not ages or any(a is None for a in ages):
+        return None
+    new = [a for a in ages if a["new"]]
+    if new:
+        return {"new": True, "since": min(a["since"] for a in new), "clean_on": new[0]["clean_on"]}
+    return {"new": False, "since": min(a["since"] for a in ages), "clean_on": None}
+
+
+def _status(entry: dict | None, att: dict[str, dict | None]) -> dict:
+    """Does the domain send? att = {account: attachments() result, or None when unreadable}."""
+    if entry is None or not entry["emails"]:
+        return {"status": "unknown" if entry and entry["stale"] else None, "campaigns": 0, "sending": 0}
+    camps: set[str] = set()
+    sending: set[str] = set()
+    unread = False
+    for email, account in entry["emails"].items():
+        a = att.get(account)
+        if a is None:
+            unread = True
+            continue
+        at = a.get(email) or {}
+        camps |= {c for c in at.get("campaigns") or [] if not is_test_campaign(c)}
+        sending |= {c for c in at.get("sending") or [] if not is_test_campaign(c)}
+    status = "sending" if sending else "idle" if camps else "unknown" if unread else "none"
+    return {"status": status, "campaigns": len(camps), "sending": len(sending)}
+
+
+def _attachments(api_key: str) -> dict:
+    """{inbox: {campaigns, sending}}: live campaigns (ACTIVE, leads left) and those that sent in 7 days."""
+    from placement_report import attachments
+    return attachments(api_key, sending_days=7)
+
+
+async def _fill_status(found: dict, inventory: dict, accounts: list) -> None:
+    """Sending status for each shown domain; reads only the accounts those domains are on."""
+    shown = found["hits"] + found["surbl"]
+    need = {acct for h in shown for acct in (inventory.get(h["domain"]) or _entry())["emails"].values()}
+    keys = {a.name: a.api_key for a in accounts}
+    att: dict[str, dict | None] = {}
+    for name in sorted(need):
+        try:
+            att[name] = await asyncio.to_thread(_attachments, keys[name])
+        except Exception as exc:  # noqa: BLE001 - say "sending unknown", keep the rest
+            print(f"  [Blacklist] ⚠ {name}: could not read campaigns ({redact(str(exc))[:150]})")
+            att[name] = None
+    for h in shown:
+        h.update(_status(inventory.get(h["domain"]), att))
+
+
+# ── the Slack summary ────────────────────────────────────────────────────────
+
+_IP_CODES = re.compile(r"\s*\((?:\d{1,3}\.){3}\d{1,3}(?:,(?:\d{1,3}\.){3}\d{1,3})*\)")
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 'es' if word.endswith('x') else 's'}"
+
+
+def _who(h: dict) -> str:
+    return ", ".join(h["clients"]) or ", ".join(f"{a} account" for a in h["accounts"])
+
+
+def hit_line(h: dict, today: str = "") -> str:
+    parts = [f"• *{h['domain']}*"]
+    if _who(h):
+        parts.append(_who(h))
+    parts.append(", ".join(_IP_CODES.sub("", s) for s in h["lists"]))
+    if h.get("inboxes"):
+        parts.append(_plural(h["inboxes"], "inbox"))
+    st = h.get("status")
+    if st == "sending":
+        parts.append(f"sending in {_plural(h['sending'], 'live campaign')}")
+    elif st == "idle":
+        parts.append(f"in {_plural(h['campaigns'], 'live campaign')}, nothing sent in 7 days")
+    elif st == "none":
+        parts.append("in no live campaign")
+    elif st == "unknown":
+        parts.append("sending unknown")
+    age = h.get("age")
+    if age and age["new"]:
+        txt = f"new (clean on {day(age['clean_on'])})" if age["clean_on"] else "new (first check)"
+        if age["clean_on"] and age["since"] != today:
+            txt += f", first seen {day(age['since'])}"
+        parts.append(txt)
+    elif age:
+        parts.append(f"ongoing, first seen {day(age['since'])}")
+    return " · ".join(parts)
+
+
+def _order(hs: list[dict]) -> list[dict]:
+    return sorted(hs, key=lambda h: (_RANK.get(h.get("status"), 4), not (h.get("age") or {}).get("new"), h["domain"]))
+
+
+ADVICE = ("What to do: decide with the client lead whether each listed domain keeps sending. Listings expire "
+          "once the sending that caused them stops, and Spamhaus removal asks for confirmed opt-in, so don't "
+          "file a removal request without a change. Check the client's other domains and the links in the copy. "
+          "Domains under 30 days old: replace instead.")
+
+
+def summary(found: dict, today: str, *, skipped: list[dict] = (), accounts: int = 0,
+            adhoc: bool = False) -> tuple[list[str], list[str]]:
+    """(headline_lines, thread_parts). The headline is one count line, plus who was skipped and
+    which listed domains still send; the domains, unknowns and advice go in the thread. Pure."""
+    c = found["counts"]
+    hits, surbl = _order(found["hits"]), _order(found["surbl"])
+    hist = found["history_ok"]
+    dbl_new = f"{c['dbl_new']} new" if hist else "new unknown"
+    surbl_part = (f"SURBL {c['surbl']}" + (f" ({c['surbl_new']} new)" if hist else "")) if adhoc else \
+        (f"SURBL new {c['surbl_new']}" if hist else "SURBL new unknown")
+    live = [h for h in hits if h.get("status") == "sending"]
+    alarm = any(h.get("status") == "sending" or (h.get("age") or {}).get("new") for h in hits)
+    worry = hits or surbl or c["unknown"] or skipped or not hist or not c["total"]
+    emoji = "🚨" if alarm else "⚠️" if worry else "✅"
+    when = day(today) + (" (by hand)" if adhoc else "")
+    if c["total"]:
+        head = [f"{emoji} Blocklists {when}: checked {c['checked']} of {_plural(c['total'], 'domain')} · "
+                f"Spamhaus DBL {c['dbl']} ({dbl_new}) · URIBL {c['uribl']} · {surbl_part} · unknown {c['unknown']}"]
     else:
-        by_client: dict[str, int] = {}
-        for r in serious:
-            for c in r["clients"] or ["no client"]:
-                by_client[c] = by_client.get(c, 0) + 1
-        head.append(" · ".join(f"{c} {k}" for c, k in sorted(by_client.items(), key=lambda kv: -kv[1])))
-        thread.append("\n".join(lines))
-    advice = ("Decide with the client lead whether these domains keep sending. Spamhaus removal asks for confirmed "
-              "opt-in and listings expire once the sending stops, so don't file a removal request without a change. "
-              "Domains under 30 days old: replace instead.")
-    if surbl_only:
-        advice += (f"\n_Also {surbl_only} domain{'s' if surbl_only != 1 else ''} on SURBL only (link reputation; "
-                   "check the links in the copy)._")
-    thread.append(advice)
+        head = [f"{emoji} Blocklists {when}: no domains to check"]
+    if skipped:
+        bits = [f"skipped {s['account']}: " + (f"its {_plural(s['domains'], 'domain')} came from the "
+                                               f"{day(s['list_date'])} check" if s["domains"]
+                                               else "no saved list, so its domains were not checked")
+                for s in skipped]
+        head.append(f"Read {accounts - len(skipped)} of {_plural(accounts, 'Smartlead account')} · " + "; ".join(bits))
+    if live:
+        names = [f"{h['domain']} ({_who(h)})" if _who(h) else h["domain"] for h in live[:3]]
+        more = f" and {len(live) - 3} more" if len(live) > 3 else ""
+        head.append(f"Listed and still sending: {', '.join(names)}{more}")
+
+    thread: list[str] = []
+    if hits:
+        thread.append(f"On Spamhaus DBL or URIBL ({len(hits)})" + (":\n" if adhoc else ", live senders first:\n")
+                      + "\n".join(hit_line(h, today) for h in hits))
+        thread.append(ADVICE)
+    if surbl:
+        title = (f"On SURBL ({len(surbl)})" if adhoc else f"New on SURBL since the last check ({len(surbl)})")
+        thread.append(f"{title}. SURBL judges the links in an email, so check the links in the copy:\n"
+                      + "\n".join(hit_line(h, today) for h in surbl))
+    if found["unknown"]:
+        zones = sorted({z for r in found["unknown"] for z in r.get("inconclusive_zones") or []})
+        lines = [f"• {z}: its test domain was not seen on any lookup path, so every domain is unknown on it"
+                 for z in zones]
+        errs = [r for r in found["unknown"] if r.get("lookup_errors")]
+        lines += [f"• {r['domain']}: {', '.join(r['lookup_errors'])} lookup failed" for r in errs[:30]]
+        if len(errs) > 30:
+            lines.append(f"… and {len(errs) - 30} more")
+        thread.append(f"Unknown ({c['unknown']}): a list could not be read for these, so they are not clean:\n"
+                      + "\n".join(lines))
+    if skipped:
+        thread.append("Could not read from Smartlead:\n" + "\n".join(_skip_line(s) for s in skipped)
+                      + "\n\nRe-run once the account reads again.")
+    if not hist:
+        thread.append("Mongo history could not be read, so new vs ongoing is unknown"
+                      + ("." if adhoc else " and new SURBL listings can't be picked out."))
     return head, thread
 
 
-async def main() -> None:
-    today = date.today().strftime("%Y-%m-%d")
-    if len(sys.argv) > 1:
-        domain_clients = {sys.argv[1].strip().lower(): {"adhoc"}}
-    else:
-        domain_clients = await _collect_domains()
-    print(f"[Blacklist] checking {len(domain_clients)} domain(s) against "
-          f"{', '.join(BLACKLIST_ZONES.values())}")
+def _skip_line(s: dict) -> str:
+    n = s["domains"]
+    if not n:
+        return f"• {s['account']}: {s['error']}. No saved list, so its domains were not checked."
+    return (f"• {s['account']}: {s['error']}. Its {_plural(n, 'domain')} from the {day(s['list_date'])} check "
+            f"{'was' if n == 1 else 'were'} checked; inbox counts, sending and any domain added since are missing.")
 
+
+def _post(head: list[str], thread: list[str]) -> bool:
+    from smartlead.notify import post_with_thread
+    token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    if not token:
+        print("[Blacklist] ⚠ SLACK_BOT_TOKEN missing: the summary was NOT posted.")
+        return False
+    if not post_with_thread(token, infra_channel("BLACKLIST_CHANNEL"), head, thread):
+        print("[Blacklist] ⚠ Slack post failed: the summary was NOT posted.")
+        return False
+    return True
+
+
+# ── run ──────────────────────────────────────────────────────────────────────
+
+async def _check_all(domains: list[str]) -> list[dict]:
     sem = asyncio.Semaphore(_CONCURRENCY)
     async with httpx.AsyncClient(timeout=10.0) as client:
         strategies = await _pick_strategies(client)
-        results = await asyncio.gather(
-            *(_check_domain(client, sem, d, strategies) for d in sorted(domain_clients)))
+        return list(await asyncio.gather(*(_check_domain(client, sem, d, strategies) for d in domains)))
 
-    records = []
-    listed = []
-    for r in results:
-        r["date"] = today
-        r["clients"] = sorted(domain_clients.get(r["domain"], set()))
-        records.append(r)
-        if r["listed_on"]:
-            listed.append(r)
 
-    if listed:
-        print(f"[Blacklist] 🚨 {len(listed)} domain(s) LISTED on serious blacklists:")
-        for r in listed:
-            print(f"    {r['domain']:35} {', '.join(r['listed_on']):30} "
-                  f"clients: {', '.join(r['clients'])}")
-        print("  ACTION: decide whether these domains keep sending (no blind removal requests), "
-              "escalate to Zapmail if DNS-related. Domain <30d old -> replace instead.")
-        # Alert on Spamhaus DBL ONLY. DBL listings genuinely suppress inbox
-        # placement and are rare (0 of 121 as of 2026-07-27). SURBL ABUSE hits
-        # ~99 of our domains, affects URLs inside message bodies rather than
-        # sender reputation, and paging anyone about it every week would train
-        # the team to ignore this alert entirely.
-        # 2026-10-08: URIBL joins Spamhaus as an alert (both judge the sending
-        # domain). SURBL stays a one-line count, for the reason above.
-        serious = [r for r in listed
-                   if any(k in s.lower() for s in r["listed_on"] for k in ("spamhaus", "uribl"))]
-        surbl_only = [r for r in listed if r not in serious]
-        if serious:
-            try:
-                from smartlead.config import HEALTH_NOTIFY_CHANNEL
-                from smartlead.notify import post_with_thread
-                token = os.getenv("SLACK_BOT_TOKEN", "")
-                if token and HEALTH_NOTIFY_CHANNEL:
-                    head, thread = _alert_parts(serious, len(surbl_only))
-                    post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, thread)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [Blacklist] Slack alert failed (non-fatal): {exc}")
+def _args(argv: list[str] | None):
+    ap = argparse.ArgumentParser(description="Blocklist check (read-only for Smartlead)")
+    ap.add_argument("domains", nargs="*", help="check these domains by hand (prints only unless --save / --post)")
+    ap.add_argument("--save", action="store_true", help="by hand: save the results to Mongo")
+    ap.add_argument("--post", action="store_true", help="by hand: post the summary to the infra channel")
+    ap.add_argument("--dry-run", action="store_true", help="check and print only: save nothing, post nothing")
+    return ap.parse_args(argv)
+
+
+async def main(argv: list[str] | None = None) -> int:
+    args = _args(argv)
+    today = date.today().isoformat()
+    adhoc = bool(args.domains)
+    save = not args.dry_run and (args.save if adhoc else True)
+    post = not args.dry_run and (args.post if adhoc else True)
+    store = _open_store()
+
+    accounts: list = []
+    skipped: list[dict] = []
+    if adhoc:
+        inventory = {d: _entry() for d in _adhoc_domains(args.domains)}
     else:
-        print("[Blacklist] ✅ all domains clean.")
-    errs = sum(1 for r in results if r["lookup_errors"])
-    if errs:
-        print(f"[Blacklist] ⚠ {errs} domain(s) had lookup errors (unknown status).")
+        accounts = discover_accounts()
+        inventory, per_account, failed = await _collect_domains(accounts)
+        skipped = _fill_from_last_lists(inventory, per_account, failed, store)
+    print(f"[Blacklist] checking {len(inventory)} domain(s) against {', '.join(BLACKLIST_ZONES.values())}"
+          + (f" ({len(accounts) - len(skipped)} of {len(accounts)} Smartlead accounts read)" if not adhoc else ""))
 
-    _save(records, today)
+    results = await _check_all(sorted(inventory)) if inventory else []
+    history = None
+    if store is not None:
+        try:
+            history = store.history(inventory) if inventory else {}
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [Blacklist] ⚠ Mongo history read failed ({redact(str(exc))[:150]})")
+    found = analyse(results, inventory, history, today, surbl_all=adhoc)
+    if not adhoc:
+        await _fill_status(found, inventory, accounts)
+
+    head, thread = summary(found, today, skipped=skipped, accounts=len(accounts), adhoc=adhoc)
+    print("\n".join(head))
+    for part in thread:
+        print("\n" + part)
+
+    ok = True
+    if save:
+        if store is None:
+            ok = False
+        else:
+            records = []
+            for r in results:
+                e = inventory.get(r["domain"]) or _entry()
+                records.append({**r, "date": today, "clients": sorted(e["accounts"]),
+                                "client_names": sorted(e["clients"]),
+                                "inboxes": None if e["stale"] or not e["emails"] else len(e["emails"]),
+                                "unknown": bool(r.get("lookup_errors") or r.get("inconclusive_zones")),
+                                "run": "adhoc" if adhoc else "weekly",
+                                "source": "last list" if e["stale"] else ("by hand" if adhoc else "smartlead")})
+            ok = store.save(records, adhoc=adhoc) and ok
+    if post:
+        ok = _post(head, thread) and ok
+    partial = bool(skipped) or found["counts"]["unknown"] > 0 or not results
+    if partial:
+        print("[Blacklist] ⚠ partial coverage: see the summary above. Exit 1.")
+    return 1 if (partial or not ok) else 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))
