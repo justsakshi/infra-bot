@@ -136,6 +136,7 @@ function reviewBlocks(r) {
     blocks.push({ type: 'section',
       text: { type: 'mrkdwn', text: ('*' + day(rv.bills_on) + ' · ' + rv.provider + ' · ' + rv.label + '* · ' + money(rv.price) + NL
         + (c.KEEP || 0) + ' keep · ' + ((c.RETIRE || 0) ? '*' + c.RETIRE + ' retire*' : '0 retire') + ' · ' + (c.CHECK || 0) + ' check'
+        + ((c.UNTESTED || 0) ? ' · *' + c.UNTESTED + ' untested*' : '')
         + (rv.retire_saves_monthly ? ' · saves ' + money(rv.retire_saves_monthly) + '/mo' : '')).slice(0, 2900) },
       accessory: btn('Show inboxes', 'u_show_bill', JSON.stringify({ d: days, i, k: billKey(rv) }).slice(0, 1990)) });
   });
@@ -149,14 +150,18 @@ function billBlocks(rv) {
   const rows = rv.rows || [];
   const bad = rows.filter(x => x.verdict === 'RETIRE');
   const chk = rows.filter(x => x.verdict === 'CHECK');
+  const unt = rows.filter(x => x.verdict === 'UNTESTED');
   let t = '*' + day(rv.bills_on) + ' · ' + rv.provider + ' · ' + rv.label + '* · ' + money(rv.price) + ' · ' + (c.KEEP || 0) + ' keep · *'
-    + (c.RETIRE || 0) + ' retire* · ' + (c.CHECK || 0) + ' check' + (rv.note ? NL + '_' + rv.note + '_' : '');
+    + (c.RETIRE || 0) + ' retire* · ' + (c.CHECK || 0) + ' check' + ((c.UNTESTED || 0) ? ' · *' + c.UNTESTED + ' untested*' : '')
+    + (rv.note ? NL + '_' + rv.note + '_' : '');
   t += bad.slice(0, 30).map(x => NL + ':x: `' + x.email + '` · ' + x.why + ((x.campaigns || []).length ? ' :warning: in a live campaign' : '')).join('');
   if (bad.length > 30) t += NL + '…and ' + (bad.length - 30) + ' more to retire';
   t += chk.slice(0, 15).map(x => NL + ':grey_question: `' + x.email + '` · ' + x.why).join('');
   if (chk.length > 15) t += NL + '…and ' + (chk.length - 15) + ' more to check';
-  const blocks = [section(t),
-    { type: 'context', elements: [{ type: 'mrkdwn', text: 'RETIRE = under 80% inbox in its latest test, or on a spam domain. CHECK = no recent test, broken connection, low warmup reputation, or not in Smartlead (connect it if it\'s new, drop it if nobody will use it).' }] }];
+  t += unt.slice(0, 15).map(x => NL + ':hourglass: `' + x.email + '` · ' + x.why).join('');
+  if (unt.length > 15) t += NL + '…and ' + (unt.length - 15) + ' more untested';
+  const blocks = [section(t.slice(0, 2900)),
+    { type: 'context', elements: [{ type: 'mrkdwn', text: 'RETIRE = v2 test failed on two Monday tests (the newer in the last 8 days), or tagged DO NOT USE. CHECK = one v2 fail, older fails, pulled in the last 30 days, domain on Spamhaus (or Spamhaus unreadable), or a Smartlead problem. UNTESTED = no v2 result in 8 days: test it before the bill. KEEP = passed v2 in the last 8 days. Classic tests only add a warning.' }] }];
   if (rv.support_message) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '*Message for ' + rv.provider + ' support* (copy and send):' }] });
     blocks.push(section('```' + rv.support_message.slice(0, 2800) + '```'));
@@ -173,7 +178,7 @@ function billBlocks(rv) {
         confirm: { type: 'plain_text', text: 'Retire' }, deny: { type: 'plain_text', text: 'Cancel' } } }));
     if (elements.length) blocks.push({ type: 'actions', elements });
   } else if (bad.length && rv.provider === 'ScaledMail') {
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'ScaledMail cannot drop single inboxes: per domain use *Look up a domain → Replace domain*, or cancel the whole order.' }] });
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'ScaledMail bills per order, but single domains can be cancelled from its billing page; or use *Look up a domain → Replace domain*.' }] });
   }
   return blocks;
 }

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Renewal review: before each Zapmail / ScaledMail bill, KEEP / RETIRE / CHECK
-every inbox on it, from placement tests + Smartlead. READ-ONLY.
+"""Renewal review: before each Zapmail / ScaledMail bill, KEEP / DROP / CHECK /
+UNTESTED every inbox on it, from Smart Delivery v2 results (Mongo v2_verdicts),
+DO NOT USE tags (Smartlead), Spamhaus DBL (Mongo blacklist_checks) and Smartlead.
+Classic tests only add a note. READ-ONLY, apart from --flag-tracker.
 
     python renewal_review.py                  # bills in the next 3 days
     python renewal_review.py --days 14 --json
-    python renewal_review.py --post           # to RENEWAL_REVIEW_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL)
+    python renewal_review.py --post           # to RENEWAL_REVIEW_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL, else infra)
 
 Rules: smartlead/renewal_review.py. Retiring is a separate, approver-only
-button (Zapmail) — this script never changes anything.
+button (Zapmail) — this script never changes a provider or Smartlead. With
+--post it also posts when a source could not be read or the run crashed, even
+when no bill is due.
 """
 from __future__ import annotations
 
@@ -36,13 +40,15 @@ import httpx
 from smartlead.api import raise_for_status
 from smartlead import renewal_review as rr
 from smartlead.accounts import discover_accounts
-from smartlead.config import SMARTDELIVERY_BASE_URL
+from smartlead.config import BLACKLIST_COLLECTION, SMARTDELIVERY_BASE_URL
 from smartlead.report_sheet import client_label
 
 SL = "https://server.smartlead.ai/api/v1"
 UA = {"User-Agent": "Mozilla/5.0"}
 PAST = {"DARLEAN", "BELARDI WONG", "MYTHIC"}     # past clients' Smartlead accounts
 TESTS_PER_ACCOUNT = 10
+V2_COLLECTION = "v2_verdicts"     # written by v2_weekly.py on Manveen's PC (shared contract, 7 Nov 2026)
+V2_LOOKBACK_DAYS = 120            # enough history for "two weekly fails with no pass since"
 
 
 def _get(url, key, **params):
@@ -105,8 +111,22 @@ def seed_provider(domain: str) -> str:
     return _SEED_MX[domain]
 
 
+def _tag_names(tags) -> list[str]:
+    """Tag names from /email-accounts (dicts with tag_name / name; plain strings kept)."""
+    out = []
+    for t in tags or []:
+        name = str(t.get("tag_name") or t.get("name") or "") if isinstance(t, dict) else str(t or "")
+        if name.strip():
+            out.append(name.strip())
+    return out
+
+
 def smartlead_facts(errors: list[str]) -> dict[str, dict]:
-    """{email: {in_smartlead, connected, reputation, pct, tested_on, campaigns}}."""
+    """{email: {in_smartlead, connected, reputation, tags, pct, tested_on, campaigns}}.
+
+    Errors name what failed: "Smartlead <acc>" for /email-accounts (inboxes missing), and the
+    note-only "campaign lists <acc>" / "classic tests <acc>" (rr.NOTE_ONLY), which never stop a
+    verdict. Every error lands in ``errors``, so kill_report, fleet_watch and volume_review see it."""
     from placement_report import attachments
     facts: dict[str, dict] = {}
     for acc in discover_accounts():
@@ -123,15 +143,23 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                         "in_smartlead": True, "account": acc.name,
                         "client": client_label(acc.name, a.get("client_id")),
                         "connected": bool(a.get("is_smtp_success") and a.get("is_imap_success")),
-                        "reputation": w.get("warmup_reputation"), "pct": None, "tested_on": None,
+                        "reputation": w.get("warmup_reputation"), "tags": _tag_names(a.get("tags")),
+                        "pct": None, "tested_on": None,
                         "tests": [], "campaigns": [], "sending": []}
                 if len(page) < 100:
                     break
                 off += 100
+        except Exception as exc:  # noqa: BLE001 - one account must not hide the others
+            errors.append(f"Smartlead {acc.name}: {str(exc)[:150]}")
+            continue
+        try:
             for email, at in attachments(key, sending_days=7).items():
                 if email in facts:
                     facts[email]["campaigns"] = at["campaigns"]
                     facts[email]["sending"] = at["sending"]
+        except Exception as exc:  # noqa: BLE001 - only the still-in-a-campaign notes are lost
+            errors.append(f"{rr.CAMPAIGNS_SOURCE} {acc.name}: {str(exc)[:150]}")
+        try:
             r = httpx.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": key},
                            json={"limit": 50}, headers=UA, timeout=60)
             tests = sorted((t for t in r.json() if t.get("status") == "COMPLETED"),
@@ -171,14 +199,16 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                     if facts[em].get("tested_on") is None:      # newest first
                         facts[em]["pct"] = round(100.0 * (seeds - spam) / seeds, 1)
                         facts[em]["tested_on"] = t["created_at"][:10]
-        except Exception as exc:  # noqa: BLE001 - one account must not hide the others
-            errors.append(f"Smartlead {acc.name}: {str(exc)[:150]}")
+        except Exception as exc:  # noqa: BLE001 - classic tests are an early warning only
+            errors.append(f"{rr.CLASSIC_SOURCE} {acc.name}: {str(exc)[:150]}")
     return facts
 
 
 def zapmail_bills(days: int, errors: list[str]) -> list[dict]:
     from smartlead.zapmail_fleet import subscriptions_billing
-    rows = asyncio.run(subscriptions_billing(days=days, errors=errors))
+    errs: list[str] = []
+    rows = asyncio.run(subscriptions_billing(days=days, errors=errs))
+    errors += [f"Zapmail {e}" for e in errs]          # the source's name first: rr.read_warning reads it
     horizon = (date.today() + timedelta(days=days)).isoformat()
     out = []
     for r in rows:
@@ -188,10 +218,13 @@ def zapmail_bills(days: int, errors: list[str]) -> list[dict]:
         bill = {"provider": "Zapmail", "label": label, "bills_on": r["bills_on"], "price": r["price"],
                 "mailboxes": r["mailboxes"], "inboxes": r.get("inboxes") or [], "clients": r.get("clients") or [],
                 "subscription_id": r["subscription_id"], "account": r["account"]}
+        notes = []
         if r.get("payment_failure"):
-            bill["note"] = f"payment failed: {r['payment_failure']}"
+            notes.append(f"payment failed: {r['payment_failure']}")
         if r["kind"] == "pre-warmed":
-            bill["note"] = "pre-warmed slots: Zapmail does not list which inboxes sit on this plan; review them by domain"
+            notes.append("pre-warmed slots: Zapmail does not list which inboxes sit on this plan; review them by domain")
+        if notes:
+            bill["note"] = " · ".join(notes)
         out.append(bill)
     return out
 
@@ -231,33 +264,110 @@ def scaledmail_bills(days: int, errors: list[str], with_inboxes: bool = True) ->
         return []
 
 
+def _collection(name: str):
+    """A collection in the health-history db, where v2_weekly.py and blacklist_monitor.py write."""
+    uri = os.getenv("MONGO_URI", "")
+    if not uri:
+        raise RuntimeError("MONGO_URI is not set")
+    from pymongo import MongoClient
+    from smartlead.config import HEALTH_HISTORY_DB
+    return MongoClient(uri, serverSelectionTimeoutMS=8000)[HEALTH_HISTORY_DB][name]
+
+
+def v2_results(domains: set[str], emails: set[str], today: date, errors: list[str]) -> dict[str, list[dict]] | None:
+    """{email: [v2_verdicts rows]} for these inboxes (by domain or address), newest
+    V2_LOOKBACK_DAYS. None, with an error, when the collection cannot be read: the
+    review then keeps nothing."""
+    if not domains and not emails:
+        return {}
+    try:
+        since = (today - timedelta(days=V2_LOOKBACK_DAYS)).isoformat()
+        query = {"night": {"$gte": since},
+                 "$or": [{"domain": {"$in": sorted(domains)}}, {"email": {"$in": sorted(emails)}}]}
+        fields = {"_id": 0, "email": 1, "night": 1, "verdict": 1, "weekly": 1, "pulled_on": 1}
+        out: dict[str, list[dict]] = {}
+        for d in _collection(V2_COLLECTION).find(query, fields):
+            email = str((d or {}).get("email") or "").strip().lower()
+            if "@" in email:
+                out.setdefault(email, []).append(d)
+        return out
+    except Exception as exc:  # noqa: BLE001 - say so; never KEEP on a half read
+        errors.append(f"v2 results (Mongo {V2_COLLECTION}): {str(exc)[:150]}")
+        return None
+
+
+def dbl_listings(domains: set[str], errors: list[str]) -> dict[str, dict] | None:
+    """{domain: rr.dbl_status(its blacklist_checks rows)}: the newest check that could read
+    Spamhaus DBL, and whether the newest check could not (lookup_errors / inconclusive_zones).
+    None, with an error, when the collection cannot be read."""
+    if not domains:
+        return {}
+    try:
+        rows: dict[str, list[dict]] = {}
+        fields = {"_id": 0, "domain": 1, "date": 1, "listed_on": 1, "lookup_errors": 1, "inconclusive_zones": 1}
+        for d in _collection(BLACKLIST_COLLECTION).find({"domain": {"$in": sorted(domains)}}, fields):
+            dom = str((d or {}).get("domain") or "").lower()
+            if dom:
+                rows.setdefault(dom, []).append(d)
+        return {dom: rr.dbl_status(rs) for dom, rs in rows.items()}
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"blocklist checks (Mongo {BLACKLIST_COLLECTION}): {str(exc)[:150]}")
+        return None
+
+
+def _targets(bills: list[dict], facts: dict[str, dict]) -> tuple[set[str], set[str]]:
+    """The bills' domains, and their inboxes plus Smartlead's inboxes on those domains
+    (a renamed domain is judged on what Smartlead holds)."""
+    listed = {str(e).lower() for b in bills for e in b.get("inboxes") or [] if "@" in str(e)}
+    domains = {e.split("@")[-1] for e in listed} | {str(d).lower() for b in bills for d in b.get("domains") or [] if d}
+    return domains, listed | {e for e in facts if e.split("@")[-1] in domains}
+
+
 def run(days: int) -> dict:
     errors: list[str] = []
     bills = zapmail_bills(days, errors) + scaledmail_bills(days, errors)
     n_before = len(errors)
     facts = smartlead_facts(errors) if bills else {}
-    complete = len(errors) == n_before        # every Smartlead account was read
+    # every account's /email-accounts was read (classic tests and campaign lists only add notes)
+    complete = not any(e.startswith("Smartlead ") for e in errors[n_before:])
     today = date.today()
-    reviews = sorted((rr.review_bill(b, facts, today, complete) for b in bills), key=lambda r: r["bills_on"])
+    v2, dbl = {}, {}
+    if bills:
+        domains, emails = _targets(bills, facts)
+        v2 = v2_results(domains, emails, today, errors)
+        dbl = dbl_listings(domains, errors)
+    reviews = sorted((rr.review_bill(b, facts, today, complete, v2=v2, dbl=dbl) for b in bills),
+                     key=lambda r: r["bills_on"])
     from smartlead.zapmail_clients import infer_client
     for rv in reviews:          # whose inbox it is: retiring is per client
         for row in rv["rows"]:
             row["client"] = infer_client(row["email"].split("@")[1], rv.get("account"))
     headline, thread = rr.format_review(reviews, days)
     if errors:
-        # A half-read review can call good inboxes CHECK: say so up front, details in the thread.
-        headline.append(":warning: Some sources could not be read, so some verdicts are CHECK (details below)")
-        thread.insert(len(thread) - 1, ":warning: could not read: " + "; ".join(errors))
-    text = "\n".join(headline) + ("\n\n" + "\n\n".join(thread) if thread else "")
+        # A half-read review keeps nothing it can't prove: say so up front, details in the thread.
+        warning = rr.read_warning(errors, days, bool(reviews))
+        if reviews:
+            if headline[0].startswith("✅"):           # never a green title over a half read
+                headline[0] = "⚠️" + headline[0][1:]
+            headline.append(warning)
+            thread.insert(len(thread) - 1, ":warning: could not read: " + "; ".join(errors))
+        else:
+            headline, thread = [warning], [":warning: could not read: " + "; ".join(errors)]
     return {"days": days, "reviews": reviews, "errors": errors, "headline": headline, "thread": thread,
-            "text": text}
+            "text": _text(headline, thread)}
+
+
+def _text(headline: list[str], thread: list[str]) -> str:
+    return "\n".join(headline) + ("\n\n" + "\n\n".join(thread) if thread else "")
 
 
 def flag_tracker(res: dict) -> dict:
-    """Write renewalFlag on tracker inbox rows. Refuses when any source could
-    not be read (a half-read review must never mark good inboxes DROP)."""
-    if res.get("errors"):
-        return {"written": 0, "skipped": "not written: " + "; ".join(res["errors"])[:200]}
+    """Write renewalFlag on tracker inbox rows. Refuses when a source that can change a verdict
+    could not be read (a half-read review must never mark good inboxes DROP); classic tests and
+    campaign lists only add notes, so they don't stop it."""
+    blocking = rr.decision_errors(res.get("errors") or [])
+    if blocking:
+        return {"written": 0, "skipped": "not written: " + "; ".join(blocking)[:200]}
     from datetime import datetime, timezone
     from smartlead.zapmail_asset_sync import _db
     db = _db()
@@ -268,7 +378,8 @@ def flag_tracker(res: dict) -> dict:
     ops = []
     for rv in res["reviews"]:
         for row in rv["rows"]:
-            flag = {"RETIRE": "DROP", "CHECK": "CHECK"}.get(row["verdict"])
+            # Same two flags as before (renewal_labels.js reads them): untested is "check before renewing".
+            flag = {"RETIRE": "DROP", "CHECK": "CHECK", rr.UNTESTED: "CHECK"}.get(row["verdict"])
             if flag:
                 ops.append(UpdateOne({"name": row["email"]}, {"$set": {
                     "renewalFlag": flag, "renewalFlagReason": row["why"][:200], "renewalFlagAt": now}}))
@@ -293,18 +404,34 @@ def main() -> int:
     try:
         res = run(args.days)
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}) if args.json else f"ERROR: {exc}")
+        err = f"{type(exc).__name__}: {str(exc)[:300]}"
+        if args.post:      # a crash is posted too: a silent day looks like "nothing to renew"
+            _post(["🚨 Renewal review crashed, so no bill was checked today"],
+                  [f"Error: {err}", "The tracker's renewal flags were not changed."])
+        print(json.dumps({"error": err}) if args.json else f"ERROR: {err}")
         return 0 if args.json else 1
     if args.flag_tracker:
-        res["flagged"] = flag_tracker(res)
-    if args.post and res["reviews"]:
-        from smartlead.notify import post_with_thread
-        token = os.getenv("SLACK_BOT_TOKEN", "")
-        from smartlead.notify import infra_channel
-        channel = infra_channel("RENEWAL_REVIEW_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
-        res["posted"] = bool(token and channel and post_with_thread(token, channel, [res["text"]], []))   # one message
+        try:
+            res["flagged"] = flag_tracker(res)
+        except Exception as exc:  # noqa: BLE001
+            res["flagged"] = {"written": 0, "skipped": f"tracker write failed: {type(exc).__name__}: {str(exc)[:150]}"}
+        if res["flagged"].get("skipped") and res["reviews"]:
+            why = ("some sources could not be read" if rr.decision_errors(res["errors"])
+                   else res["flagged"]["skipped"])
+            res["thread"].insert(len(res["thread"]) - 1, f"_Tracker renewal flags were not updated this run ({why})._")
+            res["text"] = _text(res["headline"], res["thread"])
+    if args.post and (res["reviews"] or res["errors"]):     # read errors post even when no bill is due
+        res["posted"] = _post(res["headline"], res["thread"])
     print(json.dumps(res, default=str) if args.json else res["text"])
     return 0
+
+
+def _post(headline: list[str], thread: list[str]) -> bool:
+    """Headline in the infra channel (or RENEWAL_REVIEW_CHANNEL), details in its thread."""
+    from smartlead.notify import infra_channel, post_with_thread
+    token = os.getenv("SLACK_BOT_TOKEN", "")
+    channel = infra_channel("RENEWAL_REVIEW_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
+    return bool(token and channel and post_with_thread(token, channel, headline, thread))
 
 
 if __name__ == "__main__":

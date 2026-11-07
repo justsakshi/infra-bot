@@ -97,7 +97,15 @@ const u = require('./domains_unified');
   assert.ok(retire.every(e => e.style === 'danger' && e.confirm), 'retire asks first');
   assert.ok(/Replace domain/.test(smDetail), 'ScaledMail gets the per-order explanation');
   assert.ok(u.routeText('review').sub === 'review' && u.planFor('review')[0].cli.includes('renewal_review.py'), 'typed /domains review');
-  console.log('review view: 5 passed');
+  // A bill of untested inboxes must not look empty (renewal rule, 7 Nov 2026).
+  const untested = { provider: 'Zapmail', label: 'u', bills_on: '2026-11-14', price: 84, counts: { KEEP: 0, RETIRE: 0, CHECK: 0, UNTESTED: 2 },
+    rows: [{ email: 'e@v.com', verdict: 'UNTESTED', why: 'no v2 result in the last 8 days' },
+           { email: 'f@v.com', verdict: 'UNTESTED', why: 'no v2 result in the last 8 days' }] };
+  assert.ok(/\*2 untested\*/.test(JSON.stringify(u.reviewBlocks({ days: 14, errors: [], reviews: [untested] }))), 'untested count on the bill line');
+  const uDetail = JSON.stringify(u.billBlocks(untested));
+  assert.ok(uDetail.includes('e@v.com') && uDetail.includes('f@v.com') && /UNTESTED = no v2 result/.test(uDetail), 'untested inboxes listed with the rule');
+  assert.ok(!/under 80% inbox/.test(uDetail) && /single domains can be cancelled/.test(smDetail), 'new rule text, per-domain ScaledMail cancel');
+  console.log('review view: 8 passed');
 })().catch(e => { console.error(e); process.exit(1); });
 
 // Kill warnings view
