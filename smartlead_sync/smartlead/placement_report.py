@@ -186,52 +186,84 @@ def _day(tested_on: str) -> str:
         return tested_on
 
 
+LABEL = "Classic seed test (early warning, not proof)"
+# Standing footer (audit PLACEMENT-5, 7 Nov 2026: classic posts said every mailbox landed in
+# the inbox in the same week the v2 test found many of them in Google spam).
+EARLY_WARNING = ("Early warning only: Smartlead's own Google seeds have missed Google spam that the weekly "
+                 "v2 test caught, so a clean result here does not clear a mailbox.")
+GONE_SHOWN = 25
+
+
+def _receiver(rp: str) -> str:
+    """Route label for a receiving provider: the Google seeds are Smartlead's own."""
+    return "Google (Smartlead's own seeds)" if rp == "Google" else rp
+
+
 def format_slack(client: str, report: dict, test_names: list[str],
-                 tested_on: str = "") -> tuple[list[str], list[str]]:
+                 tested_on: str = "", *, blocklist: dict | None = None,
+                 gone: list[str] | tuple = ()) -> tuple[list[str], list[str]]:
     """(headline_lines, thread_parts) for notify.post_with_thread (spec 2026-10-13).
 
-    Channel: one line with the result, plus one line naming the routes over 5% spam.
-    Thread: 1) each mailbox in spam with what to do, 2) the domains to keep out of
-    new campaigns and the domains in spam, 3) where the test emails landed."""
+    Channel: one line with the result, labelled an early warning (only bad news gets
+    an icon), a blocklist line when one of the client's domains is on DBL/URIBL or the
+    checks can't be read, and one line naming the routes over 5% spam.
+    Thread: 1) each flagged mailbox with what to do, 2) the domains to keep out of new
+    campaigns and the domains in spam, 3) the listed domains, 4) test senders that are
+    not in Smartlead now, 5) where the test emails landed, 6) the early-warning note.
+
+    ``blocklist`` = classic_blocklist.summarise(...) for this client (None: not read, no
+    line). ``gone`` = test senders not in the Smartlead account now (not in ``report``)."""
+    from smartlead import classic_blocklist as cb
     ib, dm = report["inboxes"], report["domains"]
     day = _day(tested_on)
-    who = f"{client}, {day}" if day else client
+    lead = f"{LABEL}, {client}, {day}" if day else f"{LABEL}, {client}"
     flagged = sorted((i for i in ib.values() if i["status"] in ("watch", "bad")),
                      key=lambda i: (not i["campaigns"], i["pct"] if i["pct"] is not None else 101))
     measured = len(ib) - counts(ib)["untested"]
     spam_domains = sorted(d["domain"] for d in dm.values() if d["verdict"] == "spam")
     avoid = sorted(d["domain"] for d in dm.values() if d["verdict"] == "avoid_new")
+    listed = bool(blocklist and blocklist.get("listed"))
+    gone = sorted(gone or ())
 
-    if not measured:
-        head = [f"\u26a0\ufe0f {who}: no mailbox was measured yet"]
+    if not ib and gone:
+        head = [f"\u26a0\ufe0f {lead}: none of the {len(gone)} test senders is in Smartlead now, nothing to grade"]
+    elif not measured:
+        head = [f"\u26a0\ufe0f {lead}: no mailbox was measured yet"]
     elif not flagged:
-        noun = "mailbox lands" if measured == 1 else f"{measured} mailboxes land"
-        head = [f"\u2705 {who}: {'the' if measured == 1 else 'all'} {noun} in the inbox"]
+        # Never an all-clear: classic can flag a mailbox, not clear it; a listed domain is bad news.
+        warn = "⚠️ " if listed else ""
+        head = [f"{warn}{lead}: no mailbox flagged ({measured} tested)"]
     else:
-        # Act today only when a spam mailbox is still sending (same rule as kill warnings).
+        # Act today only when a flagged mailbox is still sending (same rule as kill warnings).
         live = sum(1 for i in flagged if i.get("campaigns"))
         icon = "\U0001f6a8" if live else "\u26a0\ufe0f"
         doms = f" ({len(spam_domains)} domain{'s' if len(spam_domains) != 1 else ''} in spam)" if spam_domains else ""
-        head = [f"{icon} {who}: {len(flagged)} of {measured} mailboxes in spam{doms}"]
+        head = [f"{icon} {lead}: {len(flagged)} of {measured} mailboxes flagged{doms}"]
         if live:
             head.append(f"{live} still in live campaigns")
+    bl_line = cb.headline_line(blocklist)
+    if bl_line:
+        head.append(bl_line)
 
     routes, hot = [], []
     for sp, rp in PAIR_ORDER:
         p = report["pairs"].get((sp, rp))
         if p and p["seeds"]:
             pct = 100.0 * p["spam"] / p["seeds"]
-            routes.append(f"\u2022 {sp} \u2192 {rp}: {p['spam']} of {p['seeds']} in spam ({pct:.0f}%)")
+            routes.append(f"\u2022 {sp} \u2192 {_receiver(rp)}: {p['spam']} of {p['seeds']} in spam ({pct:.0f}%)")
             if pct > ROUTE_LINE_OVER:
-                hot.append((pct, f"{sp}\u2192{rp}"))
+                hot.append((pct, f"{sp}\u2192{rp}", rp))
     if hot:
         hot.sort(key=lambda h: -h[0])
-        head.append(" \u00b7 ".join(f"{name} {pct:.0f}%{' spam' if n == 0 else ''}"
-                                     for n, (pct, name) in enumerate(hot)))
+        line = " \u00b7 ".join(f"{name} {pct:.0f}%{' spam' if n == 0 else ''}"
+                                for n, (pct, name, _) in enumerate(hot))
+        if any(rp == "Google" for _, _, rp in hot):
+            line += " (Google = Smartlead's own seeds)"
+        head.append(line)
 
     parts = []
     if flagged:
-        rows = [f"*Mailboxes in spam ({len(flagged)})*"]
+        rows = [f"*Flagged mailboxes ({len(flagged)})*"]
         for i in flagged:
             todo = (f"remove from {', '.join(i['campaigns'])}" if i["campaigns"]
                     else "not in a live campaign, nothing to remove")
@@ -244,9 +276,85 @@ def format_slack(client: str, report: dict, test_names: list[str],
         if spam_domains:
             rows.append(f"In spam (half or more of their mailboxes): {', '.join(spam_domains)}")
         parts.append("\n".join(rows))
+    bl_part, bl_note = cb.detail(blocklist)
+    if bl_part:
+        parts.append(bl_part)
+    if gone:
+        shown = gone[:GONE_SHOWN]
+        rows = [f"*Not in Smartlead now ({len(gone)})*",
+                "These test senders are not in the Smartlead account any more, so they are left out of the "
+                "counts and the Inbox Status tab."]
+        rows += [f"\u2022 {e}" for e in shown]
+        if len(gone) > len(shown):
+            rows.append(f"and {len(gone) - len(shown)} more")
+        parts.append("\n".join(rows))
     if routes:
         parts.append("\n".join(["*Where the test emails landed* (sent from \u2192 received at)", *routes]))
+    parts.append("_" + " ".join(x for x in (EARLY_WARNING, bl_note) if x) + "_")
     return head, parts
+
+
+# Weekly scheduled classic tests, by Smartlead account -> client -> weekday (Mon=0) -> what
+# should have run. Read from Smart Delivery on 7 Nov 2026: Melior #1-2 Mondays 06:00 IST (end
+# 29 Nov 2026); Melior #3, PL #1-3 and BettrData #1-2 Tuesdays 06:30 IST (from 10 Nov 2026,
+# end 31 Oct 2027). Change this when a test is created, moved or retired, or the 13:00 run
+# warns every week. Days are the UTC run day the cron passes as --since.
+EXPECTED_TESTS: dict[str, dict[str, dict[int, str]]] = {
+    "PRECISE_LEADS": {"Precise Leads": {1: "DT PL #1, #2 and #3"},
+                      "Melior": {0: "DT Melior #1 and #2", 1: "DT Melior #3"}},
+    "BETTRDATA": {"Bettrdata": {1: "DT BettrData #1 and #2"}},
+}
+
+
+def missing_tests(account: str, day: str, covered: set[str]) -> list[tuple[str, str]]:
+    """[(client, expected test campaigns)] for clients expected to have a scheduled test
+    on ``day`` (YYYY-MM-DD) that have no reported scheduled test that day. Pure."""
+    wd = datetime.fromisoformat(day[:10]).weekday()
+    out = []
+    for client, days in sorted(EXPECTED_TESTS.get(account.upper(), {}).items()):
+        if wd in days and client not in covered:
+            out.append((client, days[wd]))
+    return out
+
+
+def missing_test_text(client: str, expected: str, day: str) -> tuple[list[str], list[str]]:
+    """The 13:00 final run's warning for a client whose weekly test has no result."""
+    head = [f"\u26a0\ufe0f {LABEL}, {client}, {_day(day)}: no result today",
+            f"Expected the scheduled test on {expected}."]
+    thread = [f"Nothing was measured, so this says nothing about the {client} inboxes either way. "
+              "Check the scheduled test in Smart Delivery: it may have ended, been stopped, lost its "
+              "senders, or not run. The bot cannot create or edit scheduled tests."]
+    return head, thread
+
+
+def find_scheduled(listing: list[dict], known: dict[int, str], fetch_page,
+                   page_size: int = 100, max_pages: int = 20) -> tuple[list[dict], list[int]]:
+    """Listing rows for remembered scheduled tests that fell out of the newest-N window.
+
+    ``known`` = {test_id: created_at} of ACTIVE scheduled tests seen before.
+    ``fetch_page(offset)`` returns the report list from that offset (newest first). The
+    by-id endpoint can't be used: its `test_run_no` is not the run counter (measured
+    7 Nov 2026: 6 on a test that had run 4 times, 2 on one that had not run yet).
+    Pages back until every known test is found, a page is short, or the page is older
+    than the oldest one still missing. Returns (rows found, ids still missing)."""
+    have = {t.get("spam_test_id") for t in listing}
+    missing = {i: str(c or "") for i, c in known.items() if i not in have}
+    found: list[dict] = []
+    offset = len(listing)
+    if listing and str(listing[-1].get("created_at") or "") < min(missing.values(), default=""):
+        return found, sorted(missing)            # the window already reaches back past them: deleted
+    for _ in range(max_pages):
+        if not missing:
+            break
+        page = fetch_page(offset) or []
+        for t in page:
+            if t.get("spam_test_id") in missing:
+                missing.pop(t["spam_test_id"])
+                found.append(t)
+        if len(page) < page_size or str(page[-1].get("created_at") or "") < min(missing.values(), default=""):
+            break
+        offset += len(page)
+    return found, sorted(missing)
 
 
 def inbox_rows(report: dict, client_by_email: dict[str, str] | None = None,

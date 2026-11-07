@@ -6,8 +6,8 @@ Two outputs:
    domain per receiving provider (G suite / Outlook) under the test date.
    Existing cells are never overwritten (the team hand-corrects this grid) and a
    domain is matched exactly: both rules live in placement_grid.plan_writes.
-2. An "Inbox Status" tab, rewritten each run: one row per inbox, and a `Usable`
-   column (YES / EXISTING / NO) that Campaign Desk reads to choose inboxes.
+2. An "Inbox Status" tab: one row per inbox, and a `Usable` column (YES / EXISTING
+   / NO). Each run replaces only the rows of the inboxes it tested (merge_status_rows).
 
 Both are dry-run unless `apply=True`. Sheet problems are returned, never raised.
 """
@@ -59,8 +59,32 @@ def grid_writes(report: dict, client_by_email: dict[str, str], tested_on: str,
     return out
 
 
+def merge_status_rows(existing: list[list], rows: list[list], account_clients: set[str] | None = None,
+                      account_emails: set[str] | None = None) -> tuple[list[list], int]:
+    """(rows to write below the header, how many old rows were kept). Pure.
+
+    Rows are replaced by EMAIL: an inbox this run did not test keeps its row and its own
+    "Tested on" (audit PLACEMENT-6: replacing by client let Tuesday's Melior #3 wipe
+    Monday's Melior #1-2 rows, and a 1-inbox retest wipe a whole client). An old row is
+    dropped when its client belongs to this Smartlead account (``account_clients``) and its
+    inbox is not in the account now (``account_emails``): those senders are "not in
+    Smartlead now". Without ``account_emails`` nothing is pruned."""
+    fresh = {str(r[0]).strip().lower() for r in rows}
+    kept = []
+    for r in existing[1:] if existing else []:
+        email = str(r[0]).strip().lower() if r else ""
+        if not email or email in fresh:
+            continue
+        if (account_emails and account_clients and len(r) > 2 and r[2] in account_clients
+                and email not in account_emails):
+            continue
+        kept.append(r)
+    return kept + rows, len(kept)
+
+
 def write_status_tab(report: dict, client_by_email: dict[str, str], tested_on: str,
-                     apply: bool) -> dict:
+                     apply: bool, account_clients: set[str] | None = None,
+                     account_emails: set[str] | None = None) -> dict:
     rows = inbox_rows(report, client_by_email, tested_on)
     if not apply:
         return {"rows": len(rows), "written": False}
@@ -72,15 +96,11 @@ def write_status_tab(report: dict, client_by_email: dict[str, str], tested_on: s
             ws = sh.worksheet(STATUS_TAB)
         except Exception:  # noqa: BLE001
             ws = sh.add_worksheet(title=STATUS_TAB, rows=max(1000, len(rows) + 50), cols=len(INBOX_HEADER))
-        existing = ws.get_all_values()
-        # Keep other clients' rows: this run only replaces the clients it tested.
-        tested_clients = {r[2] for r in rows}
-        kept = [r for r in existing[1:] if len(r) > 2 and r[2] not in tested_clients and r[0]]
-        merged = [INBOX_HEADER] + kept + rows
+        body, kept = merge_status_rows(ws.get_all_values(), rows, account_clients, account_emails)
         ws.clear()
-        ws.update(values=merged, range_name="A1")
+        ws.update(values=[INBOX_HEADER] + body, range_name="A1")
         ws.freeze(rows=1)
-        return {"rows": len(rows), "kept_other_clients": len(kept), "written": True}
+        return {"rows": len(rows), "kept_other_rows": kept, "written": True}
     except Exception as exc:  # noqa: BLE001
         print(f"  [ReportSheet] Inbox Status write failed (non-fatal): {exc}")
         return {"rows": len(rows), "written": False, "error": str(exc)}

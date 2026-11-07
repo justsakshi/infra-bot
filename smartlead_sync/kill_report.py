@@ -118,10 +118,40 @@ def _bill(dom: str, bills: dict | None) -> str:
     return f" · bills {_day(date.fromisoformat(b['bills_on']))}" if b else " · no bill found"
 
 
+EARLY = "Classic seed tests are an early warning only: they can flag an inbox, never clear one."
+
+
+def blocklist_lines(bl: dict[str, dict] | None) -> tuple[list[str], str | None, bool]:
+    """(headline lines, message part, any listed) from {client: classic_blocklist.summarise(...)}.
+    None = not read here: nothing is said. Pure."""
+    from smartlead import classic_blocklist as cb
+    if bl is None or not bl:
+        return [], None, False
+    if any(not s["read"] for s in bl.values()):
+        return ["Blocklist status unknown: could not read the blocklist checks."], None, False
+    listed = {cl: sorted(s["listed"]) for cl, s in bl.items() if s["listed"]}
+    if listed:
+        n = sum(len(d) for d in listed.values())
+        dates = [d for s in bl.values() for d in s["listed_dates"]]
+        per = sorted(listed.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        head = [f"Also {_n(n, 'domain', 'domains')} on Spamhaus DBL or URIBL ({cb.when(dates)}): "
+                + ", ".join(f"{cl} {len(d)}" for cl, d in per)]
+        part = "\n".join([f"*On Spamhaus DBL or URIBL* ({cb.when(dates)})"]
+                         + [f"• {cl}: {', '.join(d)}" for cl, d in per])
+        return head, part, True
+    total = sum(s["domains"] for s in bl.values())
+    if total and sum(len(s["unknown"]) for s in bl.values()) == total:
+        return [f"Blocklist status unknown: no check in the last {cb.STALE_DAYS} days."], None, False
+    return [], None, False
+
+
 def format_report(res: dict, errors: list[str], today: date,
-                  bills: dict | None = None, bill_errors: list[str] | None = None) -> tuple[list[str], list[str]]:
+                  bills: dict | None = None, bill_errors: list[str] | None = None,
+                  blocklist: dict[str, dict] | None = None) -> tuple[list[str], list[str]]:
     """(headline_lines, parts): one message, action first. ``bills`` =
-    bill_dates(...) or None when bills were not read."""
+    bill_dates(...) or None when bills were not read. ``blocklist`` = {client:
+    classic_blocklist.summarise(...)} or None when not read."""
+    bl_head, bl_part, bl_listed = blocklist_lines(blocklist)
     c = res["counts"]
     by_client = res["by_client"]
     rank = {cl: i for i, cl in enumerate(CURRENT_CLIENTS)}
@@ -137,10 +167,11 @@ def format_report(res: dict, errors: list[str], today: date,
     if not kills and c[kr.NO_DATA] > c[kr.GOOD] + c[kr.WATCH]:
         # 3 Nov: a green tick while 343 of 386 inboxes had no recent test read as "all clear"
         tested = c[kr.GOOD] + c[kr.WATCH]
-        head = [f"⚠️ Kill warnings, {when}: none of the {_n(tested, 'tested inbox', 'tested inboxes')} "
-                f"is landing in spam; {_n(c[kr.NO_DATA], 'inbox has', 'inboxes have')} no recent test"]
+        head = [f"⚠️ Kill warnings, {when}: no classic strikes in the {_n(tested, 'tested inbox', 'tested inboxes')}; "
+                f"{_n(c[kr.NO_DATA], 'inbox has', 'inboxes have')} no recent classic test"]
     elif not kills:
-        head = [f"✅ Kill warnings, {when}: no domain is landing in spam"]
+        # Never a green tick: a classic seed test can't clear an inbox (audit PLACEMENT-5).
+        head = [f"{'⚠️ ' if bl_listed else ''}Kill warnings, {when}: no classic strikes"]
     else:
         n = len(doms)
         head = [f"{'🚨' if sending else '⚠️'} Kill warnings, {when}: {_n(n, 'domain is', 'domains are')} "
@@ -152,6 +183,7 @@ def format_report(res: dict, errors: list[str], today: date,
         else:
             head.append("None of them is sending right now. Don't add them to campaigns; "
                         "retire or replace them at their next bill.")
+    head += bl_head
     if errors:
         head.append(f"Could not read {'; '.join(errors)}; inboxes there are missing from this list")
     if bill_errors:
@@ -192,9 +224,22 @@ def format_report(res: dict, errors: list[str], today: date,
     if retest:
         parts.append("\n".join(["*Retest*"] + [f"• `{r['email']}` ({cl}) · failed 1 test ({_pct([r])})"
                                                for cl, r in retest]))
-    parts.append(f"_{RULE} {DECIDE} Also checked: {c[kr.GOOD]} passed, {c[kr.NO_DATA]} with no recent test. "
+    if bl_part:
+        parts.append(bl_part)
+    parts.append(f"_{RULE} {DECIDE} {EARLY} Also checked: {c[kr.GOOD]} passed, {c[kr.NO_DATA]} with no recent test. "
                  "Warning only: the bot changes nothing._")
     return head, parts
+
+
+def _blocklists(facts: dict[str, dict], today: date) -> dict[str, dict]:
+    """{client: classic_blocklist.summarise(...)} over each current client's domains."""
+    from smartlead import classic_blocklist as cb
+    doms: dict[str, set] = defaultdict(set)
+    for e, f in facts.items():
+        if f.get("client") in CURRENT_CLIENTS and "@" in e:
+            doms[f["client"]].add(e.split("@")[1])
+    latest = cb.read_latest(set().union(*doms.values()) if doms else set(), today)
+    return {cl: cb.summarise(d, latest, today) for cl, d in doms.items()}
 
 
 def render_text(head: list[str], parts: list[str]) -> str:
@@ -227,7 +272,8 @@ def main() -> int:
         facts = smartlead_facts(errors)
         res = build(facts, today, _platform_of())
         bill_errors: list[str] = []
-        head, thread = format_report(res, errors, today, _bills(bill_errors), bill_errors)
+        head, thread = format_report(res, errors, today, _bills(bill_errors), bill_errors,
+                                     _blocklists(facts, today))
     except Exception as exc:  # noqa: BLE001 - say so in Slack too
         res = {"error": f"{type(exc).__name__}: {exc}"}
         head = [f"🚨 Kill warnings, {_day(today)}: the check failed ({type(exc).__name__}: {exc}). "
