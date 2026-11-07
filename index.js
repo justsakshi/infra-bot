@@ -124,10 +124,9 @@ AssetSchema.pre('save', function (next) {
 const Asset = mongoose.model('Asset', AssetSchema);
 
 /* -------------------- CronLock Schema -------------------- */
-const CronLockSchema = new mongoose.Schema({
-  jobName: { type: String, required: true, unique: true },
-  createdAt: { type: Date, expires: '2h', default: Date.now }
-});
+// No TTL: a lock must last its whole IST day (bot_health.CRON_LOCK_FIELDS says why). Never build a
+// cronlocks TTL shorter than 2 days.
+const CronLockSchema = new mongoose.Schema(health.CRON_LOCK_FIELDS);
 const CronLock = mongoose.model('CronLock', CronLockSchema);
 
 /* -------------------- Locks and run records (bot health) -------------------- */
@@ -143,7 +142,7 @@ async function takeLock(key) {
       console.log(`[lock] ${key} already taken. Skipping.`);
       return false;
     }
-    await CronLock.collection.insertOne({ _id: key, jobName: key, createdAt: new Date() });
+    await CronLock.collection.insertOne(health.lockDoc(key));
     return true;
   } catch (e) {
     if (e.code === 11000) {

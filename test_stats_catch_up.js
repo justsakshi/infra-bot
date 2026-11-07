@@ -9,7 +9,7 @@ const ist = (s) => new Date(s + '+05:30');
 assert.strictEqual(missedStatsPost(ist('2026-11-04T10:30:00'), {}), true);
 assert.strictEqual(missedStatsPost(ist('2026-11-04T10:15:00'), {}), true);   // restart on the minute
 assert.strictEqual(missedStatsPost(ist('2026-11-04T10:14:00'), {}), false);  // the cron will run it
-// The lock that stops a second post expires after 2 hours, so no catch-up after 12:00.
+// The window ends at 12:00, after the 11:00 standup the post is for.
 assert.strictEqual(missedStatsPost(ist('2026-11-04T11:59:00'), {}), true);
 assert.strictEqual(missedStatsPost(ist('2026-11-04T12:00:00'), {}), false);
 // Weekends have no post; the switch still stops it.

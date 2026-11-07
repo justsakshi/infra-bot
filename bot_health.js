@@ -370,7 +370,23 @@ function dueDailySlot(now) {
   return `${istDay(now)}T10:05+05:30`;
 }
 
+// cronlocks (index.js takeLock): one doc per run key. Every key carries the IST day (onceToday) or the
+// IST hour (the restart post), so a lock never needs to expire, and it must not expire that day: the
+// catch-ups run up to 5.5 hours after their slot and the restart post checks today's bot-health lock
+// until midnight. The old schema had a 2-hour TTL on createdAt (never built, audit 7 Nov 2026); once
+// built, a restart 2+ hours after a slot would re-post Kill warnings, re-run copy sync --apply and the
+// final placement report, and make a second daily health post. So the schema has no TTL, and the lock
+// time goes in takenAt, which no TTL index covers even if an old createdAt one gets built.
+// Never build a cronlocks TTL shorter than 2 days.
+const CRON_LOCK_FIELDS = {
+  jobName: { type: String, required: true, unique: true },
+  takenAt: { type: Date, default: Date.now }
+};
+/** The cronlocks doc for one run key: _id = key (Mongo keeps _id unique with no extra index), no createdAt. */
+const lockDoc = (key, now = new Date()) => ({ _id: key, jobName: key, takenAt: now });
+
 module.exports = {
+  CRON_LOCK_FIELDS, lockDoc,
   INFRA_CHANNEL, JOBS, PC_TASK, cronsOf, jobInfo,
   istParts, istDay, slotKey, fmtIst, fmtNight, fmtAge, lastMonday,
   parseCron, cronMatches, expectedSlots, exitOk, exitNote, exitLine,

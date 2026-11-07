@@ -21,6 +21,9 @@ function missedStatsPost(now, env) {
 //     that day's tests, so a missed final run is never reported otherwise.
 //   copy-sync: Sun 18:30, Mon 05:00, Tue 05:00; only before that morning's scheduled
 //     tests start (Mon 06:00, Tue 06:30), never while they run.
+// These windows are safe only because the day's lock lasts all day: cronlocks has no TTL
+// (bot_health.CRON_LOCK_FIELDS). Never build a cronlocks TTL shorter than 2 days, or a
+// restart inside a window re-runs a job that already ran.
 const CATCH_UPS = [
   { job: 'kill-report', days: [2], from: '13:30', until: '18:00' },
   { job: 'placement-report-final', days: [1, 2], from: '13:00', until: '18:00' },
