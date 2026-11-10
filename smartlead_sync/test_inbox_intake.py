@@ -356,12 +356,27 @@ def test_ready_announcements_once_per_domain():
     assert [a["key"] for a in later] == ["ready:low.com"]
 
 
+def test_a_domain_tagged_do_not_use_is_not_announced_until_the_tag_is_gone():
+    """10 Nov 2026: the post listed Google domains that sat in Google spam, tagged DO NOT USE, as ready."""
+    store = ii.IntakeStore(FakeCol())
+    boxes = [_ready_box(f"a{i}@pulled.com") for i in range(3)] + [_ready_box("b@fine.com")]
+    boxes[1]["tags"].append({"tag_name": "DO NOT USE - Google spam (Nov 2026)"})          # one tagged inbox is enough
+    clients = {"pulled.com": "Precise Leads", "fine.com": "Precise Leads"}
+    assert [a["key"] for a in ii.ready_announcements(boxes, date(2026, 10, 16), store, clients)] == ["ready:fine.com"]
+    assert not store.announced("ready:pulled.com")                                         # nothing recorded for it
+    boxes[1]["tags"] = [{"tag_name": "Bot-Setup"}, {"name": "do not use - failed v2 (auto)"}]   # the v2 job's tag, any case
+    assert [a["domain"] for a in ii.ready_announcements(boxes, date(2026, 10, 16), store, clients)] == ["fine.com"]
+    boxes[1]["tags"] = [{"tag_name": "Bot-Setup"}]                                         # tag removed after two passes
+    assert sorted(a["domain"] for a in ii.ready_announcements(boxes, date(2026, 10, 17), store, clients)) == ["fine.com", "pulled.com"]
+
+
 def test_ready_message_text():
     from inbox_intake_cli import ready_message
     text = ready_message([{"state": "ready", "line": "• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%"},
                           {"state": "low", "line": "• low.com · Melior · warmup reputation 85% (needs 90%), keep warming"}])
-    assert text == ("✅ *Ready to send now: 1 domain*\n\n• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%\n\n"
-                    "Run a Smart Delivery placement test before adding them to campaigns.\n\n"
+    assert text == ("✅ *Warm-up finished, ready for a placement test: 1 domain*\n\n"
+                    "• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%\n\n"
+                    "Not for campaigns yet. Add them to Monday's Smart Delivery v2 test first; they go into campaigns after a pass.\n\n"
                     "⚠️ *Reached the warmup date but not ready yet*\n\n• low.com · Melior · warmup reputation 85% (needs 90%), keep warming")
 
 
@@ -383,7 +398,8 @@ def test_ready_post_marks_announced_only_when_it_went_out():
     assert post_ready(ann, store, lambda text: None) is False and not store.announced("ready:a.com")    # Slack failed: retry next run
     sent = []
     assert post_ready(ann, store, lambda text: sent.append(text) or "1.1") is True and store.announced("ready:a.com")
-    assert sent[0].startswith("✅ *Ready to send now: 1 domain*")
+    assert sent[0].startswith("✅ *Warm-up finished, ready for a placement test: 1 domain*")
+    assert "ready to send" not in sent[0].lower()                                                        # a test comes first
     assert post_ready([], store, lambda text: 1 / 0) is False                                            # nothing new: no post
 
 

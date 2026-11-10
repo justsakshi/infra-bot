@@ -106,14 +106,17 @@ READY_CHANNEL = "C0AGVSUNEFP"   # the infra channel (#test-channel C0AV3HTPP0S i
 
 
 def ready_message(announcements: list[dict]) -> str:
-    """One post: domains ready to send now, then any past their date but still warming. Pure."""
+    """One post: domains whose warm-up is done (next step: a placement test, not a campaign), then any
+    past their date but still warming. Pure."""
     ready = [a["line"] for a in announcements if a["state"] == "ready"]
     low = [a["line"] for a in announcements if a["state"] != "ready"]
     parts = []
     if ready:
         n = len(ready)
-        parts.append("\n".join([f"✅ *Ready to send now: {n} domain{'s' if n != 1 else ''}*", ""] + ready
-                               + ["", "Run a Smart Delivery placement test before adding them to campaigns."]))
+        parts.append("\n".join([f"✅ *Warm-up finished, ready for a placement test: {n} domain{'s' if n != 1 else ''}*", ""]
+                               + ready
+                               + ["", "Not for campaigns yet. Add them to Monday's Smart Delivery v2 test first; "
+                                      "they go into campaigns after a pass."]))
     if low:
         parts.append("\n".join(["⚠️ *Reached the warmup date but not ready yet*", ""] + low))
     return "\n\n".join(parts)
@@ -296,7 +299,7 @@ def main() -> int:
         channel = (os.getenv("INBOX_READY_CHANNEL") or READY_CHANNEL).strip()
         ready_posted = bool(token) and post_ready(announcements, store, lambda text: _post(token, channel, text))
     elif announcements:
-        parts.append("*Would post to the test channel*\n" + ready_message(announcements))
+        parts.append("*Would post to the infra channel*\n" + ready_message(announcements))
     out = {"headline": head, "thread": parts, "posted": posted, "ready": announcements, "ready_posted": ready_posted,
            "counts": {k: sum(len(r[k]) for r in results.values()) for k in ("set_up", "would", "waiting", "problems")}}
     print(json.dumps(out, default=str) if args.json else "\n".join(head + [""] + parts))

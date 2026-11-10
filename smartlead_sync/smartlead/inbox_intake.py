@@ -151,6 +151,15 @@ def _has_tag(a: dict, name: str) -> bool:
     return any((t.get("tag_name") or t.get("name")) == name for t in a.get("tags") or [])
 
 
+DO_NOT_USE = "do not use"     # tag prefix, any case: a person's tag or the v2 job's (same as smartlead/fleet.py)
+
+
+def _do_not_use(a: dict) -> bool:
+    """Tagged DO NOT USE in Smartlead: it failed a placement test and is out of campaigns."""
+    return any(str(t.get("tag_name") or t.get("name") or "").strip().lower().startswith(DO_NOT_USE)
+               for t in a.get("tags") or [] if isinstance(t, dict))
+
+
 def _client(a: dict, account_name: str, d: dict | None, tracker_row: dict, melior_id) -> str | None:
     if d and d.get("client") in CURRENT_CLIENTS:
         return d["client"]
@@ -345,8 +354,9 @@ def ready_announcements(accounts: list[dict], today: date, store, clients: dict[
     """Domains whose set-up inboxes have ALL reached their ready date: "ready"
     when every one has its type's healthy warmup reputation (90%+, SMTP 70%+), else "low" (keep warming).
     Each (state, domain) is announced once; a domain announced low can later
-    be announced ready. Returns [{key, domain, state, line}]. Pure apart from
-    reading the store."""
+    be announced ready. A domain with an inbox tagged DO NOT USE is not announced at all (10 Nov 2026:
+    the post called Google domains that sat in Google spam "ready to send"); it is announced once the
+    tag is gone. Returns [{key, domain, state, line}]. Pure apart from reading the store."""
     per_domain: dict[str, int] = {}
     for a in accounts:
         dom = str(a.get("from_email", "")).split("@")[-1].lower()
@@ -360,6 +370,8 @@ def ready_announcements(accounts: list[dict], today: date, store, clients: dict[
         kind = st.inbox_kind(boxes[0], per_domain[dom])
         states = [st.readiness(a, kind, today) for a in boxes]
         if any(s in ("warming", "unknown") for s in states):
+            continue
+        if any(_do_not_use(a) for a in boxes):
             continue
         state = "ready" if all(s == "ready" for s in states) else "low"
         key = f"{state}:{dom}"
