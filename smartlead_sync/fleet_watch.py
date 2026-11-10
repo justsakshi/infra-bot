@@ -51,8 +51,9 @@ LIVE_STATUSES = ("ACTIVE", "SCHEDULED")   # campaigns that send, or will, withou
 
 
 def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict, approved: dict, health: dict,
-           today: date, live: dict | None = None) -> dict:
-    """One inbox on one day. Pure. ``live`` = {email: [live non-test campaign names]} (see _live_campaigns)."""
+           today: date, live: dict | None = None, warm: dict | None = None) -> dict:
+    """One inbox on one day. Pure. ``live`` = {email: [live non-test campaign names]} (see _live_campaigns);
+    ``warm`` = {email: (warm-up emails sent, landed in spam) over 7 days} (see _warmup_spam), None = not read."""
     from smartlead.report_sheet import client_label
     email = str(a.get("from_email", "")).lower()
     dom = email.split("@")[-1]
@@ -78,6 +79,8 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
             "warmup_started": started.isoformat() if started else None,
             "test_date": f.get("tested_on"), "test_pct": f.get("pct"), "verdict": verdicts.get(email),
             "sent_14d": int(sent), "bounced_14d": int(bounced),
+            "warm_sent_7d": (warm or {}).get(email, (None, None))[0],
+            "warm_spam_7d": (warm or {}).get(email, (None, None))[1],
             "tags": names, "live_campaigns": list(dict.fromkeys((live or {}).get(email) or []))}
 
 
@@ -229,10 +232,15 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str], 
         except Exception as exc:  # noqa: BLE001 - say so, keep the other account
             errors.append(f"Smartlead {name}: {redact(str(exc))[:150]}")
             continue
+        try:
+            warm = asyncio.run(_warmup_spam(acc, accts))
+        except Exception as exc:  # noqa: BLE001 - only the warm-up spam check is lost; its open cases stay open
+            warm = None
+            errors.append(f"warm-up stats {name}: {redact(str(exc))[:150]}")
         per_domain = Counter(str(a.get("from_email", "")).lower().split("@")[-1] for a in accts)
         kept = set()
         for a in accts:
-            r = record(name, a, facts, verdicts, per_domain, approved, health, today, live)
+            r = record(name, a, facts, verdicts, per_domain, approved, health, today, live, warm)
             if r["client"] in CURRENT_CLIENTS:
                 records.append(r)
                 kept.add(r["email"])
@@ -241,6 +249,32 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str], 
         dropped |= emails - kept
     roster = {"tracked": tracked, "present": present, "dropped": dropped}
     return records, metrics, _read_ok(list(clients), errors), roster
+
+
+def warm_counts(stats) -> tuple[int, int] | None:
+    """(warm-up emails sent, landed in spam) over the last 7 days from one /warmup-stats answer; None when
+    the answer is missing or carries no counts. Pure."""
+    s = stats[0] if isinstance(stats, list) and stats else stats
+    if not isinstance(s, dict) or s.get("sent_count") is None:
+        return None
+    try:
+        return int(s.get("sent_count") or 0), int(s.get("spam_count") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _warmup_spam(acc, accounts: list[dict]) -> dict:
+    """{inbox email: (sent, spam)} for the inboxes whose warm-up stats were read. Read-only."""
+    from smartlead.api import SmartleadClient
+    ids = {str(a["id"]): str(a.get("from_email") or "").lower() for a in accounts if a.get("id") is not None}
+    async with SmartleadClient(acc.api_key, account_name=acc.name) as sl:
+        stats = await sl.fetch_all_warmup_stats(list(ids))
+    out = {}
+    for aid, email in ids.items():
+        counts = warm_counts(stats.get(aid))
+        if counts is not None:
+            out[email] = counts
+    return out
 
 
 def _post(headline, thread=()) -> bool:

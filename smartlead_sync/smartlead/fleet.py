@@ -15,6 +15,7 @@ from statistics import median
 
 from smartlead import inbox_standard as st
 from smartlead import kill_rule as kr
+from smartlead.config import WARMUP_SPAM_RETEST_MIN_SENT, WARMUP_SPAM_RETEST_PCT
 
 BOUNCE_HIGH, BOUNCE_WATCH, BOUNCE_MIN_SENT = 4.0, 2.0, 100
 LOW_REP_DAYS = 7
@@ -38,12 +39,14 @@ KINDS = {
     "bounce_watch": ("bounces 2-4%", "Keep volume, check the lead list", "domain"),
     "failed_test": ("one failed placement test", "Keep volume, retest next Monday", "inbox"),
     "kill": ("kill list", "Take it out of campaigns, do not renew", "inbox"),
+    "warmup_spam": ("warm-up mail landing in spam",
+                    "Get a Smart Delivery v2 result before it sends more; a classic test cannot clear it", "inbox"),
     "low_rep": ("warmup reputation low 7 days", "Keep volume, check SPF/DKIM/DMARC", "inbox"),
     "smtp_ip": ("SMTP reputation under 50%", "Ask ScaledMail to rotate the IP", "domain"),
     "blocklist": ("on a blocklist", "Find out why before it sends more; no blind removal requests", "domain"),
     "early_campaign": ("in a campaign before its ready date", "Take it out until it is ready", "inbox"),
     "no_test": ("no placement test in 21 days", "Add it to Monday's test", "domain"),
-    "over_limit": ("above the standard daily limit", "Lower it to the standard or record it as approved", "inbox"),
+    "over_limit": ("above the highest daily limit for its type", "Lower it or record it as approved", "inbox"),
     "hand_limit": ("limit changed by hand", "Confirm the change was meant", "inbox"),
 }
 BLOCKLIST_KINDS = ("blocklist", "listed_live")
@@ -78,6 +81,23 @@ def _want(r: dict) -> int | None:
 
 def _standard_max(r: dict) -> int:
     return int(st.standard_for(r["kind"])["max_email_per_day"])
+
+
+def _ceiling(r: dict) -> int:
+    """The most an inbox of this type should send a day (inbox_standard.json max_daily). The types differ:
+    a dedicated Outlook inbox (3 a domain, Zapmail) goes to 10, a shared-domain one (25 a domain, ScaledMail)
+    to 8, Google to 20, SMTP to 10. The start value is only where a new inbox begins."""
+    s = st.standard_for(r["kind"])
+    return int(s.get("max_daily") or s["max_email_per_day"])
+
+
+def warmup_spam_pct(r: dict) -> float | None:
+    """% of the last 7 days' warm-up mail that landed in spam; None when the numbers were not read or
+    there were too few warm-up emails to say (the auto placement test's own rule and numbers)."""
+    sent, spam = r.get("warm_sent_7d"), r.get("warm_spam_7d")
+    if sent is None or spam is None or int(sent) < WARMUP_SPAM_RETEST_MIN_SENT:
+        return None
+    return 100.0 * int(spam) / int(sent)
 
 
 def _dnu(r: dict) -> bool:
@@ -142,13 +162,21 @@ def checks(records: list[dict], history: dict[str, list[dict]], listed: dict, to
         last = [h.get("rep") for h in (history.get(e) or [])][-LOW_REP_DAYS:]      # history includes today
         if len(last) >= LOW_REP_DAYS and all(x is not None and x < level for x in last):
             out.append(_case("low_rep", e, r, f"{e} ({r.get('rep')}%)"))
+        pct = warmup_spam_pct(r)
+        if pct is not None and pct >= WARMUP_SPAM_RETEST_PCT:
+            # 10 Nov 2026: 50 inboxes were over this line and no post named them. The auto placement test
+            # answers it with a classic test, which said "100% inbox" for inboxes at 38%.
+            out.append(_case("warmup_spam", e, r,
+                             f"{e} ({r['warm_spam_7d']} of {r['warm_sent_7d']} warm-up emails in spam, {pct:.0f}%)"))
         if r.get("ready_on") and today < date.fromisoformat(r["ready_on"]) and r.get("campaigns"):
             out.append(_case("early_campaign", e, r, f"{e} (ready {_day(r['ready_on'])})"))
-        lim, std, want = r.get("limit"), _standard_max(r), _want(r)
-        if lim is not None and r.get("approved_limit") is None and int(lim) > std:
-            # Never raise (3 Nov): above the standard with no approved limit is flagged, never changed by the bot.
-            out.append(_case("over_limit", e, r, f"{e} ({lim}/day, standard {std})",
-                             action=f"Lower to {std} or record it as approved"))
+        lim, top, want = r.get("limit"), _ceiling(r), _want(r)
+        if lim is not None and r.get("approved_limit") is None and int(lim) > top:
+            # Never raise (3 Nov): above its type's ceiling with no approved limit is flagged, never changed by
+            # the bot. Up to the ceiling is within the plan (10 Nov: 39 inboxes set to 10 and 20 before the bot
+            # existed were flagged against the start value, though their types go that high).
+            out.append(_case("over_limit", e, r, f"{e} ({lim}/day, highest for its type {top})",
+                             action=f"Lower to {top} or record it as approved"))
         elif want is not None and lim is not None and int(lim) != want:
             out.append(_case("hand_limit", e, r, f"{e} ({lim}, set {want})"))
     for dom, rs in by_dom.items():
@@ -205,7 +233,9 @@ def observe(case: dict, records: list[dict], fired_keys: set[str]) -> dict:
            "listed": case["key"] in fired_keys and case["kind"] in BLOCKLIST_KINDS}
     if case["scope"] == "inbox" and mine:
         out["limit"], out["want"] = mine[0].get("limit"), _want(mine[0])
-        out["approved"], out["std"] = mine[0].get("approved_limit"), _standard_max(mine[0])
+        out["approved"], out["std"] = mine[0].get("approved_limit"), _ceiling(mine[0])
+        pcts = [warmup_spam_pct(r) for r in mine]
+        out["warm_ok"] = all(p is not None and p < WARMUP_SPAM_RETEST_PCT for p in pcts)
     return out
 
 
@@ -230,6 +260,8 @@ def acted(kind: str, at_open: dict, now: dict) -> bool:
             (now.get("limit_sum") or 0) < (at_open.get("limit_sum") or 0)
     if kind == "dnu_live":
         return not now.get("live") or not now.get("dnu")
+    if kind == "warmup_spam":
+        return bool(now.get("warm_ok"))
     if kind == "over_limit":
         return now.get("limit") is not None and (now.get("approved") is not None
                                                  or (now.get("std") is not None and now["limit"] <= now["std"]))
@@ -252,6 +284,8 @@ def _shows_fixed(kind: str, mine: list[dict]) -> bool:
         return all(r.get("rep") is not None for r in mine if r["kind"] == "smtp")
     if kind in ("hand_limit", "over_limit"):
         return all(r.get("limit") is not None for r in mine)
+    if kind == "warmup_spam":            # numbers not read, or too few warm-up emails, prove nothing
+        return all(warmup_spam_pct(r) is not None for r in mine)
     return True
 
 

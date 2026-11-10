@@ -143,16 +143,49 @@ def test_a_disconnected_inbox_opens_no_warmup_case():
     assert kinds(run([rec(connected=False, warmup_on=False)])) == [("disconnected", "a@d.com")]
 
 
-def test_over_limit_flags_an_inbox_above_its_standard_without_an_approved_limit():
-    cases = run([rec("g@d.com", setup=False, limit=20), rec("o@o.com", kind="outlook", setup=False, limit=10),
-                 rec("s@s.com", kind="smtp", setup=False, limit=7), rec("a@a.com", setup=False, limit=20, approved_limit=20),
-                 rec("b@b.com", limit=20)])                      # a bot-set-up inbox raised by hand: over, not hand_limit
-    assert kinds(cases) == [("over_limit", "b@b.com"), ("over_limit", "g@d.com"), ("over_limit", "o@o.com")]
+def test_over_limit_flags_an_inbox_above_the_highest_limit_for_its_type():
+    """10 Nov 2026: dedicated Outlook inboxes at 10 a day and Google at 20 were flagged against the start
+    value (5 and 15), though those types go that high. The types differ; each is held to its own ceiling."""
+    within = [rec("g@d.com", setup=False, limit=20), rec("o@o.com", kind="outlook", setup=False, limit=10),
+              rec("sh@sh.com", kind="outlook_dense", setup=False, limit=8), rec("s@s.com", kind="smtp", setup=False, limit=10)]
+    assert run(within) == []                                     # at the ceiling of its type: nothing to say
+    cases = run([rec("g@d.com", setup=False, limit=25), rec("o@o.com", kind="outlook", setup=False, limit=12),
+                 rec("sh@sh.com", kind="outlook_dense", setup=False, limit=10),      # fine for a dedicated inbox, too high shared
+                 rec("a@a.com", setup=False, limit=25, approved_limit=25),          # approved by a person
+                 rec("b@b.com", limit=25)])                      # a bot-set-up inbox raised by hand past the ceiling
+    assert kinds(cases) == [("over_limit", "b@b.com"), ("over_limit", "g@d.com"), ("over_limit", "o@o.com"),
+                            ("over_limit", "sh@sh.com")]
     by = {c["target"]: c for c in cases}
-    assert by["g@d.com"]["action"] == "Lower to 15 or record it as approved"
-    assert by["o@o.com"]["action"] == "Lower to 5 or record it as approved"
-    assert by["g@d.com"]["line"] == "g@d.com (20/day, standard 15)"
+    assert by["g@d.com"]["action"] == "Lower to 20 or record it as approved"
+    assert by["o@o.com"]["action"] == "Lower to 10 or record it as approved"
+    assert by["sh@sh.com"]["line"] == "sh@sh.com (10/day, highest for its type 8)"
     assert kinds(run([rec(limit=12)])) == [("hand_limit", "a@d.com")]          # lowered by hand: still hand_limit
+    assert kinds(run([rec(limit=20)])) == [("hand_limit", "a@d.com")]          # raised by hand within the ceiling
+
+
+def test_warmup_mail_in_spam_is_a_case_with_the_numbers():
+    """10 Nov 2026: 50 inboxes had 10%+ of their warm-up mail in spam and no post named them."""
+    cases = run([rec("bad@d.com", warm_sent_7d=88, warm_spam_7d=43), rec("edge@d.com", warm_sent_7d=30, warm_spam_7d=3),
+                 rec("fine@d.com", warm_sent_7d=90, warm_spam_7d=8),          # 8.9%: under the line
+                 rec("few@d.com", warm_sent_7d=29, warm_spam_7d=20),          # too few warm-up emails to say
+                 rec("unread@d.com", warm_sent_7d=None, warm_spam_7d=None), rec("old@d.com")])   # not read: no claim
+    assert kinds(cases) == [("warmup_spam", "bad@d.com"), ("warmup_spam", "edge@d.com")]
+    by = {c["target"]: c for c in cases}
+    assert by["bad@d.com"]["line"] == "bad@d.com (43 of 88 warm-up emails in spam, 49%)"
+    assert "v2" in by["bad@d.com"]["action"] and "classic test cannot clear it" in by["bad@d.com"]["action"]
+    head, thread = fl.watch_post(cases, {}, TODAY)
+    assert head[1] == "Warm-up mail landing in spam: 2"
+
+
+def test_a_warmup_spam_case_closes_only_when_the_numbers_show_it():
+    case = run([rec("bad@d.com", warm_sent_7d=88, warm_spam_7d=43)])[0]
+    seen = lambda **kw: fl.observe(case, [rec("bad@d.com", **kw)], set())
+    assert fl.acted("warmup_spam", {}, seen(warm_sent_7d=90, warm_spam_7d=4)) is True          # back under the line
+    assert fl.acted("warmup_spam", {}, seen(warm_sent_7d=90, warm_spam_7d=30)) is False
+    assert fl.acted("warmup_spam", {}, seen(warm_sent_7d=None, warm_spam_7d=None)) is False    # not read: no evidence
+    assert fl.acted("warmup_spam", {}, seen(warm_sent_7d=10, warm_spam_7d=0)) is False         # too few to say
+    assert fl._shows_fixed("warmup_spam", [rec("bad@d.com", warm_sent_7d=90, warm_spam_7d=4)]) is True
+    assert fl._shows_fixed("warmup_spam", [rec("bad@d.com")]) is False
 
 
 def test_do_not_use_inbox_in_a_live_campaign_is_a_case():
@@ -350,9 +383,9 @@ def test_scorecard_lists_every_open_blocklist_case_including_baseline_ones():
 
 
 def test_the_headline_counts_add_up_when_one_kind_has_several_actions():
-    cases = run([rec("g@d.com", setup=False, limit=20), rec("o@o.com", kind="outlook", setup=False, limit=10)])
+    cases = run([rec("g@d.com", setup=False, limit=25), rec("o@o.com", kind="outlook", setup=False, limit=12)])
     head, thread = fl.watch_post(cases, {}, TODAY)
     assert head == ["⚠️ Fleet watch, 20 Oct: 2 new problems (suggestions only, nothing was changed)",
-                    "Above the standard daily limit: 2"]
-    assert thread == ["*Lower to 15 or record it as approved* (above the standard daily limit, 1):\n• g@d.com (20/day, standard 15)",
-                      "*Lower to 5 or record it as approved* (above the standard daily limit, 1):\n• o@o.com (10/day, standard 5)"]
+                    "Above the highest daily limit for its type: 2"]
+    assert thread == ["*Lower to 10 or record it as approved* (above the highest daily limit for its type, 1):\n• o@o.com (12/day, highest for its type 10)",
+                      "*Lower to 20 or record it as approved* (above the highest daily limit for its type, 1):\n• g@d.com (25/day, highest for its type 20)"]
