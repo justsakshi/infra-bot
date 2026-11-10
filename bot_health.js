@@ -28,6 +28,7 @@ const PC_TASK = 'InfraBot v2 weekly';  // the Windows scheduled task that runs v
 // not expected. ok: exit codes that are not a failure (default [0]). codes: what an exit code means.
 const JOBS = [
   { job: 'dt-senders', cron: '0 6 * * *', title: 'DT senders' },
+  { job: 'copy-sync', cron: '30 18 * * 6', title: 'Test-copy sync' },   // before a v2 test that starts on Sunday
   { job: 'copy-sync', cron: '30 18 * * 0', title: 'Test-copy sync' },
   { job: 'copy-sync', cron: '0 5 * * 1,2', title: 'Test-copy sync' },
   { job: 'blacklist', cron: '0 9 * * 1', title: 'Blocklist check' },
@@ -270,16 +271,23 @@ function heartbeatLine(hb, now) {
   return { red: false, text: `PC v2 job: last ran ${fmtAge(age)} ago, ${night}${mode}.${tail}` };
 }
 
-/** Tue 14:00 / Wed 10:00: red lines if Monday's v2 results are not in or the hourly PC job stopped. [] = fine. */
+/** The first day a v2 test may start and still be that Monday's weekly test: the Saturday before it
+ *  (smartlead/v2_results.py week_start; the tests start on a Saturday, Sunday or Monday). */
+function weekStart(monday) {
+  return istDay(new Date(+new Date(`${monday}T12:00:00+05:30`) - 2 * DAY));
+}
+
+/** Tue 14:00 / Wed 10:00: red lines if the week's v2 results are not in or the hourly PC job stopped. [] = fine. */
 function v2WatchProblems(hb, now) {
   const check = `Check the PC is on and the task "${PC_TASK}" ran.`;
   const monday = lastMonday(now);
+  const week = `the week of ${fmtNight(monday)}`;
   const last = lastRunOf(hb);
-  if (!hb || !(last > 0)) return [`🔴 v2 check: no heartbeat from the PC v2 job in Mongo, so the v2 results for ${fmtNight(monday)} cannot be confirmed. ${check}`];
+  if (!hb || !(last > 0)) return [`🔴 v2 check: no heartbeat from the PC v2 job in Mongo, so the v2 results for ${week} cannot be confirmed. ${check}`];
   const out = [];
-  if (!hb.newest_night || hb.newest_night < monday) {
+  if (!hb.newest_night || hb.newest_night < weekStart(monday)) {
     const had = hb.newest_night ? `the newest night read is ${fmtNight(hb.newest_night)}` : 'no night has been read yet';
-    out.push(`🔴 v2 results for ${fmtNight(monday)} are not in Mongo (${had}). Download Monday's v2 CSVs on the PC; the hourly job reads them.`);
+    out.push(`🔴 v2 results for ${week} are not in Mongo (${had}). Download this week's v2 CSVs on the PC; the hourly job reads them.`);
   }
   if (+now - last > V2_STALE_MS) {
     out.push(`🔴 The PC v2 job last ran ${fmtAge(+now - last)} ago (${fmtIst(new Date(last))} IST); it should run every hour. ${check}`);
@@ -416,7 +424,7 @@ const lockDoc = (key, now = new Date()) => ({ _id: key, jobName: key, takenAt: n
 module.exports = {
   CRON_LOCK_FIELDS, lockDoc,
   INFRA_CHANNEL, JOBS, PC_TASK, cronsOf, jobInfo,
-  istParts, istDay, slotKey, fmtIst, fmtNight, fmtAge, lastMonday,
+  istParts, istDay, slotKey, fmtIst, fmtNight, fmtAge, lastMonday, weekStart,
   parseCron, cronMatches, expectedSlots, exitOk, exitNote, exitLine,
   windowStart, summarize, liveWriteFlags, flagsLine, heartbeatLine, v2WatchProblems,
   slotList, healthPost, v2WatchPost, dueDailySlot, REPO, deployLine

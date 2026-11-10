@@ -8,10 +8,10 @@ Code: `smartlead_sync/v2_weekly.py` (files, state, Smartlead, Slack, Mongo) and 
 
 | When | What happens | Who |
 |---|---|---|
-| Mon 20:00 IST | Smart Delivery v2 tests DT PL #1-3, DT Melior #1-4 and DT BettrData #1-2 (weekly, one by one, 1-minute gap) | Smartlead, automatic |
+| Sun 00:00 IST | Smart Delivery v2 tests DT PL #1-3, DT Melior #1-4 and DT BettrData #1-2 (weekly, one by one, 5-minute gap, 4 emails per provider). The gap is for the whole test and 5 minutes is the least Smartlead allows, so a 50-mailbox test (400 emails) takes about 33 hours and is in on Monday morning. A test that starts on a Saturday, Sunday or Monday counts as the week's test | Smartlead, automatic |
 | Tue morning | Download each test's CSV into `C:\Users\Manveen\Downloads` | Manveen, about 2 minutes |
 | Within 2 hours of the last download | The job reads them and acts, then posts in the infra channel | Job |
-| Tue 12:00 IST | If any DT test has no result for Monday, one reminder post naming each missing test | Job |
+| Tue 12:00 IST | If any DT test has no result for the week, one reminder post naming each missing test | Job |
 
 The download is the only manual step: v2 has no API, webhook or email (Smartlead support, 5-6 Nov 2026). A request for one went to Smartlead on 6 Nov.
 
@@ -19,7 +19,7 @@ The download is the only manual step: v2 has no API, webhook or email (Smartlead
 
 - Per provider, 4 seeds: **pass** = all 4 in the inbox, **fail** = 3 or more of 4 in spam, **watch** = all 4 answered with 2-3 in the inbox. An inbox passes only if it passes at both Google and Microsoft, and fails if either fails.
 - **Not judged, never acted on**: a seed that had not answered when the file was downloaded, a seed that BOUNCED (a problem at the seed address, not the sender), or a test that sent fewer than 4 emails per provider. The post says which, and always lists it under Needs you: a fresh download when seeds were still pending, or, when a seed bounced or a provider has no seed rows in a file, a check of that test's seed list and a re-run (until then those inboxes can't be pulled or come back).
-- **Fail**, or **watch in two Monday tests 6+ days apart**: out of every live campaign that is not a test campaign. Its leads move to the campaign's other senders, leads the removal stalled are resumed, and it gets the tag `DO NOT USE - failed v2 (auto)`. gtm presend refuses any `DO NOT USE` tag. Warm-up stays on, and the inbox stays in its DT campaign, so the next Monday tests it again. A one-off midweek test or a history file never counts toward "two weeks running"; a one-off fail still pulls.
+- **Fail**, or **watch in two weekly tests 6+ days apart**: out of every live campaign that is not a test campaign. Its leads move to the campaign's other senders, leads the removal stalled are resumed, and it gets the tag `DO NOT USE - failed v2 (auto)`. gtm presend refuses any `DO NOT USE` tag. Warm-up stays on, and the inbox stays in its DT campaign, so the next Monday tests it again. A one-off midweek test or a history file never counts toward "two weeks running"; a one-off fail still pulls.
 - **Melior is report-only** until Ryan agrees to automatic pulls: its inboxes are listed as "would be taken out (Melior: report-only until Ryan agrees)" and nothing in Smartlead changes for them. The post counts them by what would happen (taken out, left as the last good sender of a live campaign, left in a paused/draft one, or tagged only), and a live Melior campaign left with only failing senders gets its own line asking Ryan to pause it or add a good sender. To act on Melior too, add `--act-clients Melior` to the task.
 - **Back in**: after two passes at least 6 days apart, both after the pull, it goes back into the same campaigns and the tag comes off.
 - **Never the last good sender**: a live or scheduled campaign that would be left with no good sender is not changed, and the post asks a person. A paused or draft one is left as it is, because it sends nothing.

@@ -108,10 +108,22 @@ def emails_per_provider(rows: list[dict]) -> int:
     return max(counts, key=lambda n: (counts[n], n))
 
 
+WEEKLY_START_DAYS = (5, 6, 0)      # Saturday, Sunday, Monday
+
+
 def is_weekly_night(night: str) -> bool:
-    """The DT tests run every Monday 20:00 IST; any other night is a one-off test, so 'missing this week'
-    checks do not apply to it."""
-    return date.fromisoformat(night).weekday() == 0
+    """The weekly DT tests start on a Saturday, Sunday or Monday (IST); a test started any other day is a
+    one-off, so 'missing this week' checks do not apply to it.
+
+    Monday only until 10 Nov 2026. Smart Delivery v2 sends a test's emails one at a time with a gap of at
+    least 5 minutes for the whole test, so a 50-mailbox test takes about 33 hours: started Monday its result
+    is not in until Tuesday afternoon. Started on Sunday (Manveen's choice) it is in on Monday morning."""
+    return date.fromisoformat(night).weekday() in WEEKLY_START_DAYS
+
+
+def week_start(monday: date) -> date:
+    """The first day a test may start and still be that Monday's weekly test: the Saturday before it."""
+    return monday - timedelta(days=2)
 
 
 def pending_seeds(rows: list[dict]) -> int:
@@ -293,14 +305,16 @@ def dt_missing(dt_tests: dict[str, list[str]], tested: set[str]) -> list[str]:
 
 def reminder_due(now_ist: tuple[date, int], nights_in: set[str], reminded: set[str],
                  since: str = "", missing: list[str] | None = None) -> str | None:
-    """From Tuesday 12:00 IST (the pipeline doc's upload time), the Monday whose results never came in,
-    or whose expected DT tests (``missing``) did not all come in; once per Monday, and only for Mondays
-    from ``since`` (the job's first run) on."""
+    """From Tuesday 12:00 IST (the pipeline doc's upload time), the Monday whose week's results never came
+    in, or whose expected DT tests (``missing``) did not all come in; once per Monday, and only for Mondays
+    from ``since`` (the job's first run) on. The week's tests may have started on the Saturday or Sunday
+    before that Monday (``week_start``)."""
     today, hour = now_ist
     mon = last_monday(today)
     if (today - mon).days < 1 or ((today - mon).days == 1 and hour < 12):
         return None
     night = mon.isoformat()
-    if night < since or night in reminded or (any(n >= night for n in nights_in) and not missing):
+    first = week_start(mon).isoformat()
+    if night < since or night in reminded or (any(n >= first for n in nights_in) and not missing):
         return None
     return night

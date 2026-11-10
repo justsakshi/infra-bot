@@ -706,7 +706,17 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             groups[(client_of.get(mb, "Not in Smartlead"), st, x["verdict"], mb.split("@")[1])].append((mb, x))
 
     n_out = len(acted["removed"])
-    n_camps = len({c for cs in acted["removed"].values() for c in cs})
+    camp_ids = {c for cs in acted["removed"].values() for c in cs}
+    n_camps = len(camp_ids)
+    # "live" only when every one of them sends: on 10 Nov 2026 the line said "12 live campaigns" for 3 sending
+    # and 9 paused ones (an inbox is taken out of paused campaigns too, so it cannot come back on a resume).
+    status = {str(cid): c.get("status") for f in (fleet or {}).values() for cid, c in (f.get("camps") or {}).items()}
+    n_send = sum(1 for c in camp_ids if status.get(str(c)) in SENDING)
+    if n_camps and n_send < n_camps and status:
+        camps_text = (f"{n_camps} campaign{'s' if n_camps != 1 else ''} ({n_send} sending, "
+                      f"{n_camps - n_send} paused or draft)")
+    else:
+        camps_text = f"{n_camps} live campaign{'s' if n_camps != 1 else ''}"
     n_tag = len([e for e in acted["tagged"] if e not in acted["blocked"] and e not in acted["parked"]])
     n_park = len([e for e in acted["parked"] if e not in acted["removed"]])
     no_full = count[v2.INCOMPLETE] + count[v2.NOT_SENT]
@@ -714,8 +724,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     head = [f"v2 placement results, tests of {when or '-'}",
             f"{len(tonight)} inboxes · {count[v2.PASS]} pass · {count[v2.WATCH]} watch · {count[v2.FAIL]} fail"
             + (f" · {no_full} no full result" if no_full else ""),
-            f"{'Took' if write else 'Would take'} {n_out} inbox{'es' if n_out != 1 else ''} out of {n_camps} live "
-            f"campaign{'s' if n_camps != 1 else ''} · {'tagged' if write else 'would tag'} "
+            f"{'Took' if write else 'Would take'} {n_out} inbox{'es' if n_out != 1 else ''} out of {camps_text} "
+            f"· {'tagged' if write else 'would tag'} "
             + (f"{n_park} left in paused/draft campaigns and " if n_park else "")
             + f"{n_tag} in no campaign · {'returned' if write else 'would return'} {len(acted['added'])}"]
     if not write and act_from:
@@ -802,7 +812,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                      f"and re-run it.")
     weekly = any(v2.is_weekly_night(n) for n in nights)
     if nights and not weekly:
-        info.append("Not a Monday test, so the weekly checks (missing tests, untested senders) were skipped.")
+        info.append("Not a weekly test (those start on a Saturday, Sunday or Monday), so the weekly checks "
+                    "(missing tests, untested senders) were skipped.")
     tested = set(tonight)
     no_result, waiting, in_dt = [], set(), set()
     for acc, f in fleet.items():
@@ -878,7 +889,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             tail = "not pulled (no action decided)"
         elif st == "watch":
             if all(v2.is_weekly_night(x["night"]) for _, x in items):
-                tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; if next Monday's test is below 4/4 too, it counts as failed"
+                tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; if next week's test is below 4/4 too, it counts as failed"
             else:
                 tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; a one-off test never counts toward two weeks running"
         elif st == "not_sent":
@@ -969,9 +980,9 @@ def post(head: list[str], parts: list[str]) -> bool:
 
 
 def reminder_lines(night: str, missing: list[str], some_in: bool) -> list[str]:
-    """The Tuesday reminder: which DT tests have no result for that Monday."""
+    """The Tuesday reminder: which DT tests have no result for the week of that Monday."""
     d = date.fromisoformat(night)
-    day = f"Monday {d.day} {d:%b}"
+    day = f"the week of Mon {d.day} {d:%b}"
     if some_in:
         n = len(missing)
         return [f"v2 results for {day}: {n} DT test{'s' if n != 1 else ''} not in yet",
@@ -979,7 +990,7 @@ def reminder_lines(night: str, missing: list[str], some_in: bool) -> list[str]:
                 f"\nDownload {'their CSVs' if n != 1 else 'its CSV'} from Smart Delivery v2 into Downloads on Manveen's "
                 f"PC. The job reads {'them' if n != 1 else 'it'} within the hour; {'their' if n != 1 else 'its'} inboxes get "
                 f"no verdict until then."]
-    return ([f"v2 results for {day}'s tests are not in yet"]
+    return ([f"v2 results for {day} are not in yet"]
             + ([f"\nMissing: {', '.join(missing)} ({len(missing)} test{'s' if len(missing) != 1 else ''})."]
                if missing else [])
             + ["\nDownload each test's CSV from Smart Delivery v2 into Downloads on Manveen's PC. "
@@ -1317,7 +1328,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     if not acting:
         nights_in = {n for n in (i.get("night") for i in state["files"].values()
                                  if i.get("status") in ("ingested", "history")) if n}
-        mon = v2.last_monday(now.date()).isoformat()
+        mon = v2.week_start(v2.last_monday(now.date())).isoformat()      # the week's tests may start Sat or Sun
         tested = {e for e, rs in state["results"].items() if any(x["night"] >= mon for x in rs)}
         missing = v2.dt_missing(state["dt_tests"], tested)
         due = v2.reminder_due((now.date(), now.hour), nights_in, set(state["reminded"]), state["since"], missing)

@@ -278,5 +278,20 @@ def test_emails_per_provider_reads_the_test_setting():
     assert v2.emails_per_provider([]) == 0
 
 
-def test_only_monday_nights_are_the_weekly_run():
-    assert v2.is_weekly_night("2026-11-09") and not v2.is_weekly_night("2026-11-07")
+def test_the_weekly_test_starts_on_a_saturday_sunday_or_monday():
+    """Monday only until 10 Nov 2026. A 5-minute gap makes a 50-mailbox test take 33 hours, so the tests now
+    start on Sunday and are in on Monday morning."""
+    sat, sun, mon = "2026-11-07", "2026-11-08", "2026-11-09"
+    assert all(v2.is_weekly_night(n) for n in (sat, sun, mon))
+    assert not any(v2.is_weekly_night(n) for n in ("2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"))
+    assert v2.week_start(date(2026, 11, 9)) == date(2026, 11, 7)
+
+
+def test_sunday_tests_count_as_weeks_running_and_as_this_weeks_result():
+    mon9, sun15, mon16, sun22 = "2026-11-09", "2026-11-15", "2026-11-16", "2026-11-22"
+    assert v2.decide([r(mon9, v2.WATCH), r(sun15, v2.WATCH)], pulled=None)["action"] == v2.PULL     # the switch-over week
+    assert v2.decide([r(sun15, v2.WATCH), r(sun22, v2.WATCH)], pulled=None)["action"] == v2.PULL
+    assert v2.decide([r(sun15, v2.WATCH), r(mon16, v2.WATCH)], pulled=None)["action"] is None       # a day apart: one week
+    # Tuesday noon: a Sunday or Saturday test is the week's result; Friday's belongs to the week before
+    for night, due in (("2026-11-15", None), ("2026-11-14", None), ("2026-11-13", "2026-11-16")):
+        assert v2.reminder_due(now_ist=(date(2026, 11, 17), 12), nights_in={night}, reminded=set()) == due
