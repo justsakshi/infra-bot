@@ -1114,6 +1114,26 @@ async function postHealthMessage(tag, msg) {
   return true;
 }
 
+/**
+ * The commit the bot runs against main on GitHub (public repo, no token): { running, behindBy, mainSha }
+ * or { running, error }. null off Render (no RENDER_GIT_COMMIT). Never throws: the health post must go out.
+ */
+async function deployState() {
+  const running = process.env.RENDER_GIT_COMMIT;
+  if (!running) return null;
+  const repo = process.env.RENDER_GIT_REPO_SLUG || health.REPO;
+  const branch = process.env.RENDER_GIT_BRANCH || 'main';
+  try {
+    const { data } = await axios.get(`https://api.github.com/repos/${repo}/compare/${running}...${branch}`, {
+      timeout: 15000, headers: { 'User-Agent': 'infra-bot', Accept: 'application/vnd.github+json' }
+    });
+    const commits = Array.isArray(data.commits) ? data.commits : [];
+    return { running, behindBy: Number(data.ahead_by), mainSha: commits.length ? commits[commits.length - 1].sha : running };
+  } catch (err) {
+    return { running, error: err.response ? `GitHub answered ${err.response.status}` : err.message };
+  }
+}
+
 /** kind 'daily' | 'restart'. Window: since the last health post that reached Slack. */
 async function postBotHealth(kind) {
   const now = new Date();
@@ -1131,7 +1151,8 @@ async function postBotHealth(kind) {
   } catch (err) {
     console.warn(`[bot-health] v2 heartbeat not read: ${err.message}`);
   }
-  const msg = health.healthPost({ kind, now, since, capped, fromFirst, runs: recent, heartbeat, env: process.env, upSince: PROCESS_START });
+  const deploy = await deployState();
+  const msg = health.healthPost({ kind, now, since, capped, fromFirst, runs: recent, heartbeat, env: process.env, upSince: PROCESS_START, deploy });
   return postHealthMessage('bot-health', msg);
 }
 

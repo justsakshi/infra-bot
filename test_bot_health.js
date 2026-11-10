@@ -217,6 +217,34 @@ ok(post.text.startsWith('Bot restarted at 10:05 IST. Bot health since Tue 10 Nov
 post = h.healthPost({ kind: 'daily', now: at, since: new Date(+at - 4 * 86400000), capped: true, runs: [], heartbeat: hb(1), env: quietEnv });
 ok(post.text.includes('(only the last 4 days are checked)'), 'capped window says so');
 
+/* ---------- deployed code: merged is not live until Render deploys it (10 Nov 2026) ---------- */
+
+const RUN = 'b20110715efed8cdc864c7411392b0218cc21c12';
+const MAIN = '3c38dbc1e2c1cc71fd0d91e448e65b4e0bfd00a0';
+eq(h.deployLine(undefined), { red: false, text: '' }, 'off Render: no line');
+eq(h.deployLine({ running: '' }), { red: false, text: '' });
+eq(h.deployLine({ running: RUN, behindBy: 0, mainSha: RUN }), { red: false, text: 'Code running: `b201107`, the latest on main.' });
+let dep = h.deployLine({ running: RUN, behindBy: 4, mainSha: MAIN });
+ok(dep.red && dep.text.startsWith('🔴 Not deployed: the bot runs `b201107` and main is 4 commits ahead (`3c38dbc`). What was merged since is not live.'), dep.text);
+ok(dep.text.includes('Manual Deploy'), 'says what to do');
+ok(h.deployLine({ running: RUN, behindBy: 1 }).text.includes('main is 1 commit ahead. '), 'one commit, no sha');
+dep = h.deployLine({ running: RUN, error: 'GitHub answered 403 <rate limit>' });
+eq(dep, { red: false, text: 'Code running: `b201107`. Could not compare it with main (GitHub answered 403 &lt;rate limit&gt;).' }, 'an unreadable GitHub is not an alarm');
+eq(h.deployLine({ running: RUN, behindBy: NaN }).red, false, 'no number: not an alarm');
+
+post = h.healthPost({ kind: 'daily', now: at, since, runs: allRan, heartbeat: hb(2), env: quietEnv, deploy: { running: RUN, behindBy: 4, mainSha: MAIN } });
+ok(post.text.startsWith('🔴 Not deployed: the bot runs `b201107`') && post.red, 'undeployed code is the first line and makes the post red');
+ok(post.text.includes(`\n\nBot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled runs ran, none failed.\n\n`), 'the rest of the post is unchanged');
+eq(post.thread, null, 'no thread for it');
+post = h.healthPost({ kind: 'restart', now: at, since, runs: allRan, heartbeat: hb(2), env: quietEnv, upSince: at, deploy: { running: MAIN, behindBy: 0, mainSha: MAIN } });
+eq(post.text, `Bot restarted at 10:05 IST. Bot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled runs ran, none failed.\n\n`
+  + 'Code running: `3c38dbc`, the latest on main.\n\nLive-write flags on: none.', 'after a deploy the restart post confirms the commit');
+ok(!post.red, 'up to date is not red');
+ok(/async function deployState\(\)[\s\S]{0,900}RENDER_GIT_COMMIT[\s\S]{0,900}compare\/\$\{running\}\.\.\.\$\{branch\}/.test(fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8')),
+  'index.js compares the running commit with main');
+ok(/const deploy = await deployState\(\);\s+const msg = health\.healthPost\(\{[^}]*deploy \}\)/.test(fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8')),
+  'the health post gets the deploy state');
+
 eq(h.dueDailySlot(ist('2026-11-10T11:00:00')), '2026-11-10T10:05+05:30');
 eq(h.dueDailySlot(ist('2026-11-10T10:04:00')), null, 'before 10:05 the cron will post');
 eq(h.dueDailySlot(ist('2026-11-08T11:00:00')), null, 'Sunday: no daily post');

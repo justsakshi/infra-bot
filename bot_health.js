@@ -291,6 +291,32 @@ function v2WatchProblems(hb, now) {
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
+/* ---------- deployed code ---------- */
+
+const REPO = 'justsakshi/infra-bot';   // used when Render does not give RENDER_GIT_REPO_SLUG
+const shortSha = s => String(s || '').slice(0, 7);
+
+/**
+ * One line on the code the bot runs; red when main holds commits the bot does not run. From 7 to 10 Nov
+ * 2026 eight merged fixes sat undeployed for three days (Render's auto-deploy had not run) and nothing
+ * said so: the channel kept getting the old posts. deploy = { running, behindBy, mainSha, error }, where
+ * running is RENDER_GIT_COMMIT. Off Render there is no running commit and the line is empty.
+ */
+function deployLine(deploy) {
+  const d = deploy || {};
+  if (!d.running) return { red: false, text: '' };
+  if (d.error || !Number.isFinite(d.behindBy)) {
+    const why = d.error ? ` (${esc(String(d.error).slice(0, 80))})` : '';
+    return { red: false, text: `Code running: \`${shortSha(d.running)}\`. Could not compare it with main${why}.` };
+  }
+  if (d.behindBy > 0) {
+    const main = d.mainSha ? ` (\`${shortSha(d.mainSha)}\`)` : '';
+    return { red: true, text: `🔴 Not deployed: the bot runs \`${shortSha(d.running)}\` and main is ${plural(d.behindBy, 'commit', 'commits')} ahead${main}. `
+      + 'What was merged since is not live. On Render: infra-bot-1, Manual Deploy, Deploy latest commit.' };
+  }
+  return { red: false, text: `Code running: \`${shortSha(d.running)}\`, the latest on main.` };
+}
+
 /** "Thu 6 Nov 13:05, 15:05; Fri 7 Nov 09:05" (at most `max` times). */
 function slotList(slots, max = 6) {
   const shown = slots.slice(0, max);
@@ -310,9 +336,10 @@ function slotList(slots, max = 6) {
  * The daily / after-restart post: { text, thread } (thread null when nothing is wrong).
  * kind 'daily' | 'restart'; upSince: when this process started.
  */
-function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = false, runs = [], heartbeat, env = {}, upSince, jobs = JOBS }) {
+function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = false, runs = [], heartbeat, env = {}, upSince, jobs = JOBS, deploy }) {
   const s = summarize({ runs, since, now, env, jobs });
   const v2 = heartbeatLine(heartbeat, now);
+  const dep = deployLine(deploy);
   const from = `${fmtIst(since)} IST${fromFirst ? ' (when run records began)' : capped ? ' (only the last 4 days are checked)' : ''}`;
   const lead = kind === 'restart' ? `Bot restarted at ${fmtIst(upSince || now).slice(-5)} IST. ` : '';
   const problems = [];
@@ -325,8 +352,9 @@ function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = fa
   else if (!s.due) head = `${lead}Bot health since ${from}: no scheduled runs were due, none failed.`;
   else head = `${lead}Bot health since ${from}: all ${plural(s.due, 'scheduled run', 'scheduled runs')} ran, none failed.`;
 
-  const parts = [head];
+  const parts = dep.red ? [dep.text, head] : [head];       // undeployed code goes first: every post below it is stale
   if (kind === 'daily' || v2.red) parts.push(v2.text);
+  if (dep.text && !dep.red) parts.push(dep.text);
   parts.push(flagsLine(env));
 
   let thread = null;
@@ -354,7 +382,7 @@ function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = fa
     }
     thread = sections.join('\n\n');
   }
-  return { text: parts.join('\n\n'), thread, summary: s, red: v2.red };
+  return { text: parts.join('\n\n'), thread, summary: s, red: v2.red || dep.red };
 }
 
 /** The Tue 14:00 / Wed 10:00 v2 post, or null when Monday's results are in and the PC job is running. */
@@ -391,5 +419,5 @@ module.exports = {
   istParts, istDay, slotKey, fmtIst, fmtNight, fmtAge, lastMonday,
   parseCron, cronMatches, expectedSlots, exitOk, exitNote, exitLine,
   windowStart, summarize, liveWriteFlags, flagsLine, heartbeatLine, v2WatchProblems,
-  slotList, healthPost, v2WatchPost, dueDailySlot
+  slotList, healthPost, v2WatchPost, dueDailySlot, REPO, deployLine
 };
