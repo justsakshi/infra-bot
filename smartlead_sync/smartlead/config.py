@@ -30,6 +30,10 @@ TEST_TAB_NAME: str = os.getenv("TEST_TAB_NAME", "Belardiwong")
 
 # ── Availability Rules ──────────────────────────────────────────────────────
 MIN_WARMUP_REP_PCT: float = 90.0  # Rule 2: minimum warmup reputation %
+# The evidence gate (smartlead/usable.py). A DO NOT USE tag and a failed v2 test always make an inbox BUSY.
+# These two make a warning into a block: a listed sending domain, and no v2 pass in the last 8 days.
+AVAILABILITY_BLOCK_LISTED: bool = os.getenv("AVAILABILITY_BLOCK_LISTED", "false").strip().lower() == "true"
+AVAILABILITY_REQUIRE_V2_PASS: bool = os.getenv("AVAILABILITY_REQUIRE_V2_PASS", "false").strip().lower() == "true"
 MAX_INBOX_LIMIT: int = 35         # Max safe sending limit per inbox per day
 TEST_STALE_DAYS: int = 14         # deliverability test older than this -> "stale"
 
