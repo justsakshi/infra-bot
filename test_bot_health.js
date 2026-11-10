@@ -22,7 +22,7 @@ const BEFORE = {
   'bounce-protect': ['30 12 * * *'], blacklist: ['0 9 * * 1'], capacity: ['30 9 * * 1'],
   'zapmail-sync': ['30 9 * * *'], 'zapmail-digest': ['40 9 * * *'], 'scaledmail-sync': ['35 9 * * *'],
   'inbox-intake': ['15 */2 * * *'], 'inbox-ready': ['15 */2 * * *'], 'godaddy-sync': ['37 9 * * *'],
-  'infra-audit': ['20 10 * * 1-5'], 'billing-watch': ['5 9-21/2 * * *'], 'renewal-review': ['50 9 * * *'],
+  'infra-audit': ['20 10 * * 1-5'], 'billing-watch': ['5 10,12,14,16,18,20 * * *'], 'renewal-review': ['50 9 * * *'],
   'kill-report': ['30 13 * * 2'], 'fleet-watch': ['30 10 * * *'], 'fleet-scorecard': ['50 10 * * 1'],
   'dt-senders': ['0 6 * * *'], 'campaign-metrics': ['0 9 * * *'], 'campaign-stats-post': ['15 10 * * 1-5'],
   'provider-watch': ['40 10 * * 1'], 'volume-review': ['45 13 * * 2'], 'reply-monitor': ['0 13 * * *'],
@@ -86,8 +86,24 @@ eq(slotsOf(wk, 'kill-report'), []);
 eq(slotsOf(wk, 'inbox-intake'), [], 'switched off: not expected');
 eq(slotsOf(wk, 'scaledmail-sync'), [], 'no ScaledMail key: not expected');
 eq(slotsOf(wk, 'provider-watch'), [], '10:40 Monday is after the window');
-const tue = h.expectedSlots(ist('2026-11-10T12:59:00'), ist('2026-11-10T14:00:00'), { VOLUME_REVIEW_ENABLED: 'true' });
-eq(tue.map(s => s.job), ['placement-report-final', 'reply-monitor', 'billing-watch', 'kill-report', 'volume-review', 'v2-watch'], 'Tue afternoon in order');
+const tue = h.expectedSlots(ist('2026-11-10T12:59:00'), ist('2026-11-10T14:05:00'), { VOLUME_REVIEW_ENABLED: 'true' });
+eq(tue.map(s => s.job), ['placement-report-final', 'reply-monitor', 'kill-report', 'volume-review', 'v2-watch', 'billing-watch'], 'Tue afternoon in order');
+// The schedule here must mean the same to the scheduler that runs it. node-cron reads a stepped range such as
+// 9-21/2 as "the even hours in 9-21"; this file read it as 9, 11, 13 ... and called three real runs a day
+// missed (10 Nov 2026). Every cron in JOBS is expanded by both and compared.
+const cronLib = (() => { try { return require('node-cron/src/convert-expression'); } catch (e) { return null; } })();
+if (cronLib) {
+  for (const j of h.JOBS) {
+    const lib = cronLib(j.cron).split(' ');                       // sec min hour dom month dow
+    const mine = h.parseCron(j.cron);
+    const list = set => [...set].sort((a, b) => a - b).join(',');
+    eq(list(mine.minute), lib[1], `${j.job} "${j.cron}": minutes`);
+    eq(list(mine.hour), lib[2], `${j.job} "${j.cron}": hours as the scheduler runs them`);
+    eq(list(new Set([...mine.dow].map(d => d % 7))), lib[5], `${j.job} "${j.cron}": weekdays`);
+  }
+}
+eq(slotsOf(h.expectedSlots(ist('2026-11-10T09:00:00'), ist('2026-11-10T21:30:00'), {}), 'billing-watch').map(s => s.slice(11, 16)),
+  ['10:05', '12:05', '14:05', '16:05', '18:05', '20:05'], 'billing watch: the hours it really runs');
 eq(slotsOf(h.expectedSlots(ist('2026-11-10T13:00:00'), ist('2026-11-10T14:00:00'), {}), 'volume-review'), [], 'volume review off unless VOLUME_REVIEW_ENABLED=true');
 const ready = h.expectedSlots(ist('2026-11-10T00:00:00'), ist('2026-11-10T03:00:00'), { INBOX_READY_ENABLED: 'true', SCALEDMAIL_API_KEY: 'k' });
 eq(ready.map(s => s.job), ['inbox-ready', 'inbox-ready'], 'readiness runs when intake is off');
@@ -131,9 +147,9 @@ let s = h.summarize({ runs: allRan, since, now: at });
 eq([s.due, s.missed.length, s.failed.length, s.unfinished.length], [due.length, 0, 0, 0], 'every slot has a run');
 ok(due.some(d => d.slot === '2026-11-10T10:00+05:30') && !due.some(d => d.slot === '2026-11-10T10:05+05:30'), 'own slot is not checked yet');
 ok(due.some(d => d.job === 'bot-health' && d.slot === '2026-11-09T10:05+05:30'), 'the last post slot is checked once, by the next post');
-const less = allRan.filter(r => !(r.job === 'fleet-watch' || (r.job === 'billing-watch' && r.slot.startsWith('2026-11-09T13'))));
+const less = allRan.filter(r => !(r.job === 'fleet-watch' || (r.job === 'billing-watch' && r.slot.startsWith('2026-11-09T14'))));
 s = h.summarize({ runs: less, since, now: at });
-eq(s.missed.map(m => `${m.job} ${m.slot}`), ['fleet-watch 2026-11-09T10:30+05:30', 'billing-watch 2026-11-09T13:05+05:30']);
+eq(s.missed.map(m => `${m.job} ${m.slot}`), ['fleet-watch 2026-11-09T10:30+05:30', 'billing-watch 2026-11-09T14:05+05:30']);
 const withFails = [...allRan,
   run('kill-report', '2026-11-09T13:30', { exit_code: 1 }),
   run('placement-summary', '2026-11-10T09:50', { exit_code: 2 }),
@@ -207,7 +223,7 @@ eq(post.text, `Bot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled r
 
 post = h.healthPost({ kind: 'daily', now: at, since, runs: [...less, ...withFails.slice(allRan.length)], heartbeat: hb(30), env: quietEnv });
 ok(post.text.startsWith(`Bot health since Mon 9 Nov 10:05 IST: 2 of ${dueQuiet} scheduled runs did not run, 2 runs failed, 1 run started but never finished. Details in the thread.\n\n🔴 PC v2 job: last ran 30 h ago`), post.text);
-ok(post.thread.includes('Did not run (no run recorded for that time):\n• Fleet watch: Mon 9 Nov 10:30\n• Billing watch: Mon 9 Nov 13:05'), post.thread);
+ok(post.thread.includes('Did not run (no run recorded for that time):\n• Fleet watch: Mon 9 Nov 10:30\n• Billing watch: Mon 9 Nov 14:05'), post.thread);
 ok(post.thread.includes('• Kill warnings, Mon 9 Nov 13:30: exit code 1.'), post.thread);
 ok(post.thread.includes('• DT senders, Tue 10 Nov 06:00: could not start: spawn python ENOENT.'), post.thread);
 ok(post.thread.includes('• Auto placement test, started Mon 9 Nov 11:00'), post.thread);
@@ -227,6 +243,15 @@ ok(post.text.includes('(only the last 4 days are checked)'), 'capped window says
 
 const RUN = 'b20110715efed8cdc864c7411392b0218cc21c12';
 const MAIN = '3c38dbc1e2c1cc71fd0d91e448e65b4e0bfd00a0';
+// The API answered 403 from Render on the first deploy, so the public commit feed is the fallback.
+const FEED = ['3baff8e4b17bc7f3ba9b91cd31503f54243972ee', '0caab1990789b57daf6d1e07d98056111be51122', '8ac998f2943b281a231d6bc68feefd033c43c1bb']
+  .map(sha => `<entry><id>tag:github.com,2008:Grit::Commit/${sha}</id></entry>`).join('');
+eq(h.behindFromFeed(FEED, '8ac998f2943b281a231d6bc68feefd033c43c1bb'), { behindBy: 2, mainSha: '3baff8e4b17bc7f3ba9b91cd31503f54243972ee' });
+eq(h.behindFromFeed(FEED, '3baff8e4b17bc7f3ba9b91cd31503f54243972ee').behindBy, 0, 'on the newest commit');
+eq(h.behindFromFeed(FEED, 'b20110715efed8cdc864c7411392b0218cc21c12').behindBy, 3, 'older than the feed: behind by all of it');
+eq(h.behindFromFeed('<feed></feed>', '8ac998f'), null, 'no commits in the feed: no claim');
+ok(h.deployLine({ running: '8ac998f2943b', ...h.behindFromFeed(FEED, '8ac998f2943b') }).text
+  .startsWith('🔴 Not deployed: the bot runs `8ac998f` and main is 2 commits ahead (`3baff8e`).'), 'the feed feeds the same line');
 eq(h.deployLine(undefined), { red: false, text: '' }, 'off Render: no line');
 eq(h.deployLine({ running: '' }), { red: false, text: '' });
 eq(h.deployLine({ running: RUN, behindBy: 0, mainSha: RUN }), { red: false, text: 'Code running: `b201107`, the latest on main.' });
@@ -248,6 +273,8 @@ eq(post.text, `Bot restarted at 10:05 IST. Bot health since Mon 9 Nov 10:05 IST:
 ok(!post.red, 'up to date is not red');
 ok(/async function deployState\(\)[\s\S]{0,900}RENDER_GIT_COMMIT[\s\S]{0,900}compare\/\$\{running\}\.\.\.\$\{branch\}/.test(fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8')),
   'index.js compares the running commit with main');
+ok(/commits\/\$\{branch\}\.atom[\s\S]{0,300}health\.behindFromFeed\(data, running\)/.test(fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8')),
+  'index.js falls back to the public commit feed');
 ok(/const deploy = await deployState\(\);\s+const msg = health\.healthPost\(\{[^}]*deploy \}\)/.test(fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8')),
   'the health post gets the deploy state');
 
