@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from smartlead.api import SmartleadClient
 from smartlead.client_filter import is_past_client_campaign
 from smartlead.config import MIN_WARMUP_REP_PCT, ACTIVE_STATUSES, MAX_INBOX_LIMIT
+from smartlead import usable
 from smartlead.dns_checker import audit_domain_dns
 
 PAUSED_STALE_DAYS = 7  # paused campaigns older than this are treated as finished
@@ -436,8 +437,9 @@ async def fetch_account_data(
     # 6. Warmup data + reputation map
     warmup_data, warmup_rep_map = await _build_warmup_data(client, all_accounts)
 
-    # 7. Fill warmup rep + capacity + availability on inbox rows
-    process_inbox_availability(inbox_data, warmup_rep_map, inbox_aggregate_load)
+    # 7. Fill warmup rep + capacity + availability on inbox rows. The evidence gate (DO NOT USE tags,
+    # v2 verdicts, listed domains) decides FREE together with capacity and reputation.
+    process_inbox_availability(inbox_data, warmup_rep_map, inbox_aggregate_load, gate_data=usable.load_gate_data())
 
     return inbox_data, campaign_summary, warmup_data
 
@@ -448,8 +450,12 @@ def process_inbox_availability(
     inbox_data: list[dict],
     warmup_rep_map: dict[str, dict],
     inbox_aggregate_load: dict[str, float],
+    gate_data: dict | None = None,
 ) -> None:
-    """Mutate *inbox_data* in-place: fill reputation, total load, and availability."""
+    """Mutate *inbox_data* in-place: fill reputation, total load, and availability.
+    ``gate_data`` = usable.load_gate_data(); None = only the DO NOT USE tag rule of the evidence gate."""
+    from smartlead.config import AVAILABILITY_BLOCK_LISTED, AVAILABILITY_REQUIRE_V2_PASS
+    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
     for item in inbox_data:
         email = item.get("email", "")
         info = warmup_rep_map.get(email, {})
@@ -547,6 +553,10 @@ def process_inbox_availability(
         # Check DNS records
         if not item.get("dns_spf_ok", True) or not item.get("dns_dkim_ok", True) or not item.get("dns_dmarc_ok", True):
             reasons.append("dns_error")
+
+        # The evidence gate: never hand out an inbox a person or the v2 job pulled, or one that failed v2.
+        reasons.extend(usable.apply(item, gate_data, today, block_listed=AVAILABILITY_BLOCK_LISTED,
+                                    require_v2_pass=AVAILABILITY_REQUIRE_V2_PASS))
 
         item["availability"] = "FREE" if not reasons else "BUSY"
         item["busy_reason"] = "" if not reasons else ",".join(reasons)
@@ -685,6 +695,7 @@ def _build_inbox_row(
         "email": email,
         "name": account.get("from_name", ""),
         "provider": detect_provider(account.get("type", "")),
+        "tags": usable.tag_names(account),       # read by the evidence gate (DO NOT USE)
         "bounce_rate": bounce_rate,
         "bounce_sent": (bounce_stats or {}).get("sent", 0),
         "bounce_count": (bounce_stats or {}).get("bounced", 0),

@@ -438,6 +438,9 @@ _HEADER_LABELS = {
         "last_active_date": "Last Active",
         "test_sheet_status": "Test Status",
         "test_date": "Test Date",
+        "v2_status": "v2 Status",
+        "v2_date": "v2 Date",
+        "use_notes": "Notes",
     },
     "Deliverability Queue": {
         "priority": "Priority",
@@ -719,6 +722,7 @@ class SheetsWriter:
         "capacity_left", "true_load", "available_capacity", "demand",
         "warmup_state", "warmup_rep_pct", "warmup_max_count",
         "last_active_date", "test_sheet_status", "test_date",
+        "v2_status", "v2_date", "use_notes",       # new columns go last: readers find columns by name
     ]
 
     DELIVERABILITY_QUEUE_COLUMNS = [
@@ -1070,8 +1074,10 @@ class SheetsWriter:
             # ── All Inboxes (master) ─────────────────────────
             ["All Inboxes", "Client", "Which client the inbox belongs to", ""],
             ["", "Email / Name / Provider", "Sending address, display name, provider", "Gmail, Outlook, Other"],
-            ["", "Availability", "Can this inbox take a new campaign?", "FREE = capacity + rep>=90% + fresh 'inbox' test + connected; else BUSY"],
-            ["", "Busy Reason", "Why the inbox is not FREE", "disconnected, warmup_blocked, no_capacity, low_rep, stale_test, failed_test, untested"],
+            ["", "Availability", "Can this inbox take a new campaign? Only attach FREE inboxes.", "FREE = capacity + rep>=90% + fresh 'inbox' test + connected + not tagged DO NOT USE + not failed v2; else BUSY"],
+            ["", "Busy Reason", "Why the inbox is not FREE", "disconnected, warmup_blocked, no_capacity, low_rep, stale_test, failed_test, untested, do_not_use, failed_v2, blocklisted, no_v2_pass"],
+            ["", "v2 Status / v2 Date", "Newest Smart Delivery v2 verdict and its test day", "PASS / WATCH / FAIL / blank = no v2 result"],
+            ["", "Notes", "Warnings that do not block yet", "no v2 result, old v2 pass, v2 watch, domain on Spamhaus DBL or URIBL"],
             ["", "# Campaigns", "How many active campaigns use this inbox", ""],
             ["", "Warmup State", "Warmup lifecycle stage", "off / warming / ramped / blocked"],
             ["", "Last Active", "Last date the inbox actually sent", "YYYY-MM-DD"],
