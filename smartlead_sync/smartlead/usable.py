@@ -15,7 +15,8 @@ because their grid rows happened to be stale.
 Always BUSY: tagged DO NOT USE (``do_not_use``), newest judged v2 verdict FAIL (``failed_v2``).
 BUSY when the switch is on, a note until then:
   AVAILABILITY_BLOCK_LISTED=true     listed sending domain -> ``blocklisted``
-  AVAILABILITY_REQUIRE_V2_PASS=true  no v2 pass in the last 8 days -> ``no_v2_pass``
+  AVAILABILITY_REQUIRE_V2_PASS=true  no v2 pass in the last 10 days -> ``no_v2_pass``
+  (on by date as well: AVAILABILITY_REQUIRE_V2_PASS_FROM, 13 Nov 2026 unless set to "off")
 The notes go in the Notes column, so the warning is on the sheet before it blocks anything.
 
 ``gate`` is pure. ``load_gate_data`` reads Mongo and never raises: without it the tag rule still holds
@@ -27,10 +28,25 @@ import os
 from datetime import date
 
 DO_NOT_USE = "do not use"            # tag prefix, any case (same as smartlead/fleet.py)
-V2_FRESH_DAYS = 8                    # a weekly test, plus a day of slack (same as the renewal review)
+V2_FRESH_DAYS = 10                   # a weekly test plus three days: results are downloaded by hand, a day
+                                     # late must not empty the FREE list (the renewal review keeps 8 for money)
 JUDGED = ("PASS", "WATCH", "FAIL")   # INCOMPLETE and anything else is not a verdict
 SENDER_LISTS = ("spamhaus", "uribl")  # lists that judge the sending domain (SURBL lists links in the copy)
 NOT_READ = "v2 results and blocklists not read today"
+
+
+def require_v2_pass(today: date) -> bool:
+    """Is a v2 pass required for FREE today? The switch, or the start date having come."""
+    from smartlead.config import AVAILABILITY_REQUIRE_V2_PASS, AVAILABILITY_REQUIRE_V2_PASS_FROM
+    if AVAILABILITY_REQUIRE_V2_PASS:
+        return True
+    start = str(AVAILABILITY_REQUIRE_V2_PASS_FROM or "").strip().lower()
+    if start in ("", "off", "false", "never"):
+        return False
+    try:
+        return today >= date.fromisoformat(start)
+    except ValueError:
+        return False
 
 
 def tag_names(account: dict) -> list[str]:

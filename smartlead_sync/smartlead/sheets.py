@@ -107,6 +107,8 @@ def _parse_test_date(cell: str) -> str:
     '22/06/2026', etc. Returns '' for non-date cells.
     """
     s = str(cell).strip()
+    if s.lower().endswith(" v2"):       # columns the bot fills from Smart Delivery v2 (v2_grid.py): "9 Nov 2026 v2"
+        s = s[:-3].strip()
     if not s:
         return ""
     formats = (

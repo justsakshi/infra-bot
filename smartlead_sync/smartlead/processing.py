@@ -454,8 +454,9 @@ def process_inbox_availability(
 ) -> None:
     """Mutate *inbox_data* in-place: fill reputation, total load, and availability.
     ``gate_data`` = usable.load_gate_data(); None = only the DO NOT USE tag rule of the evidence gate."""
-    from smartlead.config import AVAILABILITY_BLOCK_LISTED, AVAILABILITY_REQUIRE_V2_PASS
+    from smartlead.config import AVAILABILITY_BLOCK_LISTED
     today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+    need_v2_pass = usable.require_v2_pass(today)
     for item in inbox_data:
         email = item.get("email", "")
         info = warmup_rep_map.get(email, {})
@@ -556,7 +557,7 @@ def process_inbox_availability(
 
         # The evidence gate: never hand out an inbox a person or the v2 job pulled, or one that failed v2.
         reasons.extend(usable.apply(item, gate_data, today, block_listed=AVAILABILITY_BLOCK_LISTED,
-                                    require_v2_pass=AVAILABILITY_REQUIRE_V2_PASS))
+                                    require_v2_pass=need_v2_pass))
 
         item["availability"] = "FREE" if not reasons else "BUSY"
         item["busy_reason"] = "" if not reasons else ",".join(reasons)
