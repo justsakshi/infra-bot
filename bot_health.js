@@ -49,7 +49,10 @@ const JOBS = [
     codes: { 0: 'all tabs written', 2: 'one or more sheet tabs NOT written, see the Last Sync tab' } },
   { job: 'noon-summary', cron: '0 10 * * 1-5', title: 'Daily Renewal Check' },
   { job: 'bot-health', cron: '5 10 * * 1-5', title: 'Bot health post' },
-  { job: 'billing-watch', cron: '5 9-21/2 * * *', title: 'Billing watch' },
+  // Hours written out. The scheduler (node-cron 3) reads a stepped range like 9-21/2 as "the even hours in
+  // 9-21", not "every 2 hours from 9", so the old '5 9-21/2' ran at 10:05, 12:05 ... 20:05 while this file
+  // expected 9:05, 11:05 ... and reported three runs a day as missed (10 Nov 2026).
+  { job: 'billing-watch', cron: '5 10,12,14,16,18,20 * * *', title: 'Billing watch' },
   { job: 'campaign-stats-post', cron: '15 10 * * 1-5', title: 'Campaign stats post', when: env => env.CAMPAIGN_STATS_POST !== 'off' },
   { job: 'infra-audit', cron: '20 10 * * 1-5', title: 'Infra audit' },
   { job: 'fleet-watch', cron: '30 10 * * *', title: 'Fleet watch' },
@@ -325,6 +328,21 @@ function deployLine(deploy) {
   return { red: false, text: `Code running: \`${shortSha(d.running)}\`, the latest on main.` };
 }
 
+/**
+ * How far the running commit is behind main, read from GitHub's public commit feed (commits/<branch>.atom,
+ * newest first, 20 entries). Used when the API refuses: from Render it answered 403 on the first try
+ * (10 Nov 2026), most likely the shared address being over the anonymous limit.
+ * { behindBy, mainSha } or null when the feed has no commits. A running commit older than the feed counts
+ * as behind by the whole feed.
+ */
+function behindFromFeed(xml, running) {
+  const shas = [...String(xml || '').matchAll(/Grit::Commit\/([0-9a-f]{40})/g)].map(m => m[1]);
+  if (!shas.length) return null;
+  const want = String(running || '').toLowerCase();
+  const at = shas.findIndex(s => s === want || (want.length >= 7 && s.startsWith(want)));
+  return { behindBy: at === -1 ? shas.length : at, mainSha: shas[0] };
+}
+
 /** "Thu 6 Nov 13:05, 15:05; Fri 7 Nov 09:05" (at most `max` times). */
 function slotList(slots, max = 6) {
   const shown = slots.slice(0, max);
@@ -427,5 +445,5 @@ module.exports = {
   istParts, istDay, slotKey, fmtIst, fmtNight, fmtAge, lastMonday, weekStart,
   parseCron, cronMatches, expectedSlots, exitOk, exitNote, exitLine,
   windowStart, summarize, liveWriteFlags, flagsLine, heartbeatLine, v2WatchProblems,
-  slotList, healthPost, v2WatchPost, dueDailySlot, REPO, deployLine
+  slotList, healthPost, v2WatchPost, dueDailySlot, REPO, deployLine, behindFromFeed
 };

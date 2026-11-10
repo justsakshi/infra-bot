@@ -1130,7 +1130,18 @@ async function deployState() {
     const commits = Array.isArray(data.commits) ? data.commits : [];
     return { running, behindBy: Number(data.ahead_by), mainSha: commits.length ? commits[commits.length - 1].sha : running };
   } catch (err) {
-    return { running, error: err.response ? `GitHub answered ${err.response.status}` : err.message };
+    const why = err.response ? `GitHub answered ${err.response.status}` : err.message;
+    // The API refuses anonymous calls from a busy shared address. The public commit feed does not.
+    try {
+      const { data } = await axios.get(`https://github.com/${repo}/commits/${branch}.atom`, {
+        timeout: 15000, headers: { 'User-Agent': 'infra-bot' }, responseType: 'text'
+      });
+      const got = health.behindFromFeed(data, running);
+      if (got) return { running, ...got };
+    } catch (err2) {
+      console.warn(`[bot-health] commit feed not read: ${err2.message}`);
+    }
+    return { running, error: why };
   }
 }
 
