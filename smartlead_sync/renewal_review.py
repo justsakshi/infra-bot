@@ -46,7 +46,8 @@ from smartlead.report_sheet import client_label
 SL = "https://server.smartlead.ai/api/v1"
 UA = {"User-Agent": "Mozilla/5.0"}
 PAST = {"DARLEAN", "BELARDI WONG", "MYTHIC"}     # past clients' Smartlead accounts
-TESTS_PER_ACCOUNT = 10
+TESTS_PER_ACCOUNT = 10            # newest one-off classic tests read per account
+WEEKLY_TESTS_PER_ACCOUNT = 20     # scheduled (weekly) classic tests read per account, each at its latest run
 V2_COLLECTION = "v2_verdicts"     # written by v2_weekly.py on Manveen's PC (shared contract, 7 Nov 2026)
 V2_LOOKBACK_DAYS = 120            # enough history for "two weekly fails with no pass since"
 
@@ -121,6 +122,45 @@ def _tag_names(tags) -> list[str]:
     return out
 
 
+def tests_to_read(listing: list[dict], limit: int = TESTS_PER_ACCOUNT,
+                  weekly_limit: int = WEEKLY_TESTS_PER_ACCOUNT) -> list[dict]:
+    """The classic tests worth reading, newest run first, each with ``created_at`` set to the day it last RAN.
+
+    A weekly scheduled test keeps one id and stays ACTIVE: it is never COMPLETED, and its own created_at is
+    the day the schedule was made. Reading only COMPLETED tests by created_at (until 10 Nov 2026) left every
+    weekly result out, so fleet watch said "no test since 12 Oct" about domains tested the day before, and
+    the kill warnings and the renewal note never saw a weekly fail. Every scheduled test that has run is
+    read (newest ``weekly_limit``), plus the newest ``limit`` one-off tests. Pure."""
+    from smartlead.placement_report import select_tests
+    seen: set = set()
+    rows = [t for t in listing if not (t.get("spam_test_id") in seen or seen.add(t.get("spam_test_id")))]
+    made = {t.get("spam_test_id"): str(t.get("created_at") or "") for t in rows}
+
+    def newest(ts: list[dict]) -> list[dict]:      # by run day, then by when the test was made
+        return sorted(ts, key=lambda t: (t["created_at"], made.get(t.get("spam_test_id"), "")), reverse=True)
+    picked = select_tests(rows, "")
+    weekly = newest([t for t in picked if t.get("run_no")])[:weekly_limit]
+    once = newest([t for t in picked if not t.get("run_no")])[:limit]
+    return newest(weekly + once)
+
+
+def _older_scheduled(listing: list[dict], key: str, account: str) -> list[dict]:
+    """Scheduled tests the placement report remembers (Mongo) that have left the newest-50 list.
+    Best effort: without Mongo the newest 50 are still read."""
+    try:
+        import placement_report as pr
+        from smartlead.placement_report import find_scheduled
+        col = pr._collection(pr.SCHEDULED)
+        if col is None:
+            return []
+        older, _lost = find_scheduled(listing, pr._remembered(col, account),
+                                      lambda off: pr._list_tests(key, pr.PAGE, off), page_size=pr.PAGE)
+        return older
+    except Exception as exc:  # noqa: BLE001 - never lose the tests that were listed
+        print(f"  [Facts] older scheduled tests not read for {account}: {str(exc)[:120]}")
+        return []
+
+
 def smartlead_facts(errors: list[str]) -> dict[str, dict]:
     """{email: {in_smartlead, connected, reputation, tags, pct, tested_on, campaigns}}.
 
@@ -162,8 +202,9 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
         try:
             r = httpx.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": key},
                            json={"limit": 50}, headers=UA, timeout=60)
-            tests = sorted((t for t in r.json() if t.get("status") == "COMPLETED"),
-                           key=lambda t: t["created_at"], reverse=True)[:TESTS_PER_ACCOUNT]
+            listing = r.json()
+            listing = listing if isinstance(listing, list) else []
+            tests = tests_to_read(listing + _older_scheduled(listing, key, acc.name))
             # Every test, newest first: the kill rule needs history (two strikes)
             # and each seed's receiving provider (graded on the worse one).
             # Reports are fetched side by side; order is kept (pool.map).
