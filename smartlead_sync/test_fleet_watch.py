@@ -22,13 +22,22 @@ FACTS = {"a@d.com": {"client": "Precise Leads", "connected": True, "campaigns": 
 def test_record_holds_the_inbox_state_for_the_day():
     r = fw.record("PRECISE_LEADS", acct(), FACTS, verdicts={"a@d.com": "GOOD"}, per_domain={"d.com": 3},
                   approved={"a@d.com": (15, "2026-10-14")}, health={"a@d.com": (120, 1)}, today=TODAY,
-                  live={"a@d.com": ["PL 1", "PL 2", "PL 1"]})
+                  live={"a@d.com": ["PL 1", "PL 2", "PL 1"]}, warm={"a@d.com": (90, 12)})
     assert r == {"email": "a@d.com", "domain": "d.com", "date": "2026-10-20", "account": "PRECISE_LEADS",
                  "client": "Precise Leads", "kind": "google", "vendor": "ScaledMail", "setup": True, "limit": 15,
                  "approved_limit": 15, "warmup_on": True, "rep": 98, "connected": True, "campaigns": 1, "sending": True,
                  "ready_on": "2026-10-27", "warmup_started": "2026-10-13", "test_date": "2026-10-13", "test_pct": 95.0,
-                 "verdict": "GOOD", "sent_14d": 120, "bounced_14d": 1,
+                 "verdict": "GOOD", "sent_14d": 120, "bounced_14d": 1, "warm_sent_7d": 90, "warm_spam_7d": 12,
                  "tags": ["Bot-Setup", "ScaledMail-Google"], "live_campaigns": ["PL 1", "PL 2"]}
+    unread = fw.record("PRECISE_LEADS", acct(), FACTS, verdicts={}, per_domain={"d.com": 3}, approved={}, health={}, today=TODAY)
+    assert (unread["warm_sent_7d"], unread["warm_spam_7d"]) == (None, None)       # warm-up stats not read: no numbers
+
+
+def test_warm_counts_reads_the_seven_day_numbers_or_says_nothing():
+    assert fw.warm_counts({"id": 1, "sent_count": 88, "spam_count": 43, "stats_by_date": []}) == (88, 43)
+    assert fw.warm_counts([{"sent_count": "30", "spam_count": None}]) == (30, 0)
+    assert fw.warm_counts(None) is None and fw.warm_counts([]) is None and fw.warm_counts({"id": 1}) is None
+    assert fw.warm_counts({"sent_count": "n/a"}) is None
 
 
 def test_old_inboxes_get_no_ready_date_and_missing_facts_are_empty():
