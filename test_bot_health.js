@@ -16,7 +16,7 @@ const ist = s => new Date(`${s}+05:30`);
 // changed schedule, so it must be on purpose.
 const BEFORE = {
   'noon-summary': ['0 10 * * 1-5'], 'smartlead-sync': ['0 10 * * *'], retest: ['0 11 * * *'],
-  'placement-batch': ['0 10,12,14,16 * * 4'], 'copy-sync': ['30 18 * * 0', '0 5 * * 1,2'],
+  'placement-batch': ['0 10,12,14,16 * * 4'], 'copy-sync': ['30 18 * * 6', '30 18 * * 0', '0 5 * * 1,2'],
   'placement-report': ['0 8-12 * * 1,2'], 'placement-report-final': ['0 13 * * 1,2'],
   'placement-collect': ['30 12,16 * * *'], 'placement-summary': ['50 9 * * *'], 'key-health': ['45 9 * * *'],
   'bounce-protect': ['30 12 * * *'], blacklist: ['0 9 * * 1'], capacity: ['30 9 * * 1'],
@@ -78,7 +78,7 @@ assert.throws(() => h.parseCron('0 10 * *')); n++;
 // Fri 10:05 -> Mon 10:02 IST: the weekend.
 const wk = h.expectedSlots(ist('2026-11-06T10:05:00'), ist('2026-11-09T10:02:00'), {});
 const slotsOf = (list, job) => list.filter(s => s.job === job).map(s => s.slot);
-eq(slotsOf(wk, 'copy-sync'), ['2026-11-08T18:30+05:30', '2026-11-09T05:00+05:30'], 'Sunday evening and Monday morning');
+eq(slotsOf(wk, 'copy-sync'), ['2026-11-07T18:30+05:30', '2026-11-08T18:30+05:30', '2026-11-09T05:00+05:30'], 'Saturday and Sunday evening, Monday morning');
 eq(slotsOf(wk, 'blacklist'), ['2026-11-09T09:00+05:30']);
 eq(slotsOf(wk, 'noon-summary'), ['2026-11-09T10:00+05:30'], 'Monday 10:00 only: Friday is before the window, weekends have none');
 eq(slotsOf(wk, 'fleet-watch').length, 3, 'Fri, Sat and Sun 10:30');
@@ -178,7 +178,13 @@ eq(h.v2WatchProblems(hbAt(tue14, 0.5, '2026-11-09'), tue14), [], 'Monday is in a
 eq(h.v2WatchPost(hbAt(tue14, 0.5, '2026-11-09'), tue14), null);
 let probs = h.v2WatchProblems(hbAt(tue14, 0.5, '2026-11-02'), tue14);
 eq(probs.length, 1);
-ok(probs[0].startsWith('🔴 v2 results for Mon 9 Nov are not in Mongo (the newest night read is Mon 2 Nov)'), probs[0]);
+ok(probs[0].startsWith('🔴 v2 results for the week of Mon 9 Nov are not in Mongo (the newest night read is Mon 2 Nov)'), probs[0]);
+// The weekly tests may start on the Saturday or Sunday before that Monday (10 Nov 2026: a 5-minute gap makes a
+// 50-mailbox test take 33 hours, so they start on Sunday to be in on Monday morning).
+eq(h.weekStart('2026-11-09'), '2026-11-07');
+eq(h.v2WatchProblems(hbAt(tue14, 0.5, '2026-11-08'), tue14), [], 'a Sunday test is this week\'s test');
+eq(h.v2WatchProblems(hbAt(tue14, 0.5, '2026-11-07'), tue14), [], 'so is a Saturday one');
+eq(h.v2WatchProblems(hbAt(tue14, 0.5, '2026-11-06'), tue14).length, 1, 'a Friday test is last week\'s');
 probs = h.v2WatchProblems(hbAt(tue14, 4, '2026-11-09'), tue14);
 ok(probs.length === 1 && probs[0].startsWith('🔴 The PC v2 job last ran 4 h ago (Tue 10 Nov 10:00 IST)'), probs[0]);
 eq(h.v2WatchProblems(hbAt(tue14, 4, '2026-11-02'), tue14).length, 2, 'both');

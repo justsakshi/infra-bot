@@ -310,7 +310,7 @@ def test_the_tuesday_reminder_names_every_dt_test_with_no_result_once(job):
     job.clock = at(10, 12)
     assert job.run() == 0
     (head, _), = job.posts
-    assert head[0] == "v2 results for Monday 9 Nov's tests are not in yet"
+    assert head[0] == "v2 results for the week of Mon 9 Nov are not in yet"
     assert head[1] == "\nMissing: DT PL #1, DT PL #2 (2 tests)."
     job.clock = at(10, 13)
     job.run()
@@ -325,7 +325,7 @@ def test_the_reminder_names_the_dt_test_still_missing_after_others_came_in(job):
     job.clock = at(10, 12)
     assert job.run(act_from="2026-11-16") == 0
     head, _ = job.posts[-1]
-    assert head[0] == "v2 results for Monday 9 Nov: 1 DT test not in yet" and head[1] == "\nMissing: DT PL #2."
+    assert head[0] == "v2 results for the week of Mon 9 Nov: 1 DT test not in yet" and head[1] == "\nMissing: DT PL #2."
     job.clock = at(10, 14)
     job.run(act_from="2026-11-16")
     assert len(job.posts) == 2

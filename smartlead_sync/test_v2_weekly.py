@@ -546,14 +546,28 @@ def test_a_one_email_test_is_reported_not_judged(tmp_path):
 
 def test_a_midweek_test_skips_the_weekly_checks(tmp_path):
     st = fresh_state(tmp_path)
-    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4, "2026-11-07")]
+    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4, "2026-11-05")]              # a Thursday: a one-off test
     f = fleet()
     f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT Melior #3", "status": "ACTIVE", "senders": {55}}}
-    got = {"ingested": ["a.csv"], "pending": [], "nights": {"2026-11-07"}}
+    got = {"ingested": ["a.csv"], "pending": [], "nights": {"2026-11-05"}}
     head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), True, set())
     text = "\n".join(parts)
     assert "No result this week" not in text and "in no DT test" not in text
-    assert "Not a Monday test" in text and head[-1] == "\nNothing needs you."
+    assert "Not a weekly test (those start on a Saturday, Sunday or Monday)" in text and head[-1] == "\nNothing needs you."
+
+
+def test_the_summary_says_live_only_when_every_campaign_sends(tmp_path):
+    """10 Nov 2026: the post said "6 inboxes out of 12 live campaigns" when 3 were sending and 9 were paused."""
+    st = fresh_state(tmp_path)
+    st["results"]["bad@x.com"] = [result(v2.FAIL, 0, 4, "2026-11-09")]
+    f = fleet()
+    f["PRECISE_LEADS"]["camps"][2] = {"name": "PL | B", "status": "PAUSED", "senders": {10, 11}}
+    f["PRECISE_LEADS"]["camps"][3] = {"name": "PL | C", "status": "PAUSED", "senders": {10, 11}}
+    got = {"ingested": ["a.csv"], "pending": [], "nights": {"2026-11-09"}}
+    head, _ = wk.build_report(st, got, wk.plan(st), f, acted(removed={"bad@x.com": [1, 2, 3]}), True, set())
+    assert head[2].startswith("Took 1 inbox out of 3 campaigns (1 sending, 2 paused or draft) · ")
+    head, _ = wk.build_report(st, got, wk.plan(st), f, acted(removed={"bad@x.com": [1]}), True, set())
+    assert head[2].startswith("Took 1 inbox out of 1 live campaign · ")
 
 
 def write_rows(folder: Path, name: str, rows: list[tuple[str, str, str]]):
