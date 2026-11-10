@@ -140,6 +140,14 @@ async def main() -> None:
     # own sheet gets an isolated 'All Inboxes'; clients sharing a sheet share one).
     rows_by_sheet: dict[str, list[dict]] = {}
 
+    # The team's test grid gets each Smart Delivery v2 night first (v2_grid.py), so the Test Status read
+    # below is this week's. Never raises; V2_GRID_SYNC=off makes it a dry run.
+    try:
+        import v2_grid
+        v2_grid.sync(apply=os.getenv("V2_GRID_SYNC", "on").strip().lower() != "off")
+    except Exception as exc:  # noqa: BLE001 - the grid is a report; the sync must go on
+        print(f"[!] v2 grid sync skipped: {exc}")
+
     # Process each account sequentially with its own deliverability data
     failed_accounts: list = []
     for acc in accounts:

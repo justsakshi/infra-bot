@@ -5,8 +5,38 @@ from datetime import date
 from smartlead import usable
 from smartlead.processing import process_inbox_availability
 
+import pytest
+
 T = date(2026, 11, 10)
 PASS = {"verdict": "PASS", "night": "2026-11-05"}
+
+
+@pytest.fixture(autouse=True)
+def _no_date_rule(monkeypatch):
+    """The dated rule (a v2 pass is required from 13 Nov 2026) is off here unless a test turns it on, so these
+    tests read the same on any day."""
+    from smartlead import config
+    monkeypatch.setattr(config, "AVAILABILITY_REQUIRE_V2_PASS_FROM", "off")
+    monkeypatch.setattr(config, "AVAILABILITY_REQUIRE_V2_PASS", False)
+    monkeypatch.setattr(config, "AVAILABILITY_BLOCK_LISTED", False)
+
+
+def test_a_v2_pass_is_required_from_the_start_date_or_when_the_switch_is_on(monkeypatch):
+    from smartlead import config
+    assert usable.require_v2_pass(date(2030, 1, 1)) is False                       # "off"
+    monkeypatch.setattr(config, "AVAILABILITY_REQUIRE_V2_PASS_FROM", "2026-11-13")
+    assert usable.require_v2_pass(date(2026, 11, 12)) is False
+    assert usable.require_v2_pass(date(2026, 11, 13)) is True
+    monkeypatch.setattr(config, "AVAILABILITY_REQUIRE_V2_PASS_FROM", "not a date")
+    assert usable.require_v2_pass(date(2030, 1, 1)) is False
+    monkeypatch.setattr(config, "AVAILABILITY_REQUIRE_V2_PASS", True)
+    assert usable.require_v2_pass(date(2020, 1, 1)) is True
+
+
+def test_the_shipped_start_date_is_13_nov_2026():
+    from smartlead import config
+    src = open(config.__file__, encoding="utf-8").read()
+    assert 'os.getenv("AVAILABILITY_REQUIRE_V2_PASS_FROM", "2026-11-13")' in src
 
 
 def test_a_tagged_inbox_is_never_free_whatever_else_is_known():
@@ -23,11 +53,12 @@ def test_a_failed_v2_test_blocks_and_a_fresh_pass_is_clean():
 
 def test_no_pass_is_a_note_until_the_switch_makes_it_a_block():
     cases = [(None, "no v2 result"), ({"verdict": "WATCH", "night": "2026-11-09"}, "v2 watch on 9 Nov"),
-             ({"verdict": "PASS", "night": "2026-10-27"}, "last v2 pass 27 Oct, older than 8 days")]
+             ({"verdict": "PASS", "night": "2026-10-27"}, "last v2 pass 27 Oct, older than 10 days")]
     for v2, note in cases:
         assert usable.gate([], v2, False, T) == ([], [note])
         assert usable.gate([], v2, False, T, require_v2_pass=True) == (["no_v2_pass"], [note])
-    assert usable.gate([], {"verdict": "PASS", "night": "2026-11-02"}, False, T, require_v2_pass=True) == ([], [])   # day 8
+    assert usable.gate([], {"verdict": "PASS", "night": "2026-10-31"}, False, T, require_v2_pass=True) == ([], [])   # day 10
+    assert usable.gate([], {"verdict": "PASS", "night": "2026-10-30"}, False, T, require_v2_pass=True)[0] == ["no_v2_pass"]
 
 
 def test_a_listed_domain_is_a_note_until_the_switch_makes_it_a_block():

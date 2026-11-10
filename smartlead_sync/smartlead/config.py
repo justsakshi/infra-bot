@@ -34,6 +34,9 @@ MIN_WARMUP_REP_PCT: float = 90.0  # Rule 2: minimum warmup reputation %
 # These two make a warning into a block: a listed sending domain, and no v2 pass in the last 8 days.
 AVAILABILITY_BLOCK_LISTED: bool = os.getenv("AVAILABILITY_BLOCK_LISTED", "false").strip().lower() == "true"
 AVAILABILITY_REQUIRE_V2_PASS: bool = os.getenv("AVAILABILITY_REQUIRE_V2_PASS", "false").strip().lower() == "true"
+# Manveen, 10 Nov 2026: yes to requiring a v2 pass, once that week's results are in (they arrive 11-12 Nov).
+# From this day an inbox with no v2 pass in the last 10 days is BUSY. "off" switches the date rule off.
+AVAILABILITY_REQUIRE_V2_PASS_FROM: str = os.getenv("AVAILABILITY_REQUIRE_V2_PASS_FROM", "2026-11-13").strip()
 MAX_INBOX_LIMIT: int = 35         # Max safe sending limit per inbox per day
 TEST_STALE_DAYS: int = 14         # deliverability test older than this -> "stale"
 
