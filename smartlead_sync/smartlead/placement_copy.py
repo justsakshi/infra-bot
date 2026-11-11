@@ -17,6 +17,15 @@ receive "Hi ," or literal braces, which is itself a spam signal. Every field is
 therefore filled from ONE real lead of the source campaign that has all of them
 filled, so the test sends one complete, real-looking email. If no lead has them
 all, the refresh is skipped rather than sent degraded.
+
+Three kinds of test campaign use this module (copy_sync.py decides which is which):
+the weekly INBOX tests ("DT <client> #n") get the fixed neutral note below, never
+campaign copy; the standing test campaigns and each client's COPY check
+("DT <client> copy check") get the live copy. A copy check can also be loaded from
+one named campaign, a draft included, to test an email before it starts
+(``refresh_test_campaign(source_campaign_id=...)``, refused for another client's
+campaign), and its senders are the client's inboxes that pass the neutral note now
+(``pick_copy_check_senders``).
 """
 from __future__ import annotations
 
@@ -70,6 +79,63 @@ async def write_neutral_note(c, account: str, test_campaign_id: int, step_id: in
     await c.save_campaign_sequence_variants(str(test_campaign_id), step_id, variants)
     await c.update_campaign_settings(str(test_campaign_id), {"track_settings": list(_TRACKING_OFF_WRITE)})
     return {"written": True, "source": None, "hash": digest, "reason": "neutral note written, tracking off"}
+
+
+# The COPY check ("DT <client> copy check", one small campaign per client) is the other half: it carries the client's
+# real first email and sends it from a few inboxes that just passed the neutral note, so a bad result there is the
+# email's, not the inbox's. Its senders are picked here; copy_sync.py keeps the campaign in step every run.
+COPY_CHECK_PER_TYPE = 5         # at most this many Google-hosted and this many Outlook-hosted senders
+COPY_CHECK_PER_DOMAIN = 2       # at most this many senders of one sending domain
+COPY_CHECK_MAX_AGE_DAYS = 10    # the pass must be this recent: last week's test, with room for a late download
+_HOSTED = ("GMAIL", "OUTLOOK")  # Smartlead inbox types that are picked; an SMTP inbox never is
+_JUDGED = ("PASS", "WATCH", "FAIL")
+
+
+def _tag_names(tags) -> list[str]:
+    return [str((t.get("tag_name") or t.get("name") or "") if isinstance(t, dict) else t) for t in (tags or [])]
+
+
+def pick_copy_check_senders(inboxes: list[dict], verdicts: list[dict], today) -> list[int]:
+    """The inbox ids a client's copy-check campaign should hold. Pure.
+
+    ``inboxes``: that client's Smartlead email accounts (from_email, id, type, is_smtp_success, is_imap_success,
+    tags). ``verdicts``: Mongo v2_verdicts rows (email, night, verdict), already the verdict at the inbox's own
+    provider. An inbox is picked when it is Google- or Outlook-hosted, connected, carries no tag starting
+    "do not use", and its NEWEST judged verdict is PASS and at most COPY_CHECK_MAX_AGE_DAYS old. At most
+    COPY_CHECK_PER_TYPE per type and COPY_CHECK_PER_DOMAIN per sending domain, taken by domain then address, so
+    the same inboxes are picked run after run while they keep passing."""
+    from datetime import date
+
+    newest: dict[str, tuple[str, str]] = {}
+    for v in verdicts:
+        email, night = str(v.get("email") or "").strip().lower(), str(v.get("night") or "")
+        if email and night and v.get("verdict") in _JUDGED and night >= newest.get(email, ("", ""))[0]:
+            newest[email] = (night, v["verdict"])
+    ready = []
+    for a in inboxes:
+        email = str(a.get("from_email") or "").strip().lower()
+        kind = str(a.get("type") or "").strip().upper()
+        night, verdict = newest.get(email, ("", ""))
+        if ("@" not in email or a.get("id") is None or kind not in _HOSTED or verdict != "PASS"
+                or not (a.get("is_smtp_success") and a.get("is_imap_success"))
+                or any(t.strip().lower().startswith("do not use") for t in _tag_names(a.get("tags")))):
+            continue
+        try:
+            age = (today - date.fromisoformat(night)).days
+        except ValueError:
+            continue
+        if age <= COPY_CHECK_MAX_AGE_DAYS:
+            ready.append((email.rsplit("@", 1)[1], email, kind, int(a["id"])))
+    picked: list[int] = []
+    per_type: dict[str, int] = {}
+    per_domain: dict[str, int] = {}
+    for domain, _, kind, inbox_id in sorted(ready):
+        if per_type.get(kind, 0) >= COPY_CHECK_PER_TYPE or per_domain.get(domain, 0) >= COPY_CHECK_PER_DOMAIN:
+            continue
+        per_type[kind] = per_type.get(kind, 0) + 1
+        per_domain[domain] = per_domain.get(domain, 0) + 1
+        picked.append(inbox_id)
+    return picked
 
 
 def resolve_merge_fields(text: str, sample_fields: dict,
@@ -241,74 +307,106 @@ def first_signature(accounts: list[dict]) -> str:
     return ""
 
 
+def named_source(campaigns: list[dict], source_id: int, client_id=_ANY, exclude_ids: tuple = (),
+                 skip_words: tuple = ()) -> tuple[dict | None, str]:
+    """The campaign named with --source, or (None, why it is refused). Any status counts, a draft too: checking
+    an email before it starts is the point. Never a test campaign, and never another client's (``client_id`` and
+    ``skip_words`` as in ``eligible_sources``): that would grade one client's email under another's name."""
+    camp = next((c for c in campaigns if str(c.get("id")) == str(source_id)), None)
+    if camp is None:
+        return None, f"source campaign {source_id} is not in this account; kept current copy"
+    name = str(camp.get("name", "")).lower()
+    if int(source_id) in {int(i) for i in exclude_ids} or name.startswith("dt "):
+        return None, f"source campaign {source_id} is a test campaign; kept current copy"
+    if (client_id is not _ANY and camp.get("client_id") != client_id) or any(w in name for w in skip_words):
+        return None, f"source campaign {source_id} belongs to another client; kept current copy"
+    return camp, "named with --source"
+
+
+async def _most_active_source(c, campaigns: list[dict], test_campaign_id: int, source_client_id,
+                              skip_words: tuple) -> tuple[dict | None, str]:
+    """The client's campaign that sent the most this week, else last week (``choose_most_active``), or
+    (None, why none). ``c`` is an open Smartlead client; sends and lead progress are read from it."""
+    from datetime import date, timedelta
+
+    candidates = eligible_sources(campaigns, client_id=source_client_id,
+                                  exclude_ids=(int(test_campaign_id),), skip_words=skip_words)
+    today = date.today()
+    unread: list = []
+
+    async def sent(cs, since, until):
+        out = {}
+        for camp in cs:
+            an = None
+            for wait in (0, 5, 20):  # Smartlead throttles hard; retry before giving up
+                if wait:
+                    await asyncio.sleep(wait)
+                try:
+                    an = await c.get_analytics_by_date(str(camp["id"]), since.isoformat(),
+                                                       until.isoformat())
+                    break
+                except Exception:  # noqa: BLE001 - retried, then reported below
+                    an = None
+            if an is None:
+                unread.append(camp["id"])
+            else:
+                out[camp["id"]] = int(an.get("sent_count") or 0)
+        return out
+
+    # Only campaigns that could have sent in the last 14 days: active ones, plus
+    # paused / completed ones whose status changed in the last 21 days.
+    cutoff = (today - timedelta(days=21)).isoformat()
+    pool = [x for x in candidates if str(x.get("status", "")).upper() == "ACTIVE"
+            or str(x.get("updated_at") or "9999")[:10] >= cutoff]
+    this_week = await sent(pool, today - timedelta(days=7), today)
+    last_week = {}
+    if not any(this_week.values()):
+        last_week = await sent(pool, today - timedelta(days=14), today - timedelta(days=8))
+    # Lead progress, only for campaigns that sent: leads not started or mid-sequence.
+    leads_left = {}
+    for x in pool:
+        if str(x.get("status", "")).upper() == "ACTIVE" and (this_week.get(x["id"]) or last_week.get(x["id"])):
+            for wait in (0, 5, 20):
+                if wait:
+                    await asyncio.sleep(wait)
+                try:
+                    st = (await c.get_campaign_analytics(str(x["id"]))).get("campaign_lead_stats") or {}
+                    leads_left[x["id"]] = int(st.get("notStarted") or 0) + int(st.get("inprogress") or 0)
+                    break
+                except Exception:  # noqa: BLE001 - retried, then reported below
+                    pass
+            else:
+                unread.append(x["id"])
+    if unread:
+        # An unread number could change the pick: guessing would copy the wrong one.
+        return None, f"could not read sends / lead progress for campaign(s) {unread}; kept current copy"
+    return choose_most_active(pool, this_week, last_week, leads_left)
+
+
 async def refresh_test_campaign(acc, test_campaign_id: int, step_id: int,
                                 store, dry_run: bool = False,
-                                source_client_id=_ANY, skip_words: tuple = ()) -> dict:
+                                source_client_id=_ANY, skip_words: tuple = (),
+                                source_campaign_id: int | None = None) -> dict:
     """Rewrite the test campaign's step from the client's campaign that sent the
-    most emails this week, else last week (``choose_most_active``).
+    most emails this week, else last week (``choose_most_active``). With
+    ``source_campaign_id`` it is rewritten from that one campaign instead (a copy
+    check of an email before it starts); a campaign that is not this client's is
+    refused (``named_source``).
 
     Returns {"written": bool, "source": campaign id or None, "hash": str,
-    "reason": str}. Never raises: a refresh that cannot be done safely is
+    "reason": str}; "hash" is empty whenever the copy was not, and would not be,
+    written. Never raises: a refresh that cannot be done safely is
     skipped and the previous copy stays in place.
     """
     from smartlead.api import SmartleadClient
 
-    from datetime import date, timedelta
-
     async with SmartleadClient(acc.api_key, acc.name) as c:
-        candidates = eligible_sources(await c.list_campaigns(), client_id=source_client_id,
-                                      exclude_ids=(int(test_campaign_id),), skip_words=skip_words)
-        today = date.today()
-        unread: list = []
-
-        async def sent(cs, since, until):
-            out = {}
-            for camp in cs:
-                an = None
-                for wait in (0, 5, 20):  # Smartlead throttles hard; retry before giving up
-                    if wait:
-                        await asyncio.sleep(wait)
-                    try:
-                        an = await c.get_analytics_by_date(str(camp["id"]), since.isoformat(),
-                                                           until.isoformat())
-                        break
-                    except Exception:  # noqa: BLE001 - retried, then reported below
-                        an = None
-                if an is None:
-                    unread.append(camp["id"])
-                else:
-                    out[camp["id"]] = int(an.get("sent_count") or 0)
-            return out
-
-        # Only campaigns that could have sent in the last 14 days: active ones, plus
-        # paused / completed ones whose status changed in the last 21 days.
-        cutoff = (today - timedelta(days=21)).isoformat()
-        pool = [x for x in candidates if str(x.get("status", "")).upper() == "ACTIVE"
-                or str(x.get("updated_at") or "9999")[:10] >= cutoff]
-        this_week = await sent(pool, today - timedelta(days=7), today)
-        last_week = {}
-        if not any(this_week.values()):
-            last_week = await sent(pool, today - timedelta(days=14), today - timedelta(days=8))
-        # Lead progress, only for campaigns that sent: leads not started or mid-sequence.
-        leads_left = {}
-        for x in pool:
-            if str(x.get("status", "")).upper() == "ACTIVE" and (this_week.get(x["id"]) or last_week.get(x["id"])):
-                for wait in (0, 5, 20):
-                    if wait:
-                        await asyncio.sleep(wait)
-                    try:
-                        st = (await c.get_campaign_analytics(str(x["id"]))).get("campaign_lead_stats") or {}
-                        leads_left[x["id"]] = int(st.get("notStarted") or 0) + int(st.get("inprogress") or 0)
-                        break
-                    except Exception:  # noqa: BLE001 - retried, then reported below
-                        pass
-                else:
-                    unread.append(x["id"])
-        if unread:
-            # An unread number could change the pick: guessing would copy the wrong one.
-            return {"written": False, "source": None, "hash": "",
-                    "reason": f"could not read sends / lead progress for campaign(s) {unread}; kept current copy"}
-        source, why = choose_most_active(pool, this_week, last_week, leads_left)
+        campaigns = await c.list_campaigns()
+        if source_campaign_id is not None:
+            source, why = named_source(campaigns, source_campaign_id, source_client_id,
+                                       (int(test_campaign_id),), skip_words)
+        else:
+            source, why = await _most_active_source(c, campaigns, test_campaign_id, source_client_id, skip_words)
         if not source:
             return {"written": False, "source": None, "hash": "", "reason": why}
         sid = source["id"]

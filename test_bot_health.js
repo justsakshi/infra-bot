@@ -16,7 +16,7 @@ const ist = s => new Date(`${s}+05:30`);
 // changed schedule, so it must be on purpose.
 const BEFORE = {
   'noon-summary': ['0 10 * * 1-5'], 'smartlead-sync': ['0 10 * * *'], retest: ['0 11 * * *'],
-  'placement-batch': ['0 10,12,14,16 * * 4'], 'copy-sync': ['30 18 * * 6', '30 18 * * 0', '0 5 * * 1,2'],
+  'placement-batch': ['0 10,12,14,16 * * 4'], 'copy-sync': ['30 18 * * 5', '30 18 * * 6', '30 18 * * 0', '0 5 * * 1,2'],   // Fri added 11 Nov 2026: the weekly tests may start on Saturday
   'placement-report': ['0 8-12 * * 1,2'], 'placement-report-final': ['0 13 * * 1,2'],
   'placement-collect': ['30 12,16 * * *'], 'placement-summary': ['50 9 * * *'], 'key-health': ['45 9 * * *'],
   'bounce-protect': ['30 12 * * *'], blacklist: ['0 9 * * 1'], capacity: ['30 9 * * 1'],
@@ -79,7 +79,7 @@ assert.throws(() => h.parseCron('0 10 * *')); n++;
 // Fri 10:05 -> Mon 10:02 IST: the weekend.
 const wk = h.expectedSlots(ist('2026-11-06T10:05:00'), ist('2026-11-09T10:02:00'), {});
 const slotsOf = (list, job) => list.filter(s => s.job === job).map(s => s.slot);
-eq(slotsOf(wk, 'copy-sync'), ['2026-11-07T18:30+05:30', '2026-11-08T18:30+05:30', '2026-11-09T05:00+05:30'], 'Saturday and Sunday evening, Monday morning');
+eq(slotsOf(wk, 'copy-sync'), ['2026-11-06T18:30+05:30', '2026-11-07T18:30+05:30', '2026-11-08T18:30+05:30', '2026-11-09T05:00+05:30'], 'Friday, Saturday and Sunday evening, Monday morning');
 eq(slotsOf(wk, 'blacklist'), ['2026-11-09T09:00+05:30']);
 eq(slotsOf(wk, 'noon-summary'), ['2026-11-09T10:00+05:30'], 'Monday 10:00 only: Friday is before the window, weekends have none');
 eq(slotsOf(wk, 'fleet-watch').length, 3, 'Fri, Sat and Sun 10:30');

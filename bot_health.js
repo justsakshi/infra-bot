@@ -28,6 +28,7 @@ const PC_TASK = 'InfraBot v2 weekly';  // the Windows scheduled task that runs v
 // not expected. ok: exit codes that are not a failure (default [0]). codes: what an exit code means.
 const JOBS = [
   { job: 'dt-senders', cron: '0 6 * * *', title: 'DT senders' },
+  { job: 'copy-sync', cron: '30 18 * * 5', title: 'Test-copy sync' },   // before a v2 test that starts on Saturday
   { job: 'copy-sync', cron: '30 18 * * 6', title: 'Test-copy sync' },   // before a v2 test that starts on Sunday
   { job: 'copy-sync', cron: '30 18 * * 0', title: 'Test-copy sync' },
   { job: 'copy-sync', cron: '0 5 * * 1,2', title: 'Test-copy sync' },
