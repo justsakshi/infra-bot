@@ -806,11 +806,12 @@ class ZapmailClient:
             "GET", "/v2/placement-tests/orders",
             params=_pruned({"page": page, "limit": limit}))
 
-    async def placement_report(self, cart_order_id: str | int) -> dict:
-        """Detailed report for one cart order. READ-ONLY."""
+    async def placement_report(self, cart_order_id: str | int, *, page: int | None = None,
+                               limit: int | None = None) -> dict:
+        """Detailed report for one cart order (10 emails a page unless ``limit`` is given). READ-ONLY."""
         return await self._request(
             "GET", "/v2/placement-tests/report",
-            params={"cartOrderId": cart_order_id})
+            params=_pruned({"cartOrderId": cart_order_id, "page": page, "limit": limit}))
 
     async def placement_eligible_mailboxes(
         self, *, page: int = 1, limit: int = 50, status: str | None = None,
