@@ -99,12 +99,6 @@ def widest(periods: list[Period]) -> tuple[date, date]:
     return min(p.start for p in periods), max(p.end for p in periods)
 
 
-def periods_window(periods: list[Period]) -> tuple[datetime, datetime]:
-    """[first, last) over every period, as UTC datetimes."""
-    lo, hi = widest(periods)
-    return Period("all", lo, hi).window
-
-
 # ── email ──────────────────────────────────────────────────────────────────
 
 def _kind(category) -> str:
@@ -122,25 +116,23 @@ def _kind(category) -> str:
     return "other"
 
 
-def email_counts(stats: list[dict], period: Period,
-                 reply_times: dict[str, list] | None = None) -> dict:
+def email_counts(stats: list[dict], period: Period) -> dict:
     """One campaign's numbers for one period, from its per-email statistics.
 
     sent: emails whose sent_time falls in the period (Smartlead's per-day
     sent_count, exactly). reached: of those, first emails (sequence 1).
     bounced: of those, the ones that bounced (Smartlead's bounce_count).
-    replies: people who wrote during the period, one each, by their category.
-    `reply_times` (lead -> times of their messages, from the message history)
-    counts someone again on a later day they write; statistics keep only the
-    first reply (30 Oct: a Laurie lead who first replied on the 28th wrote
-    again). Bounce notices (a reply on a bounced email, tagged or not yet:
-    30 Oct had two untagged, seconds after sending) are not replies;
-    out-of-office replies are counted on their own.
+    replies: people whose FIRST reply falls in the period, one each, by their
+    category (Manveen 11 Nov: "count first reply and not all replies"; from 30
+    Oct to 11 Nov a later message counted the person again that day). Bounce
+    notices (a reply on a bounced email, tagged or not yet: 30 Oct had two
+    untagged, seconds after sending) are not replies; out-of-office replies
+    are counted on their own.
     """
     out = dict.fromkeys(EMAIL_FIELDS, 0)
-    kinds: dict[str, str] = {}
     category: dict[str, str] = {}
     touch: dict[str, int] = {}
+    first: dict[str, datetime] = {}
     for r in stats:
         if period.holds(r.get("sent_time")):
             out["sent"] += 1
@@ -149,24 +141,21 @@ def email_counts(stats: list[dict], period: Period,
             if r.get("is_bounced"):
                 out["bounced"] += 1
         email = str(r.get("lead_email") or "").strip().lower()
-        if not email or not r.get("reply_time"):
+        t = parse_time(r.get("reply_time"))
+        if not email or t is None or r.get("is_bounced"):
             continue
-        kind = "bounce" if r.get("is_bounced") else _kind(r.get("lead_category"))
-        if kind != "bounce":
-            touch[email] = max(touch.get(email, 0), int(r.get("sequence_number") or 1))
-        if kind != "bounce" and category.get(email, "other") == "other":
+        kind = _kind(r.get("lead_category"))
+        if kind == "bounce":
+            continue
+        touch[email] = max(touch.get(email, 0), int(r.get("sequence_number") or 1))
+        if category.get(email, "other") == "other":
             category[email] = kind
-        if kind == "ooo" and period.holds(r.get("reply_time")):
-            kinds[email] = kind
-        elif (kind != "bounce" and (reply_times is None or reply_times.get(email, []) is None)
-              and period.holds(r.get("reply_time"))):
-            kinds.setdefault(email, kind)
-    if reply_times is not None:
-        for email, times in reply_times.items():
-            if times and any(period.holds(t) for t in times) \
-                    and category.get(email) not in (None, "ooo"):
-                kinds[email] = category[email]
-    for email, kind in kinds.items():
+        if email not in first or t < first[email]:
+            first[email] = t
+    for email, t in first.items():
+        if not period.holds(t):
+            continue
+        kind = category.get(email, "other")
         if kind == "ooo":
             out["out_of_office"] += 1
             continue
@@ -176,48 +165,6 @@ def email_counts(stats: list[dict], period: Period,
         if touch.get(email, 1) >= 2:
             out["later_touch"] += 1
     return out
-
-
-def repliers(stats: list[dict], since: datetime) -> list[str]:
-    """Leads with a real reply (not a bounce notice or out-of-office) since
-    `since`: the ones whose message history is read."""
-    out = set()
-    for r in stats:
-        t = parse_time(r.get("reply_time"))
-        if t and t >= since and r.get("lead_email") and not r.get("is_bounced") \
-                and _kind(r.get("lead_category")) not in ("bounce", "ooo"):
-            out.add(str(r["lead_email"]).strip().lower())
-    return sorted(out)
-
-
-async def reply_times(slc, cid: str, emails: list[str]) -> tuple[dict[str, list[str] | None], list[str]]:
-    """(lead -> times of their own messages in the campaign, leads whose read
-    failed). The reply button's source: replies from another address are not
-    theirs. None for a lead whose history is unavailable."""
-    from smartlead.reply_view import from_lead
-    sem = asyncio.Semaphore(4)
-
-    async def one(email):
-        # None: email_counts falls back to the lead's first reply time. A lead
-        # deleted from Smartlead has no history to read (2 Nov: three on Aaron
-        # Open tracking) and that is expected; a failed read is counted in
-        # `unread` so the post can say so.
-        try:
-            async with sem:
-                lead = await slc._get("/leads/", {"email": email})
-                lid = (lead or {}).get("id")
-                if not lid:
-                    return email, None
-                hist = await slc._get(f"/campaigns/{cid}/leads/{lid}/message-history")
-        except Exception:  # noqa: BLE001 - one lead must not cost the campaign
-            unread.append(email)
-            return email, None
-        return email, [m.get("time") for m in (hist or {}).get("history") or []
-                       if m.get("type") == "REPLY" and from_lead(m.get("from"), email)]
-
-    unread: list[str] = []
-    out = dict(await asyncio.gather(*(one(e) for e in emails)))
-    return out, unread
 
 
 def moved(counts: dict) -> bool:
@@ -236,9 +183,6 @@ async def _smartlead(periods: list[Period], failed: list[str], log: str) -> list
     check_from = min(lo, hi - timedelta(days=30))
     if (hi - check_from).days > 30:
         check_from = lo
-    # Leads who replied within 30 days before the period: the reply button's
-    # look-back, so a later message from them is counted the same way.
-    since = datetime.combine(lo, time.min, timezone.utc) - timedelta(days=30)
     rows: list[dict] = []
     for acc in discover_accounts():
         if not cm.account_in_scope(acc.name, CAMPAIGN_METRICS_CLIENTS):
@@ -262,21 +206,15 @@ async def _smartlead(periods: list[Period], failed: list[str], log: str) -> list
                     camp, cid, client = item
                     # One cheap call first: most campaigns did nothing in the
                     # period, and their statistics run to thousands of rows.
-                    # The range reaches back 30 days (Smartlead's maximum) so a
-                    # campaign whose only news is a second message from an
-                    # earlier replier is still read.
+                    # The range reaches back 30 days (Smartlead's maximum).
                     a = await slc.get_analytics_by_date(cid, check_from.isoformat(), hi.isoformat())
                     if not any(int(a.get(f) or 0) for f in
                                ("sent_count", "total_reply_count", "reply_count", "bounce_count")):
                         return None
                     stats = await slc.get_campaign_statistics(cid)
-                    times, unread = await reply_times(slc, cid, repliers(stats, since))
-                    if unread:
-                        failed.append(f"{camp.get('name', '')}: {len(unread)} replier(s)' messages, "
-                                      f"counted by their first reply instead")
                     return {"client": client, "channel": "Email", "platform": "Smartlead",
                             "campaign": str(camp.get("name", "")), "campaign_id": cid,
-                            "counts": {p.key: email_counts(stats, p, times) for p in periods}}
+                            "counts": {p.key: email_counts(stats, p) for p in periods}}
 
                 found = await _each_with_retry(
                     wanted, fetch, lambda it, a=acc.name: f"Smartlead {a}: {it[0].get('name', '')}", log,
@@ -293,9 +231,8 @@ async def _smartlead(periods: list[Period], failed: list[str], log: str) -> list
 
 def heyreach_counts(overall: dict) -> dict:
     """GetOverallStats for a period. Its reply figure counts a conversation
-    once, on its first reply, so _heyreach replaces it with the people who
-    wrote in the period, from the inbox the reply button reads (27 and 29
-    Oct: a lead writing again showed 1 where the button had 2)."""
+    once, on its first reply, which is what the post counts (Manveen 11 Nov).
+    From 27 Oct to 11 Nov it was replaced by everyone who wrote in the period."""
     o = (overall or {}).get("overallStats") or {}
     n = lambda k: int(o.get(k) or 0)  # noqa: E731
     return {"invites": n("connectionsSent"), "accepted": n("connectionsAccepted"),
@@ -318,17 +255,13 @@ async def _heyreach(periods: list[Period], failed: list[str], log: str) -> list[
             async with HeyReachClient(ws.api_key, ws.name) as hrc:
                 camps = await hrc.list_campaigns()
 
-                async def fetch(camp, hrc=hrc, client=cm.display_client(ws.name)):
-                    from smartlead.reply_view import _heyreach as inbox, _who
-                    first, last = periods_window(periods)
-                    messages = await inbox(client, str(camp["id"]), first, last)
+                async def fetch(camp, hrc=hrc):
                     counts = {}
                     for p in periods:
                         lo, hi = p.window
                         counts[p.key] = heyreach_counts(await hrc.get_overall_stats(
                             camp["id"], start=lo.isoformat().replace("+00:00", "Z"),
                             end=(hi - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")))
-                        counts[p.key]["replies"] = len({_who(m) for m in messages if p.holds(m.get("time"))})
                     if not any(moved(c) for c in counts.values()):
                         return None
                     return {"client": cm.display_client(ws.name), "channel": "LinkedIn",
@@ -344,13 +277,25 @@ async def _heyreach(periods: list[Period], failed: list[str], log: str) -> list[
     return rows
 
 
-def log_reply_people(replies: list[dict]) -> tuple[int, int]:
-    """(people, positive people) from reply-log rows (Expandi / Waalaxy)."""
-    who: dict[str, str] = {}
-    for r in replies:
-        who[str(r.get("lead") or r.get("name") or "").strip().lower()] = str(r.get("category") or "")
-    pos = sum(1 for c in who.values() if c.strip().lower() in ("interested", "positive"))
-    return len(who), pos
+def _person(r: dict) -> str:
+    return str(r.get("lead") or r.get("name") or "").strip().lower()
+
+
+def first_reply_people(every: list[dict], window: list[dict]) -> tuple[int, int]:
+    """(people, positive people) whose first row in the whole reply log
+    (`every`, one campaign) is among `window`, the rows inside the period.
+    A person who writes again later is not counted again (Manveen 11 Nov).
+    Positive if any of their rows is."""
+    first: dict[str, str] = {}
+    pos: set[str] = set()
+    for r in every:
+        k, t = _person(r), str(r.get("time") or "")
+        if k not in first or t < first[k]:
+            first[k] = t
+        if str(r.get("category") or "").strip().lower() in ("interested", "positive"):
+            pos.add(k)
+    people = {k for r in window if first.get(k := _person(r)) == str(r.get("time") or "")}
+    return len(people), len(people & pos)
 
 
 def expandi_counts(messengers: list[dict], period: Period) -> dict:
@@ -361,6 +306,30 @@ def expandi_counts(messengers: list[dict], period: Period) -> dict:
     inside = lambda v: (d := _day(v)) is not None and lo <= d <= hi  # noqa: E731
     return {"invites": sum(1 for m in messengers if inside(m.get("invited_at"))),
             "accepted": sum(1 for m in messengers if inside(m.get("connected_at")))}
+
+
+async def _expandi_leads(exc_client, camp: dict, tries: int = 2) -> tuple[list[dict], str]:
+    """(every lead row of a campaign across its LinkedIn accounts, why the
+    read fell short or ""). A short read is tried again once: one failed page
+    out of hundreds should not cost the day's numbers."""
+    why = ""
+    for _ in range(tries):
+        leads: list[dict] = []
+        why = ""
+        for acc_id, inst_id in camp.get("_instance_refs", []):
+            try:
+                got, done = await exc_client.list_messengers(acc_id, inst_id, page_size=100,
+                                                             max_pages=1000)
+            except Exception as exc:  # noqa: BLE001
+                got, done = [], False
+                exc_client.last_error = type(exc).__name__
+            if not done:
+                why = getattr(exc_client, "last_error", "") or "stopped early"
+                break
+            leads += got
+        if not why:
+            return leads, ""
+    return [], why
 
 
 async def _expandi(periods: list[Period], failed: list[str], log: str) -> list[dict]:
@@ -400,25 +369,32 @@ async def _expandi(periods: list[Period], failed: list[str], log: str) -> list[d
                         raw.extend(await exc_client.list_campaigns(acc["id"]))
                 camps = [c for c in _merge_by_name(raw) if not c.get("archived")
                          and int((c.get("stats") or {}).get("people_in_campaign") or 0)]
+                short: list[str] = []
                 for camp in camps:
                     name = str(camp.get("name", "")).strip()
-                    leads: list[dict] = []
-                    for acc_id, inst_id in camp.get("_instance_refs", []):
-                        got, done = await exc_client.list_messengers(
-                            acc_id, inst_id, page_size=100, max_pages=1000)
-                        if not done:
-                            raise RuntimeError(f"lead list of {name} not fully read")
-                        leads += got
-                    store.save(ws.name, name, leads)      # keeps the 09:00 cache current too
+                    leads, why = await _expandi_leads(exc_client, camp)
+                    if why:
+                        # Until 11 Nov one short read dropped every BettrData
+                        # LinkedIn number, replies too (4-10 Nov posts said
+                        # "no activity"). Now only this campaign's invites and
+                        # accepts are left out; replies come from the log.
+                        print(f"{log} Expandi {ws.name}: {name} lead list not fully read ({why})")
+                        short.append(why)
+                    else:
+                        store.save(ws.name, name, leads)  # keeps the 09:00 cache current too
+                    every = expandi_log_replies(log_values, name, None, None)
                     counts = {}
                     for p in periods:
                         lo, hi = p.window
-                        people, pos = log_reply_people(expandi_log_replies(log_values, name, lo, hi))
-                        counts[p.key] = {**expandi_counts(leads, p), "replies": people,
-                                         "positive": pos}
+                        people, pos = first_reply_people(every, expandi_log_replies(log_values, name, lo, hi))
+                        known = expandi_counts(leads, p) if not why else {"invites": None, "accepted": None}
+                        counts[p.key] = {**known, "replies": people, "positive": pos}
                     if any(moved(c) for c in counts.values()):
                         rows.append({"client": client, "channel": "LinkedIn", "platform": "Expandi",
                                      "campaign": name, "campaign_id": name, "counts": counts})
+                if short:
+                    failed.append(f"Expandi {ws.name} invites and accepts for {len(short)} of "
+                                  f"{len(camps)} campaigns ({short[0]}); replies are counted")
         except Exception as exc:  # noqa: BLE001
             print(f"{log} Expandi {ws.name} failed: {exc}")
             failed.append(f"Expandi {ws.name}")
@@ -444,7 +420,8 @@ def waalaxy_rows(replies_log: list[list[str]], accepts_log: list[list[str]],
         counts = {}
         for p in periods:
             lo, hi = p.window
-            people, pos = log_reply_people(wl.replies(replies_log, name, lo, hi))
+            people, pos = first_reply_people(wl.replies(replies_log, name, None, None),
+                                             wl.replies(replies_log, name, lo, hi))
             # Accepts exist only for campaigns with the CRM Sync step: for
             # the rest the number is unknown, not 0.
             acc = (sum(1 for r in accepts if r["Campaign"].strip() == name
