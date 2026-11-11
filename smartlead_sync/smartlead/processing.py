@@ -259,6 +259,7 @@ async def fetch_account_data(
     try:
         raw_accounts = await client.list_email_accounts()
         all_accounts = await client.fetch_all_account_details(raw_accounts) if raw_accounts else []
+        all_accounts = usable.carry_tags(raw_accounts, all_accounts)   # the detail call returns no tags
         print(f"  [{name}] {len(all_accounts)}/{len(raw_accounts)} account details fetched")
     except Exception as exc:
         print(f"  [!] Account detail fetch failed: {exc}")
