@@ -175,36 +175,37 @@ LISTED_26 = {"domain": "x.com", "date": "2026-10-26", "listed_on": ["Spamhaus DB
 
 
 def _dbl_verdict(monkeypatch, *rows):
+    """(verdict, the row's Spamhaus note) for an inbox that passed v2 on 9 Nov."""
     _use(monkeypatch, blacklist_checks=FakeCol(rows))
     dbl = cli.dbl_listings({"x.com"}, [])["x.com"]
     facts = {"in_smartlead": True, "connected": True, "reputation": "100%", "tags": []}
-    return rr.judge_inbox("a@x.com", facts, None, T, True, PASS_9, dbl)
+    return rr.judge_inbox("a@x.com", facts, None, T, True, PASS_9, dbl)[0], rr.dbl_note(dbl)
 
 
-def test_unread_dbl_in_the_newest_check_is_never_clean(monkeypatch):
-    """Review R2 / audit BLOCKLIST-4: blacklist_monitor puts "Spamhaus DBL" in inconclusive_zones
-    (control probe failed) or lookup_errors (lookup failed). That is unknown, not clean."""
+def test_a_dbl_listing_is_a_note_and_never_changes_the_verdict(monkeypatch):
+    """Manveen, 11 Nov 2026: the v2 result decides; the listing is a note. An unread check
+    (blacklist_monitor puts "Spamhaus DBL" in inconclusive_zones or lookup_errors) is still never
+    read as clean: the note falls back to the newest check that could read DBL."""
     inconclusive_2 = {"domain": "x.com", "date": "2026-11-02", "listed_on": [], "lookup_errors": [],
                       "inconclusive_zones": ["Spamhaus DBL"]}
     assert _dbl_verdict(monkeypatch, LISTED_26, inconclusive_2) == (
-        "CHECK", "Spamhaus DBL could not be read in the check of 2 Nov; the check of 26 Oct listed the domain")
+        "KEEP", "Spamhaus DBL could not be read in the check of 2 Nov; the check of 26 Oct listed the domain")
     errored_2 = {**inconclusive_2, "lookup_errors": ["Spamhaus DBL"], "inconclusive_zones": []}
     assert _dbl_verdict(monkeypatch, errored_2, LISTED_26)[1].startswith("Spamhaus DBL could not be read in the "
                                                                           "check of 2 Nov; the check of 26 Oct")
-    # no check ever read DBL: CHECK
-    assert _dbl_verdict(monkeypatch, inconclusive_2) == (
-        "CHECK", "Spamhaus DBL could not be read in the check of 2 Nov, and no earlier check read it")
-    # the newest check that could read DBL found it clean: nothing stops a keep
+    # no check ever read DBL: nothing is known, so no note
+    assert _dbl_verdict(monkeypatch, inconclusive_2) == ("KEEP", "")
+    # the newest check that could read DBL found it clean: no note
     clean_26 = {**LISTED_26, "listed_on": []}
-    assert _dbl_verdict(monkeypatch, clean_26, inconclusive_2) == ("KEEP", "passed v2 on 9 Nov")
+    assert _dbl_verdict(monkeypatch, clean_26, inconclusive_2) == ("KEEP", "")
     # only another list unread (SURBL): DBL was read, clean
     surbl_2 = {**inconclusive_2, "inconclusive_zones": ["SURBL"]}
-    assert _dbl_verdict(monkeypatch, LISTED_26, surbl_2) == ("KEEP", "passed v2 on 9 Nov")
+    assert _dbl_verdict(monkeypatch, LISTED_26, surbl_2) == ("KEEP", "")
     # a listing seen even over an unsure path counts; rows saved before these fields existed still read
     doh_listed = {**inconclusive_2, "listed_on": ["Spamhaus DBL (127.0.1.2)"]}
-    assert _dbl_verdict(monkeypatch, doh_listed) == ("CHECK", "domain on Spamhaus DBL (check of 2 Nov)")
-    assert _dbl_verdict(monkeypatch, {"domain": "x.com", "date": "2026-11-02", "listed_on": []}) == \
-        ("KEEP", "passed v2 on 9 Nov")
+    assert _dbl_verdict(monkeypatch, doh_listed) == ("KEEP", "domain on Spamhaus DBL (check of 2 Nov)")
+    assert _dbl_verdict(monkeypatch, {"domain": "x.com", "date": "2026-11-02", "listed_on": []}) == ("KEEP", "")
+    assert rr.dbl_note(None) == "" and rr.dbl_note({}) == ""
 
 
 def test_dbl_status_is_pure_and_newest_first():

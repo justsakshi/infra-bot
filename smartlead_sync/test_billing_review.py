@@ -100,10 +100,11 @@ def test_judge_inbox_rule_decision_4():
     assert _judge(_facts(), _v2(("2026-09-28", "FAIL"), ("2026-10-05", "WATCH"))) == "CHECK"
     # the v2 job's own tag marks a pull after ONE fail: CHECK, not a person's DO NOT USE
     assert _judge(_facts(tags=["DO NOT USE - failed v2 (auto)"]), _v2(PASS_5)) == "CHECK"
-    # a pull under 30 days old, or a DBL listing, is CHECK even after a pass
+    # a pull under 30 days old is CHECK even after a pass
     assert _judge(_facts(), _v2(PASS_5, pulled_on="2026-09-20")) == "CHECK"
     assert _judge(_facts(), _v2(PASS_5, pulled_on="2026-09-01")) == "KEEP"   # 37 days ago
-    assert _judge(_facts(), _v2(PASS_5), DBL) == "CHECK"
+    # a Spamhaus DBL listing is a note, never a verdict (Manveen, 11 Nov 2026): the v2 pass keeps it
+    assert _judge(_facts(), _v2(PASS_5), DBL) == "KEEP"
     assert _judge(_facts(), _v2(PASS_5), {"date": "2026-10-05", "listed_on": ["SURBL (ABUSE)"]}) == "KEEP"
     # no v2 result in the last 8 days: UNTESTED, never KEEP (classic results don't count)
     assert _judge(_facts(), _v2(("2026-09-28", "PASS"))) == "UNTESTED"      # 10 days old
@@ -147,11 +148,12 @@ def test_old_weekly_fails_are_check_never_drop():
     assert r["counts"]["CHECK"] == 1 and r["counts"]["RETIRE"] == 0 and r["support_message"] == ""
 
 
-def test_unread_v2_or_blocklist_keeps_nothing():
+def test_unread_v2_keeps_nothing_and_unread_blocklists_change_nothing():
     v, why = rr.judge_inbox("a@x.com", _facts(), None, T, True, None, {})
     assert (v, why) == ("CHECK", "v2 results could not be read, so not kept")
+    # blocklists only add a note, so not reading them cannot change a verdict
     v, why = rr.judge_inbox("a@x.com", _facts(), None, T, True, _v2(PASS_5), None)
-    assert (v, why) == ("CHECK", "blocklist checks could not be read, so not kept")
+    assert (v, why) == ("KEEP", "passed v2 on 5 Oct")
     # the default for a caller that passes no v2 is "not read": never a silent KEEP
     assert rr.judge_inbox("a@x.com", _facts(), None, T)[0] == "CHECK"
 
@@ -162,11 +164,11 @@ def test_judge_inbox_reasons_are_plain_and_dated():
         "failed v2 on the weekly tests of 28 Sep and 5 Oct"
     assert why(_facts(tags=["DO NOT USE - Google spam"]), []) == 'tagged "DO NOT USE - Google spam" in Smartlead'
     assert why(_facts(), _v2(("2026-10-05", "FAIL"))) == "failed v2 on 5 Oct, no pass since"
-    assert why(_facts(), _v2(PASS_5), DBL) == "domain on Spamhaus DBL (check of 5 Oct)"
+    assert why(_facts(), _v2(PASS_5), DBL) == "passed v2 on 5 Oct"          # the listing is not a reason
     assert why(_facts(), _v2(PASS_5, pulled_on="2026-09-20")) == \
         "taken out of campaigns on 20 Sep after v2, under 30 days ago"
     assert why(_facts(), _v2(("2026-09-21", "FAIL")), DBL) == \
-        "failed v2 on 21 Sep, no pass since; domain on Spamhaus DBL (check of 5 Oct); no v2 result in the last 8 days"
+        "failed v2 on 21 Sep, no pass since; no v2 result in the last 8 days"
     assert why(_facts(), []) == "no v2 result in the last 8 days"
     assert why(_facts(), _v2(PASS_5)) == "passed v2 on 5 Oct"
 
@@ -318,3 +320,25 @@ def test_tracker_flags_keep_their_shape(monkeypatch):
                                       "renewalFlagAt": got["b@x.com"]["$set"]["renewalFlagAt"]}
     assert got["c@x.com"]["$set"]["renewalFlag"] == "CHECK"
     assert set(got["d@x.com"]["$unset"]) == {"renewalFlag", "renewalFlagReason", "renewalFlagAt"}
+
+
+def test_a_spamhaus_listing_is_a_note_on_the_row_and_in_the_post():
+    """Manveen, 11 Nov 2026: a listed domain that passes v2 is kept; the listing shows as a note."""
+    facts = {"a@x.com": _facts(), "b@x.com": _facts(), "c@y.com": _facts()}
+    v2 = {e: _v2(PASS_5) for e in facts}
+    bill = {"provider": "Zapmail", "label": "Outlook", "bills_on": "2026-10-10", "price": 30.0, "inboxes": list(facts)}
+    r = rr.review_bill(bill, facts, T, v2=v2, dbl={"x.com": DBL, "y.com": {"date": "2026-10-05", "listed_on": []}})
+    assert r["counts"] == {"KEEP": 3, "CHECK": 0, "RETIRE": 0, "UNTESTED": 0}
+    assert {x["email"]: x.get("listed") for x in r["rows"]} == {
+        "a@x.com": "domain on Spamhaus DBL (check of 5 Oct)", "b@x.com": "domain on Spamhaus DBL (check of 5 Oct)",
+        "c@y.com": None}
+    head, parts = rr.format_review([r], 3)
+    assert head[0].startswith("✅") and head[1] == "Of 3 inboxes: nothing to drop, 3 to keep"
+    note = [p for p in parts if p.startswith("*On Spamhaus DBL")]
+    assert note == ["*On Spamhaus DBL (a note only: the v2 result decides keep, check or drop)*\n"
+                    "• Bill on 10 Oct: x.com (2 inboxes): domain on Spamhaus DBL (check of 5 Oct)"]
+    # blocklists not read: no notes, same verdicts
+    r2 = rr.review_bill(bill, facts, T, v2=v2, dbl=None)
+    assert r2["counts"]["KEEP"] == 3 and not any(x.get("listed") for x in r2["rows"])
+    assert rr.decision_errors(["blocklist checks (Mongo blacklist_checks): refused", "v2 results (Mongo): x"]) == \
+        ["v2 results (Mongo): x"]

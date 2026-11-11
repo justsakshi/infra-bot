@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Renewal review: before each Zapmail / ScaledMail bill, KEEP / DROP / CHECK /
 UNTESTED every inbox on it, from Smart Delivery v2 results (Mongo v2_verdicts),
-DO NOT USE tags (Smartlead), Spamhaus DBL (Mongo blacklist_checks) and Smartlead.
-Classic tests only add a note. READ-ONLY, apart from --flag-tracker.
+DO NOT USE tags (Smartlead) and Smartlead. Classic tests and a Spamhaus DBL
+listing (Mongo blacklist_checks) only add a note. READ-ONLY, apart from --flag-tracker.
 
     python renewal_review.py                  # bills in the next 3 days
     python renewal_review.py --days 14 --json
