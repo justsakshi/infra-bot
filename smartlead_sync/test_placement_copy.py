@@ -145,3 +145,75 @@ pl = [{"id": 7, "status": "COMPLETED", "name": "Data Providers | Bettrdata - Con
 ok([c["id"] for c in eligible_sources(pl, client_id=None, skip_words=("bettrdata", "melior"))] == [8],
    "PL's own test never copies an old BettrData campaign left on PL's account")
 print("client guards: passed")
+
+
+# --- the neutral note: weekly inbox tests send a fixed plain email, not campaign copy -----------------
+
+from smartlead import placement_copy as pc  # noqa: E402
+
+class _FakeSmartlead:
+    """Just the three calls write_neutral_note makes."""
+    def __init__(self, steps, track):
+        self.steps, self.track, self.writes, self.settings = steps, track, [], []
+
+    async def _get(self, endpoint):
+        return self.steps if endpoint.endswith("/sequences") else {"track_settings": self.track}
+
+    async def save_campaign_sequence_variants(self, cid, step_id, variants):
+        self.writes.append((cid, step_id, variants))
+
+    async def update_campaign_settings(self, cid, settings):
+        self.settings.append((cid, settings))
+
+
+class _FakeStore:
+    def __init__(self):
+        self.snaps = []
+
+    def save_copy_snapshot(self, account, cid, current):
+        self.snaps.append((account, cid))
+
+
+def _neutral_step():
+    return {"id": 7, "seq_number": 1, "sequence_variants": [
+        {"subject": pc.NEUTRAL_SUBJECT, "email_body": pc.NEUTRAL_BODY, "variant_label": "A"}]}
+
+
+def test_the_neutral_note_has_nothing_a_filter_could_blame_on_the_copy():
+    text = pc.NEUTRAL_SUBJECT + " " + pc.NEUTRAL_BODY
+    assert "{{" not in text and "%" not in text and "http" not in text.lower()      # no merge field, token or link
+    assert not __import__("re").search(r"\{[^{}|]*\|", text)                         # no spintax
+    assert pc.is_neutral(_neutral_step(), pc.NEUTRAL_TRACKING)
+    assert not pc.is_neutral(_neutral_step(), [])                                    # tracking still on
+    two = _neutral_step(); two["sequence_variants"].append({"subject": "x", "email_body": "y"})
+    assert not pc.is_neutral(two, pc.NEUTRAL_TRACKING)                               # a second variant is campaign copy
+    assert not pc.is_neutral({"id": 7, "sequence_variants": [{"subject": "AI Roundtable", "email_body": "Hi Steve"}]},
+                             pc.NEUTRAL_TRACKING)
+
+
+def test_write_neutral_note_replaces_campaign_copy_and_turns_tracking_off():
+    import asyncio
+    c = _FakeSmartlead([{"id": 7, "seq_number": 1, "sequence_variants": [
+        {"subject": "AI Roundtable", "email_body": "Hi Steve"}, {"subject": "B", "email_body": "b"}]}], [])
+    store = _FakeStore()
+    dry = asyncio.run(pc.write_neutral_note(c, "ACC", 55, 7, store, dry_run=True))
+    assert dry["written"] is False and "would write" in dry["reason"] and not c.writes and not store.snaps
+    r = asyncio.run(pc.write_neutral_note(c, "ACC", 55, 7, store))
+    assert r["written"] is True and store.snaps == [("ACC", 55)]                    # the old copy is kept
+    assert c.writes == [("55", 7, [{"subject": pc.NEUTRAL_SUBJECT, "email_body": pc.NEUTRAL_BODY, "variant_label": "A"}])]
+    assert c.settings == [("55", {"track_settings": ["DONT_TRACK_EMAIL_OPEN", "DONT_TRACK_LINK_CLICK"]})]
+
+
+def test_write_neutral_note_leaves_a_campaign_that_already_has_it():
+    import asyncio
+    c = _FakeSmartlead([_neutral_step()], ["DONT_EMAIL_OPEN", "DONT_LINK_CLICK"])
+    r = asyncio.run(pc.write_neutral_note(c, "ACC", 55, 7, _FakeStore()))
+    assert r["written"] is False and "already" in r["reason"] and not c.writes and not c.settings
+
+
+def test_copy_sync_sends_dt_campaigns_the_neutral_note_and_the_rest_live_copy():
+    import copy_sync
+    assert copy_sync.is_inbox_test("DT PL #1") and copy_sync.is_inbox_test("DT BettrData #12")
+    assert not copy_sync.is_inbox_test("DT Melior copy check")      # a copy check must carry campaign copy
+    assert not copy_sync.is_inbox_test("Melior - Deliverability Test")
+    assert not copy_sync.is_inbox_test("DT Unknown #1")             # no known client prefix

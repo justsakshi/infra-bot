@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Weekly: point each deliverability TEST campaign at what is really being sent.
+"""Weekly: set the email each deliverability TEST campaign sends.
 
-The test campaigns carry the scheduled SmartDelivery tests, so the email they
-test must be the email of a campaign that is running this week. This copies
-the client's MOST ACTIVE campaign of the week (most emails sent in the last 7
-days; else the newest active one; else its last active paused/completed one)
-into each test campaign's first step, and posts "Message sequence refreshed" to
-Slack (plus a line per test campaign it could not refresh).
-Live campaigns are only read, never written.
+Two kinds of test campaign, two kinds of email:
 
-    python3 copy_sync.py               # dry run: says what it would copy
+  * INBOX tests ("DT <client> #n", made by dt_campaigns.py; the weekly Smart
+    Delivery v2 tests run on them) send a fixed neutral note with tracking off
+    (smartlead/placement_copy.NEUTRAL_*). A fail then means the inbox or its
+    domain, never the copy (Manveen, 11 Nov 2026).
+  * The standing test campaigns below send what is really being sent: the
+    client's MOST ACTIVE campaign of the week (most emails sent in the last 7
+    days; else the newest active one; else its last active paused/completed
+    one) is copied into the first step.
+
+Posts "Message sequence refreshed" to Slack (plus a line per test campaign it
+could not refresh). Live campaigns are only read, never written.
+
+    python3 copy_sync.py               # dry run: says what it would write
     python3 copy_sync.py --apply       # write
     python3 copy_sync.py --only BETTRDATA
+    python3 copy_sync.py --apply --skip 111,222   # leave these test campaigns alone (a test is running on them)
 
 Targets are listed below. `source_client_id` keeps a test on its own client's
 copy: None = the account's own campaigns (e.g. Precise Leads' own outbound),
@@ -33,7 +40,7 @@ if sys.platform == "win32":
 
 from smartlead.accounts import discover_accounts
 from smartlead.api import SmartleadClient
-from smartlead.placement_copy import refresh_test_campaign
+from smartlead.placement_copy import refresh_test_campaign, write_neutral_note
 from smartlead.placement_store import PlacementStore
 
 # account name -> [(standing test campaign id, source client id), ...]. Every campaign
@@ -53,6 +60,12 @@ DT_SOURCE_CLIENT = {"DT PL": None, "DT Melior": 12256, "DT BettrData": None}
 SKIP_WORDS = {("PRECISE_LEADS", None): ("bettrdata", "melior")}
 
 
+def is_inbox_test(name: str) -> bool:
+    """A "DT <known client> #n" campaign: an inbox test, which sends the neutral note."""
+    n = str(name or "")
+    return any(n.startswith(p + " #") for p in DT_SOURCE_CLIENT)
+
+
 async def first_step_id(acc, campaign_id: int) -> int | None:
     async with SmartleadClient(acc.api_key, acc.name) as c:
         seq = await c._get(f"/campaigns/{campaign_id}/sequences")
@@ -65,12 +78,14 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--only", help="account name, e.g. BETTRDATA")
+    ap.add_argument("--skip", default="", help="comma-separated test campaign ids to leave alone this run")
     args = ap.parse_args()
     store = PlacementStore()
     problems: list[str] = []
     written = attempted = 0
     by_name = {a.name.upper(): a for a in discover_accounts()}
     failed = 0
+    skip = {int(x) for x in str(args.skip).split(",") if x.strip().isdigit()}
     for name, standing in TARGETS.items():
         if args.only and args.only.upper() != name:
             continue
@@ -94,6 +109,9 @@ async def main() -> int:
                 continue
             plan.setdefault(int(x["id"]), DT_SOURCE_CLIENT[prefix])
         for test_id, client_id in plan.items():
+            if int(test_id) in skip:
+                print(f"[CopySync] {name} test {test_id}: skipped (--skip)")
+                continue
             step = await first_step_id(acc, test_id)
             if step is None:
                 msg = f"{name}: test campaign {names.get(int(test_id), test_id)} has no step to write into"
@@ -101,9 +119,19 @@ async def main() -> int:
                 problems.append(":warning: " + msg)
                 failed += 1
                 continue
-            r = await refresh_test_campaign(acc, test_id, step, store, dry_run=not args.apply,
-                                            source_client_id=client_id,
-                                            skip_words=SKIP_WORDS.get((name, client_id), ()))
+            if is_inbox_test(names.get(int(test_id), "")):
+                try:
+                    async with SmartleadClient(acc.api_key, acc.name) as c:
+                        r = await write_neutral_note(c, acc.name, test_id, step, store, dry_run=not args.apply)
+                except Exception as exc:  # noqa: BLE001 - say so and go on; never print the exception text (URL)
+                    r = {"written": False, "source": None, "reason": f"could not write the neutral note ({type(exc).__name__})"}
+                    problems.append(f":warning: {name}: test campaign {names.get(int(test_id), test_id)} kept its old copy "
+                                    f"({type(exc).__name__})")
+                    failed += 1
+            else:
+                r = await refresh_test_campaign(acc, test_id, step, store, dry_run=not args.apply,
+                                                source_client_id=client_id,
+                                                skip_words=SKIP_WORDS.get((name, client_id), ()))
             state = "UPDATED" if r["written"] else "kept"
             print(f"[CopySync] {name} test {test_id}: {state} - source "
                   f"{r['source']} - {r['reason']}")
