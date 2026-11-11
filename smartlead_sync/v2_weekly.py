@@ -9,6 +9,10 @@ it reads new v2 CSVs in his Downloads folder (by content hash, so a file is read
 What it does (rules in smartlead/v2_results.py):
   * every inbox gets PASS / WATCH / FAIL per provider (4 of 4 seeds in the inbox / 2-3 / 3+ in spam);
     a seed still pending or BOUNCED, or a test that sent fewer than 4, is not judged and never acted on;
+  * own provider (Manveen 11 Nov 2026): a GMAIL inbox is judged on its Google result only, an OUTLOOK
+    inbox on its Microsoft result only; an SMTP inbox, or one of unknown type, on both as before;
+  * a domain fails when half or more of its tested inboxes fail at their own provider: every other
+    inbox on that domain is taken out the same way, and none of them comes back while it still fails;
   * FAIL, or WATCH in two Monday tests 6+ days apart: removed from every live campaign that is not a
     test campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
     tagged "DO NOT USE - failed v2 (auto)" so gtm presend refuses it. Warm-up stays on, and it
@@ -129,7 +133,7 @@ def load_state(d: Path) -> dict:
     s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     for k, empty in (("files", {}), ("results", {}), ("holds", {}), ("pulled", {}), ("returned", []),
                      ("reminded", []), ("log", []), ("overrides", {}), ("repair", []), ("file_holds", {}),
-                     ("clients", {}), ("dt_tests", {}), ("synced", {})):
+                     ("clients", {}), ("types", {}), ("dt_tests", {}), ("synced", {})):
         s.setdefault(k, empty)
     s.setdefault("needs_action", False)
     s.setdefault("since", None)
@@ -274,19 +278,24 @@ def held_for(state: dict, x: dict) -> set[str]:
     return set(state["holds"].get(x["night"]) or []) | set(state.get("file_holds", {}).get(x.get("file") or "") or [])
 
 
-def effective(results: list[dict], state: dict) -> list[dict]:
-    """Results with held providers set aside."""
-    out = []
-    for x in results:
-        held = held_for(state, x)
-        out.append({**x, "verdict": v2.apply_hold(x, held) if held else x["verdict"]})
-    return out
+def effective(results: list[dict], state: dict, inbox_type: str | None = None) -> list[dict]:
+    """Results as the job judges them: held providers set aside, then the verdict at the inbox's own provider
+    (GMAIL: Google, OUTLOOK: Microsoft; any other type, or none: both providers)."""
+    return [{**x, "verdict": v2.own_verdict(x, inbox_type, held_for(state, x))} for x in results]
+
+
+def judged_nights(state: dict, mb: str) -> list[str]:
+    """Nights on which an inbox got a verdict at its own provider (holds not applied), oldest first."""
+    kind = (state.get("types") or {}).get(mb)
+    return [x["night"] for x in state["results"].get(mb, []) if v2.own_verdict(x, kind) in v2.JUDGED]
 
 
 def remember_fleet(state: dict, fleet: dict) -> None:
-    """What the hourly runs need without reading Smartlead: each inbox's client (for v2_verdicts) and each
-    DT test campaign's inboxes (for the Tuesday reminder)."""
+    """What the hourly runs need without reading Smartlead: each inbox's client (for v2_verdicts) and type
+    (GMAIL / OUTLOOK / SMTP, for the own-provider verdict), and each DT test campaign's inboxes (for the
+    Tuesday reminder)."""
     state["clients"] = {e: i["client"] for f in fleet.values() for e, i in f["inboxes"].items()}
+    state["types"] = {e: str(i.get("type") or "") for f in fleet.values() for e, i in f["inboxes"].items()}
     dt = {}
     for f in fleet.values():
         email_of = {i["id"]: e for e, i in f["inboxes"].items()}
@@ -301,16 +310,56 @@ def report_only_clients(args) -> set[str]:
     return {c for c in REPORT_ONLY_CLIENTS if c.lower() not in acting}
 
 
-def plan(state: dict) -> dict[str, dict]:
-    """{mailbox: decision} for every inbox with results. An inbox whose tag a person removed is
-    not pulled again for a result they already overrode (state overrides: {email: night})."""
-    out = {}
+def plan(state: dict, nights=None) -> dict[str, dict]:
+    """{mailbox: decision} for every inbox with results, each judged at its own provider, plus the other
+    inboxes of a failed domain. An inbox whose tag a person removed is not pulled again for a result they
+    already overrode (state overrides: {email: night}).
+
+    Failed domains: per client and sending domain, among the inboxes with a new (not history) result in
+    ``nights`` (the nights being acted on; by default the newest night that has one), half or more failing
+    at their own provider fails the domain. Every other inbox the job knows on it (state clients: the fleet,
+    tested or not) is then pulled with the reason "its domain failed (N of M inboxes in spam)", and none of
+    its inboxes returns while it still fails. The decision carries ``domain`` {name, failed, tested}."""
+    types, clients = state.get("types") or {}, state.get("clients") or {}
+    if nights is None:
+        new = [x["night"] for rs in state["results"].values() for x in rs if not x.get("history")]
+        nights = {max(new)} if new else set()
+    out, shown = {}, {}
     for mb, rs in state["results"].items():
-        d = v2.decide(effective(rs, state), state["pulled"].get(mb))
-        judged = [x["night"] for x in rs if x["verdict"] in v2.JUDGED]
+        eff = effective(rs, state, types.get(mb))
+        d = v2.decide(eff, state["pulled"].get(mb))
+        judged = judged_nights(state, mb)
         if d["action"] == v2.PULL and judged and judged[-1] <= str(state["overrides"].get(mb) or ""):
             d = {"action": None, "why": "override"}
         out[mb] = d
+        mine = [x for x in eff if x["night"] in nights and not x.get("history")]
+        if mine:        # the result the job acts on: the newest judged one of these nights, else the newest
+            shown[mb] = next((x for x in reversed(mine) if x["verdict"] in v2.JUDGED), mine[-1])
+
+    def key(mb: str) -> tuple:
+        return clients.get(mb), mb.rsplit("@", 1)[-1]
+
+    failed = v2.failed_domains({mb: x["verdict"] for mb, x in shown.items()}, clients)
+    newest: dict[tuple, str] = {}
+    for mb, x in shown.items():
+        newest[key(mb)] = max(newest.get(key(mb), ""), x["night"])
+    for mb in sorted(set(clients) | set(state["results"])) if failed else ():
+        if key(mb) not in failed or (shown.get(mb) or {}).get("verdict") == v2.FAIL:
+            continue                                     # another domain, or it failed itself (decided above)
+        n, m = failed[key(mb)]
+        dom = {"name": key(mb)[1], "failed": n, "tested": m}
+        why = f"its domain failed ({n} of {_inboxes(m)} in spam)"
+        d = out.get(mb) or {"action": None, "why": "no result"}
+        if d["action"] == v2.RETURN:
+            out[mb] = {"action": None, "why": f"{d['why']}, but {why}", "domain": dom, "waits": True}
+        elif d["action"] == v2.PULL:
+            continue                                     # pulled for its own results (two weeks below 4/4)
+        elif mb in state["pulled"]:
+            out[mb] = {**d, "domain": dom}               # already out; the report names it with its domain
+        elif newest[key(mb)] <= str(state["overrides"].get(mb) or ""):
+            out[mb] = {"action": None, "why": "override"}
+        else:
+            out[mb] = {"action": v2.PULL, "why": why, "domain": dom}
     return out
 
 
@@ -320,7 +369,7 @@ def reconcile(state: dict, fleet: dict, today: str) -> list[str]:
     tags = {e: i["tags"] for f in fleet.values() for e, i in f["inboxes"].items()}
     for e in list(state["pulled"]):
         if e in tags and TAG not in tags[e]:
-            rs = [x["night"] for x in state["results"].get(e, []) if x["verdict"] in v2.JUDGED]
+            rs = judged_nights(state, e)
             state["overrides"][e] = rs[-1] if rs else today
             state["pulled"].pop(e)
             notes.append(f"{e}: a person removed its DO NOT USE tag, so the job leaves it alone until its next result.")
@@ -366,7 +415,8 @@ async def load_fleet() -> dict:
                 e = str(a.get("from_email") or "").strip().lower()
                 if e and a.get("id") is not None:
                     tags = [str(t.get("tag_name") or t.get("name") or "") for t in (a.get("tags") or []) if isinstance(t, dict)]
-                    inboxes[e] = {"id": int(a["id"]), "client": client_label(acc.name, a.get("client_id")), "tags": tags}
+                    inboxes[e] = {"id": int(a["id"]), "client": client_label(acc.name, a.get("client_id")), "tags": tags,
+                                  "type": str(a.get("type") or "").strip().upper()}
             if not inboxes:
                 raise FleetIncomplete(f"{name}: Smartlead returned no inboxes")
             camps, dt = {}, {}
@@ -654,6 +704,52 @@ def _ro_would(kinds: Counter) -> str:
     return _and(bits)
 
 
+def _domain_tail(client: str, es: list[str], acted: dict, names: dict, write: bool) -> str:
+    """What happened to the other inboxes of a failed domain: '2 more inboxes taken out of <campaigns>; tagged
+    DO NOT USE'. Counted by kind when they differ (out of a campaign, last good sender, paused/draft, in no
+    campaign, removal failed). A report-only client's inboxes read 'would be' and end as its other lines do."""
+    report_only = acted.get("report_only") or {}
+    ro = any(e in report_only for e in es)
+    kinds: dict[str, list[str]] = {}
+    for e in es:
+        if e in report_only:
+            k = _ro_kind(report_only[e])
+        elif e in acted["failed"] and e not in acted["removed"]:
+            k = "failed"
+        else:
+            k = next((k for k in ("removed", "blocked", "parked") if e in acted[k]), "tagged")
+        kinds.setdefault(k, []).append(e)
+
+    def camps(k: str) -> str:
+        ids = set()
+        for e in kinds[k]:
+            ids |= set((report_only[e].get(k) if e in report_only else acted[k].get(e)) or [])
+        return _names(sorted(ids), names)
+
+    bits = []
+    for k in ("failed", "removed", "blocked", "parked", "tagged"):
+        if k not in kinds:
+            continue
+        stay = f", so {'it' if len(kinds[k]) == 1 else 'they'} would stay there" if ro else ""
+        if k == "failed":
+            bit = "removal failed (see Needs you), retried next run"
+        elif k == "removed":
+            bit = f"{'taken' if write and not ro else 'would be taken'} out of {camps(k)}"
+        elif k == "blocked":
+            bit = f"last good sender of live {camps(k)}{stay or ': not removed (see Needs you)'}"
+        elif k == "parked":
+            bit = f"left in paused/draft {camps(k)}{stay}"
+        else:
+            bit = "in no campaign"
+        bits.append(bit if len(kinds) == 1 else f"{len(kinds[k])} {bit}")
+    more = f"{len(es)} more inbox{'es' if len(es) != 1 else ''}"
+    what = f"{more} {bits[0]}" if len(bits) == 1 else f"{more}: {', '.join(bits)}"
+    if ro:
+        why = REPORT_ONLY_WHY.get(client, "")
+        return f"{what} ({client}: report-only{' ' + why if why else ''}); nothing changed in Smartlead"
+    return f"{what}; {'' if write else 'would be '}tagged DO NOT USE"
+
+
 def _unjudged_why(x: dict) -> list[str]:
     """Why a result that was not judged needs the test fixed: 'bounced' (a seed bounced), or the provider with
     no seed rows at all. A pending seed or a short test is reported by its own Needs-you line."""
@@ -698,15 +794,24 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                  pulled_before: set, act_from: str | None = None, behind: int | None = None,
                  report_only_clients: set | None = None) -> tuple[list[str], list[str]]:
     nights = sorted(got["nights"])
-    latest = {mb: _shown(rs, got["nights"]) for mb, rs in state["results"].items()
+    types = state.get("types") or {}
+
+    def own(mb: str) -> list[dict]:
+        """An inbox's results with the verdict at its own provider (holds not applied)."""
+        return [{**x, "verdict": v2.own_verdict(x, types.get(mb))} for x in state["results"][mb]]
+
+    latest = {mb: _shown(own(mb), got["nights"]) for mb, rs in state["results"].items()
               if rs and rs[-1]["night"] in got["nights"]}
     count = Counter(x["verdict"] for x in latest.values())
     tonight = dict(latest)
     report_only = acted.get("report_only") or {}
-    for e in (set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["tagged"])
-              | set(acted["failed"]) | set(report_only)):
+    touched = (set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["tagged"])
+               | set(acted["failed"]) | set(report_only))
+    # Inboxes out because their domain failed, not for a result of their own: one line per domain, below.
+    dom_pulled = {e: d["domain"] for e, d in decisions.items() if e in touched and d.get("domain")}
+    for e in touched - set(dom_pulled):
         if e not in latest and state["results"].get(e):
-            latest[e] = _shown(state["results"][e])         # acted on from an older result: still named
+            latest[e] = _shown(own(e))                      # acted on from an older result: still named
     fleet = fleet or {}
     client_of = {e: i["client"] for f in fleet.values() for e, i in f["inboxes"].items()}
     names = {cid: c["name"] for f in fleet.values() for cid, c in {**f["camps"], **f.get("dt", {})}.items()}
@@ -715,7 +820,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
 
     groups = defaultdict(list)
     for mb, x in sorted(latest.items()):
-        eff = v2.apply_hold(x, held_for(state, x))
+        if mb in dom_pulled:
+            continue
+        eff = v2.own_verdict(x, types.get(mb), held_for(state, x))
         st = status_of(mb, x, eff, decisions.get(mb, {}), acted, pulled_before, mb in client_of)
         if st:
             groups[(client_of.get(mb, "Not in Smartlead"), st, x["verdict"], mb.split("@")[1])].append((mb, x))
@@ -820,7 +927,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     unjudged = defaultdict(set)
     for mb, rs in state["results"].items():
         for x in rs:
-            if x["night"] in got["nights"] and not x.get("history") and x["verdict"] == v2.INCOMPLETE:
+            if (x["night"] in got["nights"] and not x.get("history")
+                    and v2.own_verdict(x, types.get(mb)) == v2.INCOMPLETE):
                 for why in _unjudged_why(x):
                     unjudged[(x.get("file") or "", why)].add(mb)
     for (fid, why), es in sorted(unjudged.items()):
@@ -873,6 +981,20 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     if needs:
         parts.append("*Needs you*\n\n" + "\n".join(f"• {x}" for x in needs))
     by_client = defaultdict(list)
+    by_domain = defaultdict(list)
+    for e, dom in sorted(dom_pulled.items()):
+        by_domain[(client_of.get(e, "Not in Smartlead"), dom["name"])].append(e)
+    for (client, name), es in sorted(by_domain.items()):
+        dom = dom_pulled[es[0]]
+        by_client[client].append(f"• domain failed · {name} · {dom['failed']} of {_inboxes(dom['tested'])} in spam → "
+                                 + _domain_tail(client, es, acted, names, write))
+    waits = defaultdict(list)
+    for e, d in decisions.items():
+        if d.get("waits"):
+            waits[(d["domain"]["name"], d["domain"]["failed"], d["domain"]["tested"])].append(e)
+    for (name, n, m), es in sorted(waits.items()):
+        info.append(f"{name} still fails ({n} of {_inboxes(m)} in spam), so {_inboxes(len(es))} that passed twice "
+                    f"stay{'s' if len(es) == 1 else ''} out of campaigns until it no longer does.")
     out_before = defaultdict(lambda: [0, set()])
     order = {"pull_failed": -1, "pulled": 0, "report_only_removed": 0.5, "blocked": 1, "report_only_blocked": 1.5,
              "parked": 2, "report_only_parked": 2.5, "tagged": 3, "report_only_tagged": 3.5, "held": 4,
@@ -931,7 +1053,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     # Inboxes acted on with no stored v2 result (pulled by hand, e.g. after a one-off test) are not in any
     # group above, so name them here: every inbox the headline counts must be listed.
     no_result = sorted(e for e in (set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["failed"]))
-                       if e not in latest)
+                       if e not in latest and e not in dom_pulled)
     if no_result:
         lines = []
         for e in no_result:
@@ -1070,8 +1192,9 @@ def _fingerprint(doc: dict) -> str:
 
 def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
     """v2_verdicts docs (shared contract), one per inbox per night: nights from the last VERDICT_DAYS days
-    whose holds an acting run has worked out and whose files stopped arriving. The verdict is the one the
-    job acts on (held providers set aside); ``held`` names them."""
+    whose holds an acting run has worked out and whose files stopped arriving. The verdict is the combined
+    one of both providers with held providers set aside (``held`` names them): the readers of v2_verdicts
+    (usable list, renewal review, grid) have not been moved to the own-provider verdict the job acts on."""
     cut = (now.date() - timedelta(days=VERDICT_DAYS)).isoformat()
     skip = set(unsettled(state, now))
     at = now.astimezone(timezone.utc).isoformat(timespec="seconds")
@@ -1390,7 +1513,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         acted["notes"] += reconcile(state, fleet, today)
     pulled_before = set(state["pulled"])
     compute_holds(state, fleet)
-    decisions = plan(state)
+    decisions = plan(state, got["nights"])
     where = {e: acc for acc, f in fleet.items() for e in f["inboxes"]}
     pulls, returns = defaultdict(list), defaultdict(list)
     for mb, d in sorted(decisions.items()):

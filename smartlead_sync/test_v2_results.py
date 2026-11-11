@@ -307,3 +307,58 @@ def test_sunday_tests_count_as_weeks_running_and_as_this_weeks_result():
     # Tuesday noon: a Sunday or Saturday test is the week's result; Friday's belongs to the week before
     for night, due in (("2026-11-15", None), ("2026-11-14", None), ("2026-11-13", "2026-11-16")):
         assert v2.reminder_due(now_ist=(date(2026, 11, 17), 12), nights_in={night}, reminded=set()) == due
+
+
+# --- own provider, failed domains (Manveen 11 Nov 2026) ------------------------------
+
+def both(g, m):
+    """One stored result: g and m seeds of 4 in the inbox."""
+    return v2.summarise(v2.parse(csv_text(seeds("a@x.com", g, m))))["a@x.com"]
+
+
+def test_an_inbox_is_judged_at_its_own_provider():
+    assert v2.own_verdict(both(4, 0), "GMAIL") == v2.PASS            # Google to Google
+    assert v2.own_verdict(both(0, 4), "GMAIL") == v2.FAIL
+    assert v2.own_verdict(both(0, 4), "OUTLOOK") == v2.PASS          # Outlook to Outlook
+    assert v2.own_verdict(both(4, 0), "OUTLOOK") == v2.FAIL
+    assert v2.own_verdict(both(3, 0), "gmail ") == v2.WATCH          # the type is read whatever its case
+
+
+def test_an_smtp_or_unknown_inbox_is_judged_on_both_providers_as_before():
+    for kind in ("SMTP", "", None, "ZOHO"):
+        assert v2.own_verdict(both(0, 4), kind) == v2.FAIL
+        assert v2.own_verdict(both(4, 0), kind) == v2.FAIL
+        assert v2.own_verdict(both(4, 3), kind) == v2.WATCH
+        assert v2.own_verdict(both(4, 4), kind) == v2.PASS
+
+
+def test_holds_are_applied_before_the_own_provider_verdict():
+    assert v2.own_verdict(both(0, 4), "GMAIL", {"google"}) == v2.INCOMPLETE      # own provider held: not judged
+    assert v2.own_verdict(both(0, 0), "GMAIL", {"microsoft"}) == v2.FAIL         # the other one held: no matter
+    assert v2.own_verdict(both(0, 4), "SMTP", {"google"}) == v2.INCOMPLETE       # as apply_hold says today
+    assert v2.own_verdict(both(0, 0), "SMTP", {"google"}) == v2.FAIL
+
+
+def test_an_own_provider_that_was_not_judged_is_incomplete():
+    short = v2.summarise(v2.parse(csv_text(seeds("a@x.com", 1, 4, g_total=1))))["a@x.com"]
+    assert v2.own_verdict(short, "GMAIL") == v2.INCOMPLETE           # 1 Google email: too few to judge
+    assert v2.own_verdict(short, "OUTLOOK") == v2.PASS               # its Microsoft seeds are complete
+    dead = v2.summarise(v2.parse(csv_text([("a@x.com", G, "NOT_SENT")] * 4 + [("a@x.com", M, "NOT_SENT")] * 4)))
+    assert v2.own_verdict(dead["a@x.com"], "GMAIL") == v2.NOT_SENT
+    # a stored result with no per-provider part keeps its combined verdict
+    assert v2.own_verdict({"night": "2026-11-09", "verdict": v2.FAIL}, "GMAIL") == v2.FAIL
+
+
+def test_a_domain_fails_when_half_or_more_of_its_tested_inboxes_fail():
+    verdicts = {"a@bad.com": v2.FAIL, "b@bad.com": v2.FAIL, "c@bad.com": v2.PASS, "d@bad.com": v2.INCOMPLETE,
+                "a@fine.com": v2.FAIL, "b@fine.com": v2.PASS, "c@fine.com": v2.WATCH, "d@fine.com": v2.PASS,
+                "a@clean.com": v2.PASS}
+    assert v2.failed_domains(verdicts) == {(None, "bad.com"): (2, 4)}          # 2 of 4 yes, 1 of 4 no
+    assert v2.failed_domains({"a@bad.com": v2.FAIL, "b@bad.com": v2.PASS, "c@bad.com": v2.PASS}) == {}
+    assert v2.failed_domains({}) == {}
+
+
+def test_domains_are_counted_per_client():
+    verdicts = {"a@bad.com": v2.FAIL, "b@bad.com": v2.PASS, "c@bad.com": v2.PASS}
+    clients = {"a@bad.com": "One", "b@bad.com": "Two", "c@bad.com": "Two"}
+    assert v2.failed_domains(verdicts, clients) == {("One", "bad.com"): (1, 1)}

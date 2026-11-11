@@ -14,12 +14,13 @@ from smartlead.config import AccountConfig
 HEAD = "Mailbox,Provider,Landed,Sent at,Send status\n"
 MON9 = "2026-11-09T14:31:00.000Z"            # Monday 9 Nov, 20:01 IST
 
-# email: (Smartlead id, client)
+# email: (Smartlead id, client). mel-ok sits on its own domain: next to mel-bad it would make y.com 1 of 2 in
+# spam, a failed domain (11 Nov 2026 rule), and these tests are about single inboxes.
 INBOXES = {"pl-ok1@x.com": (10, "Precise Leads"), "pl-ok2@x.com": (11, "Precise Leads"),
-           "pl-bad@x.com": (20, "Precise Leads"), "mel-bad@y.com": (30, "Melior"), "mel-ok@y.com": (31, "Melior"),
+           "pl-bad@x.com": (20, "Precise Leads"), "mel-bad@y.com": (30, "Melior"), "mel-ok@w.com": (31, "Melior"),
            "pl-other@z.com": (40, "Precise Leads")}
 DT_PL_1 = {"pl-ok1@x.com": (4, 4), "pl-ok2@x.com": (4, 4), "pl-bad@x.com": (0, 4)}
-DT_MELIOR_1 = {"mel-bad@y.com": (4, 0), "mel-ok@y.com": (4, 4)}
+DT_MELIOR_1 = {"mel-bad@y.com": (4, 0), "mel-ok@w.com": (4, 4)}
 
 
 def at(day, hour, minute=0):
@@ -399,6 +400,44 @@ def test_a_pending_seed_never_pulls_a_working_inbox(job):
     assert job.run() == 0
     assert job.sl.calls == [] and job.state()["pulled"] == {}
     assert "1 seed result had not come in" in job.posts[-1][1][0]
+
+
+# --- failed domains (Manveen 11 Nov 2026) ---------------------------------------------
+
+def test_a_failed_domain_takes_its_other_inboxes_out_too(job, monkeypatch):
+    for n in range(5):
+        monkeypatch.setitem(INBOXES, f"q{n + 1}@q.com", (50 + n, "Precise Leads"))
+    job.sl.senders[1] |= {50, 51, 52, 53, 54}
+    write_csv(job.downloads, "dt-pl-1.csv", {**DT_PL_1, "q1@q.com": (0, 4), "q2@q.com": (4, 0), "q3@q.com": (4, 4),
+                                             "q4@q.com": (4, 4)})                    # q5 is in no test
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    everyone = [20, 50, 51, 52, 53, 54]                           # 2 of 4 on q.com in spam: all five go, with pl-bad
+    assert ("tag", everyone, [77]) in job.sl.calls and ("remove", 1, everyone) in job.sl.calls
+    assert job.sl.senders[1] == {10, 11}
+    assert set(job.state()["pulled"]) == {"pl-bad@x.com"} | {f"q{n}@q.com" for n in range(1, 6)}
+    head, parts = job.posts[-1]
+    assert head[2] == "Took 6 inboxes out of 1 live campaign · tagged 0 in no campaign · returned 0"
+    text = "\n".join(parts)
+    assert "• domain failed · q.com · 2 of 4 inboxes in spam → 3 more inboxes taken out of PL | A; tagged DO NOT USE" in text
+    assert "• pass" not in text and "Pulled earlier" not in text
+
+
+def test_a_failed_domain_of_a_report_only_client_changes_nothing(job, monkeypatch):
+    monkeypatch.setitem(INBOXES, "mel-ok2@y.com", (32, "Melior"))
+    job.sl.senders[2] |= {32}
+    write_csv(job.downloads, "dt-melior-1.csv", {**DT_MELIOR_1, "mel-ok2@y.com": (4, 4)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert job.sl.calls == [] and job.state()["pulled"] == {} and job.sl.senders[2] == {30, 31, 32}
+    head, parts = job.posts[-1]
+    assert head[2] == "Took 0 inboxes out of 0 live campaigns · tagged 0 in no campaign · returned 0"
+    assert "The job would take 2 inboxes out of campaigns. List under *Melior* below." in parts[0]
+    melior = next(p for p in parts if p.startswith("*Melior*"))
+    assert ("• domain failed · y.com · 1 of 2 inboxes in spam → 1 more inbox would be taken out of Melior | B "
+            "(Melior: report-only until Ryan agrees); nothing changed in Smartlead") in melior
 
 
 # --- self-check ---------------------------------------------------------------------
