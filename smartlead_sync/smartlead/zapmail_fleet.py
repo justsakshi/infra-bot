@@ -518,4 +518,41 @@ async def subscriptions_billing(days: int = 14, errors: list[str] | None = None,
                 print(f"  [Zapmail] subscriptions failed — {msg}")
                 if errors is not None:
                     errors.append(msg)
+    if any(r["kind"] == "pre-warmed" for r in rows):
+        try:    # extra reads only when a pre-warmed plan exists; a failure leaves those plans unlisted, as before
+            tracked: dict = {}
+
+            def client_of(d: str, account: str) -> str | None:   # the tracker is read only if a plan was filled
+                if not tracked:
+                    from smartlead.zapmail_asset_sync import read_tracker
+                    tracked.update(read_tracker() or {"": {}})
+                return infer_client(d, account, (tracked.get(d) or {}).get("client"))
+            prewarmed_by_count(rows, await all_mailboxes(), client_of)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [Zapmail] pre-warmed inboxes not worked out: {type(exc).__name__}")
     return sorted(rows, key=lambda r: r["bills_on"] or "9999")
+
+
+def prewarmed_by_count(rows: list[dict], mailboxes: list[dict], client_of=None) -> list[dict]:
+    """Name the inboxes on a pre-warmed plan by elimination. Pure; edits ``rows``.
+
+    Zapmail lists the mailboxes of an inbox add-on subscription but not of a
+    pre-warmed plan (2026-11-11: a 12-mailbox plan billed with no inbox list,
+    so the bill review could not judge it). The plan's inboxes are the active
+    mailboxes of its account and provider that sit on no add-on subscription,
+    and only when exactly one pre-warmed plan of that provider exists and the
+    count matches the plan's. Anything else stays unlisted: never a guess.
+    A filled row carries ``inboxes_by = "count"`` so a reader can say so.
+    """
+    on_addon = {e for r in rows if r["kind"] == "inboxes" for e in r.get("inboxes") or []}
+    for account, provider in {(r["account"], r["provider"]) for r in rows if r["kind"] == "pre-warmed"}:
+        plans = [r for r in rows if r["kind"] == "pre-warmed" and (r["account"], r["provider"]) == (account, provider)]
+        rest = sorted({m["email"] for m in mailboxes
+                       if m.get("account") == account and str(m.get("provider") or "").upper() == provider
+                       and str(m.get("status") or "").upper() == "ACTIVE" and m["email"] not in on_addon})
+        if len(plans) != 1 or not rest or len(rest) != int(plans[0].get("mailboxes") or 0):
+            continue
+        doms = sorted({e.partition("@")[2] for e in rest})
+        plans[0].update(inboxes=rest, domains=doms, inboxes_by="count",
+                        clients=sorted({(client_of(d, account) if client_of else None) or "unassigned" for d in doms}))
+    return rows
