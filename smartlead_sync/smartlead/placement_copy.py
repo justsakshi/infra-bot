@@ -27,6 +27,50 @@ import re
 
 _MERGE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
+# The weekly INBOX test ("DT <client> #n" campaigns) sends this fixed plain note, never campaign copy, with open and
+# click tracking off. A test should have one thing that can fail it: on 11 Nov 2026 the same Google inbox reached a
+# real Gmail inbox with a plain note and went to spam with the campaign email, tracking on or off, so a test that
+# sends campaign copy grades the copy and the inbox together. Copy is checked separately.
+NEUTRAL_SUBJECT = "Quick note before this week's update"
+NEUTRAL_BODY = ("Hi,<br><br>Sharing a short note ahead of this week's update. Let me know if the timing works on "
+                "your side and I'll send the details over.<br><br>Thanks")
+NEUTRAL_TRACKING = ["DONT_EMAIL_OPEN", "DONT_LINK_CLICK"]          # as Smartlead stores "tracking off"
+_TRACKING_OFF_WRITE = ["DONT_TRACK_EMAIL_OPEN", "DONT_TRACK_LINK_CLICK"]   # as its settings call takes it
+
+
+def _tracking_off(track_settings) -> bool:
+    got = {str(t).replace("DONT_TRACK_", "DONT_") for t in (track_settings or [])}
+    return set(NEUTRAL_TRACKING) <= got
+
+
+def is_neutral(step: dict, track_settings) -> bool:
+    """True when the step is exactly the neutral note (one variant) and the campaign's tracking is off."""
+    variants = step_variants(step)
+    return (len(variants) == 1 and str(variants[0].get("subject") or "").strip() == NEUTRAL_SUBJECT
+            and str(variants[0].get("email_body") or "").strip() == NEUTRAL_BODY and _tracking_off(track_settings))
+
+
+async def write_neutral_note(c, account: str, test_campaign_id: int, step_id: int, store, dry_run: bool = False) -> dict:
+    """Make an inbox-test campaign's step the neutral note, tracking off. ``c`` is an open Smartlead client.
+    Returns {"written", "source": None, "hash", "reason"} like ``refresh_test_campaign``; the old copy is snapshotted."""
+    current = await c._get(f"/campaigns/{test_campaign_id}/sequences")
+    steps = current if isinstance(current, list) else current.get("sequences", [])
+    step = next((s for s in steps if int(s.get("id", 0)) == int(step_id)), None)
+    if step is None:
+        return {"written": False, "source": None, "hash": "", "reason": "its step was not found; kept current copy"}
+    camp = await c._get(f"/campaigns/{test_campaign_id}")
+    variants = [{"subject": NEUTRAL_SUBJECT, "email_body": NEUTRAL_BODY, "variant_label": "A"}]
+    digest = copy_hash(variants)
+    if is_neutral(step, (camp or {}).get("track_settings")):
+        return {"written": False, "source": None, "hash": digest, "reason": "already the neutral note, tracking off"}
+    if dry_run:
+        return {"written": False, "source": None, "hash": digest,
+                "reason": "dry-run: would write the neutral note and turn tracking off"}
+    store.save_copy_snapshot(account, test_campaign_id, current)
+    await c.save_campaign_sequence_variants(str(test_campaign_id), step_id, variants)
+    await c.update_campaign_settings(str(test_campaign_id), {"track_settings": list(_TRACKING_OFF_WRITE)})
+    return {"written": True, "source": None, "hash": digest, "reason": "neutral note written, tracking off"}
+
 
 def resolve_merge_fields(text: str, sample_fields: dict,
                          signature: str) -> tuple[str, list[str]]:
