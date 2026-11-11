@@ -159,12 +159,13 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
   });
 
   // ── handlers with a fake Slack app ──
-  function harness(runPy) {
+  function harness(runPy, check) {
     const h = { actions: {}, views: {}, opened: [], updated: [], said: [] };
     const app = { action: (id, fn) => { h.actions[id] = fn; }, view: (id, fn) => { h.views[id] = fn; } };
     h.client = { views: { open: async a => { h.opened.push(a.view); }, update: async a => { h.updated.push(a.view); } } };
     bf.registerBuyFlow(app, __dirname, {
       runPy: runPy || (async args => ({ staged: true, plan_id: 'abc123', args })),
+      check: check || (async () => ({ ok: true })),
       say: async (client, channel, user, payload) => { h.said.push(payload); },
       profiles: () => ({ 'Precise Leads': { main_domain: 'preciseleads.in' }, Bettrdata: { main_domain: 'bettrdata.io' } }),
       senders: () => ({ 'Precise Leads': ['Aravind Haridas', 'Avinash Haridas'], Bettrdata: [] })
@@ -294,6 +295,221 @@ const picks = n => Array.from({ length: n }, (_, i) => ({ d: 'name' + i + '.com'
     const b = submitBody(m, 'Avinash Haridas', '');
     await h.views.buy_flow({ ack: noop, body: b, view: b.view, client: {} });
     assert.ok(JSON.stringify(h.said).includes('abc123'));
+  });
+
+  // ── buying rule on the confirm step: a warning, never a block (smartlead_sync/buy_check.py) ──
+  const QUIET = '_Could not check the buying rule just now, so no trial warning is shown._';
+  const WHY = 'only 0 Zapmail Google inboxes have passed their placement test twice (6 needed): buy at most 6 as a trial, '
+    + 'test them weekly from the first week, and buy more once they pass twice';
+  const LINE30 = ':warning: Trial first: Only 0 Zapmail Google inboxes have passed their placement test twice (6 needed): '
+    + 'buy at most 6 as a trial, test them weekly from the first week, and buy more once they pass twice. This order has 30 of them.';
+  const unproven = (type, count, why) => ({ vendor: 'zapmail', type, count, proven: 0, tested: 0, ok: false, limit: 6, why: why || WHY });
+  const fine = (type, count, proven) => ({ vendor: 'zapmail', type, count, proven, tested: proven, ok: true,
+    limit: proven >= 6 ? null : 6, why: 'not shown' });
+  const quietly = async fn => {
+    const saved = console.error;
+    console.error = () => {};
+    try { return await fn(); } finally { console.error = saved; }
+  };
+
+  await test('order inboxes: per inbox type, in inboxes, not domains', () => {
+    assert.deepStrictEqual(bf.orderInboxes('zapmail', [10, 4]), [{ type: 'google', inboxes: 30 }, { type: 'outlook', inboxes: 12 }]);
+    assert.deepStrictEqual(bf.orderInboxes('scaledmail', [1, 1, 1]),
+      [{ type: 'google', inboxes: 3 }, { type: 'outlook', inboxes: 25 }, { type: 'smtp', inboxes: 4 }]);
+    assert.deepStrictEqual(bf.orderInboxes('scaledmail', [0, 2, 0]), [{ type: 'outlook', inboxes: 50 }]);   // empty rows left out
+    assert.deepStrictEqual(bf.orderInboxes('nobody', [3]), []);
+    assert.deepStrictEqual(bf.orderInboxes('zapmail', undefined), []);
+  });
+
+  await test('buy check args: vendor, type and inbox count for each type in the order', () => {
+    assert.deepStrictEqual(bf.buyCheckArgs('zapmail', bf.orderInboxes('zapmail', [10, 4])), [
+      ['buy_check.py', '--vendor', 'zapmail', '--type', 'google', '--count', '30', '--json'],
+      ['buy_check.py', '--vendor', 'zapmail', '--type', 'outlook', '--count', '12', '--json']]);
+    assert.deepStrictEqual(bf.buyCheckArgs('scaledmail', bf.orderInboxes('scaledmail', [2, 1, 3])), [
+      ['buy_check.py', '--vendor', 'scaledmail', '--type', 'google', '--count', '6', '--json'],
+      ['buy_check.py', '--vendor', 'scaledmail', '--type', 'outlook', '--count', '25', '--json'],
+      ['buy_check.py', '--vendor', 'scaledmail', '--type', 'smtp', '--count', '12', '--json']]);
+    assert.deepStrictEqual(bf.buyCheckArgs('zapmail', []), []);
+  });
+
+  await test('buy warnings: 30 inboxes of an unproven kind give one line with the reason and the count', () => {
+    assert.deepStrictEqual(bf.buyWarnings([{ type: 'google', inboxes: 30 }], [unproven('google', 30)]), [LINE30]);
+  });
+
+  await test('buy warnings: a trial-sized order or a proven kind gives no line', () => {
+    assert.deepStrictEqual(bf.buyWarnings([{ type: 'google', inboxes: 6 }], [fine('google', 6, 0)]), []);
+    assert.deepStrictEqual(bf.buyWarnings([{ type: 'google', inboxes: 30 }], [fine('google', 30, 7)]), []);
+    assert.deepStrictEqual(bf.buyWarnings([], []), []);
+  });
+
+  await test('buy warnings: two unproven types give two lines', () => {
+    const lines = bf.buyWarnings([{ type: 'google', inboxes: 30 }, { type: 'outlook', inboxes: 12 }],
+      [unproven('google', 30), unproven('outlook', 12, 'only 2 Zapmail Outlook inboxes have passed twice.')]);
+    assert.deepStrictEqual(lines, [LINE30,
+      ':warning: Trial first: Only 2 Zapmail Outlook inboxes have passed twice. This order has 12 of them.']);
+    // one unproven, one proven: only the unproven one
+    assert.deepStrictEqual(bf.buyWarnings([{ type: 'google', inboxes: 30 }, { type: 'outlook', inboxes: 12 }],
+      [unproven('google', 30), fine('outlook', 12, 9)]), [LINE30]);
+  });
+
+  await test('buy warnings: an unreadable check gives the one quiet line, no warning, and nothing throws', () => {
+    const bads = [{ error: 'could not read the tracker or the v2 verdicts (SecretError)' }, new Error('SecretError: timed out'),
+      null, undefined, 'SecretError not json', 7, [], { staged: true }, { ok: false }, { ok: 'false', why: 'x' }, { ok: false, why: '' }];
+    for (const bad of bads) {
+      const lines = bf.buyWarnings([{ type: 'google', inboxes: 30 }], [bad]);
+      assert.deepStrictEqual(lines, [QUIET], 'for ' + JSON.stringify(bad));
+    }
+    // two unreadable types: still one line, and the raw error text is never shown
+    const two = bf.buyWarnings([{ type: 'google', inboxes: 30 }, { type: 'outlook', inboxes: 12 }], [bads[0], bads[1]]);
+    assert.deepStrictEqual(two, [QUIET]);
+    assert.ok(!two.join(' ').includes('SecretError'));
+    assert.deepStrictEqual(bf.buyWarnings([{ type: 'google', inboxes: 30 }], undefined), [QUIET]);
+    assert.deepStrictEqual(bf.buyWarnings([{ type: 'google', inboxes: 30 }], []), [QUIET]);
+  });
+
+  await test('buy warnings: one type read, one not: the warning that was read, then a note that some may be missing', () => {
+    const lines = bf.buyWarnings([{ type: 'google', inboxes: 30 }, { type: 'outlook', inboxes: 12 }], [unproven('google', 30), { error: 'x' }]);
+    assert.deepStrictEqual(lines, [LINE30,
+      '_Could not check the buying rule for every inbox type just now, so a trial warning may be missing._']);
+  });
+
+  await test('order warnings: one check per type, run in parallel, with inbox counts', async () => {
+    const calls = [];
+    let running = 0;
+    let most = 0;
+    const check = async args => {
+      calls.push(args);
+      running += 1; most = Math.max(most, running);
+      await new Promise(r => setTimeout(r, 15));
+      running -= 1;
+      return unproven(args[4], Number(args[6]));
+    };
+    const lines = await bf.orderWarnings({ p: 'zapmail', k: [10, 4] }, check);
+    assert.deepStrictEqual(calls, [
+      ['buy_check.py', '--vendor', 'zapmail', '--type', 'google', '--count', '30', '--json'],
+      ['buy_check.py', '--vendor', 'zapmail', '--type', 'outlook', '--count', '12', '--json']]);
+    assert.strictEqual(most, 2, 'both checks were running at once');
+    assert.strictEqual(lines.length, 2);
+    assert.match(lines[1], /This order has 12 of them\.$/);
+  });
+
+  await test('order warnings: a check error, a thrown error and malformed output each give the quiet line; nothing throws', async () => {
+    const checks = [
+      async () => ({ error: 'could not read the tracker or the v2 verdicts (SecretError)' }),
+      () => { throw new Error('SecretError thrown'); },
+      async () => { throw new Error('SecretError: timed out'); },
+      async () => 'SecretError garbage',
+      async () => ({ staged: true }),
+      async () => null];
+    for (const check of checks) {
+      const lines = await quietly(() => bf.orderWarnings({ p: 'zapmail', k: [10, 0] }, check));
+      assert.deepStrictEqual(lines, [QUIET]);
+    }
+    assert.deepStrictEqual(await quietly(() => bf.orderWarnings({ p: 'zapmail', k: [10, 0] }, undefined)), [QUIET]);
+    assert.deepStrictEqual(await bf.orderWarnings({}, async () => { throw new Error('never asked'); }), []);   // nothing to check
+  });
+
+  await test('confirm view: warnings sit on top, above the totals; with none the view is unchanged', () => {
+    const m = meta(10, { p: 'zapmail', k: [10, 0] });
+    const d = { senders: 'A B', redirect: '' };
+    const plain = bf.confirmView(m, d);
+    assert.strictEqual(plain.blocks[0].type, 'section');
+    assert.ok(plain.blocks[0].fields, 'the totals grid is first when there is no warning');
+    assert.deepStrictEqual(bf.confirmView(m, d, []), plain);
+    assert.ok(!txt(plain).includes('Trial first') && !txt(plain).includes('buying rule'));
+
+    const v = bf.confirmView(m, d, [LINE30]);
+    assert.deepStrictEqual(v.blocks[0], { type: 'section', text: { type: 'mrkdwn', text: LINE30 } });
+    assert.deepStrictEqual(v.blocks.slice(1), plain.blocks);
+    assert.strictEqual(v.submit.text, 'Stage (no charge)');
+    assert.strictEqual(v.private_metadata, plain.private_metadata);
+
+    const two = bf.confirmView(m, d, [LINE30, LINE30.replace('30 of them', '12 of them')]);
+    assert.strictEqual(two.blocks[0].text.text.split('\n').length, 2);                 // one line each, one block
+    assert.deepStrictEqual(two.blocks.slice(1), plain.blocks);
+
+    const q = bf.confirmView(m, d, [QUIET]);
+    assert.deepStrictEqual(q.blocks[0], { type: 'context', elements: [{ type: 'mrkdwn', text: QUIET }] });
+    assert.deepStrictEqual(q.blocks.slice(1), plain.blocks);
+    assert.strictEqual(q.submit.text, 'Stage (no charge)');
+  });
+
+  const nextBody = m => ({ view: { id: 'V1', hash: 'h', private_metadata: bf.mixView(m).private_metadata } });
+  const zapJob = { job_id: 'abcdef0123', status: 'awaiting_approval', client: 'Client', domains: ['a.com'], provider: 'GOOGLE', cost: null };
+
+  await test('next: an unproven kind shows the warning, and the order is still staged', async () => {
+    const checks = [];
+    const stages = [];
+    const h = harness(async args => { stages.push(args); return zapJob; }, async args => { checks.push(args); return unproven('google', 30); });
+    const m = meta(10, { p: 'zapmail', k: [10, 0] });
+    await h.actions.buy_next({ ack: noop, action: { value: 'x' }, body: nextBody(m), client: h.client });
+    assert.deepStrictEqual(checks, [['buy_check.py', '--vendor', 'zapmail', '--type', 'google', '--count', '30', '--json']]);
+    const v = h.updated[0];
+    assert.strictEqual(v.blocks[0].text.text, LINE30);
+    assert.strictEqual(v.submit.text, 'Stage (no charge)');
+    assert.deepStrictEqual(v.blocks.filter(b => b.type === 'input').map(b => b.block_id), ['senders', 'redirect', 'sig']);
+    // Stage: accepted without errors, the order goes to the job, the rule is not asked again.
+    const b = submitBody(JSON.parse(v.private_metadata), 'Jane Doe');
+    let acked = 'not called';
+    await h.views.buy_flow({ ack: async a => { acked = a; }, body: b, view: b.view, client: h.client });
+    assert.strictEqual(acked, undefined);
+    assert.strictEqual(stages.length, 1);
+    assert.strictEqual(stages[0][0], 'inbox_jobs.py');
+    assert.strictEqual(checks.length, 1);
+  });
+
+  await test('next: a proven kind adds nothing to the confirm step', async () => {
+    const h = harness(null, async () => fine('google', 30, 8));
+    const m = meta(10, { p: 'zapmail', k: [10, 0] });
+    await h.actions.buy_next({ ack: noop, action: { value: 'x' }, body: nextBody(m), client: h.client });
+    const v = h.updated[0];
+    assert.ok(v.blocks[0].fields, 'the totals grid is still first');
+    assert.ok(!txt(v).includes('Trial first') && !txt(v).includes('buying rule'));
+    assert.deepStrictEqual(v.blocks.map(b => b.type), bf.confirmView(m, { senders: '', redirect: '' }).blocks.map(b => b.type));
+  });
+
+  await test('next: a check that fails still opens the confirm step, with the quiet line', async () => {
+    for (const check of [async () => { throw new Error('SecretError: timed out'); }, async () => ({ error: 'SecretError' }), async () => 'x']) {
+      const h = harness(null, check);
+      const m = meta(10, { p: 'zapmail', k: [10, 0] });
+      await quietly(() => h.actions.buy_next({ ack: noop, action: { value: 'x' }, body: nextBody(m), client: h.client }));
+      const v = h.updated[0];
+      assert.strictEqual(v.blocks[0].elements[0].text, QUIET);
+      assert.strictEqual(v.submit.text, 'Stage (no charge)');
+      assert.ok(!txt(v).includes('SecretError') && !txt(v).includes('Trial first'));
+    }
+  });
+
+  // The real runner, with node standing in for Python and a throwaway script (still no Python, no network).
+  await test('run check: exit code 1 (trial only) is an answer, not a failure; bad output and a timeout reject', async () => {
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'buy-check-'));
+    fs.mkdirSync(path.join(base, 'smartlead_sync'));
+    fs.writeFileSync(path.join(base, 'smartlead_sync', 'fake_check.js'), [
+      'const mode = process.argv[2];',
+      'if (mode === "trial") { console.log("a log line"); console.log(JSON.stringify({ ok: false, limit: 6, why: "w" })); process.exit(1); }',
+      'if (mode === "fine") { console.log(JSON.stringify({ ok: true, limit: null, why: "w" })); process.exit(0); }',
+      'if (mode === "error") { console.log(JSON.stringify({ error: "e" })); process.exit(2); }',
+      'if (mode === "garbage") { console.log("Traceback (most recent call last):"); process.exit(1); }',
+      'if (mode === "hang") setTimeout(() => {}, 30000);'].join('\n'));
+    const saved = process.env.INFRABOT_PYTHON;
+    process.env.INFRABOT_PYTHON = process.execPath;
+    try {
+      assert.deepStrictEqual(await bf.runCheck(['fake_check.js', 'trial'], base, 20000), { ok: false, limit: 6, why: 'w' });
+      assert.deepStrictEqual(await bf.runCheck(['fake_check.js', 'fine'], base, 20000), { ok: true, limit: null, why: 'w' });
+      assert.deepStrictEqual(await bf.runCheck(['fake_check.js', 'error'], base, 20000), { error: 'e' });
+      await assert.rejects(bf.runCheck(['fake_check.js', 'garbage'], base, 20000));
+      await assert.rejects(bf.runCheck(['fake_check.js', 'silent'], base, 20000));
+      await assert.rejects(bf.runCheck(['fake_check.js', 'hang'], base, 300), /timed out/);
+      // and end to end: the trial-only answer becomes the warning
+      const lines = await bf.orderWarnings({ p: 'zapmail', k: [10, 0] }, () => bf.runCheck(['fake_check.js', 'trial'], base, 20000));
+      assert.deepStrictEqual(lines, [':warning: Trial first: W. This order has 30 of them.']);
+    } finally {
+      if (saved === undefined) delete process.env.INFRABOT_PYTHON; else process.env.INFRABOT_PYTHON = saved;
+      fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 
   console.log(passed + ' passed');
