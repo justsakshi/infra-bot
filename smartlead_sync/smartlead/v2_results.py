@@ -10,7 +10,13 @@ result that is not complete):
   * per provider, 4 seeds: PASS = all 4 in the inbox, FAIL = 3 or more of 4 in spam, WATCH = all 4
     answered with 2-3 in the inbox. Anything else (a seed still pending, a BOUNCED seed, which is a
     seed-side problem, or a test that sent fewer than 4) is not judged and never acted on.
-  * an inbox FAILS if either provider fails; PASSES only if both pass.
+  * own provider (Manveen 11 Nov 2026: "google to google and outlook to outlook first"): a GMAIL inbox is
+    judged on its Google seeds only, an OUTLOOK inbox on its Microsoft seeds only (own_verdict). An SMTP
+    inbox, or one whose type is not known, is judged on both: it FAILS if either provider fails and
+    PASSES only if both pass.
+  * a domain fails when half or more of its inboxes fail at their own provider (failed_domains): the
+    share is of every inbox the job knows on it, tested or not, so a small one-off test cannot rest a
+    big domain. Then every other inbox on it is pulled too, and none comes back while it still fails.
   * FAIL -> pull it from live campaigns. WATCH twice running -> pull, but only when both are Monday
     (weekly) tests from new files, 6+ days apart; a one-off or history result never counts.
   * a pulled inbox comes back after two passes, at least 6 days apart, both after the pull.
@@ -38,6 +44,8 @@ FAIL_SPAM = 3               # this many of 4 seeds in spam: fail
 PENDING_SHARE = 0.2         # more results than this still pending: the file was downloaded too early
 HOLD_SHARE, HOLD_MIN = 0.8, 10
 RETURN_GAP_DAYS = 6         # two results 6+ days apart: two different weeks (return, and WATCH-WATCH pull)
+OWN_PROVIDER = {"GMAIL": "google", "OUTLOOK": "microsoft"}      # Smartlead inbox type -> the provider it is judged on
+DOMAIN_FAIL_SHARE = 0.5     # this share of a domain's inboxes failing: the whole domain is rested
 RULES = "2026-11-07"        # results stored under older rules are judged again from the kept CSV copies
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -224,6 +232,38 @@ def apply_hold(summary: dict, held: set[str]) -> str:
     g = UNKNOWN if "google" in held else (summary.get("google") or {}).get("verdict", UNKNOWN)
     m = UNKNOWN if "microsoft" in held else (summary.get("microsoft") or {}).get("verdict", UNKNOWN)
     return combine(g, m)
+
+
+def own_verdict(summary: dict, inbox_type: str | None = None, held: set[str] = frozenset()) -> str:
+    """The verdict the job acts on. Held providers are set aside first. A GMAIL inbox is then judged on its
+    Google result only and an OUTLOOK inbox on its Microsoft result only; if that provider is held or was not
+    judged, the result is INCOMPLETE (no action either way). Any other type (SMTP, unknown, missing), and a
+    stored result with no per-provider part, is judged on both providers as before."""
+    own = OWN_PROVIDER.get(str(inbox_type or "").strip().upper())
+    mine = (summary.get(own) or {}).get("verdict") if own else None
+    if mine is None:
+        return apply_hold(summary, held)
+    if own in held or (mine not in JUDGED and mine != NOT_SENT):
+        return INCOMPLETE
+    return mine
+
+
+def failed_domains(verdicts: dict[str, str], client_of: dict[str, str] | None = None,
+                   sizes: dict[tuple, int] | None = None) -> dict[tuple, tuple[int, int]]:
+    """{(client, domain): (failed, inboxes)} for each client's sending domain where half or more of its inboxes
+    failed. ``verdicts``: {mailbox: the own-provider verdict of its result in the nights acted on}, judged or
+    not. ``sizes``: {(client, domain): how many inboxes the job knows on it}; the share is taken of that number
+    (never of fewer than were tested), so a one-off test of one inbox cannot rest a 25-inbox domain. Without
+    ``sizes`` the share is of the tested inboxes."""
+    seen: dict[tuple, list[str]] = {}
+    for mb, v in verdicts.items():
+        seen.setdefault(((client_of or {}).get(mb), mb.rsplit("@", 1)[-1]), []).append(v)
+    out = {}
+    for k, vs in seen.items():
+        total = max(len(vs), int((sizes or {}).get(k) or 0))
+        if vs.count(FAIL) and vs.count(FAIL) >= DOMAIN_FAIL_SHARE * total:
+            out[k] = (vs.count(FAIL), total)
+    return out
 
 
 def merge_results(results: list[dict], new: list[dict]) -> list[dict]:
