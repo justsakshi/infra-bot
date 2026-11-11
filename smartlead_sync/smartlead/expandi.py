@@ -31,6 +31,9 @@ class ExpandiClient:
 
     def __init__(self, api_key: str, api_secret: str, workspace_name: str = "Default") -> None:
         self._api_key = api_key
+        # Why the last list_messengers call stopped short: type and HTTP
+        # status only (the key and secret travel in headers, never here).
+        self.last_error = ""
         self._api_secret = api_secret
         self.workspace_name = workspace_name
         self._client: httpx.AsyncClient | None = None
@@ -143,10 +146,13 @@ class ExpandiClient:
             try:
                 data = await self._get(url)
             except Exception as exc:  # noqa: BLE001
+                code = getattr(getattr(exc, "response", None), "status_code", None)
+                self.last_error = f"page {page}: {type(exc).__name__}" + (f" {code}" if code else "")
                 print(f"  [EX {self.workspace_name}] messengers page {page} "
                       f"failed ({type(exc).__name__}) — keeping {len(out)} row(s)")
                 break
             if not isinstance(data, dict):
+                self.last_error = f"page {page}: not a JSON object"
                 break
             rows = data.get("results") or []
             out.extend(rows)

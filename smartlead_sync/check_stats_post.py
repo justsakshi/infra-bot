@@ -1,8 +1,9 @@
 """Live check of the stats post's numbers (read-only, no Slack).
 
 For every Smartlead campaign that moved in the period: emails sent equal
-Smartlead's own analytics-by-date figure, and the people who replied equal the
-people the Show replies button lists; HeyReach repliers equal the button's.
+Smartlead's own analytics-by-date figure, and the people who replied are at
+most the people the Show replies button lists (the post counts a person on
+their first reply only since 11 Nov; the button shows everyone who wrote).
 Bounces are printed beside Smartlead's figure. Exit 1 on any mismatch.
 
     python check_stats_post.py 2026-10-30               one day
@@ -45,7 +46,7 @@ async def main():
             checks = {"button people": (c["replies"], len({rv._who(x) for x in found}))}
         for k,(mine,theirs) in checks.items():
             n+=1
-            ok = mine==theirs
+            ok = mine <= theirs if k == "button people" else mine == theirs
             bad += not ok
             print(("PASS" if ok else "FAIL"), r["platform"], r["campaign"][:45], k, "post", mine, "vs", theirs)
     print(f"{n-bad}/{n} pass; failed fetches: {failed}")
