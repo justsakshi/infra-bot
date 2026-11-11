@@ -1318,9 +1318,17 @@ class SheetsWriter:
 # ── Formatting helpers (Google Sheets API v4 request builders) ───────────────
 
 def _serialize(value: Any) -> Any:
-    """Convert booleans and other non-JSON types for Sheets."""
+    """Convert booleans and other non-JSON types for Sheets. A cell holds one value: a list becomes
+    "a, b" and a dict its JSON. On 11 Nov 2026 the inbox rows gained ``tags`` (a list) and Google
+    refused the whole "<account> - Inboxes" tab with "Invalid values[1][3]: list_value"; the tab had
+    been cleared first, so it stayed empty and the sync exited 2."""
     if isinstance(value, bool):
         return "Yes" if value else "No"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return ", ".join(str(v) for v in (sorted(value, key=str) if isinstance(value, (set, frozenset)) else value))
+    if isinstance(value, dict):
+        import json
+        return json.dumps(value, default=str, sort_keys=True)
     return value
 
 

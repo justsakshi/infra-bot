@@ -187,3 +187,21 @@ def test_tags_come_from_the_list_call_because_the_detail_call_has_none():
     row = _build_inbox_row(out[0], "a@x.com", "N/A", "N/A",
                            {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0}, {})
     assert usable.gate(row["tags"], None, None, date(2026, 11, 11))[0] == ["do_not_use"]
+
+
+def test_every_inbox_row_value_fits_one_sheet_cell():
+    """11 Nov 2026: the row's ``tags`` list made Google refuse the whole "<account> - Inboxes" tab
+    ("Invalid values[1][3]: list_value"), and the tab had been cleared first. Whatever a row carries,
+    what is sent to the sheet must be a plain value."""
+    from smartlead.processing import _build_inbox_row
+    from smartlead.sheets import _serialize
+    load = {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0}
+    for tags in ([], [{"name": "ScaledMail"}, {"name": "DO NOT USE - Google spam (Nov 2026)"}]):
+        row = _build_inbox_row({"id": 1, "from_email": "a@x.com", "tags": tags}, "a@x.com", "N/A", "N/A", load, {})
+        process_inbox_availability([row], {}, {}, gate_data=None)
+        cells = {k: _serialize(v) for k, v in row.items()}
+        bad = {k: type(v).__name__ for k, v in cells.items() if not isinstance(v, (str, int, float, type(None)))}
+        assert bad == {}, bad
+    assert cells["tags"] == "ScaledMail, DO NOT USE - Google spam (Nov 2026)"
+    assert _serialize([]) == "" and _serialize(("a", 2)) == "a, 2" and _serialize({"b", "a"}) == "a, b"
+    assert _serialize({"k": [1]}) == '{"k": [1]}' and _serialize(True) == "Yes" and _serialize(None) is None

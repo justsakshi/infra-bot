@@ -109,14 +109,19 @@ def ready_message(announcements: list[dict]) -> str:
     """One post: domains whose warm-up is done (next step: a placement test, not a campaign), then any
     past their date but still warming. Pure."""
     ready = [a["line"] for a in announcements if a["state"] == "ready"]
-    low = [a["line"] for a in announcements if a["state"] != "ready"]
+    failed = [a["line"] for a in announcements if a["state"] == "failed_v2"]
+    low = [a["line"] for a in announcements if a["state"] not in ("ready", "failed_v2")]
     parts = []
     if ready:
         n = len(ready)
         parts.append("\n".join([f"✅ *Warm-up finished, ready for a placement test: {n} domain{'s' if n != 1 else ''}*", ""]
                                + ready
-                               + ["", "Not for campaigns yet. Add them to Monday's Smart Delivery v2 test first; "
+                               + ["", "Not for campaigns yet. Add them to this week's Smart Delivery v2 test first; "
                                       "they go into campaigns after a pass."]))
+    if failed:
+        n = len(failed)
+        parts.append("\n".join([f"⚠️ *Warm-up finished, but already failed Smart Delivery v2: {n} domain{'s' if n != 1 else ''}*", ""]
+                               + failed + ["", "They stay out of campaigns until they pass v2."]))
     if low:
         parts.append("\n".join(["⚠️ *Reached the warmup date but not ready yet*", ""] + low))
     return "\n\n".join(parts)
