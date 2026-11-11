@@ -1251,8 +1251,11 @@ async function start() {
       return runJob('placement-batch', args, { slot });
     });
 
-    // Deliverability-test copy sync: Sunday 18:30 and Monday/Tuesday 05:00 IST, i.e.
-    // before the 06:00 scheduled tests. Copies the first step of each client's
+    // Deliverability-test copy sync: Friday, Saturday and Sunday 18:30 and Monday/Tuesday 05:00 IST
+    // (the slots are bot_health.JOBS 'copy-sync'), i.e. before a weekly v2 test that starts on
+    // Saturday, Sunday or Monday and before the 06:00 scheduled tests. Friday 18:30 was added on
+    // 11 Nov 2026: the weekly tests may start on Saturday, and the copy-check campaigns
+    // ("DT <client> copy check") must carry that week's email and senders by then. Copies the first step of each client's
     // campaign that sent the most emails this week (still-running campaigns with
     // leads left first; nothing this week -> last week) into every test campaign,
     // the five "DT ..." ones included, so the tests send what is really running. Posts a summary to Slack.

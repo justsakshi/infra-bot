@@ -9,7 +9,7 @@ Code: `smartlead_sync/v2_weekly.py` (files, state, Smartlead, Slack, Mongo) and 
 | When | What happens | Who |
 |---|---|---|
 | Sun 00:00 IST | Smart Delivery v2 tests DT PL #1-3, DT Melior #1-4 and DT BettrData #1-2 (weekly, one by one, 5-minute gap, 4 emails per provider). The gap is for the whole test and 5 minutes is the least Smartlead allows, so a 50-mailbox test (400 emails) takes about 33 hours and is in on Monday morning. A test that starts on a Saturday, Sunday or Monday counts as the week's test | Smartlead, automatic |
-| Tue morning | Download each test's CSV into `C:\Users\Manveen\Downloads` | Manveen, about 2 minutes |
+| Tue morning | Download each test's CSV into `C:\Users\Manveen\Downloads`, the copy checks too (below) | Manveen, about 2 minutes |
 | Within 2 hours of the last download | The job reads them and acts, then posts in the infra channel | Job |
 | Tue 12:00 IST | If any DT test has no result for the week, one reminder post naming each missing test | Job |
 
@@ -31,11 +31,59 @@ The download is the only manual step: v2 has no API, webhook or email (Smartlead
 - **History**: the 5 Nov audit files are filed as history. They are kept and sent to Mongo, but never start an action.
 - **A CSV it can't read**: a file with a Mailbox column but another header (Smart Delivery changed its download) is posted once as "unrecognised v2 CSV format: <file>" instead of being skipped silently.
 
+## Copy check
+
+An inbox test sends a plain note, so it says whether the inbox is fine. It says nothing about the email. On 11 Nov 2026 the same Google inbox delivered the plain note to a Gmail inbox and its campaign email to spam, with tracking on and with tracking off. The copy check tests the email.
+
+**The campaign.** One small campaign per client: `DT PL copy check`, `DT Melior copy check`, `DT BettrData copy check`. It holds:
+
+- the client's real first email: the campaign that sent the most this week, the same rule the standing test campaigns follow. Its tracking settings are left as they are.
+- up to 10 senders: 5 Google-hosted and 5 Outlook-hosted inboxes of that client, at most 2 per domain. Each is connected, has no `DO NOT USE` tag, and its newest v2 verdict is a pass from the last 10 days.
+
+`copy_sync.py` refreshes both on every run (Fri, Sat and Sun 18:30, Mon and Tue 05:00 IST): it attaches the inboxes that qualify and are missing, detaches the ones that no longer qualify, and reads the list back. If no inbox qualifies, or the verdicts in Mongo cannot be read, the senders stay as they are and the run says so. The campaign stays paused and is never started.
+
+**Create it, once per client.** From `smartlead_sync` in a checkout that has this code and the `.env` (the keys and `MONGO_URI`):
+
+```powershell
+python copy_sync.py --create-copy-check "DT PL"              # dry run: says which campaign it would clone
+python copy_sync.py --create-copy-check "DT PL" --apply
+python copy_sync.py --create-copy-check "DT Melior" --apply
+python copy_sync.py --create-copy-check "DT BettrData" --apply
+```
+
+It clones the client's `DT <client> #1` campaign (one step, same settings and schedule, the placeholder lead, paused), then loads the email and attaches the senders. It refuses to create a second one.
+
+**Each week (Manveen).** In Smart Delivery v2, one more test per client, on the copy-check campaign: 4 emails per provider, 5-minute gap, and the words "copy check" in the test's name (for example `PL copy check`). Download its CSV into Downloads with the others.
+
+The name matters. The CSV's file name comes from the test's name, and "copy check" in it (also `copy-check`, `copy_check`, `copycheck`) is how the job knows the file. Without it the job can still tell when every inbox in the file is a sender of a copy-check campaign, but it only knows the senders as of its last weekly run, so a sender attached since then makes an unnamed file look like an inbox test.
+
+**What the job does with it.**
+
+- Nothing in the file is an inbox result: no verdict, no pull, no return, no domain rule, no hold, no `v2_verdicts` row. The headline's inbox counts leave it out.
+- It judges the email per sender type, at that type's own provider: Google-hosted senders on the Google seeds, Outlook-hosted senders on the Microsoft seeds. Only emails that got a placement count, and only senders whose newest judged inbox-test result is a pass; the others are left out and counted as left out.
+- Share in the inbox: 75% or more = the email is fine, 50% or less = the email is the problem, in between = borderline. Fewer than 8 counted emails for a sender type = not judged.
+- The post has one line per sender type under the client, for example `copy check · Google inboxes · 3 of 20 emails in the Google inbox, from 5 inboxes that pass the plain note → the email is the problem: rewrite it before it sends from Google inboxes`. A failed email also gets a line under Needs you.
+- With the week's inbox files it is part of their post. On its own (a one-off check) it is posted once the file has been in Downloads for 90 minutes; that run does not read or change Smartlead.
+- The client is the one most of the file's inboxes belong to.
+- A copy-check campaign with no copy-check file for the week is named in "No result this week from ..." and in the Tuesday reminder, like any other DT test.
+
+It only reports. Refusing a launch on a failed copy check is a later step.
+
+**Check a drafted campaign before launch.** Load its first email into the client's copy-check campaign, then run a test on it:
+
+```powershell
+python copy_sync.py --only-copy-check "DT Melior" --source 1234567          # dry run
+python copy_sync.py --only-copy-check "DT Melior" --source 1234567 --apply
+```
+
+`--source` is the Smartlead id of the campaign to check; a draft works. A campaign of another client is refused and the run exits 1. Then create a one-off v2 test on `DT Melior copy check` (4 emails per provider, "copy check" in its name) and download its CSV when it is done. The next scheduled copy sync puts the most active campaign's email back, so start the test before then.
+
 ## What reaches Render
 
 After every saved run the job writes to Mongo (database `HEALTH_HISTORY_DB`, `MONGO_URI` from the same `.env`). A Mongo problem never stops the run: it is printed in `task.log` and listed in the heartbeat's `errors` when the heartbeat itself can be written.
 
 - `v2_heartbeat`, one doc `_id: "pc"`: `last_run` (UTC), `newest_night`, `files_read`, `mode` (act / warn), `last_post_ok`, `commit`, `behind_main` (commits behind `origin/main` as last fetched), `errors`.
+- `copy_checks`, one doc per client per night, `_id: "<client>|<night>"`: `client`, `night`, `file`, and per sender type (`google`, `outlook`) `inbox`, `sent`, `senders`, `left_out`, `verdict` (PASS / WATCH / FAIL / NOT_JUDGED), `updated_at`. Written once the copy check has been reported; rewritten only when it changes.
 - `v2_verdicts`, one doc per inbox per night, `_id: "<email>|<night>"`: `email`, `domain`, `client`, `night`, `verdict` (the one the job acts on: at the inbox's own provider, with held providers set aside; `held` names them. A Google inbox in spam at Microsoft only reads PASS here, so the tools that read these rows (usable list, gate self-test, renewal review, grid) see the verdict the job acted on), `google` and `microsoft` (`inbox`, `reported`, `sent`), `history`, `weekly`, `pulled_on`, `updated_at`. Only nights the job has acted on (so holds are worked out) from the last 42 days; a doc is rewritten only when it changes.
 
 ## Where it runs

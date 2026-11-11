@@ -997,3 +997,191 @@ def test_published_verdicts_follow_the_own_provider_rule(tmp_path):
         st["holds"].setdefault(n, [])
     docs = {d["email"]: d["verdict"] for d in wk.verdict_docs(st, NOW + timedelta(days=1)).values()}
     assert docs == {"g@x.com": v2.PASS, "o@x.com": v2.PASS, "s@x.com": v2.FAIL}
+
+
+# --- the copy check: a file that grades the email and never an inbox (11 Nov 2026) --------------------
+
+def test_a_state_file_without_copy_checks_still_loads(tmp_path):
+    st = fresh_state(tmp_path)
+    del st["copy_checks"]
+    wk.save_state(tmp_path / "state", st)
+    assert wk.load_state(tmp_path / "state")["copy_checks"] == {}
+
+
+def test_a_copy_check_file_is_read_once_and_never_becomes_an_inbox_result(tmp_path):
+    st = fresh_state(tmp_path)
+    st["clients"] = {"a@x.com": "Melior", "b@x.com": "Melior"}
+    write_csv(tmp_path, "DT Melior copy check.csv", {"a@x.com": (0, 4), "b@x.com": (1, 4)})
+    got = wk.ingest(wk.scan(tmp_path, st, NOW), st, tmp_path / "state", history=False, now=NOW, persist=True)
+    assert st["results"] == {} and st["needs_action"] is False and not got["nights"] and got["ingested"] == []
+    assert got["copy_checks"] == ["Melior|2026-11-09"]
+    (f,) = st["files"].values()
+    assert f["status"] == "copy_check" and f["client"] == "Melior" and f["night"] == "2026-11-09"
+    rec = st["copy_checks"]["Melior|2026-11-09"]
+    assert (rec["client"], rec["night"], rec["file"]) == ("Melior", "2026-11-09", "DT Melior copy check.csv")
+    assert rec["senders"]["b@x.com"] == {"google": [1, 4], "microsoft": [4, 4]} and rec["history"] is False
+    assert wk.scan(tmp_path, st, NOW) == []                       # by content hash, like any other file
+    assert len(list((tmp_path / "state" / "runs").iterdir())) == 1          # a copy is kept
+    st["holds"]["2026-11-09"] = []
+    assert wk.unsettled(st, NOW) == [] and wk.verdict_docs(st, NOW + timedelta(days=1)) == {}
+    wk.compute_holds(st, None)
+    assert wk.plan(st) == {} and st["file_holds"] == {}           # no verdict, no pull, no hold from it
+
+
+def test_a_file_of_copy_check_senders_is_a_copy_check_whatever_its_name(tmp_path):
+    st = fresh_state(tmp_path)
+    st["dt_tests"] = {"DT PL #1": ["a@x.com", "b@x.com", "c@x.com"], "DT PL copy check": ["a@x.com", "b@x.com"]}
+    st["clients"] = {e: "Precise Leads" for e in st["dt_tests"]["DT PL #1"]}
+    write_csv(tmp_path, "export.csv", {"a@x.com": (0, 0), "b@x.com": (0, 0)})
+    write_csv(tmp_path, "dt-pl-1.csv", {"a@x.com": (4, 4), "b@x.com": (4, 4), "c@x.com": (4, 4)})
+    got = read(tmp_path, st)
+    assert got["ingested"] == ["dt-pl-1.csv"] and got["copy_checks"] == ["Precise Leads|2026-11-09"]
+    assert {mb: [x["verdict"] for x in rs] for mb, rs in st["results"].items()} == {
+        "a@x.com": [v2.PASS], "b@x.com": [v2.PASS], "c@x.com": [v2.PASS]}
+
+
+def test_a_copy_check_from_before_the_jobs_first_day_is_kept_and_never_reported(tmp_path):
+    st = fresh_state(tmp_path)
+    st["since"] = "2026-11-10"
+    write_csv(tmp_path, "copy-check.csv", {"a@x.com": (0, 0)})
+    read(tmp_path, st)
+    assert st["copy_checks"]["Unknown|2026-11-09"]["history"] is True
+    assert wk.copy_checks_due(st, NOW + timedelta(days=1)) == []
+
+
+def test_a_copy_check_waits_for_its_night_to_settle_before_it_is_reported_alone(tmp_path):
+    st = fresh_state(tmp_path)
+    write_csv(tmp_path, "copy-check.csv", {"a@x.com": (0, 0)})
+    read(tmp_path, st)
+    assert wk.copy_checks_due(st, NOW) == []                      # the inbox files of the same download may follow
+    assert wk.copy_checks_due(st, NOW, settled=False) == ["Unknown|2026-11-09"]
+    later = NOW + timedelta(minutes=wk.SETTLE_MINUTES + 1)
+    assert wk.copy_checks_due(st, later) == ["Unknown|2026-11-09"]
+    st["copy_checks"]["Unknown|2026-11-09"]["reported"] = "2026-11-10T13:00"
+    assert wk.copy_checks_due(st, later) == []
+
+
+def copy_checked(tmp_path, copy, results, types, client="Precise Leads"):
+    """A state with stored inbox results, then one copy-check file read and judged: (state, got)."""
+    st = fresh_state(tmp_path)
+    st["results"], st["types"] = results, types
+    st["clients"] = {e: client for e in types}
+    write_csv(tmp_path, "copy check.csv", copy)
+    got = read(tmp_path, st)
+    wk.judge_copy_checks(st, got["copy_checks"])
+    return st, got
+
+
+GOOGLE5 = {f"g{n}@x.com": "GMAIL" for n in range(5)}
+OUTLOOK5 = {f"o{n}@y.com": "OUTLOOK" for n in range(5)}
+
+
+def test_the_report_gives_the_email_its_own_verdict_per_sender_type(tmp_path):
+    types = {**GOOGLE5, **OUTLOOK5}
+    results = {e: [result(v2.PASS, 4, 4, "2026-11-02")] for e in types}
+    copy = {e: ((3, 0) if e == "g0@x.com" else (0, 0)) for e in GOOGLE5}            # 3 of 20 at Google
+    copy.update({e: ((0, 3) if e == "o0@y.com" else (0, 4)) for e in OUTLOOK5})     # 19 of 20 at Microsoft
+    st, got = copy_checked(tmp_path, copy, results, types)
+    head, parts = wk.build_report(st, got, {}, None, acted(), True, set())
+    assert head == ["v2 copy check, test of Mon 9 Nov",
+                    "Copy check · Precise Leads · Google inboxes fail · Outlook inboxes pass",
+                    "\n*Needs you: 1*"]
+    assert parts[0] == ("*Needs you*\n\n• Precise Leads: the copy check failed from Google inboxes (3 of 20 emails in "
+                        "the Google inbox, from inboxes that pass the plain note). The email is the problem: rewrite it "
+                        "before it sends from Google inboxes.")
+    assert parts[1].split("\n") == [
+        "*Precise Leads*", "",
+        "• copy check · Google inboxes · 3 of 20 emails in the Google inbox, from 5 inboxes that pass the plain note → "
+        "the email is the problem: rewrite it before it sends from Google inboxes",
+        "• copy check · Outlook inboxes · 19 of 20 emails in the Microsoft inbox, from 5 inboxes that pass the plain "
+        "note → the email is fine from Outlook inboxes"]
+    assert st["results"].keys() == results.keys() and all(len(rs) == 1 for rs in st["results"].values())
+
+
+def test_senders_that_do_not_pass_the_plain_note_are_left_out_of_the_copy_verdict(tmp_path):
+    results = {"g0@x.com": [result(v2.PASS, 4, 4, "2026-11-02")],
+               "g1@x.com": [result(v2.PASS, 4, 0, "2026-11-02")],             # a Google inbox: Microsoft is not its test
+               "g2@x.com": [result(v2.FAIL, 0, 4, "2026-11-02")],
+               "g3@x.com": [result(v2.PASS, 4, 4, "2026-10-26"), result(v2.FAIL, 0, 4, "2026-11-02")]}   # g4: never tested
+    st, got = copy_checked(tmp_path, {e: (2, 0) for e in GOOGLE5}, results, GOOGLE5)
+    assert wk.known_good(st) == {"g0@x.com", "g1@x.com"}
+    rec = st["copy_checks"]["Precise Leads|2026-11-09"]["types"]
+    assert rec["google"] == {"inbox": 4, "sent": 8, "senders": 2, "left_out": 3, "verdict": v2.FAIL}
+    head, parts = wk.build_report(st, got, {}, None, acted(), True, set())
+    assert ("• copy check · Google inboxes · 4 of 8 emails in the Google inbox, from 2 inboxes that pass the plain note "
+            "(3 left out) → the email is the problem") in parts[1]
+    assert "Outlook" not in "\n".join(head + parts)                # no Outlook sender in the file: no Outlook line
+
+
+def test_too_few_known_good_senders_is_reported_as_not_judged_and_needs_nobody(tmp_path):
+    results = {"g0@x.com": [result(v2.PASS, 4, 4, "2026-11-02")]}
+    st, got = copy_checked(tmp_path, {e: (0, 0) for e in GOOGLE5}, results, GOOGLE5)
+    head, parts = wk.build_report(st, got, {}, None, acted(), True, set())
+    assert head[1:] == ["Copy check · Precise Leads · Google inboxes not judged", "\nNothing needs you."]
+    assert parts == ["*Precise Leads*\n\n• copy check · Google inboxes · too few inboxes that pass the plain note to "
+                     "judge the email (1 counted, 4 left out)"]
+
+
+def test_a_borderline_copy_check_says_so_and_a_file_of_unknown_inboxes_is_not_judged(tmp_path):
+    results = {e: [result(v2.PASS, 4, 4, "2026-11-02")] for e in GOOGLE5}
+    copy = dict(zip(GOOGLE5, [(4, 0), (4, 0), (3, 0), (1, 0), (0, 0)]))            # 12 of 20
+    st, got = copy_checked(tmp_path, copy, results, GOOGLE5, client="Melior")
+    head, parts = wk.build_report(st, got, {}, None, acted(), True, set())
+    assert head[1] == "Copy check · Melior · Google inboxes borderline" and head[-1] == "\nNothing needs you."
+    assert parts == ["*Melior*\n\n• copy check · Google inboxes · 12 of 20 emails in the Google inbox, from 5 inboxes "
+                     "that pass the plain note → borderline: test the email again before it sends from Google inboxes"]
+    st["types"] = {}
+    wk.judge_copy_checks(st, got["copy_checks"])
+    head, parts = wk.build_report(st, got, {}, None, acted(), True, set())
+    assert head[1] == "Copy check · Melior · not judged"
+    assert parts == ["*Melior*\n\n• copy check · none of its 5 inboxes is a Google or Outlook inbox the job knows, "
+                     "so the email was not judged"]
+
+
+def test_the_headline_counts_never_include_copy_check_mailboxes(tmp_path):
+    types = {"ok@x.com": "GMAIL", "bad@x.com": "GMAIL"}
+    st = fresh_state(tmp_path)
+    st["types"], st["clients"] = types, {e: "Precise Leads" for e in types}
+    write_csv(tmp_path, "dt-pl-1.csv", {"ok@x.com": (4, 4)})
+    write_csv(tmp_path, "dt-pl-copy-check.csv", {"ok@x.com": (0, 0), "bad@x.com": (0, 0)})
+    got = read(tmp_path, st)
+    wk.compute_holds(st, None)
+    wk.judge_copy_checks(st, got["copy_checks"])
+    head, parts = wk.build_report(st, got, wk.plan(st), fleet(), acted(), True, set())
+    assert head[0] == "v2 placement results, tests of Mon 9 Nov"
+    assert head[1] == "1 inboxes · 1 pass · 0 watch · 0 fail"       # bad@x.com is only in the copy check
+    assert head[2] == "Took 0 inboxes out of 0 live campaigns · tagged 0 in no campaign · returned 0"
+    assert head[3] == "Copy check · Precise Leads · Google inboxes not judged"
+    assert set(st["results"]) == {"ok@x.com"} and wk.plan(st)["ok@x.com"]["action"] is None
+    section = next(p for p in parts if p.startswith("*Precise Leads*"))
+    assert "(1 counted, 1 left out)" in section
+
+
+def test_a_copy_check_campaign_has_a_result_once_its_clients_copy_check_arrived(tmp_path):
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4)]
+    f = fleet()
+    f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT PL #1", "status": "PAUSED", "senders": {10, 11}},
+                                8: {"name": "DT PL copy check", "status": "PAUSED", "senders": {11}}}
+    report = lambda: "\n".join(wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())[1])   # noqa: E731
+    # ok@x.com's inbox-test result is not the copy check's result
+    assert "No result this week from DT PL copy check (1 inbox): download its CSV into Downloads." in report()
+    st["copy_checks"]["Precise Leads|2026-11-01"] = {"client": "Precise Leads", "night": "2026-11-01"}
+    assert "No result this week from DT PL copy check" in report()            # last week's does not count
+    st["copy_checks"]["Melior|2026-11-08"] = {"client": "Melior", "night": "2026-11-08"}
+    assert "No result this week from DT PL copy check" in report()            # nor another client's
+    st["copy_checks"]["Precise Leads|2026-11-08"] = {"client": "Precise Leads", "night": "2026-11-08"}
+    assert "No result this week" not in report()                               # started on Sunday: this week's
+
+
+def test_copy_checks_go_to_mongo_as_one_document_per_client_and_night(tmp_path):
+    results = {e: [result(v2.PASS, 4, 4, "2026-11-02")] for e in GOOGLE5}
+    st, got = copy_checked(tmp_path, {e: (4, 0) for e in GOOGLE5}, results, GOOGLE5)
+    st["copy_checks"]["Melior|2026-11-09"] = {"client": "Melior", "night": "2026-11-09", "file": "m.csv", "senders": {}}
+    docs = wk.copy_check_docs(st, NOW)
+    assert set(docs) == {"Precise Leads|2026-11-09"}               # one not judged yet is not sent
+    d = docs["Precise Leads|2026-11-09"]
+    assert (d["_id"], d["client"], d["night"], d["file"]) == ("Precise Leads|2026-11-09", "Precise Leads", "2026-11-09",
+                                                              "copy check.csv")
+    assert d["google"] == {"inbox": 20, "sent": 20, "senders": 5, "left_out": 0, "verdict": v2.PASS}
+    assert d["outlook"]["verdict"] == v2.NOT_JUDGED and d["updated_at"].endswith("+00:00")
