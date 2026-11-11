@@ -693,3 +693,26 @@ def test_an_inbox_pulled_by_hand_with_no_v2_result_is_still_named(tmp_path):
     text = "\n".join(parts)
     assert "*Pulled earlier and still in campaigns*" in text
     assert "• hand@x.com (Bettrdata) → would be taken out of PL | A" in text
+
+
+def test_a_later_short_test_does_not_hide_the_fail_the_job_acts_on(tmp_path):
+    """Mon: a 4-email test fails the inbox. Tue: a one-off test sends it 1 Google email (not judged). Both files
+    arrive together. The job pulls on Monday's fail, so the post shows that result, not Tuesday's 'incomplete'
+    (seen 11 Nov 2026: 'incomplete ... Google 0/4 -> would be taken out', and the headline counted no fail)."""
+    write_csv(tmp_path, "weekly.csv", {"bad@x.com": (0, 4), "ok@x.com": (4, 4)})
+    lines = [HEAD] + [f"bad@x.com,{p},Inbox,2026-11-10T11:51:00.000Z,SENT\n"
+                      for p in ["GOOGLE_WORKSPACE"] + ["MICROSOFT_365"] * 4]
+    p = tmp_path / "one-off.csv"
+    p.write_text("".join(lines), encoding="utf-8")
+    t = NOW.timestamp() - 3600
+    os.utime(p, (t, t))
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st, now=NOW + timedelta(days=1))
+    assert [x["verdict"] for x in st["results"]["bad@x.com"]] == [v2.FAIL, v2.INCOMPLETE]
+    decisions = wk.plan(st)
+    assert decisions["bad@x.com"]["action"] == v2.PULL
+    head, parts = wk.build_report(st, got, decisions, fleet(), acted(removed={"bad@x.com": [1]}), True, set())
+    text = "\n".join(parts)
+    assert "• fail · x.com · bad@x.com · Google 0/4, Microsoft 4/4 → taken out of PL | A; tagged DO NOT USE" in text
+    assert "incomplete" not in text
+    assert head[1] == "2 inboxes · 1 pass · 0 watch · 1 fail"

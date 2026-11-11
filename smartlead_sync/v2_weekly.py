@@ -681,18 +681,32 @@ def _incomplete_tail(items: list[tuple[str, dict]]) -> str:
     return f"{' and '.join(why) or 'a provider has no result'}, so it was not judged; nothing done"
 
 
+def _shown(rs: list[dict], nights=None) -> dict:
+    """The result the report shows for an inbox: its newest (among ``nights`` when given). When that one was
+    not judged (a short test, a pending seed) and an earlier one was, the judged one is shown: it is the result
+    the job acts on, so the line and the headline say 'fail', not 'incomplete'."""
+    mine = [x for x in rs if nights is None or x["night"] in nights] or rs
+    last = mine[-1]
+    if last["verdict"] == v2.INCOMPLETE:
+        judged = [x for x in mine if x["verdict"] in v2.JUDGED]
+        if judged:
+            return judged[-1]
+    return last
+
+
 def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, acted: dict, write: bool,
                  pulled_before: set, act_from: str | None = None, behind: int | None = None,
                  report_only_clients: set | None = None) -> tuple[list[str], list[str]]:
     nights = sorted(got["nights"])
-    latest = {mb: rs[-1] for mb, rs in state["results"].items() if rs and rs[-1]["night"] in got["nights"]}
+    latest = {mb: _shown(rs, got["nights"]) for mb, rs in state["results"].items()
+              if rs and rs[-1]["night"] in got["nights"]}
     count = Counter(x["verdict"] for x in latest.values())
     tonight = dict(latest)
     report_only = acted.get("report_only") or {}
     for e in (set(acted["removed"]) | set(acted["blocked"]) | set(acted["parked"]) | set(acted["tagged"])
               | set(acted["failed"]) | set(report_only)):
         if e not in latest and state["results"].get(e):
-            latest[e] = state["results"][e][-1]             # acted on from an older result: still named
+            latest[e] = _shown(state["results"][e])         # acted on from an older result: still named
     fleet = fleet or {}
     client_of = {e: i["client"] for f in fleet.values() for e, i in f["inboxes"].items()}
     names = {cid: c["name"] for f in fleet.values() for cid, c in {**f["camps"], **f.get("dt", {})}.items()}
