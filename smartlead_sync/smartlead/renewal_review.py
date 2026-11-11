@@ -15,11 +15,10 @@ classic tests were read):
   CHECK     one v2 FAIL (or a WATCH, below 4 of 4) with no pass since, two
             weekly FAILs older than 8 days (it may have been fixed or rested
             since), a pull from campaigns less than 30 days old, still
-            carrying the v2 job's own DO NOT USE tag, the domain on Spamhaus
-            DBL in its newest blocklist check that could read DBL (or no
-            check could), Smartlead connection broken, warmup reputation
-            under 70%, a source that could not be read, or not in Smartlead
-            (new and not connected yet, or abandoned: a person decides).
+            carrying the v2 job's own DO NOT USE tag, Smartlead connection
+            broken, warmup reputation under 70%, a source that could not be
+            read, or not in Smartlead (new and not connected yet, or
+            abandoned: a person decides).
   UNTESTED  no v2 result in the last 8 days: never KEEP without a test.
   KEEP      only a v2 PASS in the last 8 days and none of the above.
 
@@ -28,6 +27,12 @@ the row, never a verdict, so a failed classic read only loses the notes. The
 v2 job's auto tag ("DO NOT USE - failed v2
 (auto)") marks a pull after ONE failed test, so it counts as a pull (CHECK),
 not as a person's DO NOT USE.
+
+A Spamhaus DBL listing of the domain is a note on the row, never a verdict
+(Manveen, 11 Nov 2026). On 10 Nov a listed Outlook domain put 96 of 96 Google
+and 95 of 96 Microsoft seeds in the inbox on v2, and 25 of that week's 46
+CHECK rows were CHECK for the listing alone. The v2 result decides; the
+listing is shown so a person can weigh it.
 
 Pure functions (unit-tested); ``renewal_review.py`` collects and posts.
 """
@@ -105,8 +110,16 @@ def dbl_status(rows: list[dict]) -> dict:
             "unknown_on": str(rows[-1].get("date") or "") if _dbl_unread(rows[-1]) else None}
 
 
+def dbl_note(dbl: dict | None) -> str:
+    """The row's note when the newest check that could read Spamhaus DBL listed the domain
+    ('' otherwise). A note only: it never changes the verdict."""
+    if not dbl or not is_dbl(dbl.get("listed_on")):
+        return ""
+    return dbl_reason(dbl)
+
+
 def dbl_reason(dbl: dict) -> str:
-    """Why the domain's blocklist state stops a KEEP ('' when it does not)."""
+    """What the domain's blocklist state says in words ('' when the newest readable check is clean)."""
     listed, unknown = is_dbl(dbl.get("listed_on")), dbl.get("unknown_on")
     seen = f"the check of {_day(dbl['date'])}" if _iso(dbl.get("date")) else "an earlier check"
     if unknown is not None:
@@ -159,9 +172,9 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
     """``(verdict, reason)`` for one inbox.
 
     ``facts``: Smartlead {in_smartlead, connected, reputation, tags, ...}. ``v2``: this inbox's
-    v2_verdicts rows ([] = none; None = the collection could not be read). ``dbl``: its domain's
-    dbl_status ({} = no check; None = could not be read). ``kill`` (the classic
-    kill rule) is not used here: classic tests only add a note (review_bill)."""
+    v2_verdicts rows ([] = none; None = the collection could not be read). ``dbl`` (its domain's
+    dbl_status) and ``kill`` (the classic kill rule) are not used here: a Spamhaus listing and
+    classic tests only add a note to the row (review_bill)."""
     f = facts or {}
     if not f.get("in_smartlead"):
         # Only proof when every Smartlead account was read: a 429 on 2026-10-08
@@ -197,8 +210,6 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
                    f"under {PULL_CHECK_DAYS} days ago")
     if not pulled and any(t.lower() == AUTO_DNU_TAG.lower() for t in tags):
         why.append("still tagged DO NOT USE by the v2 job, waiting for two passes")
-    if dbl and dbl_reason(dbl):
-        why.append(dbl_reason(dbl))
     if not f.get("connected", True):
         why.append("Smartlead connection broken")
     rep = _rep(f.get("reputation"))
@@ -212,8 +223,6 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
         return "CHECK", "v2 results could not be read, so not kept"
     if not s["latest_recent"]:
         return UNTESTED, NO_V2
-    if dbl is None:
-        return "CHECK", "blocklist checks could not be read, so not kept"
     return "KEEP", f"passed v2 on {_day(s['latest_recent']['night'].isoformat())}"
 
 
@@ -229,8 +238,9 @@ def price_of(bill: dict) -> float | None:
 def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool = True,
                 v2: dict[str, list[dict]] | None = None, dbl: dict[str, dict] | None = None) -> dict:
     """``bill`` = {provider, label, bills_on, price, inboxes:[emails], client(s), ...}.
-    ``v2`` {email: v2_verdicts rows} and ``dbl`` {domain: newest blacklist_checks row}; None
-    means that source could not be read, so nothing on the bill is KEEP."""
+    ``v2`` {email: v2_verdicts rows}; None means it could not be read, so nothing on the bill is
+    KEEP. ``dbl`` {domain: dbl_status}; a listing adds the row's ``listed`` note and nothing else
+    (None = not read: no notes)."""
     # The kill rule pools a domain across ALL its known mailboxes, not just this bill's.
     kills = kr.judge_all({e: (f or {}).get("tests") or [] for e, f in facts.items()}, today)
     rows = []
@@ -249,6 +259,8 @@ def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool 
         k = kills.get(email) or {}
         if k.get("verdict") in (kr.KILL, kr.WATCH):          # early warning only, never the verdict
             row["watch"] = f"classic test: {k['why']}"
+        if dbl_note(bl):                                      # a note, never the verdict
+            row["listed"] = dbl_note(bl)
         rows.append(row)
     n = len(bill.get("inboxes") or []) or int(bill.get("mailboxes") or 0) or 1
     per_inbox = float(bill.get("price") or 0) / n if bill.get("per_inbox") is None else float(bill["per_inbox"])
@@ -369,7 +381,7 @@ def format_review(reviews: list[dict], days: int) -> tuple[list[str], list[str]]
     line per bill (price, counts, cost per passing inbox), then what to drop (by domain,
     with the reason), paid-for inboxes not in Smartlead, what to check, what is untested,
     bills not reviewed, classic early warnings, copy-ready support messages and how to
-    retire. Inboxes the provider is still setting up are left out."""
+    retire, with Spamhaus listings as a note. Inboxes the provider is still setting up are left out."""
     if not reviews:
         return [f"✅ Nothing bills in the next {days} days"], []
     rows = [x for r in reviews for x in r["rows"]]
@@ -400,7 +412,7 @@ def format_review(reviews: list[dict], days: int) -> tuple[list[str], list[str]]
         head.append(f"{k} bill{'s' if k != 1 else ''} ({_money(cost)}) not reviewed: no inbox list")
 
     parts: list[str] = ["\n".join(["*Each bill*"] + [_bill_line(r) for r in reviews])]
-    drop, gone, check, untested, notrev, watch = [], [], [], [], [], []
+    drop, gone, check, untested, notrev, watch, listed = [], [], [], [], [], [], []
     for r in reviews:
         k_rows = [x for x in r["rows"] if x["verdict"] == "RETIRE"]
         u_rows = [x for x in r["rows"] if x.get("kind") == "unused"]
@@ -430,11 +442,13 @@ def format_review(reviews: list[dict], days: int) -> tuple[list[str], list[str]]
             owner = "" if r.get("clients") else " · no client named"
             notrev.append(f"• {_bill_name(r)}: no inbox list, so no inbox was judged{note}{owner}")
         watch += _grouped(r, [x for x in r["rows"] if x.get("watch") and x["verdict"] != "RETIRE"], "watch")
+        listed += _grouped(r, [x for x in r["rows"] if x.get("listed")], "listed")
     for title, lines in (("*Drop before the bill*", drop), ("*Paying for inboxes not in Smartlead*", gone),
                          ("*Check before paying*", check),
                          (f"*Untested: no v2 result in the last {V2_FRESH_DAYS} days, so not kept*", untested),
                          ("*Not reviewed*", notrev),
-                         ("*Classic tests (early warning only, never a verdict)*", watch)):
+                         ("*Classic tests (early warning only, never a verdict)*", watch),
+                         ("*On Spamhaus DBL (a note only: the v2 result decides keep, check or drop)*", listed)):
         if lines:
             parts.append("\n".join([title] + lines))
     for r in reviews:
@@ -447,17 +461,18 @@ def format_review(reviews: list[dict], days: int) -> tuple[list[str], list[str]]
 
 CLASSIC_SOURCE = "classic tests"       # SmartDelivery v1 reports: notes only
 CAMPAIGNS_SOURCE = "campaign lists"    # which campaigns an inbox is in: notes only
-NOTE_ONLY = (CLASSIC_SOURCE, CAMPAIGNS_SOURCE)
+BLOCKLIST_SOURCE = "blocklist checks"  # Spamhaus DBL listings: notes only (11 Nov 2026)
+NOTE_ONLY = (CLASSIC_SOURCE, CAMPAIGNS_SOURCE, BLOCKLIST_SOURCE)
 READ_EFFECT = (("Zapmail", "a bill may be missing"), ("ScaledMail", "a bill may be missing"),
                ("Smartlead", "some inboxes have no verdict"), ("v2 results", "no inbox is marked keep"),
-               ("blocklist checks", "no inbox is marked keep"),
+               (BLOCKLIST_SOURCE, "Spamhaus listing notes are missing"),
                (CLASSIC_SOURCE, "classic early warnings are missing"),
                (CAMPAIGNS_SOURCE, "an inbox to drop may still be in a campaign without a warning"))
 
 
 def decision_errors(errors: list[str]) -> list[str]:
     """The read errors that can change a verdict: all but the note-only sources (classic tests,
-    campaign lists), which never decide KEEP / CHECK / DROP / UNTESTED."""
+    campaign lists, blocklist checks), which never decide KEEP / CHECK / DROP / UNTESTED."""
     return [e for e in errors or [] if not str(e).startswith(NOTE_ONLY)]
 
 

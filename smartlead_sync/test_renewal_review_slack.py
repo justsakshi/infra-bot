@@ -26,7 +26,7 @@ def _v2(email, *nights, pulled_on=None):
 
 def _reviews():
     """Four bills: a Zapmail Outlook subscription with a domain that failed v2 two Mondays running,
-    a ScaledMail order with a DO NOT USE domain, a DBL domain and an untested inbox, a clean
+    a ScaledMail order with a DO NOT USE domain, a DBL domain (kept, with a note) and an untested inbox, a clean
     Zapmail one (one inbox with a bad classic test), and a pre-warmed plan with no inbox list."""
     facts = {f"{u}@twofails.com": _facts(campaigns=["BD Ingest"] if u == "amy" else [])
              for u in ("amy", "ben", "cal")}
@@ -64,7 +64,7 @@ def _part(parts, title):
 def test_review_headline_counts_add_up():
     head, parts = rr.format_review(_reviews(), 7)
     assert head == ["⚠️ Bills in the next 7 days: 4 bills, $119.00",
-                    "Of 13 inboxes: 5 to drop before they renew (saves $13.67/mo), 3 to check, 1 untested, 4 to keep",
+                    "Of 13 inboxes: 5 to drop before they renew (saves $13.67/mo), 1 to check, 1 untested, 6 to keep",
                     "1 bill ($84.00) not reviewed: no inbox list"]
     assert not any(EMAIL.search(l) for l in head)
 
@@ -76,7 +76,7 @@ def test_each_bill_has_price_counts_and_cost_per_passing_inbox():
     assert each[1:] == [
         "• Bill on 15 Oct · Zapmail · 5 Outlook inboxes · $15.00 (Bettrdata): 1 keep, 1 check, 3 drop, 0 untested "
         "· $7.50 per passing inbox (2 passed v2 in the last 8 days)",
-        "• Bill on 17 Oct · ScaledMail · 6 × Google Inboxes · $14.00 (Precise Leads): 1 keep, 2 check, 2 drop, 1 untested "
+        "• Bill on 17 Oct · ScaledMail · 6 × Google Inboxes · $14.00 (Precise Leads): 3 keep, 0 check, 2 drop, 1 untested "
         "· $4.67 per passing inbox (3 passed v2 in the last 8 days)",
         "• Bill on 19 Oct · Zapmail · 2 Google inboxes · $6.00 (Precise Leads): 2 keep, 0 check, 0 drop, 0 untested "
         "· $3.00 per passing inbox (2 passed v2 in the last 8 days)",
@@ -96,8 +96,9 @@ def test_review_drop_lines_per_bill_by_domain_with_the_reason():
 
 def test_review_checks_untested_and_not_reviewed():
     head, parts = rr.format_review(_reviews(), 7)
-    assert _part(parts, "*Check before paying*")[1:] == [
-        "• `eve@mixed.com` (bill 15 Oct): warmup reputation 55%",
+    assert _part(parts, "*Check before paying*")[1:] == ["• `eve@mixed.com` (bill 15 Oct): warmup reputation 55%"]
+    # a Spamhaus listing is a note under its own heading, not a reason to check (Manveen, 11 Nov 2026)
+    assert _part(parts, "*On Spamhaus DBL (a note only: the v2 result decides keep, check or drop)*")[1:] == [
         "• Bill on 17 Oct (Precise Leads): listed.com (2 inboxes): domain on Spamhaus DBL (check of 12 Oct)"]
     assert _part(parts, "*Untested: no v2 result in the last 8 days, so not kept*")[1:] == [
         "• Bill on 17 Oct (Precise Leads): plgood.com (1 inbox)"]
@@ -320,7 +321,7 @@ def test_unread_v2_keeps_nothing_says_so_and_writes_no_flags(monkeypatch):
     assert rows == {"a@x.com": ("CHECK", "v2 results could not be read, so not kept"),
                     "b@x.com": ("RETIRE", 'tagged "do not use" in Smartlead')}     # a tag needs no v2
     assert res["headline"][-1] == (":warning: Could not read v2 results and blocklist checks, so no inbox is marked "
-                                   "keep (details in the thread)")
+                                   "keep and Spamhaus listing notes are missing (details in the thread)")
     assert "v2 results (Mongo v2_verdicts): v2_verdicts: server selection timed out" in "\n".join(res["thread"])
     sent = _capture_posts(monkeypatch, cli, "--post", "--flag-tracker")
     monkeypatch.setattr(cli, "run", lambda days: res)
