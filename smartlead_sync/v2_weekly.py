@@ -18,7 +18,7 @@ What it does (rules in smartlead/v2_results.py):
     test campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
     tagged "DO NOT USE - failed v2 (auto)" so gtm presend refuses it. Warm-up stays on, and it
     stays in its DT test campaign, so next Monday tests it again;
-  * Melior is report-only (REPORT_ONLY_CLIENTS, until Ryan agrees; --act-clients Melior to act): its
+  * Melior is report-only (REPORT_ONLY_CLIENTS, until the job is proven on the other clients; --act-clients Melior to act): its
     inboxes are listed as "would be taken out" and nothing in Smartlead changes for them;
   * a campaign left with no good sender is not touched (sending or scheduled: the post asks a person);
   * an inbox the job pulled comes back (same campaigns, tag removed) after two passes 6+ days apart;
@@ -106,8 +106,11 @@ INFRA_CHANNEL = "C0AGVSUNEFP"
 DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
 # Clients whose inboxes the job only reports, never changes in Smartlead (7 Nov 2026: Melior pulls go through
 # Ryan's path until he agrees to automatic ones). --act-clients overrides this for a run.
+# Report-only is a safety stage, not a client rule (Manveen, 11 Nov 2026: "it should not be client dependent
+# right now i am keeping melior out so we should know its safe before using that"). The rules are the same
+# for every client; a client listed here is only reported on until the job is known to be safe.
 REPORT_ONLY_CLIENTS = {"Melior"}
-REPORT_ONLY_WHY = {"Melior": "until Ryan agrees"}
+REPORT_ONLY_WHY = {"Melior": "until the job is proven on the other clients"}
 REPORT_ONLY_OWNER = {"Melior": "Ryan"}   # who decides a report-only client's stuck campaign
 # Mongo (db smartlead.config.HEALTH_HISTORY_DB), read on Render: is the PC job alive, and what did v2 say.
 HEARTBEAT_COLLECTION = "v2_heartbeat"

@@ -202,7 +202,7 @@ def test_watch_week_waits_for_the_night_to_settle_then_reports_without_changing_
     assert ("• fail · x.com · pl-bad@x.com · Google 0/4, Microsoft 4/4 → would be taken out of PL | A; "
             "would be tagged DO NOT USE") in text
     assert ("• fail · y.com · mel-bad@y.com · Google 4/4, Microsoft 0/4 → would be taken out of Melior | B "
-            "(Melior: report-only until Ryan agrees); nothing changed in Smartlead") in text
+            "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in text
     assert "No result this week from DT PL #2 (1 inbox): download its CSV" in parts[0]
     assert "2 commits behind main" in text
     v = job.verdicts()
@@ -265,13 +265,13 @@ def test_report_only_melior_is_reported_by_what_would_happen_and_never_touched(j
     assert head[2] == "Took 1 inbox out of 1 live campaign · tagged 0 in no campaign · returned 0"
     assert head[-1] == "\n*Needs you: 3*"
     assert parts[0].split("\n")[2:] == [
-        "• Melior is report-only until Ryan agrees, so nothing changed in Smartlead for it. The job would take 1 inbox "
+        "• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would take 1 inbox "
         "out of campaigns, leave 1 inbox in a live campaign where it is the last good sender and tag 1 inbox that is "
         "in no campaign. List under *Melior* below.",
         "• Melior | Solo (3) is live with only failed inboxes left (mel-solo@y.com). Not changed, as Melior is "
-        "report-only until Ryan agrees: ask Ryan to pause it or add a good sender.",
+        "report-only until the job is proven on the other clients: ask Ryan to pause it or add a good sender.",
         "• No result this week from DT PL #2 (1 inbox): download its CSV into Downloads."]
-    ro = " (Melior: report-only until Ryan agrees); nothing changed in Smartlead"
+    ro = " (Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead"
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert melior.split("\n")[2:] == [
         "• fail · y.com · mel-bad@y.com · Google 4/4, Microsoft 0/4 → would be taken out of Melior | B" + ro,
@@ -437,7 +437,7 @@ def test_a_failed_domain_of_a_report_only_client_changes_nothing(job, monkeypatc
     assert "The job would take 2 inboxes out of campaigns. List under *Melior* below." in parts[0]
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert ("• domain failed · y.com · 1 of 2 inboxes in spam → 1 more inbox would be taken out of Melior | B "
-            "(Melior: report-only until Ryan agrees); nothing changed in Smartlead") in melior
+            "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
 
 
 # --- self-check ---------------------------------------------------------------------

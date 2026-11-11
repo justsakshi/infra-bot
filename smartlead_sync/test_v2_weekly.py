@@ -649,16 +649,16 @@ def test_report_only_lines_say_what_would_happen_to_each_inbox(tmp_path):
     head, parts = wk.build_report(st, GOT, wk.plan(st), melior_fleet(), a, False, set(), report_only_clients={"Melior"})
     text = "\n".join(parts)
     assert "out of campaigns" not in parts[0] and "2 of 2" not in text
-    assert ("• Melior is report-only until Ryan agrees, so nothing changed in Smartlead for it. The job would leave 1 "
+    assert ("• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would leave 1 "
             "inbox in a live campaign where it is the last good sender and tag 1 inbox that is in no campaign. "
             "List under *Melior* below.") in parts[0]
     assert ("• Melior | Solo (5) is live with only failed inboxes left (last@y.com). Not changed, as Melior is "
-            "report-only until Ryan agrees: ask Ryan to pause it or add a good sender.") in parts[0]
+            "report-only until the job is proven on the other clients: ask Ryan to pause it or add a good sender.") in parts[0]
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert ("• fail · y.com · last@y.com · Google 0/4, Microsoft 4/4 → last good sender of live Melior | Solo, so it "
-            "would stay there (Melior: report-only until Ryan agrees); nothing changed in Smartlead") in melior
+            "would stay there (Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
     assert ("• fail · y.com · idle@y.com · Google 4/4, Microsoft 1/4 → in no campaign; would be tagged DO NOT USE "
-            "(Melior: report-only until Ryan agrees); nothing changed in Smartlead") in melior
+            "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
     assert head[2] == "Would take 0 inboxes out of 0 live campaigns · would tag 0 in no campaign · would return 0"
 
 
@@ -957,8 +957,8 @@ def test_the_domain_line_counts_its_inboxes_by_what_happened():
         "paused/draft PL | B, 1 in no campaign; tagged DO NOT USE")
     ro = acted(report_only={"c@y.com": {"removed": [], "blocked": [1], "parked": []}})
     assert wk._domain_tail("Melior", ["c@y.com"], ro, names, True) == (
-        "1 more inbox last good sender of live PL | A, so it would stay there (Melior: report-only until Ryan "
-        "agrees); nothing changed in Smartlead")
+        "1 more inbox last good sender of live PL | A, so it would stay there (Melior: report-only until the job "
+        "is proven on the other clients); nothing changed in Smartlead")
 
 
 def test_report_counts_an_inbox_by_its_own_provider_verdict(tmp_path):
