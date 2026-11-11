@@ -20,6 +20,8 @@ Checks (smartlead/gate_selftest.checks):
   3. once a v2 pass is required: every FREE inbox has a v2 pass in the last 10 days
   4. no tagged or failed inbox is attached to a sending campaign (report-only clients are listed, not failed)
   5. the v2 job on the PC ran in the last 26 hours and is in act mode
+  6. every connected inbox of a current client has a row in the asset tracker (Mongo assets), so the
+     inventory that bills and expiry reminders are read from is complete
 
     python gate_selftest.py                  # print the result
     python gate_selftest.py --save --post    # daily on Render: record it; post when a check disagrees,
@@ -50,7 +52,7 @@ COLLECTION = "gate_selftest"
 
 
 async def smartlead_side(errors: list[str]) -> tuple[list[dict], list[dict]]:
-    """([{email, tags, account}], [{client, campaign, emails}]) for every current account."""
+    """([{email, tags, account, connected, client}], [{client, campaign, emails}]) for every current account."""
     from smartlead.sheets import _is_test_campaign
     inboxes, campaigns = [], []
     for acc in discover_accounts():
@@ -60,7 +62,9 @@ async def smartlead_side(errors: list[str]) -> tuple[list[dict], list[dict]]:
             async with SmartleadClient(acc.api_key, acc.name) as c:
                 for a in await c.list_email_accounts():
                     inboxes.append({"email": str(a.get("from_email") or "").strip().lower(),
-                                    "tags": usable.tag_names(a), "account": acc.name})
+                                    "tags": usable.tag_names(a), "account": acc.name,
+                                    "connected": bool(a.get("is_smtp_success")) and bool(a.get("is_imap_success")),
+                                    "client": client_label(acc.name, a.get("client_id"))})
                 for camp in await c.list_campaigns() or []:
                     if str(camp.get("status") or "").upper() != "ACTIVE" or _is_test_campaign(camp.get("name") or ""):
                         continue
@@ -101,6 +105,15 @@ def mongo_side(errors: list[str]) -> tuple[dict, dict | None, object]:
     return data.get("v2") or {}, heartbeat, db
 
 
+def tracker_names(errors: list[str]) -> set[str]:
+    """Every name (domain or inbox) in the asset tracker."""
+    from smartlead.zapmail_asset_sync import read_tracker
+    names = set(read_tracker())
+    if not names:
+        errors.append("the tracker (Mongo assets): not read")
+    return names
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Gate self-test (read-only for Smartlead)")
     ap.add_argument("--post", action="store_true", help="post when a check disagrees, and always on Monday")
@@ -113,7 +126,9 @@ def main() -> int:
     inboxes, campaigns = asyncio.run(smartlead_side(errors))
     rows = list_rows(errors)
     v2, heartbeat, db = mongo_side(errors)
-    results = gs.checks(inboxes, campaigns, rows, v2, heartbeat, now, usable.require_v2_pass(now.date()), errors)
+    tracker = tracker_names(errors)
+    results = gs.checks(inboxes, campaigns, rows, v2, heartbeat, now, usable.require_v2_pass(now.date()), errors,
+                        tracker=tracker)
     head, thread = gs.format_post(results, now.date(), errors)
     bad = [r for r in results if not r["ok"]]
     out = {"date": now.date().isoformat(), "ok": not bad and not errors, "errors": errors,

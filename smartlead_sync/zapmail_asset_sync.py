@@ -3,7 +3,8 @@
 
 Dry run by default: prints what would change. See
 smartlead/zapmail_asset_sync.py for the rules (expiry follows Zapmail, status
-only downgrades, new rows only for current clients, nothing deleted).
+only downgrades, new rows only for current clients, nothing deleted; a domain
+with no brand in its name takes its client from Smartlead).
 
     python zapmail_asset_sync.py                    # preview
     python zapmail_asset_sync.py --apply            # write the tracker
@@ -41,7 +42,7 @@ async def main() -> int:
     res = await sync(apply_changes=args.apply, domain=args.domain)
     if args.json:
         print(json.dumps({k: res.get(k) for k in
-                          ("ok", "counts", "applied", "errors", "note")}
+                          ("ok", "counts", "applied", "errors", "note", "smartlead_note")}
                          | {"ops": [{k: o[k] for k in ("action", "type", "name", "reason")}
                                     for o in res.get("ops", [])],
                             "skipped": res.get("skipped", [])}, default=str))
@@ -60,6 +61,8 @@ async def main() -> int:
         print(f"  ⚠ {e}")
     if res.get("note"):
         print(f"  ⚠ {res['note']}")
+    if res.get("smartlead_note"):
+        print(f"  ⚠ {res['smartlead_note']}")
     if args.apply:
         print(f"  wrote {res.get('applied', 0)} row(s)")
     else:

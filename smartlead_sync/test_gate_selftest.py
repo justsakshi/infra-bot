@@ -25,8 +25,8 @@ def _world():
     return inboxes, campaigns, rows, v2
 
 
-def _run(inboxes, campaigns, rows, v2, hb=HB, require=True, errors=None):
-    return {r["name"]: r for r in gs.checks(inboxes, campaigns, rows, v2, hb, NOW, require, errors)}
+def _run(inboxes, campaigns, rows, v2, hb=HB, require=True, errors=None, tracker=None):
+    return {r["name"]: r for r in gs.checks(inboxes, campaigns, rows, v2, hb, NOW, require, errors, tracker=tracker)}
 
 
 def test_all_agree_when_every_source_says_the_same():
@@ -110,6 +110,7 @@ def test_cli_posts_on_a_disagreement_or_a_monday_and_stays_quiet_otherwise(monke
     monkeypatch.setattr(cli, "smartlead_side", side)
     monkeypatch.setattr(cli, "list_rows", lambda errors: _world()[2])
     monkeypatch.setattr(cli, "mongo_side", lambda errors: (_world()[3], {**HB, "last_run": "2026-11-16T05:30:00+00:00"}, None))
+    monkeypatch.setattr(cli, "tracker_names", lambda errors: {"good@x.com"})
     monkeypatch.setattr(cli.usable, "require_v2_pass", lambda today: False)
     monkeypatch.setattr(cli.notify, "post_with_thread", lambda token, ch, head, thread: sent.append(head) or "ts")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
@@ -130,4 +131,27 @@ def test_cli_posts_on_a_disagreement_or_a_monday_and_stays_quiet_otherwise(monke
     assert cli.main() == 0 and len(sent) == 1 and sent[0][0].startswith("✅ Gate self-test 16 Nov")
     monkeypatch.setattr(cli, "datetime", Tue)
     monkeypatch.setattr(cli, "list_rows", lambda errors: [_row("tag@x.com", "FREE", "")] + _world()[2][1:])
-    assert cli.main() == 0 and len(sent) == 2 and sent[1][0].startswith("⚠️ Gate self-test 17 Nov: 1 of 5")
+    assert cli.main() == 0 and len(sent) == 2 and sent[1][0].startswith("⚠️ Gate self-test 17 Nov: 1 of 6")
+
+
+def test_a_working_inbox_the_tracker_does_not_know_is_caught_2026_11_11():
+    """Twelve sending inboxes of a current client sat on domains with no brand in the name, so the tracker sync
+    never added them and nothing said so."""
+    inboxes, campaigns, rows, v2 = _world()
+    inboxes = inboxes + [
+        {"email": "known@x.com", "tags": [], "connected": True, "client": "Bettrdata"},
+        {"email": "unknown@nobrand.co", "tags": [], "connected": True, "client": "Bettrdata"},
+        {"email": "dead@nobrand.co", "tags": [], "connected": False, "client": "Bettrdata"},      # not working: not asked for
+        {"email": "old@past.com", "tags": [], "connected": True, "client": "OSC"}]                # a past client's
+    r = _run(inboxes, campaigns, rows, v2, tracker={"known@x.com", "x.com"})["tracker_has_every_inbox"]
+    assert not r["ok"] and r["checked"] == 2 and r["bad"] == ["unknown@nobrand.co"]
+    assert r["says"].startswith("1 of 2 connected inboxes of current clients have no row in the asset tracker")
+    r = _run(inboxes, campaigns, rows, v2, tracker={"known@x.com", "unknown@nobrand.co"})["tracker_has_every_inbox"]
+    assert r["ok"] and r["says"].startswith("all 2 connected inboxes")
+
+
+def test_the_tracker_check_fails_when_the_tracker_was_not_read_and_is_absent_when_not_asked_for():
+    inboxes, campaigns, rows, v2 = _world()
+    r = _run(inboxes, campaigns, rows, v2, tracker=set(), errors=["the tracker (Mongo assets): not read"])
+    assert not r["tracker_has_every_inbox"]["ok"] and r["tracker_has_every_inbox"]["says"].startswith("not checked")
+    assert "tracker_has_every_inbox" not in _run(inboxes, campaigns, rows, v2)

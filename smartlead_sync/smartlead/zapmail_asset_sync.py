@@ -18,8 +18,13 @@ Rules (conservative on purpose — the tracker is the team's):
   channel, costs, notes).
 * **New rows** are added only for current clients (``zapmail_clients``), only
   when live, and with no owner/channel — so no reminder is sent for them
-  until someone assigns one. Past-client and unbranded domains are reported,
-  never added.
+  until someone assigns one. Past-client domains are reported, never added.
+* A domain with no brand in its name (the pre-warmed ``.co`` ones) takes its
+  client from Smartlead: when every inbox Smartlead holds on it is filed
+  under one current client, it is that client's (``smartlead_clients``).
+  Until 2026-11-11 such domains were never added, so nine domains and twelve
+  sending inboxes of a current client were missing from the tracker. A domain
+  Smartlead does not know, or files under two clients, stays unassigned.
 * Nothing is deleted.
 
 ``plan_sync`` is pure (unit-tested); ``apply`` writes. Callers default to a
@@ -32,7 +37,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from smartlead.zapmail_clients import TRACKER_SPELLING, infer_client
+from smartlead.zapmail_clients import TRACKER_SPELLING, client_from_tracker, infer_client
 
 try:
     from pymongo import MongoClient, UpdateOne
@@ -104,6 +109,15 @@ def _zap_status(status, expire_on: str, today: str) -> str:
     return "Active" if str(status or "").upper() in _ACTIVE else "Inactive"
 
 
+def _past_account(account: str | None) -> bool:
+    """A past client's own Zapmail account: nothing in it is a current client's."""
+    return "".join(ch for ch in str(account or "").lower() if ch.isalpha()) == "belardiwong"
+
+
+def _smartlead_note(by_smartlead: bool, client: str | None) -> str:
+    return f"; client from Smartlead, where its inboxes are filed under {client}" if by_smartlead else ""
+
+
 def _changes(existing: dict, *, expire_on: str, zap_status: str,
              workspace: str, first_day: str, domain: str | None = None) -> dict:
     """Fields to $set on an existing row under the rules above."""
@@ -123,13 +137,57 @@ def _changes(existing: dict, *, expire_on: str, zap_status: str,
     return s
 
 
+def domain_clients(inboxes: list[dict]) -> dict[str, str]:
+    """``{domain: client profile key}`` from Smartlead inboxes. Pure.
+
+    ``inboxes`` = ``[{email, client}]`` where ``client`` is the label Smartlead
+    itself carries (the account for a single-client account, the client field
+    inside the agency account) and is empty when Smartlead names none. A domain
+    counts only when every inbox on it carries the same current client: one
+    unlabelled or past-client inbox leaves the domain unassigned.
+    """
+    seen: dict[str, set] = {}
+    for i in inboxes:
+        dom = str(i.get("email") or "").strip().lower().partition("@")[2]
+        if dom:
+            seen.setdefault(dom, set()).add(client_from_tracker(i.get("client")) if i.get("client") else None)
+    return {dom: next(iter(cs)) for dom, cs in seen.items() if len(cs) == 1 and None not in cs}
+
+
+async def smartlead_clients() -> dict[str, str]:
+    """``{domain: client}`` read from Smartlead's inbox lists. READ-ONLY.
+
+    Only an explicit label counts: the agency account's inboxes with no client
+    field are Precise Leads' own AND old clients' leftovers, so they say nothing.
+    """
+    from smartlead.accounts import discover_accounts
+    from smartlead.api import SmartleadClient
+    from smartlead.report_sheet import _CLIENT_BY_ID, client_label
+
+    rows: list[dict] = []
+    for acc in discover_accounts():
+        agency = acc.name.strip().lower().replace("_", " ") == "precise leads"
+        async with SmartleadClient(acc.api_key, acc.name) as c:
+            for a in await c.list_email_accounts():
+                named = (not agency) or a.get("client_id") in _CLIENT_BY_ID
+                rows.append({"email": a.get("from_email"),
+                             "client": client_label(acc.name, a.get("client_id")) if named else ""})
+    return domain_clients(rows)
+
+
 def plan_sync(zap_domains: list[dict], zap_mailboxes: list[dict],
-              tracker: dict[str, dict], *, today: str) -> dict:
+              tracker: dict[str, dict], *, today: str,
+              in_use: dict[str, str] | None = None) -> dict:
     """Decide inserts/updates. Pure.
+
+    ``in_use`` = ``{domain: client}`` from Smartlead (``smartlead_clients``),
+    used only for a domain the tracker and the name say nothing about.
 
     Returns ``{"ops": [{action, type, name, set|doc, reason}], "skipped": [...],
     "counts": {...}}``.
     """
+    in_use = in_use or {}
+    by_smartlead: set[str] = set()
     ops: list[dict] = []
     skipped: list[dict] = []
     now = datetime.now(timezone.utc)
@@ -139,6 +197,10 @@ def plan_sync(zap_domains: list[dict], zap_mailboxes: list[dict],
         name = r["domain"]
         existing = tracker.get(name)
         client = infer_client(name, r.get("account"), (existing or {}).get("client"))
+        if (client is None and not existing and in_use.get(name) in TRACKER_SPELLING
+                and not _past_account(r.get("account"))):
+            client = in_use[name]
+            by_smartlead.add(name)
         domain_client[name] = client
         status = _zap_status(r.get("status"), r.get("expire_on", ""), today)
         ws = _workspace(r.get("provider"))
@@ -162,9 +224,11 @@ def plan_sync(zap_domains: list[dict], zap_mailboxes: list[dict],
                         "workspace": ws,
                         "purchaseDate": _dt(r.get("registered_on", "")),
                         "expiryDate": _dt(r.get("expire_on", "")),
-                        "status": "Active", "brandedPrewarmed": "Branded",
+                        "status": "Active",
+                        **({} if name in by_smartlead else {"brandedPrewarmed": "Branded"}),
                         "currency": "USD",
-                        "notes": f"Added automatically from Zapmail ({r.get('account')} account)",
+                        "notes": f"Added automatically from Zapmail ({r.get('account')} account)"
+                                 + _smartlead_note(name in by_smartlead, client),
                         "createdBy": "ZAPMAIL_SYNC", "remindersSent": [],
                         "createdAt": now, "updatedAt": now,
                     }})
@@ -177,6 +241,10 @@ def plan_sync(zap_domains: list[dict], zap_mailboxes: list[dict],
         if dom not in domain_client:
             client = infer_client(dom, m.get("account"),
                                   (tracker.get(dom) or {}).get("client"))
+            if (client is None and dom not in tracker and in_use.get(dom) in TRACKER_SPELLING
+                    and not _past_account(m.get("account"))):
+                client = in_use[dom]
+                by_smartlead.add(dom)
         raw = str(m.get("status") or "").upper()
         ws = _workspace(m.get("provider"))
         if existing:
@@ -202,9 +270,11 @@ def plan_sync(zap_domains: list[dict], zap_mailboxes: list[dict],
                         "workspace": ws,
                         "purchaseDate": _dt(m.get("assigned_on", "")),
                         "expiryDate": _dt(m.get("expire_on", "")),
-                        "status": "Active", "brandedPrewarmed": "Branded",
+                        "status": "Active",
+                        **({} if dom in by_smartlead else {"brandedPrewarmed": "Branded"}),
                         "currency": "USD",
-                        "notes": f"Added automatically from Zapmail ({m.get('account')} account)",
+                        "notes": f"Added automatically from Zapmail ({m.get('account')} account)"
+                                 + _smartlead_note(dom in by_smartlead, client),
                         "createdBy": "ZAPMAIL_SYNC", "remindersSent": [],
                         "createdAt": now, "updatedAt": now,
                     }})
@@ -270,9 +340,22 @@ async def sync(*, apply_changes: bool = False, domain: str | None = None) -> dic
     if not tracker:
         errors.append("tracker unreachable (Mongo) — nothing planned")
         return {"ok": False, "errors": errors, "counts": {}, "ops": [], "skipped": []}
+    # Smartlead is asked only when a live domain has no client by tracker or name
+    # (a webhook refresh of a known domain costs no Smartlead call).
+    in_use: dict[str, str] = {}
+    smartlead_note = ""
+    if any(d["domain"] not in tracker and infer_client(d["domain"], d.get("account")) is None
+           for d in domains):
+        try:
+            in_use = await smartlead_clients()
+        except Exception as exc:  # noqa: BLE001 - the Zapmail side still syncs
+            smartlead_note = ("Smartlead not read, so domains with no brand in the name stay "
+                              f"unassigned this run ({type(exc).__name__})")
     plan = plan_sync(domains, mailboxes, tracker,
-                     today=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                     today=datetime.now(timezone.utc).strftime("%Y-%m-%d"), in_use=in_use)
     plan["errors"] = errors
+    if smartlead_note:
+        plan["smartlead_note"] = smartlead_note
     plan["applied"] = apply(plan["ops"]) if apply_changes and not errors else 0
     plan["ok"] = not errors
     if apply_changes and errors:
