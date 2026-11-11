@@ -52,6 +52,8 @@ PULL_CHECK_DAYS = 30    # a pull younger than this is still CHECK
 DNU = "do not use"      # gtm presend refuses any tag starting with this
 AUTO_DNU_TAG = "DO NOT USE - failed v2 (auto)"     # v2_weekly.TAG: the v2 job's own pull tag
 UNTESTED = "UNTESTED"
+SECOND_SOURCE = "second test"   # another placement test of the same inbox (today: Zapmail's own); can change a verdict
+SECOND_FRESH_DAYS = 14          # a second test older than this is not used
 VERDICTS = ("KEEP", "CHECK", "RETIRE", "UNTESTED")
 NO_V2 = f"no v2 result in the last {V2_FRESH_DAYS} days"
 V2_DROP = "failed v2 on the weekly tests of "     # + "26 Oct and 2 Nov"
@@ -226,6 +228,33 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
     return "KEEP", f"passed v2 on {_day(s['latest_recent']['night'].isoformat())}"
 
 
+def with_second(verdict: str, why: str, s: dict | None, op: dict | None, today: date) -> tuple[str, str]:
+    """``(verdict, why)`` after a second placement test of the same inbox is read beside v2 (11 Nov 2026: v2 failed
+    every Google inbox of a client while a second seed network and a real mailbox accepted half of them).
+
+    ``s``: the inbox's v2_summary; ``op``: its second opinion {verdict PASS|FAIL, inbox, sent, on, source} or None.
+    Two tests that disagree are a CHECK, never a drop and never a keep. Two that agree say so. A person's DO NOT
+    USE tag, a second test that is old or mixed, and an inbox not in Smartlead are left as they were."""
+    on = _iso((op or {}).get("on"))
+    if not op or op.get("verdict") not in (PASS, FAIL) or not on or (today - on).days > SECOND_FRESH_DAYS:
+        return verdict, why
+    if why.startswith('tagged "') or why == NOT_IN_SMARTLEAD or not s:
+        return verdict, why
+    said = (f"{op.get('source') or 'a second test'} on {_day(on.isoformat())} put it in "
+            f"{'the inbox' if op['verdict'] == PASS else 'spam'} ({op.get('inbox')} of {op.get('sent')})")
+    v2_fail = bool(s["fails"])
+    v2_pass = bool(s["latest_recent"] and s["latest_recent"]["verdict"] == PASS)
+    if v2_fail and op["verdict"] == PASS:
+        return "CHECK", f"{why}; but {said}: two tests disagree, so not dropped on one"
+    if v2_pass and op["verdict"] == FAIL:
+        return "CHECK", f"{why}; but {said}: two tests disagree"
+    if (v2_fail and op["verdict"] == FAIL) or (v2_pass and op["verdict"] == PASS):
+        return verdict, f"{why}; {said} too"
+    if op["verdict"] == FAIL and verdict == UNTESTED:
+        return "CHECK", f"{said}; {why}"
+    return verdict, f"{why}; {said}"
+
+
 def price_of(bill: dict) -> float | None:
     """The bill's price, or None when it is not known (missing, unreadable or zero)."""
     try:
@@ -236,11 +265,13 @@ def price_of(bill: dict) -> float | None:
 
 
 def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool = True,
-                v2: dict[str, list[dict]] | None = None, dbl: dict[str, dict] | None = None) -> dict:
+                v2: dict[str, list[dict]] | None = None, dbl: dict[str, dict] | None = None,
+                second: dict[str, dict] | None = None) -> dict:
     """``bill`` = {provider, label, bills_on, price, inboxes:[emails], client(s), ...}.
     ``v2`` {email: v2_verdicts rows}; None means it could not be read, so nothing on the bill is
     KEEP. ``dbl`` {domain: dbl_status}; a listing adds the row's ``listed`` note and nothing else
-    (None = not read: no notes)."""
+    (None = not read: no notes). ``second`` {email: a second placement test's opinion} (with_second);
+    None or no entry = no second test for that inbox."""
     # The kill rule pools a domain across ALL its known mailboxes, not just this bill's.
     kills = kr.judge_all({e: (f or {}).get("tests") or [] for e, f in facts.items()}, today)
     rows = []
@@ -251,6 +282,8 @@ def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool 
         docs = None if v2 is None else v2.get(email.lower()) or []
         bl = None if dbl is None else dbl.get(email.lower().split("@")[-1]) or {}
         v, why = judge_inbox(email, facts.get(email), kills.get(email), today, complete, docs, bl)
+        v, why = with_second(v, why, v2_summary(docs, today) if docs else None,
+                             (second or {}).get(email.lower()), today)
         unused = complete and not (facts.get(email) or {}).get("in_smartlead")
         latest = v2_summary(docs, today)["latest_recent"] if docs else None
         row = {"email": email, "verdict": v, "why": why, "kind": "unused" if unused else "kill",
@@ -464,6 +497,7 @@ CAMPAIGNS_SOURCE = "campaign lists"    # which campaigns an inbox is in: notes o
 BLOCKLIST_SOURCE = "blocklist checks"  # Spamhaus DBL listings: notes only (11 Nov 2026)
 NOTE_ONLY = (CLASSIC_SOURCE, CAMPAIGNS_SOURCE, BLOCKLIST_SOURCE)
 READ_EFFECT = (("Zapmail", "a bill may be missing"), ("ScaledMail", "a bill may be missing"),
+               (SECOND_SOURCE, "an inbox that a second test would dispute is judged on v2 alone"),
                ("Smartlead", "some inboxes have no verdict"), ("v2 results", "no inbox is marked keep"),
                (BLOCKLIST_SOURCE, "Spamhaus listing notes are missing"),
                (CLASSIC_SOURCE, "classic early warnings are missing"),

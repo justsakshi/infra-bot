@@ -359,6 +359,21 @@ def dbl_listings(domains: set[str], errors: list[str]) -> dict[str, dict] | None
         return None
 
 
+def second_opinions(bills: list[dict], today: date, errors: list[str]) -> dict[str, dict]:
+    """{email: opinion} from Zapmail's own placement tests of the last two weeks, read only when a Zapmail bill
+    is under review. A read failure is a ``second test`` error: the rows are then judged on v2 alone."""
+    if not any(b.get("provider") == "Zapmail" for b in bills):
+        return {}
+    from smartlead import zapmail_placement as zp
+    errs: list[str] = []
+    try:
+        rows = asyncio.run(zp.recent_rows(today.isoformat(), errors=errs))
+    except Exception as exc:  # noqa: BLE001
+        rows, errs = [], [type(exc).__name__]
+    errors += [f"{rr.SECOND_SOURCE} (Zapmail placement): {e}" for e in errs]
+    return zp.own_provider_opinion(rows)
+
+
 def _targets(bills: list[dict], facts: dict[str, dict]) -> tuple[set[str], set[str]]:
     """The bills' domains, and their inboxes plus Smartlead's inboxes on those domains
     (a renamed domain is judged on what Smartlead holds)."""
@@ -375,12 +390,13 @@ def run(days: int) -> dict:
     # every account's /email-accounts was read (classic tests and campaign lists only add notes)
     complete = not any(e.startswith("Smartlead ") for e in errors[n_before:])
     today = date.today()
-    v2, dbl = {}, {}
+    v2, dbl, second = {}, {}, {}
     if bills:
         domains, emails = _targets(bills, facts)
         v2 = v2_results(domains, emails, today, errors)
         dbl = dbl_listings(domains, errors)
-    reviews = sorted((rr.review_bill(b, facts, today, complete, v2=v2, dbl=dbl) for b in bills),
+        second = second_opinions(bills, today, errors)
+    reviews = sorted((rr.review_bill(b, facts, today, complete, v2=v2, dbl=dbl, second=second) for b in bills),
                      key=lambda r: r["bills_on"])
     from smartlead.zapmail_clients import infer_client
     for rv in reviews:          # whose inbox it is: retiring is per client
