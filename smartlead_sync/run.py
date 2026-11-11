@@ -255,6 +255,18 @@ async def main() -> None:
     except Exception as exc:
         print(f"[!] Inbox Health workbook failed: {exc}")
 
+    # ── One status per inbox, kept for all time, and the one daily "needs you" post ──
+    try:
+        from datetime import timedelta, timezone
+        from smartlead import inbox_status
+        ist_today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+        res = inbox_status.run([r for rows in rows_by_sheet.values() for r in rows], ist_today,
+                               complete=not failed_accounts, post=True)
+        print(f"[*] Inbox status: {res['inboxes']} inboxes, {res['changes']} change(s), needs you: "
+              f"{', '.join(res['needs_you']) or 'nothing'}{' (posted)' if res['posted'] else ''}")
+    except Exception as exc:
+        print(f"[!] Inbox status step failed: {exc}")
+
     # Campaign Metrics and Campaign History are written by metrics_only.py
     # (09:00 IST job in index.js), before the 10:30 stats post that reads them.
     # This run used to repeat the same ~24-minute pull at its end.
