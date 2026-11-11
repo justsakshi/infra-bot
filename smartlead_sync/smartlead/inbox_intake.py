@@ -206,7 +206,9 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
             dom = dom_of(a)
             owners.setdefault(dom, store.client_of(email_of(a))
                               or _client(a, account_name, by_domain.get(dom), tracker.get(dom), melior_id) or "")
-    out["ready"] = ready_announcements(accounts, today, store, owners)
+    from smartlead import usable
+    out["ready"] = ready_announcements(accounts, today, store, owners,
+                                       v2=usable.load_gate_data()["v2"] if owners else None)
     new = [a for a in accounts if fresh(a) and not _has_tag(a, st.SETUP_TAG) and not store.done(email_of(a))]
     if only:
         new = [a for a in new if only.lower() in (email_of(a), dom_of(a))]
@@ -350,13 +352,40 @@ def _drift_sweep(accounts: list[dict], per_domain: dict[str, int], approved: dic
     return lines
 
 
-def ready_announcements(accounts: list[dict], today: date, store, clients: dict[str, str]) -> list[dict]:
+def v2_note(boxes: list[dict], v2: dict | None) -> tuple[str, bool]:
+    """(" · v2: 3 failed, 1 passed (5 Nov)", any failed) from the inboxes' newest v2 verdicts; ("", False)
+    when none has one. ``v2`` = usable.load_gate_data()["v2"]."""
+    got = [v2[e] for e in (str(a.get("from_email", "")).strip().lower() for a in boxes) if e in (v2 or {})]
+    if not got:
+        return "", False
+    count: dict[str, int] = {}
+    for d in got:
+        word = {"FAIL": "failed", "PASS": "passed", "WATCH": "below 4 of 4"}.get(str(d.get("verdict") or "").upper())
+        if word:
+            count[word] = count.get(word, 0) + 1
+    if not count:
+        return "", False
+    night = max(str(d.get("night") or "")[:10] for d in got)
+    try:
+        when = date.fromisoformat(night)
+        when = f" ({when.day} {when.strftime('%b')})"
+    except ValueError:
+        when = ""
+    order = ("failed", "below 4 of 4", "passed")
+    return " · v2: " + ", ".join(f"{count[w]} {w}" for w in order if w in count) + when, "failed" in count
+
+
+def ready_announcements(accounts: list[dict], today: date, store, clients: dict[str, str],
+                        v2: dict | None = None) -> list[dict]:
     """Domains whose set-up inboxes have ALL reached their ready date: "ready"
     when every one has its type's healthy warmup reputation (90%+, SMTP 70%+), else "low" (keep warming).
     Each (state, domain) is announced once; a domain announced low can later
     be announced ready. A domain with an inbox tagged DO NOT USE is not announced at all (10 Nov 2026:
     the post called Google domains that sat in Google spam "ready to send"); it is announced once the
-    tag is gone. Returns [{key, domain, state, line}]. Pure apart from reading the store."""
+    tag is gone. With ``v2`` (the newest Smart Delivery v2 verdict per inbox) a ready domain's line says
+    what v2 already found, and one with a failed inbox is "failed_v2", not "ready" (11 Nov 2026: a domain
+    whose four inboxes had failed v2 six days earlier was announced "ready for a placement test").
+    Returns [{key, domain, state, line}]. Pure apart from reading the store."""
     per_domain: dict[str, int] = {}
     for a in accounts:
         dom = str(a.get("from_email", "")).split("@")[-1].lower()
@@ -374,18 +403,21 @@ def ready_announcements(accounts: list[dict], today: date, store, clients: dict[
         if any(_do_not_use(a) for a in boxes):
             continue
         state = "ready" if all(s == "ready" for s in states) else "low"
+        note, failed = v2_note(boxes, v2) if state == "ready" else ("", False)
+        if failed:
+            state = "failed_v2"
         key = f"{state}:{dom}"
         if store.announced(key):
             continue
         reps = [st._int((a.get("warmup_details") or {}).get("warmup_reputation")) for a in boxes]
         reps = [r for r in reps if r is not None]
         client = clients.get(dom) or NO_CLIENT_LABEL
-        if state == "ready":
+        if state in ("ready", "failed_v2"):
             days = (today - st.warmup_started(boxes[0])).days
             label = st.standard_for(kind)["label"]
             n = len(boxes)
             line = (f"• {dom} · {n} {label} inbox{'es' if n != 1 else ''} · {client} · warmed {days} days"
-                    f" · reputation {min(reps)}%")
+                    f" · reputation {min(reps)}%{note}")
         else:
             line = f"• {dom} · {client} · warmup reputation {min(reps)}% (needs {st.good_reputation(kind)}%), keep warming"
         out.append({"key": key, "domain": dom, "state": state, "line": line})

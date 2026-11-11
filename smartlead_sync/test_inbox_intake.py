@@ -376,7 +376,7 @@ def test_ready_message_text():
                           {"state": "low", "line": "• low.com · Melior · warmup reputation 85% (needs 90%), keep warming"}])
     assert text == ("✅ *Warm-up finished, ready for a placement test: 1 domain*\n\n"
                     "• ready.com · 3 Google inboxes · Precise Leads · warmed 15 days · reputation 100%\n\n"
-                    "Not for campaigns yet. Add them to Monday's Smart Delivery v2 test first; they go into campaigns after a pass.\n\n"
+                    "Not for campaigns yet. Add them to this week's Smart Delivery v2 test first; they go into campaigns after a pass.\n\n"
                     "⚠️ *Reached the warmup date but not ready yet*\n\n• low.com · Melior · warmup reputation 85% (needs 90%), keep warming")
 
 
@@ -459,3 +459,27 @@ def test_answer_choice_is_saved_and_skip_sets_nothing_up():
     import pytest
     with pytest.raises(ValueError):
         save_answer("x.com", "bettrdata", "U1", store)                        # only Precise Leads' account asks
+
+
+def test_a_ready_domain_says_what_v2_already_found_and_a_failed_one_is_not_called_ready():
+    """11 Nov 2026: a domain whose four inboxes had failed v2 six days earlier was announced
+    "ready for a placement test. Add them to Monday's test"."""
+    from inbox_intake_cli import ready_message
+    store = ii.IntakeStore(FakeCol())
+    boxes = ([_ready_box(f"a{i}@failed.com") for i in range(4)] + [_ready_box(f"b{i}@passed.com") for i in range(2)]
+             + [_ready_box("c@new.com")])
+    clients = {"failed.com": "Precise Leads", "passed.com": "Precise Leads", "new.com": "Precise Leads"}
+    v2 = {**{f"a{i}@failed.com": {"verdict": "FAIL", "night": "2026-10-12"} for i in range(3)},
+          "a3@failed.com": {"verdict": "PASS", "night": "2026-10-12"},
+          "b0@passed.com": {"verdict": "PASS", "night": "2026-10-12"}}
+    got = {a["domain"]: a for a in ii.ready_announcements(boxes, date(2026, 10, 16), store, clients, v2=v2)}
+    assert got["failed.com"]["state"] == "failed_v2" and got["failed.com"]["key"] == "failed_v2:failed.com"
+    assert got["failed.com"]["line"].endswith("· reputation 100% · v2: 3 failed, 1 passed (12 Oct)")
+    assert got["passed.com"]["state"] == "ready" and got["passed.com"]["line"].endswith("· v2: 1 passed (12 Oct)")
+    assert got["new.com"]["state"] == "ready" and got["new.com"]["line"].endswith("· reputation 100%")
+    text = ready_message(list(got.values()))
+    assert "✅ *Warm-up finished, ready for a placement test: 2 domains*" in text
+    assert ("⚠️ *Warm-up finished, but already failed Smart Delivery v2: 1 domain*\n\n" + got["failed.com"]["line"]
+            + "\n\nThey stay out of campaigns until they pass v2.") in text
+    assert ii.v2_note(boxes[:1], None) == ("", False) and ii.v2_note(boxes[:1], {}) == ("", False)
+    assert ii.v2_note(boxes[:1], {"a0@failed.com": {"verdict": "INCOMPLETE", "night": "x"}}) == ("", False)
