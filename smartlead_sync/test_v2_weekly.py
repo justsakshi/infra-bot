@@ -544,6 +544,26 @@ def test_a_one_email_test_is_reported_not_judged(tmp_path):
     assert any("the test sent 1 email per provider, too few to judge; nothing done" in x for x in parts)
 
 
+def test_a_test_thin_at_one_provider_asks_for_a_person(tmp_path):
+    """1 Google and 4 Microsoft emails per inbox: not judged, and the post says how to fix the test."""
+    lines = [HEAD] + [f"{mb},{p},Inbox,2026-11-09T14:31:00.000Z,SENT\n"
+                      for mb in ("a@x.com", "b@x.com", "c@x.com")
+                      for p in ["GOOGLE_WORKSPACE"] + ["MICROSOFT_365"] * 4]
+    p = tmp_path / "bd-run-1.csv"
+    p.write_text("".join(lines), encoding="utf-8")
+    t = NOW.timestamp() - 3600
+    os.utime(p, (t, t))
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    assert st["results"]["a@x.com"][0]["verdict"] == v2.INCOMPLETE
+    assert wk.plan(st)["a@x.com"]["action"] is None
+    f = fleet()
+    f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
+    head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
+    assert ("bd-run-1.csv: this test sends 1 Google and 4 Microsoft emails per inbox, so the job can't judge its "
+            "inboxes (it needs 4 of 4 at each)") in parts[0]
+
+
 def test_a_midweek_test_skips_the_weekly_checks(tmp_path):
     st = fresh_state(tmp_path)
     st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4, "2026-11-05")]              # a Thursday: a one-off test

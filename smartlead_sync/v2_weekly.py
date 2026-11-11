@@ -191,6 +191,7 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
         summary = v2.summarise(rows)
         sent_last = v2.last_sent(rows)
         info["per_provider"] = v2.emails_per_provider(rows)
+        info["by_provider"] = v2.emails_by_provider(rows)
         info["pending_seeds"] = v2.pending_seeds(rows)
         old = history or bool(state.get("since") and night < state["since"])
         for mb, s in summary.items():
@@ -782,10 +783,15 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     for dom, n in sorted(dead.items()):
         needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test. Check "
                      f"{'they are' if n != 1 else 'it is'} connected in Smartlead.")
-    thin = sorted((f["name"], f["per_provider"]) for f in state["files"].values()
+    thin = sorted((f["name"], f["per_provider"], f.get("by_provider") or {}) for f in state["files"].values()
                   if f.get("night") in got["nights"] and f.get("status") == "ingested"
                   and 0 < int(f.get("per_provider") or v2.PASS_SEEDS) < v2.PASS_SEEDS)
-    for name, n in thin:
+    for name, n, by in thin:
+        if len(set(by.values())) > 1:       # the two providers got different counts: name both
+            sends = " and ".join(f"{c} {p.title()}" for p, c in sorted(by.items())) + " emails per inbox"
+            needs.append(f"{name}: this test sends {sends}, so the job can't judge its inboxes (it needs 4 of 4 at "
+                         f"each). In Smart Delivery, set the test to 4 emails per provider and check its seed list.")
+            continue
         needs.append(f"{name}: this test sends {n} email{'s' if n != 1 else ''} per provider, so the job can't judge its "
                      f"inboxes (it needs 4 of 4). In Smart Delivery, set the test to 4 emails per provider.")
     current = {x.get("file") for rs in state["results"].values() for x in rs}

@@ -92,20 +92,30 @@ def last_sent(rows: list[dict]) -> str:
     return max(times).isoformat() if times else ""
 
 
-def emails_per_provider(rows: list[dict]) -> int:
-    """How many emails the test sent each inbox per provider (the most common count). Smart Delivery lets a test
-    send 1-4; the job needs 4 to judge (pass = 4 of 4), so a 1-email test is reported, never judged."""
+def emails_by_provider(rows: list[dict]) -> dict[str, int]:
+    """{google|microsoft: how many emails the test sent each inbox there}, the most common count per provider.
+    A provider with no sent rows is left out."""
     per: dict[tuple[str, str], int] = {}
     for r in rows:
         if r["provider"] in PROVIDERS and r["landed"] != "NOT_SENT":
-            k = (r["mailbox"], r["provider"])
+            k = (r["mailbox"], PROVIDERS[r["provider"]])
             per[k] = per.get(k, 0) + 1
-    if not per:
-        return 0
-    counts: dict[int, int] = {}
-    for n in per.values():
-        counts[n] = counts.get(n, 0) + 1
-    return max(counts, key=lambda n: (counts[n], n))
+    out: dict[str, int] = {}
+    for prov in sorted(set(PROVIDERS.values())):
+        counts: dict[int, int] = {}
+        for (_, p), n in per.items():
+            if p == prov:
+                counts[n] = counts.get(n, 0) + 1
+        if counts:
+            out[prov] = max(counts, key=lambda n: (counts[n], n))
+    return out
+
+
+def emails_per_provider(rows: list[dict]) -> int:
+    """How many emails the test sent each inbox per provider: the thinner provider's count. Smart Delivery lets a
+    test send 1-4; the job needs 4 at each provider to judge (pass = 4 of 4), so a test that sends 1 anywhere is
+    reported, never judged."""
+    return min(emails_by_provider(rows).values(), default=0)
 
 
 WEEKLY_START_DAYS = (5, 6, 0)      # Saturday, Sunday, Monday

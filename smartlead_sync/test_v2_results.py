@@ -278,6 +278,18 @@ def test_emails_per_provider_reads_the_test_setting():
     assert v2.emails_per_provider([]) == 0
 
 
+def test_emails_per_provider_is_the_thinner_provider():
+    """A test that sends 1 Google and 4 Microsoft emails per inbox can't be judged at Google, so it counts as a
+    1-email test (seen 11 Nov 2026: the tie between the two counts read as 4 and nobody was asked to fix it)."""
+    mixed = v2.parse(csv_text([r for mb in ("a@x.com", "b@x.com", "c@x.com") for r in seeds(mb, 1, 4, g_total=1)]))
+    assert v2.emails_by_provider(mixed) == {"google": 1, "microsoft": 4}
+    assert v2.emails_per_provider(mixed) == 1
+    # one inbox whose fourth Microsoft email did not send does not make a 4-email test thin
+    rows = [r for mb in ("a@x.com", "b@x.com", "c@x.com") for r in seeds(mb, 4, 4)] + seeds("d@x.com", 4, 3, m_total=3)
+    assert v2.emails_per_provider(v2.parse(csv_text(rows))) == 4
+    assert v2.emails_by_provider([]) == {}
+
+
 def test_the_weekly_test_starts_on_a_saturday_sunday_or_monday():
     """Monday only until 10 Nov 2026. A 5-minute gap makes a 50-mailbox test take 33 hours, so the tests now
     start on Sunday and are in on Monday morning."""
