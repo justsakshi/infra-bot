@@ -373,3 +373,112 @@ def test_a_domain_is_judged_on_all_its_inboxes_not_only_the_tested_ones():
     two = {"i0@big.com": v2.FAIL, "i1@big.com": v2.FAIL}
     assert v2.failed_domains(two, client, sizes={("C", "big.com"): 4}) == {("C", "big.com"): (2, 4)}
     assert v2.failed_domains(two, client, sizes={("C", "big.com"): 1}) == {("C", "big.com"): (2, 2)}   # never below tested
+
+
+# --- the copy check: a small test that grades the email, not the inboxes (11 Nov 2026) --------------
+
+DT = {"DT PL #1": [f"i{n}@x.com" for n in range(50)], "DT PL copy check": ["i1@x.com", "i2@x.com", "i3@x.com"]}
+
+
+def test_a_copy_check_campaign_is_known_by_its_name():
+    assert v2.is_copy_check_campaign("DT PL copy check") and v2.is_copy_check_campaign("dt melior Copy Check ")
+    assert not v2.is_copy_check_campaign("DT PL #1") and not v2.is_copy_check_campaign("PL copy check")
+    assert v2.is_test_campaign("DT PL copy check")                         # so no inbox is ever pulled from it
+
+
+def test_a_copy_check_file_is_known_by_its_name_in_any_spelling():
+    for name in ("DT PL copy-check.csv", "dt_pl_copy_check_run2.csv", "DT PL Copy Check.csv", "plcopycheck.csv",
+                 "COPYCHECK (1).csv"):
+        assert v2.is_copy_check_file(name, ["anyone@x.com"], {}), name
+    for name in ("dt-pl-1.csv", "copy of check.csv", "checkcopy.csv"):
+        assert not v2.is_copy_check_file(name, ["anyone@x.com"], {}), name
+
+
+def test_a_copy_check_file_is_known_by_its_mailboxes_too():
+    assert v2.is_copy_check_file("export.csv", ["i1@x.com", "i2@x.com", "i3@x.com"], DT)
+    assert v2.is_copy_check_file("export.csv", ["i2@x.com"], DT)           # a test on some of its senders
+    assert not v2.is_copy_check_file("export.csv", DT["DT PL #1"], DT)     # an ordinary inbox test: 50 mailboxes
+    assert not v2.is_copy_check_file("export.csv", ["i1@x.com", "other@y.com"], DT)
+    assert not v2.is_copy_check_file("export.csv", [], DT)
+    assert not v2.is_copy_check_file("export.csv", ["i1@x.com"], {"DT PL #1": ["i1@x.com"]})
+
+
+def test_a_small_inbox_test_whose_inboxes_were_all_picked_is_still_an_inbox_test():
+    dt = {"DT PL #3": ["a@x.com", "b@x.com"], "DT PL copy check": ["a@x.com", "b@x.com", "c@y.com"]}
+    assert not v2.is_copy_check_file("export.csv", ["a@x.com", "b@x.com"], dt)        # exactly DT PL #3's own list
+    assert v2.is_copy_check_file("export copy check.csv", ["a@x.com", "b@x.com"], dt)  # the name settles it
+    same = {"DT PL #3": ["a@x.com", "b@x.com"], "DT PL copy check": ["a@x.com", "b@x.com"]}
+    assert v2.is_copy_check_file("export.csv", ["a@x.com", "b@x.com"], same)           # cannot tell: never an inbox result
+
+
+def copy_rows(mb, g_inbox, m_inbox):
+    return v2.parse(csv_text(seeds(mb, g_inbox, m_inbox)))
+
+
+def test_the_copy_verdict_is_the_share_of_emails_in_the_inbox():
+    types = {f"g{n}@x.com": "GMAIL" for n in range(5)}
+
+    def google(inbox_of_4):
+        rows = [r for n, k in enumerate(inbox_of_4) for r in copy_rows(f"g{n}@x.com", k, 0)]
+        return v2.copy_verdict(rows, types, set(types))["google"]
+
+    assert google([4, 4, 4, 3, 0]) == {"inbox": 15, "sent": 20, "senders": 5, "left_out": 0, "verdict": v2.PASS}  # 75%
+    assert google([4, 4, 4, 2, 0])["verdict"] == v2.WATCH                  # 70%: borderline
+    assert google([4, 4, 3, 0, 0])["verdict"] == v2.WATCH                  # 55%
+    assert google([4, 4, 2, 0, 0])["verdict"] == v2.FAIL                   # 50%
+    assert google([0, 0])["verdict"] == v2.FAIL                            # 8 emails is enough to judge
+    one = google([4])
+    assert one["verdict"] == v2.NOT_JUDGED and (one["inbox"], one["sent"], one["senders"]) == (4, 4, 1)
+
+
+def test_only_known_good_senders_count_and_each_type_is_judged_at_its_own_provider():
+    types = {"g1@x.com": "GMAIL", "g2@x.com": "GMAIL", "g3@x.com": "gmail", "o1@y.com": "OUTLOOK",
+             "o2@y.com": "OUTLOOK", "s@z.com": "SMTP"}
+    rows = (copy_rows("g1@x.com", 0, 4) + copy_rows("g2@x.com", 0, 4) + copy_rows("g3@x.com", 4, 4)
+            + copy_rows("o1@y.com", 0, 4) + copy_rows("o2@y.com", 0, 4) + copy_rows("s@z.com", 0, 0)
+            + copy_rows("new@q.com", 0, 0))
+    got = v2.copy_verdict(rows, types, {"g1@x.com", "g2@x.com", "o1@y.com", "o2@y.com", "s@z.com"})
+    # g3 is not known good, so its 4 of 4 is left out; the Outlook inboxes' Google spam is not their result
+    assert got["google"] == {"inbox": 0, "sent": 8, "senders": 2, "left_out": 1, "verdict": v2.FAIL}
+    assert got["outlook"] == {"inbox": 8, "sent": 8, "senders": 2, "left_out": 0, "verdict": v2.PASS}
+    assert set(got) == {"google", "outlook"}                               # an SMTP or unknown inbox is in neither
+    nobody = v2.copy_verdict(rows, types, set())
+    assert nobody["google"] == {"inbox": 0, "sent": 0, "senders": 0, "left_out": 3, "verdict": v2.NOT_JUDGED}
+
+
+def test_an_email_with_no_placement_is_not_counted_in_the_copy_verdict():
+    rows = v2.parse(csv_text([("g1@x.com", G, x) for x in ("Inbox", "Inbox", "Inbox", "")]
+                             + [("g2@x.com", G, x) for x in ("Inbox", "BOUNCED", "Spam", "NOT_SENT")]
+                             + [("g3@x.com", G, "Inbox")] * 4))
+    got = v2.copy_verdict(rows, {m: "GMAIL" for m in ("g1@x.com", "g2@x.com", "g3@x.com")},
+                          {"g1@x.com", "g2@x.com", "g3@x.com"})["google"]
+    assert (got["inbox"], got["sent"], got["verdict"]) == (8, 9, v2.PASS)   # pending, bounced, not sent: left out
+
+
+def test_stored_copy_counts_give_the_same_verdict_as_the_rows():
+    rows = copy_rows("g1@x.com", 1, 4) + copy_rows("g2@x.com", 0, 4)
+    counts = v2.copy_counts(rows)
+    assert counts == {"g1@x.com": {"google": [1, 4], "microsoft": [4, 4]}, "g2@x.com": {"google": [0, 4], "microsoft": [4, 4]}}
+    types, good = {"g1@x.com": "GMAIL", "g2@x.com": "GMAIL"}, {"g1@x.com", "g2@x.com"}
+    assert v2.judge_copy(counts, types, good) == v2.copy_verdict(rows, types, good)
+
+
+def test_a_night_belongs_to_the_monday_its_weekly_test_counts_for():
+    for night in ("2026-11-07", "2026-11-08", "2026-11-09", "2026-11-11", "2026-11-13"):   # Sat, Sun, Mon, Wed, Fri
+        assert v2.week_of(night) == date(2026, 11, 9), night
+    assert v2.week_of("2026-11-14") == date(2026, 11, 16)
+
+
+def test_a_copy_check_campaign_is_missing_until_its_clients_copy_check_arrived():
+    dt = {"DT PL #1": ["a@x.com"], "DT PL copy check": ["a@x.com"], "DT Melior copy check": ["m@y.com"]}
+    clients = {"a@x.com": "Precise Leads", "m@y.com": "Melior"}
+    # a@x.com's inbox-test result is not the copy check's result
+    assert v2.dt_missing(dt, {"a@x.com"}) == ["DT Melior copy check", "DT PL copy check"]
+    assert v2.dt_missing(dt, {"a@x.com"}, {"Precise Leads"}, clients) == ["DT Melior copy check"]
+    assert v2.dt_missing(dt, set(), {"Precise Leads", "Melior"}, clients) == ["DT PL #1"]
+
+
+def test_the_client_of_a_file_is_the_client_of_most_of_its_mailboxes():
+    clients = {"a@x.com": "Melior", "b@x.com": "Melior", "c@y.com": "Precise Leads"}
+    assert v2.majority_client(["a@x.com", "b@x.com", "c@y.com", "new@z.com"], clients) == "Melior"
+    assert v2.majority_client(["new@z.com"], clients) == "Unknown" and v2.majority_client([], {}) == "Unknown"

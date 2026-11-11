@@ -21,6 +21,9 @@ INBOXES = {"pl-ok1@x.com": (10, "Precise Leads"), "pl-ok2@x.com": (11, "Precise 
            "pl-other@z.com": (40, "Precise Leads")}
 DT_PL_1 = {"pl-ok1@x.com": (4, 4), "pl-ok2@x.com": (4, 4), "pl-bad@x.com": (0, 4)}
 DT_MELIOR_1 = {"mel-bad@y.com": (4, 0), "mel-ok@w.com": (4, 4)}
+TYPES = {}          # email: Smartlead inbox type (GMAIL / OUTLOOK), for the tests that need one; else unknown
+EXTRA_DT = {}       # more "DT ..." campaigns for one test, e.g. a copy-check campaign
+WED11 = "2026-11-11T05:00:00.000Z"           # Wednesday 11 Nov, 10:30 IST
 
 
 def at(day, hour, minute=0):
@@ -91,13 +94,14 @@ class FakeSL:
 
 
 def fleet_from(sl):
-    inboxes = {e: {"id": i, "client": c, "tags": [wk.TAG] if i in sl.tagged else []} for e, (i, c) in INBOXES.items()}
+    inboxes = {e: {"id": i, "client": c, "tags": [wk.TAG] if i in sl.tagged else [], "type": TYPES.get(e, "")}
+               for e, (i, c) in INBOXES.items()}
     return {"PRECISE_LEADS": {"key": "k", "inboxes": inboxes,
                               "camps": {cid: {"name": sl.names[cid], "status": "ACTIVE", "senders": set(ids)}
                                         for cid, ids in sl.senders.items()},
                               "dt": {9: {"name": "DT PL #1", "status": "ACTIVE", "senders": {10, 11, 20}},
                                      8: {"name": "DT Melior #1", "status": "ACTIVE", "senders": {30, 31}},
-                                     7: {"name": "DT PL #2", "status": "ACTIVE", "senders": {40}}}}}
+                                     7: {"name": "DT PL #2", "status": "ACTIVE", "senders": {40}}, **EXTRA_DT}}}
 
 
 class FakeCol:
@@ -400,6 +404,158 @@ def test_a_pending_seed_never_pulls_a_working_inbox(job):
     assert job.run() == 0
     assert job.sl.calls == [] and job.state()["pulled"] == {}
     assert "1 seed result had not come in" in job.posts[-1][1][0]
+
+
+# --- the copy check (Manveen 11 Nov 2026): a result about the email, never about an inbox ---------
+
+def know_fleet(h):
+    """The state as the PC has it after any weekly run: each inbox's client and type, each DT campaign's inboxes."""
+    st = h.state()
+    wk.remember_fleet(st, fleet_from(h.sl))
+    wk.save_state(h.state_dir, st)
+
+
+COPY_FAIL_LINE = ("• copy check · Google inboxes · 0 of 8 emails in the Google inbox, from 2 inboxes that pass the "
+                  "plain note → the email is the problem: rewrite it before it sends from Google inboxes")
+
+
+def test_a_copy_check_in_spam_blames_the_email_and_never_an_inbox(job, monkeypatch):
+    for e in ("pl-ok1@x.com", "pl-ok2@x.com"):
+        monkeypatch.setitem(TYPES, e, "GMAIL")
+    know_fleet(job)
+    download_monday(job)
+    # the same two inboxes sent the campaign email: every one of them in spam, at both providers
+    write_csv(job.downloads, "pl-copy-check-run-1.csv", {"pl-ok1@x.com": (0, 0), "pl-ok2@x.com": (0, 0)})
+    job.run()
+    assert job.posts == []                                        # waits for the night's files like the others
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    # Smartlead: only the inbox that failed its own inbox test is tagged and taken out
+    assert [c for c in job.sl.calls if c[0] in ("tag", "remove", "add")] == [("tag", [20], [77]), ("remove", 1, [20])]
+    assert job.sl.senders[1] == {10, 11} and job.sl.tagged == {20}
+    st = job.state()
+    assert set(st["pulled"]) == {"pl-bad@x.com"} and st["holds"] == {"2026-11-09": []}
+    for e in ("pl-ok1@x.com", "pl-ok2@x.com"):                    # their inbox-test result stands, alone
+        assert [(x["night"], x["verdict"]) for x in st["results"][e]] == [("2026-11-09", v2.PASS)]
+    v = job.verdicts()
+    assert len(v) == 5 and v["pl-ok1@x.com|2026-11-09"]["verdict"] == v2.PASS
+    assert v["pl-ok2@x.com|2026-11-09"]["google"] == {"inbox": 4, "reported": 4, "sent": 4}
+    (head, parts), = job.posts
+    assert head[1] == "5 inboxes · 3 pass · 0 watch · 2 fail"
+    assert head[2] == "Took 1 inbox out of 1 live campaign · tagged 0 in no campaign · returned 0"
+    assert head[3] == "Copy check · Precise Leads · Google inboxes fail"
+    assert ("• Precise Leads: the copy check failed from Google inboxes (0 of 8 emails in the Google inbox, from "
+            "inboxes that pass the plain note). The email is the problem: rewrite it before it sends from Google "
+            "inboxes.") in parts[0].split("\n")
+    assert COPY_FAIL_LINE in next(p for p in parts if p.startswith("*Precise Leads*")).split("\n")
+    doc = job.db.cols[wk.COPY_CHECKS_COLLECTION].docs["Precise Leads|2026-11-09"]
+    assert doc["client"] == "Precise Leads" and doc["night"] == "2026-11-09" and doc["file"] == "pl-copy-check-run-1.csv"
+    assert doc["google"] == {"inbox": 0, "sent": 8, "senders": 2, "left_out": 0, "verdict": v2.FAIL}
+    assert job.heartbeat()["files_read"] == 2 and job.heartbeat()["errors"] == []
+    job.clock = at(10, 11, 31)
+    assert job.run() == 0 and len(job.posts) == 1                 # told once
+
+
+def test_a_copy_check_on_its_own_is_posted_and_smartlead_is_not_even_read(job, monkeypatch):
+    for e in ("pl-ok1@x.com", "pl-ok2@x.com"):
+        monkeypatch.setitem(TYPES, e, "OUTLOOK")
+    know_fleet(job)
+    download_monday(job)
+    write_csv(job.downloads, "dt-pl-2.csv", {"pl-other@z.com": (4, 4)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.run()
+    posts, fleet_calls, calls = len(job.posts), job.fleet_calls, list(job.sl.calls)
+    # Wednesday: a drafted campaign's email, loaded with --source and tested before launch
+    job.clock = at(11, 16)
+    write_csv(job.downloads, "pl draft copy_check.csv", {"pl-ok1@x.com": (0, 4), "pl-ok2@x.com": (0, 3)},
+              sent=WED11, when=at(11, 15, 50))
+    assert job.run() == 0 and len(job.posts) == posts             # more files may follow: not yet
+    job.clock = at(11, 17, 31)
+    assert job.run() == 0
+    head, parts = job.posts[-1]
+    assert head == ["v2 copy check, test of Wed 11 Nov", "Copy check · Precise Leads · Outlook inboxes pass",
+                    "\nNothing needs you."]
+    assert parts == ["*Precise Leads*\n\n• copy check · Outlook inboxes · 7 of 8 emails in the Microsoft inbox, from 2 "
+                     "inboxes that pass the plain note → the email is fine from Outlook inboxes"]
+    assert job.fleet_calls == fleet_calls and job.sl.calls == calls
+    st = job.state()
+    assert [x["night"] for x in st["results"]["pl-ok1@x.com"]] == ["2026-11-09"] and len(job.verdicts()) == 6
+    assert set(st["pulled"]) == {"pl-bad@x.com"}
+    assert job.db.cols[wk.COPY_CHECKS_COLLECTION].docs["Precise Leads|2026-11-11"]["outlook"]["verdict"] == v2.PASS
+    job.clock = at(11, 18, 31)
+    assert job.run() == 0 and len(job.posts) == posts + 1         # told once
+
+
+def test_a_copy_check_campaign_is_named_missing_until_its_csv_arrives(job, monkeypatch):
+    monkeypatch.setitem(EXTRA_DT, 6, {"name": "DT PL copy check", "status": "PAUSED", "senders": {10, 11}})
+    for e in ("pl-ok1@x.com", "pl-ok2@x.com"):
+        monkeypatch.setitem(TYPES, e, "GMAIL")
+    know_fleet(job)
+    download_monday(job)
+    write_csv(job.downloads, "dt-pl-2.csv", {"pl-other@z.com": (4, 4)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.run()
+    assert "• No result this week from DT PL copy check (2 inboxes): download its CSV into Downloads." in \
+        job.posts[-1][1][0].split("\n")                           # its senders' inbox tests are not its result
+    job.clock = at(10, 12)
+    assert job.run() == 0
+    head, _ = job.posts[-1]
+    assert head[0] == "v2 results for the week of Mon 9 Nov: 1 DT test not in yet"
+    assert head[1] == "\nMissing: DT PL copy check."
+    # its CSV, under a name that says nothing: known by its mailboxes, all senders of the copy-check campaign
+    write_csv(job.downloads, "export (3).csv", {"pl-ok1@x.com": (4, 0), "pl-ok2@x.com": (4, 0)}, when=at(10, 12, 30))
+    job.clock = at(10, 13)
+    job.run()
+    job.clock = at(10, 14, 31)
+    assert job.run() == 0
+    head, parts = job.posts[-1]
+    assert head[:2] == ["v2 copy check, test of Mon 9 Nov", "Copy check · Precise Leads · Google inboxes pass"]
+    st = job.state()
+    assert sorted(f["status"] for f in st["files"].values()) == ["copy_check", "ingested", "ingested", "ingested"]
+    assert set(st["pulled"]) == {"pl-bad@x.com"} and len(job.verdicts()) == 6
+
+
+def test_a_copy_check_campaign_whose_csv_arrived_is_not_called_missing(job, monkeypatch):
+    monkeypatch.setitem(EXTRA_DT, 6, {"name": "DT PL copy check", "status": "PAUSED", "senders": {10, 11}})
+    know_fleet(job)
+    download_monday(job)
+    write_csv(job.downloads, "dt-pl-2.csv", {"pl-other@z.com": (4, 4)})
+    write_csv(job.downloads, "pl-copy-check-run-1.csv", {"pl-ok1@x.com": (4, 4), "pl-ok2@x.com": (4, 4)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.run()
+    (head, parts), = job.posts
+    assert "No result this week" not in "\n".join(parts)
+    job.clock = at(10, 12)
+    assert job.run() == 0 and len(job.posts) == 1                 # nothing is missing: no Tuesday reminder
+
+
+def test_a_mongo_problem_with_copy_checks_never_stops_the_run(job, monkeypatch):
+    for e in ("pl-ok1@x.com", "pl-ok2@x.com"):
+        monkeypatch.setitem(TYPES, e, "GMAIL")
+    know_fleet(job)
+    download_monday(job)
+    write_csv(job.downloads, "pl-copy-check-run-1.csv", {"pl-ok1@x.com": (0, 0), "pl-ok2@x.com": (0, 0)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.db.cols[wk.COPY_CHECKS_COLLECTION] = FakeCol()
+    job.db.cols[wk.COPY_CHECKS_COLLECTION].fail = RuntimeError("write refused")
+    assert job.run() == 0 and len(job.posts) == 1 and len(job.verdicts()) == 5
+    assert any(e.startswith("copy_checks not written: RuntimeError") for e in job.heartbeat()["errors"])
+    job.db.cols[wk.COPY_CHECKS_COLLECTION].fail = None
+    job.clock = at(10, 11, 31)
+    assert job.run() == 0                                         # written on the next run
+    assert job.db.cols[wk.COPY_CHECKS_COLLECTION].docs["Precise Leads|2026-11-09"]["google"]["verdict"] == v2.FAIL
+
+
+def test_a_dry_run_prints_the_copy_check_and_saves_nothing(job, capsys, monkeypatch):
+    write_csv(job.downloads, "pl-copy-check-run-1.csv", {"pl-ok1@x.com": (0, 0), "pl-ok2@x.com": (0, 0)})
+    assert job.run(apply=False) == 0
+    out = capsys.readouterr().out
+    assert "v2 copy check, test of Mon 9 Nov" in out and "copy check" in out.split("v2 copy check", 1)[1]
+    assert job.posts == [] and job.state()["copy_checks"] == {} and job.state()["files"] == {}
 
 
 # --- failed domains (Manveen 11 Nov 2026) ---------------------------------------------

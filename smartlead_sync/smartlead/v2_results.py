@@ -22,11 +22,22 @@ result that is not complete):
   * a pulled inbox comes back after two passes, at least 6 days apart, both after the pull.
   * if nearly every inbox in one night's tests, or in one test file, is below 4 of 4 at one provider, the
     test is suspect: hold (inboxes already known bad are left out of that count).
+
+The copy check (Manveen 11 Nov 2026, after one Google inbox delivered a plain note to the inbox and its
+campaign email to spam): a test on a "DT <client> copy check" campaign sends the client's real first email
+from a few inboxes that pass the plain note, so its result is a verdict on the EMAIL and never on an inbox.
+  * a file is a copy check when its name says so (copy check, copy-check, copy_check, copycheck) or when all
+    its mailboxes are senders of a copy-check campaign (is_copy_check_file);
+  * per sender type, at that type's own provider (Google-hosted senders at Google, Outlook-hosted at
+    Microsoft), over emails that got a placement, from senders known good only: 75% or more in the inbox =
+    PASS (the email is fine), 50% or less = FAIL (the email is the problem), in between = WATCH (borderline);
+    fewer than 8 counted emails = NOT_JUDGED (copy_verdict).
 """
 from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import date, datetime, timedelta, timezone
 
 HEADER = ["Mailbox", "Provider", "Landed", "Sent at", "Send status"]
@@ -48,6 +59,12 @@ OWN_PROVIDER = {"GMAIL": "google", "OUTLOOK": "microsoft"}      # Smartlead inbo
 DOMAIN_FAIL_SHARE = 0.5     # this share of a domain's inboxes failing: the whole domain is rested
 RULES = "2026-11-07"        # results stored under older rules are judged again from the kept CSV copies
 IST = timezone(timedelta(hours=5, minutes=30))
+
+COPY_PASS_SHARE, COPY_FAIL_SHARE = (3, 4), (1, 2)   # share in the inbox: 75% or more passes, 50% or less fails
+COPY_MIN_EMAILS = 8         # fewer counted emails than this for a sender type: the email is not judged
+NOT_JUDGED = "NOT_JUDGED"
+COPY_TYPES = {"GMAIL": "google", "OUTLOOK": "outlook"}       # Smartlead inbox type -> the copy verdict's sender type
+_COPY_CHECK_NAME = re.compile(r"copy[-_ ]?check", re.I)
 
 LIVE = {"ACTIVE", "PAUSED", "DRAFTED", "SCHEDULED"}
 TEST_WORDS = ("deliverability", "spam test", "placement test", "placement-test")
@@ -276,6 +293,95 @@ def merge_results(results: list[dict], new: list[dict]) -> list[dict]:
     return [by_night[k] for k in sorted(by_night)]
 
 
+# --- the copy check ----------------------------------------------------------------
+
+def is_copy_check_campaign(name: str) -> bool:
+    """A "DT <client> copy check" campaign: it carries the client's real first email, so a test on it grades the
+    email. (copy_sync.py only fills the ones of a known client; here any such name counts, so a result of one
+    can never be read as an inbox result.)"""
+    n = str(name or "").strip().lower()
+    return n.startswith("dt ") and n.endswith(" copy check")
+
+
+def is_copy_check_file(name: str, mailboxes, dt_tests: dict[str, list[str]]) -> bool:
+    """True when a result CSV is a copy check and must never be read as inbox results: its file name says so
+    (copy check, copy-check, copy_check, copycheck; any case), or every mailbox in it is a sender of a
+    copy-check campaign (``dt_tests``: DT campaign name -> sender emails).
+
+    One case by mailboxes is still an inbox test: the file holds exactly the sender list of an inbox-test
+    campaign and not exactly a copy-check campaign's (a small "DT <client> #n" whose inboxes were all picked
+    for the copy check). Read as a copy check, that campaign's weekly result would be lost every week. When
+    the two lists are the same the file cannot be told apart and is a copy check, the side that pulls nothing."""
+    if _COPY_CHECK_NAME.search(str(name or "")):
+        return True
+    mbs = set(mailboxes)
+    checks = [set(v) for k, v in dt_tests.items() if is_copy_check_campaign(k)]
+    if not mbs or not any(mbs <= c for c in checks):
+        return False
+    if any(mbs == c for c in checks):
+        return True
+    return not any(mbs == set(v) for k, v in dt_tests.items() if not is_copy_check_campaign(k))
+
+
+def majority_client(mailboxes, client_of: dict[str, str]) -> str:
+    """The client most of these mailboxes belong to (a tie: the first by name); "Unknown" when none is known."""
+    counts: dict[str, int] = {}
+    for mb in mailboxes:
+        c = client_of.get(mb)
+        if c:
+            counts[c] = counts.get(c, 0) + 1
+    return max(sorted(counts), key=lambda c: counts[c]) if counts else "Unknown"
+
+
+def copy_counts(rows: list[dict]) -> dict[str, dict[str, list[int]]]:
+    """{mailbox: {google: [in the inbox, counted], microsoft: [...]}} for one copy-check file. Only an email
+    that got a placement (Inbox or Spam) is counted: a pending, BOUNCED or NOT_SENT one says nothing about
+    the copy. This is what the job keeps of a copy-check file; ``judge_copy`` turns it into the verdict."""
+    out: dict[str, dict[str, list[int]]] = {}
+    for r in rows:
+        p = PROVIDERS.get(r["provider"])
+        if not p:
+            continue
+        mine = out.setdefault(r["mailbox"], {"google": [0, 0], "microsoft": [0, 0]})
+        if r["landed"] in REPORTED:
+            mine[p][0] += r["landed"] == "Inbox"
+            mine[p][1] += 1
+    return out
+
+
+def judge_copy(counts: dict[str, dict], types: dict[str, str], good: set[str]) -> dict[str, dict]:
+    """The copy verdict from ``copy_counts``: {google: {...}, outlook: {...}} by SENDER type (Google-hosted,
+    Outlook-hosted), each {inbox, sent, senders, left_out, verdict}. A sender counts at its own provider only
+    (OWN_PROVIDER) and only when it is in ``good`` (it passes the plain note, so a miss is the email's); one
+    that is not is counted in ``left_out``. An SMTP inbox, or one of unknown type, is in neither.
+    Share in the inbox: 75%+ PASS, 50% or less FAIL, between WATCH; under COPY_MIN_EMAILS emails NOT_JUDGED."""
+    out = {k: {"inbox": 0, "sent": 0, "senders": 0, "left_out": 0, "verdict": NOT_JUDGED} for k in COPY_TYPES.values()}
+    for mb, c in counts.items():
+        kind = str(types.get(mb) or "").strip().upper()
+        if kind not in COPY_TYPES:
+            continue
+        t = out[COPY_TYPES[kind]]
+        if mb not in good:
+            t["left_out"] += 1
+            continue
+        inbox, sent = (c.get(OWN_PROVIDER[kind]) or [0, 0])[:2]
+        t["inbox"] += int(inbox)
+        t["sent"] += int(sent)
+        t["senders"] += 1
+    for t in out.values():
+        if t["sent"] >= COPY_MIN_EMAILS:
+            t["verdict"] = (PASS if t["inbox"] * COPY_PASS_SHARE[1] >= t["sent"] * COPY_PASS_SHARE[0]
+                            else FAIL if t["inbox"] * COPY_FAIL_SHARE[1] <= t["sent"] * COPY_FAIL_SHARE[0] else WATCH)
+    return out
+
+
+def copy_verdict(rows: list[dict], types: dict[str, str], good: set[str]) -> dict[str, dict]:
+    """The verdict on the EMAIL a copy-check file sent, per sender type (see ``judge_copy``). ``rows``: the
+    parsed CSV; ``types``: {mailbox: GMAIL | OUTLOOK | SMTP}; ``good``: the inboxes whose newest judged verdict
+    at their own provider is a pass."""
+    return judge_copy(copy_counts(rows), types, good)
+
+
 # --- decisions ---------------------------------------------------------------------
 
 def two_weeks_running(a: dict, b: dict) -> bool:
@@ -347,10 +453,29 @@ def last_monday(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
-def dt_missing(dt_tests: dict[str, list[str]], tested: set[str]) -> list[str]:
-    """The DT test campaigns (name -> sender emails) none of whose inboxes has a result: each one's CSV
-    was not downloaded (or its test did not run)."""
-    return sorted(name for name, emails in dt_tests.items() if emails and not set(emails) & tested)
+def week_of(night: str) -> date:
+    """The Monday whose weekly test a night counts for: a test started on Saturday or Sunday belongs to the
+    Monday after it (``week_start``), any other day to the Monday of its own week."""
+    d = date.fromisoformat(night)
+    return d + timedelta(days=7 - d.weekday()) if d.weekday() >= 5 else last_monday(d)
+
+
+def dt_missing(dt_tests: dict[str, list[str]], tested: set[str], copy_checked: set[str] | None = None,
+               client_of: dict[str, str] | None = None) -> list[str]:
+    """The DT test campaigns (name -> sender emails) with no result: each one's CSV was not downloaded (or its
+    test did not run). An inbox test has a result when any of its inboxes has one. A copy-check campaign has
+    one only when a copy-check file for its client arrived (``copy_checked``: those clients; its senders'
+    inbox-test results are not its result)."""
+    out = []
+    for name, emails in dt_tests.items():
+        if not emails:
+            continue
+        if is_copy_check_campaign(name):
+            if majority_client(emails, client_of or {}) not in (copy_checked or set()):
+                out.append(name)
+        elif not set(emails) & tested:
+            out.append(name)
+    return sorted(out)
 
 
 def reminder_due(now_ist: tuple[date, int], nights_in: set[str], reminded: set[str],

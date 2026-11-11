@@ -30,6 +30,19 @@ What it does (rules in smartlead/v2_results.py):
   * after every saved run it writes a heartbeat and the verdicts to Mongo (v2_heartbeat, v2_verdicts),
     so Render can see the job ran and what v2 said; a Mongo problem never stops the run.
 
+The copy check (11 Nov 2026): one more small test per client, on its "DT <client> copy check" campaign
+(copy_sync.py keeps it on the client's real first email and on a few inboxes that pass the plain note).
+  * its CSV is known by its name (copy check, copy-check, copy_check, copycheck) or by its mailboxes all
+    being senders of a copy-check campaign, and is read as a verdict on the EMAIL: per sender type, at that
+    type's own provider, from inboxes whose newest judged result is a pass (smartlead/v2_results.copy_verdict);
+  * nothing from it is ever an inbox result: no verdict, pull, return, domain rule, hold or v2_verdicts row.
+    It is kept in state["copy_checks"] and its file in state["files"] with status "copy_check";
+  * it is reported under its client ("copy check · Google inboxes · ... → the email is the problem"), with
+    a Needs-you line when the email fails. With the week's inbox files it rides in their post; on its own it
+    is posted once its file is 90 minutes old, without reading or changing Smartlead;
+  * a copy-check campaign counts as "in" for the week only when its client's copy-check file arrived;
+  * Mongo copy_checks gets one document per client and night.
+
 Modes:
     python v2_weekly.py                         # dry run: print the plan; no state, no Smartlead, no Slack
     python v2_weekly.py --warn --post           # save state and post the plan; no Smartlead changes
@@ -115,6 +128,7 @@ REPORT_ONLY_OWNER = {"Melior": "Ryan"}   # who decides a report-only client's st
 # Mongo (db smartlead.config.HEALTH_HISTORY_DB), read on Render: is the PC job alive, and what did v2 say.
 HEARTBEAT_COLLECTION = "v2_heartbeat"
 VERDICTS_COLLECTION = "v2_verdicts"
+COPY_CHECKS_COLLECTION = "copy_checks"   # one doc per client per night: what the copy check said about the email
 VERDICT_DAYS = 42                        # nights older than this are no longer re-sent to Mongo
 
 
@@ -137,7 +151,7 @@ def load_state(d: Path) -> dict:
     s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     for k, empty in (("files", {}), ("results", {}), ("holds", {}), ("pulled", {}), ("returned", []),
                      ("reminded", []), ("log", []), ("overrides", {}), ("repair", []), ("file_holds", {}),
-                     ("clients", {}), ("types", {}), ("dt_tests", {}), ("synced", {})):
+                     ("clients", {}), ("types", {}), ("dt_tests", {}), ("synced", {}), ("copy_checks", {})):
         s.setdefault(k, empty)
     s.setdefault("needs_action", False)
     s.setdefault("since", None)
@@ -185,9 +199,12 @@ def scan(folder: Path, state: dict, now: datetime, unrecognised: list | None = N
 
 
 def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, persist: bool) -> dict:
-    """Read new files into state. Returns {ingested: [...], pending: [...], nights: set of nights to act on}.
-    A test from before the job's first day (state["since"]) is filed as history whatever the flags say."""
-    got = {"ingested": [], "pending": [], "nights": set(), "unrecognised": []}
+    """Read new files into state. Returns {ingested: [...], pending: [...], nights: set of nights to act on,
+    copy_checks: [keys of state["copy_checks"] read now]}.
+    A test from before the job's first day (state["since"]) is filed as history whatever the flags say.
+    A copy-check file (v2.is_copy_check_file) is kept apart: it goes to state["copy_checks"] and never into
+    state["results"], so no inbox is judged, pulled, returned or held on it."""
+    got = {"ingested": [], "pending": [], "nights": set(), "unrecognised": [], "copy_checks": []}
     for path, sha, text in files:
         rows = v2.parse(text)
         night = v2.night_of(rows)
@@ -196,12 +213,28 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             state["files"][sha] = {**info, "status": "pending"}
             got["pending"].append(path.name)
             continue
-        summary = v2.summarise(rows)
         sent_last = v2.last_sent(rows)
+        old = history or bool(state.get("since") and night < state["since"])
+        mailboxes = sorted({r["mailbox"] for r in rows})
+        if v2.is_copy_check_file(path.name, mailboxes, state.get("dt_tests") or {}):
+            client = v2.majority_client(mailboxes, state.get("clients") or {})
+            key = f"{client}|{night}"
+            before = state["copy_checks"].get(key)
+            if before is None or sent_last >= str(before.get("sent_last") or ""):      # a later run of it replaces
+                state["copy_checks"][key] = {"client": client, "night": night, "file": path.name, "sha": sha[:12],
+                                             "seen": info["seen"], "sent_last": sent_last, "history": old,
+                                             "senders": v2.copy_counts(rows)}
+            state["files"][sha] = {**info, "status": "copy_check", "client": client, "inboxes": len(mailboxes)}
+            if persist:
+                keep = state_dir / "runs"
+                keep.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, keep / f"{night}__{sha[:8]}__{path.name}")
+            got["copy_checks"].append(key)
+            continue
+        summary = v2.summarise(rows)
         info["per_provider"] = v2.emails_per_provider(rows)
         info["by_provider"] = v2.emails_by_provider(rows)
         info["pending_seeds"] = v2.pending_seeds(rows)
-        old = history or bool(state.get("since") and night < state["since"])
         for mb, s in summary.items():
             res = {"night": night, "verdict": s["verdict"], "google": s["google"], "microsoft": s["microsoft"],
                    "sent_last": sent_last, "file": sha[:12], "history": old}
@@ -292,6 +325,41 @@ def judged_nights(state: dict, mb: str) -> list[str]:
     """Nights on which an inbox got a verdict at its own provider (holds not applied), oldest first."""
     kind = (state.get("types") or {}).get(mb)
     return [x["night"] for x in state["results"].get(mb, []) if v2.own_verdict(x, kind) in v2.JUDGED]
+
+
+def known_good(state: dict) -> set[str]:
+    """Inboxes that pass the plain note: their newest judged result, at their own provider with held providers
+    set aside, is a pass. Only these count in a copy check, so a miss there is the email's, not the inbox's."""
+    types = state.get("types") or {}
+    out = set()
+    for mb, rs in state["results"].items():
+        judged = [x for x in effective(rs, state, types.get(mb)) if x["verdict"] in v2.JUDGED]
+        if judged and judged[-1]["verdict"] == v2.PASS:
+            out.add(mb)
+    return out
+
+
+def copy_checks_due(state: dict, now: datetime, settled: bool = True) -> list[str]:
+    """Copy checks read but not reported yet (history ones never are). With ``settled``, only those whose file
+    arrived SETTLE_MINUTES ago: the week's inbox files may come in the same download, and they decide which
+    senders are known good."""
+    cut = (now - timedelta(minutes=SETTLE_MINUTES)).isoformat(timespec="minutes")
+    return sorted(k for k, r in state["copy_checks"].items()
+                  if not r.get("reported") and not r.get("history")
+                  and (not settled or str(r.get("seen") or "") <= cut))
+
+
+def judge_copy_checks(state: dict, keys: list[str]) -> None:
+    """Work out each copy check's verdict from the counts kept of its file, with the inboxes known good now."""
+    good, types = known_good(state), state.get("types") or {}
+    for k in keys:
+        state["copy_checks"][k]["types"] = v2.judge_copy(state["copy_checks"][k].get("senders") or {}, types, good)
+
+
+def copy_checked_clients(state: dict, since: str) -> set[str]:
+    """Clients with a copy-check file (not history) for a night from ``since`` on."""
+    return {r["client"] for r in state.get("copy_checks", {}).values()
+            if not r.get("history") and str(r.get("night") or "") >= since}
 
 
 def remember_fleet(state: dict, fleet: dict) -> None:
@@ -796,10 +864,59 @@ def _shown(rs: list[dict], nights=None) -> dict:
     return last
 
 
+COPY_KINDS = (("google", "Google inboxes", "Google"), ("outlook", "Outlook inboxes", "Microsoft"))
+COPY_WORD = {v2.PASS: "pass", v2.FAIL: "fail", v2.WATCH: "borderline", v2.NOT_JUDGED: "not judged"}
+
+
+def _day(night: str) -> str:
+    d = date.fromisoformat(night)
+    return f"{d:%a} {d.day} {d:%b}"
+
+
+def copy_check_lines(rec: dict) -> tuple[str, list[str], list[str]]:
+    """One judged copy check as (headline line, lines for its client's section, Needs-you lines). A sender type
+    with no sender in the file gets no line; a failed email is the one thing here that needs a person."""
+    client, lines, needs, words = rec["client"], [], [], []
+    for kind, who, prov in COPY_KINDS:
+        t = (rec.get("types") or {}).get(kind) or {}
+        n, left = int(t.get("senders") or 0), int(t.get("left_out") or 0)
+        if not n and not left:
+            continue
+        verdict = t.get("verdict") or v2.NOT_JUDGED
+        words.append(f"{who} {COPY_WORD[verdict]}")
+        if verdict == v2.NOT_JUDGED:
+            lines.append(f"• copy check · {who} · too few inboxes that pass the plain note to judge the email "
+                         f"({n} counted, {left} left out)")
+            continue
+        share = f"{t['inbox']} of {t['sent']} emails in the {prov} inbox"
+        tail = {v2.PASS: f"the email is fine from {who}",
+                v2.FAIL: f"the email is the problem: rewrite it before it sends from {who}",
+                v2.WATCH: f"borderline: test the email again before it sends from {who}"}[verdict]
+        lines.append(f"• copy check · {who} · {share}, from {n} inbox{'es that pass' if n != 1 else ' that passes'} the "
+                     f"plain note{f' ({left} left out)' if left else ''} → {tail}")
+        if verdict == v2.FAIL:
+            needs.append(f"{client}: the copy check failed from {who} ({share}, from inboxes that pass the plain "
+                         f"note). The email is the problem: rewrite it before it sends from {who}.")
+    if not lines:
+        n = len(rec.get("senders") or {})
+        lines.append(f"• copy check · none of its {_inboxes(n)} is a Google or Outlook inbox the job knows, so the "
+                     f"email was not judged")
+    return f"Copy check · {client} · {' · '.join(words) or 'not judged'}", lines, needs
+
+
 def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, acted: dict, write: bool,
                  pulled_before: set, act_from: str | None = None, behind: int | None = None,
                  report_only_clients: set | None = None) -> tuple[list[str], list[str]]:
+    """(headline lines, thread parts). ``got["copy_checks"]``: keys of the judged copy checks to report with
+    it. With no night to report (a copy check that arrived on its own) the post is the copy check's alone."""
     nights = sorted(got["nights"])
+    copies = [state["copy_checks"][k] for k in got.get("copy_checks") or [] if k in state.get("copy_checks", {})]
+    copy_head, copy_by_client, copy_needs = [], defaultdict(list), []
+    for rec in sorted(copies, key=lambda r: (r["client"], r["night"])):
+        line, lines, needs_ = copy_check_lines(rec)
+        copy_head.append(line)
+        copy_by_client[rec["client"]] += lines
+        copy_needs += needs_
     types = state.get("types") or {}
 
     def own(mb: str) -> list[dict]:
@@ -859,6 +976,10 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     if not write and act_from:
         ro_note = f" ({', '.join(sorted(report_only_clients))} stays report-only)" if report_only_clients else ""
         head.append(f"Watch week: nothing is changed in Smartlead until {act_from}, then the job acts on its own{ro_note}.")
+    if copies and not nights:       # a copy check on its own: no inbox was tested, so no inbox counts
+        days = sorted({r["night"] for r in copies})
+        head = [f"v2 copy check, test{'s' if len(days) != 1 else ''} of {' and '.join(_day(n) for n in days)}"]
+    head += copy_head
 
     needs, info = [], list(acted["notes"]) + list(acted["skipped"])
     for name in got.get("unrecognised") or []:
@@ -900,6 +1021,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
                      f"Not changed, as {client} is report-only{' ' + why if why else ''}: "
                      f"{'ask ' + owner + ' to ' if owner else ''}pause it or add a good sender.")
+    needs += copy_needs
     needs += [f"Error: {err}" for err in acted["errors"]]
     if got["pending"]:
         needs.append(f"Downloaded before the results were in (download again later): {', '.join(got['pending'])}")
@@ -950,14 +1072,26 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                     "(missing tests, untested senders) were skipped.")
     tested = set(tonight)
     no_result, waiting, in_dt = [], set(), set()
+    # A copy-check campaign has a result only when its client's copy-check file came in for this week: its
+    # senders are tested inboxes, so their inbox-test results must not count for it.
+    copy_in = (copy_checked_clients(state, min(v2.week_start(v2.week_of(n)) for n in nights).isoformat())
+               if nights else set())
+    copy_waiting = set()
     for acc, f in fleet.items():
         for c in f.get("dt", {}).values():
+            if v2.is_copy_check_campaign(c["name"]):
+                mine = [e for e, i in f["inboxes"].items() if i["id"] in c["senders"]]
+                if c["senders"] and v2.majority_client(mine, client_of) not in copy_in:
+                    no_result.append(c["name"])
+                    copy_waiting |= {(acc, i) for i in c["senders"]}
+                continue
             in_dt |= {(acc, i) for i in c["senders"]}
             if c["senders"] and not any(e in tested for e, i in f["inboxes"].items() if i["id"] in c["senders"]):
                 no_result.append(c["name"])
                 waiting |= {(acc, i) for i in c["senders"]}
     if no_result and weekly:
-        needs.append(f"No result this week from {', '.join(sorted(no_result))} ({len(waiting)} inbox{'es' if len(waiting) != 1 else ''}): "
+        n_wait = len(waiting | copy_waiting)
+        needs.append(f"No result this week from {', '.join(sorted(no_result))} ({n_wait} inbox{'es' if n_wait != 1 else ''}): "
                      f"download {'their CSVs' if len(no_result) != 1 else 'its CSV'} into Downloads.")
     untested, missed = defaultdict(list), defaultdict(list)
     if weekly:
@@ -1049,12 +1183,13 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         who = items[0][0] if len(items) == 1 else f"{len(items)} of {per_dom[dom]} inboxes"
         label = verdict.lower().replace("_", " ")
         by_client[client].append(" · ".join(x for x in (f"• {label}", dom, who, _seeds(items)) if x) + f" → {tail}")
-    for client in sorted(set(by_client) | set(out_before)):
+    for client in sorted(set(by_client) | set(out_before) | set(copy_by_client)):
         lines = list(by_client.get(client, []))
         if client in out_before:
             n, doms = out_before[client]
             lines.append(f"• Still failing, already out from an earlier run: {n} inbox{'es' if n != 1 else ''} "
                          f"on {len(doms)} domain{'s' if len(doms) != 1 else ''}")
+        lines += copy_by_client.get(client, [])
         parts.append(f"*{client}*\n\n" + "\n".join(lines))
     # Inboxes acted on with no stored v2 result (pulled by hand, e.g. after a one-off test) are not in any
     # group above, so name them here: every inbox the headline counts must be listed.
@@ -1221,6 +1356,15 @@ def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
     return out
 
 
+def copy_check_docs(state: dict, now: datetime) -> dict[str, dict]:
+    """copy_checks docs, one per client per night ("<client>|<night>"): what a copy check said about the email,
+    per sender type (inbox, sent, senders, left_out, verdict). Only copy checks already judged."""
+    at = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return {k: {"_id": k, "client": r["client"], "night": r["night"], "file": r.get("file"),
+                **{kind: dict(r["types"].get(kind) or {}) for kind, _, _ in COPY_KINDS}, "updated_at": at}
+            for k, r in state.get("copy_checks", {}).items() if r.get("types")}
+
+
 def write_verdicts(col, docs: list[dict]) -> None:
     from pymongo import ReplaceOne
     for k in range(0, len(docs), 500):
@@ -1239,7 +1383,7 @@ def heartbeat(state: dict, now: datetime, ctx: dict, errors: list[str]) -> dict:
 
 
 def record(state_dir: Path, ctx: dict) -> None:
-    """After a saved run: the verdicts that changed, then the heartbeat. Never raises; a Mongo problem is
+    """After a saved run: the verdicts and copy checks that changed, then the heartbeat. Never raises; a Mongo problem is
     printed, and put in the heartbeat's errors when the heartbeat itself can still be written."""
     db = None
     try:
@@ -1262,6 +1406,17 @@ def record(state_dir: Path, ctx: dict) -> None:
             state["synced"] = {i: _fingerprint(d) for i, d in docs.items()}
         except Exception as exc:  # noqa: BLE001
             errors.append(f"v2_verdicts not written: {_short(exc)}")
+            print(f"[v2-weekly] {errors[-1]}")
+        try:
+            docs = copy_check_docs(state, now)
+            fresh = [d for k, d in docs.items() if state["copy_checks"][k].get("synced") != _fingerprint(d)]
+            if fresh:
+                write_verdicts(db[COPY_CHECKS_COLLECTION], fresh)
+                print(f"[v2-weekly] Mongo: {len(fresh)} copy check(s) written")
+            for k, d in docs.items():
+                state["copy_checks"][k]["synced"] = _fingerprint(d)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"copy_checks not written: {_short(exc)}")
             print(f"[v2-weekly] {errors[-1]}")
         try:
             db[HEARTBEAT_COLLECTION].replace_one({"_id": "pc"}, heartbeat(state, now, ctx, errors), upsert=True)
@@ -1462,6 +1617,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     print(f"[v2-weekly] {now:%Y-%m-%d %H:%M} IST ({'act' if write else 'warn' if persist else 'dry run'}): "
           f"{len(got['ingested'])} new file(s), {len(got['pending'])} not ready"
           + (f", {len(odd)} unrecognised" if odd else "")
+          + (f", {len(got['copy_checks'])} copy check(s)" if got["copy_checks"] else "")
           + (f": {', '.join(got['ingested'])}" if got["ingested"] else "")
           + (f"; code {behind} commit(s) behind origin/main" if behind else ""))
     save()
@@ -1479,7 +1635,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
                                  if i.get("status") in ("ingested", "history")) if n}
         mon = v2.week_start(v2.last_monday(now.date())).isoformat()      # the week's tests may start Sat or Sun
         tested = {e for e, rs in state["results"].items() if any(x["night"] >= mon for x in rs)}
-        missing = v2.dt_missing(state["dt_tests"], tested)
+        missing = v2.dt_missing(state["dt_tests"], tested, copy_checked_clients(state, mon), state["clients"])
         due = v2.reminder_due((now.date(), now.hour), nights_in, set(state["reminded"]), state["since"], missing)
         if due and can_post and _post_noted(state, ctx, reminder_lines(due, missing, any(n >= due for n in nights_in)), []):
             state["reminded"].append(due)
@@ -1498,6 +1654,23 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
             if (rep["notes"] or rep["errors"]) and can_post:
                 post_or_queue(state, ["v2 job: leads in campaigns it pulled inboxes from",
                                       "\n" + "\n".join(f"• {x}" for x in rep["errors"] + rep["notes"])], [], ctx)
+        # A copy check with no inbox files to act on: reported on its own, from stored results. Smartlead is
+        # neither read nor changed, so nothing is pulled or returned on such a run.
+        copies = copy_checks_due(state, now, settled=persist)
+        if copies:
+            judge_copy_checks(state, copies)
+            head, parts = build_report(state, {"ingested": [], "pending": [], "nights": set(), "copy_checks": copies},
+                                       {}, None, _new_rep(), write, set())
+            text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
+            print(text)
+            if persist:
+                reports = state_dir / "reports"
+                reports.mkdir(parents=True, exist_ok=True)
+                (reports / f"{now:%Y-%m-%d_%H%M}_copy_check.md").write_text(text, encoding="utf-8")
+                if can_post:
+                    post_or_queue(state, head, parts, ctx)        # queued if refused: it counts as told
+                for k in copies:
+                    state["copy_checks"][k]["reported"] = now.isoformat(timespec="minutes")
         save()
         return 0
 
@@ -1558,6 +1731,9 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         print(f"  leads moved {acted['leads']['moved']}, resumed {acted['leads']['resumed']}")
     ctx["errors"] += acted["errors"]
 
+    # Copy checks read and not yet reported ride with this report, judged against the results just acted on.
+    got["copy_checks"] = copy_checks_due(state, now, settled=False)
+    judge_copy_checks(state, got["copy_checks"])
     head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from, behind, ro)
     text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
     print(text)
@@ -1567,6 +1743,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
                          "errors": acted["errors"]})
     state["needs_action"] = False
     if persist:
+        for k in got["copy_checks"]:
+            state["copy_checks"][k]["reported"] = now.isoformat(timespec="minutes")
         reports = state_dir / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         (reports / f"{now:%Y-%m-%d_%H%M}{'' if write else '_warn'}.md").write_text(text, encoding="utf-8")
