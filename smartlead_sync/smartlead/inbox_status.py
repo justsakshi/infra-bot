@@ -118,8 +118,9 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
     """[{"key", "text", "detail": [lines]}], most urgent first; [] = nothing needs a person. Pure.
 
     1. an inbox that must not send (tagged, pulled, failed v2) is still in a sending campaign;
-    2. a sending campaign has no usable inbox left, or half or more of its inboxes are held back;
-    3. inboxes Smartlead cannot connect to;
+    2. a sending campaign has no usable inbox left, or half or more of its inboxes cannot send;
+    3. an inbox in a sending campaign cannot connect (one that sits idle is listed in the thread, not here:
+       an item that never clears teaches people to skip the post; the renewal review asks about it at its bill);
     4. once a v2 pass is required: inboxes sending without one (the week's v2 files are not in)."""
     if require_pass is None:
         require_pass = usable.require_v2_pass(today)
@@ -152,21 +153,26 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
 
     short = []
     for (client, camp), rs in sorted(by_campaign.items()):
-        usable_n = sum(1 for r in rs if r["state"] not in HELD and r["state"] != "disconnected")
+        out_of = Counter(r["state"] for r in rs if r["state"] in HELD or r["state"] == "disconnected")
+        usable_n = len(rs) - sum(out_of.values())
         if usable_n == 0 or (len(rs) - usable_n) * 2 >= len(rs):
-            short.append(f"• {client} · {camp}: {usable_n} of {len(rs)} inboxes can send")
+            why = ", ".join(f"{out_of[s]} {LABEL[s]}" for s in ("disconnected",) + HELD if out_of.get(s))
+            short.append(f"• {client} · {camp}: {usable_n} of {len(rs)} inboxes can send ({why})")
     if short:
+        one = len(short) == 1
         items.append({"key": "campaign_short", "detail": short,
-                      "text": f"{_n(len(short), 'sending campaign')} {'has' if len(short) == 1 else 'have'} lost half "
-                              "or more of their inboxes: give them proven inboxes or slow them down"})
+                      "text": f"{_n(len(short), 'sending campaign')} {'has' if one else 'have'} lost half or more of "
+                              f"{'its' if one else 'their'} inboxes: give {'it' if one else 'them'} proven inboxes or "
+                              f"slow {'it' if one else 'them'} down"})
 
-    off = [r for r in records if r["state"] == "disconnected"]
+    off = [r for r in records if r["state"] == "disconnected" and r["campaigns"]]
     if off:
         by_client: dict[str, list[str]] = defaultdict(list)
         for r in off:
             by_client[r["client"]].append(r["email"])
         items.append({"key": "disconnected",
-                      "text": f"{_n(len(off))} cannot connect in Smartlead: reconnect them or drop them",
+                      "text": f"{_n(len(off))} in sending campaigns cannot connect in Smartlead: reconnect "
+                              f"{'it' if len(off) == 1 else 'them'}",
                       "detail": [f"• {c}: {_names(sorted(es))}" for c, es in sorted(by_client.items())]})
 
     unproven = [r for r in records if r["state"] == "sending_unproven"]
@@ -203,6 +209,15 @@ def format_post(records: list[dict], changes: list[dict], items: list[dict], tod
         by_client[r["client"] or "no client"][r["state"]] += 1
     parts.append("\n".join(["*By client*"] + [
         f"• {c}: " + ", ".join(f"{k[s]} {LABEL[s]}" for s in ORDER if k.get(s)) for c, k in sorted(by_client.items())]))
+    idle_off: dict[str, list[str]] = defaultdict(list)
+    for r in records:
+        if r["state"] == "disconnected" and not r["campaigns"]:
+            idle_off[r["client"] or "no client"].append(r["domain"])
+    if idle_off:
+        parts.append("\n".join(["*Not connected and in no sending campaign (the renewal review asks about these at their bill)*"]
+                               + [f"• {c}: {_n(len(ds))} on {', '.join(sorted(set(ds))[:12])}"
+                                  + (f" and {len(set(ds)) - 12} more domains" if len(set(ds)) > 12 else "")
+                                  for c, ds in sorted(idle_off.items())]))
     if changes:
         lines = [f"• {c['email']}: {LABEL.get(c.get('from') or '', 'new')} → {LABEL.get(c['to'], c['to'])}"
                  for c in changes if c.get("from")][:40]

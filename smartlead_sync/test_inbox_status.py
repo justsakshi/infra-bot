@@ -52,8 +52,12 @@ def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well():
         _row("tagged@x.com", "Camp A", "ACTIVE", tags=["DO NOT USE - x"]),
         _row("m1@m.com", "Melior Legal", "ACTIVE", sub="Melior", tags=[AUTO]),
         _row("m2@m.com", "Melior Legal", "ACTIVE", sub="Melior", v2_status="PASS", v2_date="2026-11-09"),
-        _row("off1@b.co", client="BETTRDATA", sub="Bettrdata", connection_ok=False),
-        _row("off2@b.co", client="BETTRDATA", sub="Bettrdata", connection_ok=False),
+        _row("off1@b.co", "BD Roundtable", "ACTIVE", client="BETTRDATA", sub="Bettrdata", connection_ok=False),
+        _row("off2@b.co", "BD Roundtable", "ACTIVE", client="BETTRDATA", sub="Bettrdata", connection_ok=False),
+        _row("ok@b.co", "BD Roundtable", "ACTIVE", client="BETTRDATA", sub="Bettrdata", v2_status="PASS", v2_date="2026-11-09"),
+        _row("ok2@b.co", "BD Roundtable", "ACTIVE", client="BETTRDATA", sub="Bettrdata", v2_status="PASS", v2_date="2026-11-09"),
+        _row("ok3@b.co", "BD Roundtable", "ACTIVE", client="BETTRDATA", sub="Bettrdata", v2_status="PASS", v2_date="2026-11-09"),
+        _row("bench@b.co", client="BETTRDATA", sub="Bettrdata", connection_ok=False),      # idle: listed, not a job
         _row("u@x.com", "Camp C", "ACTIVE"),
     ]
     items = st.needs_you(st.states(rows, T), T, require_pass=True)
@@ -64,9 +68,14 @@ def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well():
     assert items[0]["detail"] == ["• Precise Leads · Camp A: tagged@x.com (tagged do not use); failed@x.com (failed v2)"]
     assert items[1]["text"] == ("1 inbox that must not send is still in 1 sending campaign (Melior: the v2 job only "
                                 "reports, Ryan decides)")
-    assert items[2]["detail"] == ["• Melior · Melior Legal: 1 of 2 inboxes can send"]       # half held back
-    assert items[3]["text"] == "2 inboxes cannot connect in Smartlead: reconnect them or drop them"
-    assert items[3]["detail"] == ["• Bettrdata: off1@b.co, off2@b.co"]
+    assert items[2]["text"] == ("1 sending campaign has lost half or more of its inboxes: give it proven inboxes or "
+                                "slow it down")
+    assert items[2]["detail"] == ["• Melior · Melior Legal: 1 of 2 inboxes can send (1 pulled by the v2 job)"]
+    assert items[3]["text"] == "2 inboxes in sending campaigns cannot connect in Smartlead: reconnect them"
+    assert items[3]["detail"] == ["• Bettrdata: off1@b.co, off2@b.co"]                      # bench@b.co is not a job
+    head, parts = st.format_post(st.states(rows, T), [], items, T)
+    assert ("*Not connected and in no sending campaign (the renewal review asks about these at their bill)*\n"
+            "• Bettrdata: 1 inbox on b.co") in parts
     assert items[4]["text"] == ("1 inbox is sending without a v2 pass in the last 10 days: download this week's v2 "
                                 "result files")
     # before the v2 pass is required, sending without one is not a job for a person
@@ -76,7 +85,8 @@ def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well():
 def test_a_campaign_with_no_usable_inbox_is_named():
     rows = [_row("a@x.com", "Camp Z", "ACTIVE", tags=[AUTO]), _row("b@x.com", "Camp Z", "ACTIVE", connection_ok=False)]
     items = {i["key"]: i for i in st.needs_you(st.states(rows, T), T, require_pass=False)}
-    assert items["campaign_short"]["detail"] == ["• Precise Leads · Camp Z: 0 of 2 inboxes can send"]
+    assert items["campaign_short"]["detail"] == [
+        "• Precise Leads · Camp Z: 0 of 2 inboxes can send (1 disconnected, 1 pulled by the v2 job)"]
 
 
 def test_history_records_each_change_once_and_gone_only_on_a_full_read():
