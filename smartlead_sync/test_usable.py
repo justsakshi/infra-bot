@@ -168,3 +168,22 @@ def test_the_all_inboxes_tab_carries_the_new_columns_last():
     from smartlead.sheets import SheetsWriter
     assert SheetsWriter.MASTER_COLUMNS[-3:] == ["v2_status", "v2_date", "use_notes"]
     assert SheetsWriter.MASTER_COLUMNS[:6] == ["client", "email", "name", "provider", "account_id", "availability"]
+
+
+def test_tags_come_from_the_list_call_because_the_detail_call_has_none():
+    """11 Nov 2026: 63 inboxes were tagged DO NOT USE in Smartlead and no row on the sheet said do_not_use.
+    The daily sync builds rows from GET /email-accounts/{id}, which returns no tags."""
+    listed = [{"id": 1, "from_email": "a@x.com", "tags": [{"id": 9, "name": "DO NOT USE - Google spam (Nov 2026)"}]},
+              {"id": 2, "from_email": "b@x.com", "tags": []}, {"id": 3, "from_email": "c@x.com"}]
+    details = [{"id": 1, "from_email": "a@x.com", "message_per_day": 15}, {"id": "2", "from_email": "b@x.com"},
+               {"id": 3, "from_email": "c@x.com", "tags": [{"name": "kept"}]}, None]
+    out = usable.carry_tags(listed, details)
+    assert usable.is_do_not_use(usable.tag_names(out[0])) and out[0]["message_per_day"] == 15
+    assert "tags" not in details[0]                        # the input is not changed
+    assert usable.tag_names(out[1]) == [] and usable.tag_names(out[2]) == ["kept"] and out[3] is None
+    assert usable.carry_tags(None, None) == []
+    # and the row the gate reads gets them
+    from smartlead.processing import _build_inbox_row
+    row = _build_inbox_row(out[0], "a@x.com", "N/A", "N/A",
+                           {"leads_remaining": 0, "inbox_count": 0, "individual_load": 0, "true_load": 0}, {})
+    assert usable.gate(row["tags"], None, None, date(2026, 11, 11))[0] == ["do_not_use"]

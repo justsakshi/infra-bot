@@ -59,6 +59,22 @@ def tag_names(account: dict) -> list[str]:
     return out
 
 
+def carry_tags(listed, details) -> list[dict]:
+    """``details`` with each account's tags taken from the list call when the detail has none.
+
+    Smartlead's GET /email-accounts (the list) returns ``tags``; GET /email-accounts/{id} (the detail the
+    daily sync builds its rows from) does not. So from 10 to 11 Nov 2026 the tag rule never fired in the
+    sheet: 63 inboxes were tagged DO NOT USE and none carried ``do_not_use`` (all were BUSY only because
+    they had also failed v2). Found by comparing the tags with the published tab. Pure; never raises."""
+    by_id = {str(a.get("id")): a.get("tags") for a in listed or [] if isinstance(a, dict) and a.get("tags")}
+    out = []
+    for d in details or []:
+        if isinstance(d, dict) and not d.get("tags") and str(d.get("id")) in by_id:
+            d = {**d, "tags": by_id[str(d.get("id"))]}
+        out.append(d)
+    return out
+
+
 def is_do_not_use(tags) -> bool:
     return any(str(t).strip().lower().startswith(DO_NOT_USE) for t in tags or [])
 
