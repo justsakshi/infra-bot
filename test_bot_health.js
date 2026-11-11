@@ -27,7 +27,8 @@ const BEFORE = {
   'dt-senders': ['0 6 * * *'], 'campaign-metrics': ['0 9 * * *'], 'campaign-stats-post': ['15 10 * * 1-5'],
   'provider-watch': ['40 10 * * 1'], 'volume-review': ['45 13 * * 2'], 'reply-monitor': ['0 13 * * *'],
   reminder: ['0 16 * * 1-5'],
-  'bot-health': ['5 10 * * 1-5'], 'v2-watch': ['0 14 * * 2', '0 10 * * 3']
+  'bot-health': ['5 10 * * 1-5'], 'v2-watch': ['0 14 * * 2', '0 10 * * 3'],
+  'gate-selftest': ['30 11 * * *']     // 11 Nov 2026: daily, after the sync has written the inbox list
 };
 const jobNames = [...new Set(h.JOBS.map(j => j.job))].sort();
 eq(jobNames, Object.keys(BEFORE).sort(), 'JOBS has exactly the scheduled jobs');
