@@ -262,7 +262,10 @@ def zapmail_bills(days: int, errors: list[str]) -> list[dict]:
         notes = []
         if r.get("payment_failure"):
             notes.append(f"payment failed: {r['payment_failure']}")
-        if r["kind"] == "pre-warmed":
+        if r["kind"] == "pre-warmed" and r.get("inboxes_by") == "count":
+            notes.append("pre-warmed slots: Zapmail does not list the inboxes on this plan; these are the "
+                         f"{len(r.get('inboxes') or [])} active ones it holds on no other subscription")
+        elif r["kind"] == "pre-warmed":
             notes.append("pre-warmed slots: Zapmail does not list which inboxes sit on this plan; review them by domain")
         if notes:
             bill["note"] = " · ".join(notes)

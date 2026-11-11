@@ -4,7 +4,7 @@
 """
 from datetime import datetime, timezone
 
-from smartlead.zapmail_asset_sync import plan_sync
+from smartlead.zapmail_asset_sync import domain_clients, plan_sync
 from smartlead.zapmail_clients import client_from_tracker, infer_client
 
 TODAY = "2026-09-29"
@@ -147,3 +147,45 @@ def test_counts():
     plan = plan_sync([_dom("gomelior.com"), _dom("kombinatorfunds.com")],
                      [_mb("ann@gomelior.com")], {}, today=TODAY)
     assert plan["counts"] == {"domain_insert": 1, "inbox_insert": 1, "domain_skipped": 1}
+
+
+# ── domains with no brand in the name: the client comes from Smartlead ───────
+
+def test_an_unbranded_domain_in_use_is_added_with_smartleads_client_2026_11_11():
+    """Nine `.co` domains of a current client (twelve sending inboxes on four of them) were never added:
+    nothing in the name said whose they were."""
+    doms = [_dom("plainnameone.co", provider="MICROSOFT"), _dom("plainnametwo.co")]
+    boxes = [_mb("ann@plainnameone.co", provider="MICROSOFT")]
+    in_use = {"plainnameone.co": "Bettrdata", "plainnametwo.co": "Bettrdata"}
+    without = plan_sync(doms, boxes, {}, today=TODAY)
+    assert without["ops"] == [] and without["counts"] == {"domain_skipped": 2, "inbox_skipped": 1}
+    plan = plan_sync(doms, boxes, {}, today=TODAY, in_use=in_use)
+    ins = _ops(plan, "insert")
+    assert sorted(ins) == ["ann@plainnameone.co", "plainnameone.co", "plainnametwo.co"]
+    for o in ins.values():
+        assert o["doc"]["client"] == "Bettrdata" and o["doc"]["provider"] == "Zapmail"
+        assert "client from Smartlead, where its inboxes are filed under Bettrdata" in o["doc"]["notes"]
+        assert "brandedPrewarmed" not in o["doc"] and "primaryOwner" not in o["doc"]      # not known; no reminders
+    assert ins["ann@plainnameone.co"]["doc"]["domain"] == "plainnameone.co"
+
+
+def test_smartlead_never_reassigns_a_tracked_or_branded_or_past_account_domain():
+    in_use = {"gomelior.com": "Bettrdata", "oldclient.com": "Bettrdata", "bwreach.co": "Bettrdata"}
+    tracker = {"oldclient.com": {"type": "DOMAIN", "name": "oldclient.com", "client": "OSC - Srivatsan",
+                                 "status": "Active", "expiryDate": _dt("2027-06-01"), "workspace": "Google",
+                                 "purchaseDate": _dt("2026-06-01")}}
+    plan = plan_sync([_dom("gomelior.com"), _dom("oldclient.com"), _dom("bwreach.co", account="Belardi Wong")],
+                     [_mb("a@oldclient.com")], tracker, today=TODAY, in_use=in_use)
+    ins = _ops(plan, "insert")
+    assert sorted(ins) == ["gomelior.com"] and ins["gomelior.com"]["doc"]["client"] == "Melior"   # the name wins
+    assert ins["gomelior.com"]["doc"]["brandedPrewarmed"] == "Branded"
+    assert {s["name"] for s in plan["skipped"]} == {"bwreach.co", "a@oldclient.com"}
+
+
+def test_domain_clients_needs_every_inbox_under_one_current_client():
+    got = domain_clients([
+        {"email": "a@one.co", "client": "Bettrdata"}, {"email": "B@One.co", "client": "Bettrdata"},
+        {"email": "a@mixed.co", "client": "Bettrdata"}, {"email": "b@mixed.co", "client": "Melior"},
+        {"email": "a@half.co", "client": "Melior"}, {"email": "b@half.co", "client": ""},        # one unlabelled
+        {"email": "a@past.co", "client": "OSC"}, {"email": "", "client": "Melior"}])
+    assert got == {"one.co": "Bettrdata"}

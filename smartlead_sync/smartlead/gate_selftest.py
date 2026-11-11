@@ -11,6 +11,7 @@ from datetime import date, datetime, timezone
 
 from smartlead import usable
 from smartlead.inbox_status import AUTO_TAG, REPORT_ONLY
+from smartlead.zapmail_clients import client_from_tracker
 
 HEARTBEAT_MAX_HOURS = 26      # the PC job runs hourly; a PC off overnight still reports within a day
 
@@ -33,10 +34,12 @@ def _fresh_pass(v2: dict | None, today: date) -> bool:
 
 
 def checks(inboxes: list[dict], campaigns: list[dict], rows: list[dict], v2: dict[str, dict],
-           heartbeat: dict | None, now: datetime, require_pass: bool, errors: list[str] | None = None) -> list[dict]:
-    """``inboxes`` [{email, tags}] from Smartlead's list call; ``campaigns`` [{client, campaign, emails}] the
-    ACTIVE ones; ``rows`` the published tab; ``v2`` {email: {verdict, night}} newest judged; ``heartbeat`` the
-    v2 job's doc. ``errors`` name sources that were not read (their checks fail)."""
+           heartbeat: dict | None, now: datetime, require_pass: bool, errors: list[str] | None = None,
+           tracker: set[str] | None = None) -> list[dict]:
+    """``inboxes`` [{email, tags, connected, client}] from Smartlead's list call; ``campaigns`` [{client, campaign,
+    emails}] the ACTIVE ones; ``rows`` the published tab; ``v2`` {email: {verdict, night}} newest judged;
+    ``heartbeat`` the v2 job's doc; ``tracker`` the names in the asset tracker (None = that check is not asked for).
+    ``errors`` name sources that were not read (their checks fail)."""
     errors = errors or []
     unread = lambda *names: [e for e in errors if e.startswith(names)]   # noqa: E731
     today = now.date()
@@ -121,6 +124,18 @@ def checks(inboxes: list[dict], campaigns: list[dict], rows: list[dict], v2: dic
         f"the v2 job on the PC ran {0 if age is None else age:.0f} hours ago in act mode"
         + (f" ({_n(len(auto))} {'carries' if len(auto) == 1 else 'carry'} its tag)" if auto else ""), wrong,
         blocked=unread("v2 heartbeat"))
+
+    # 6. the asset tracker knows every working inbox of a current client (what bills and expires is read from it)
+    if tracker is not None:
+        working = sorted(i["email"] for i in inboxes if i["email"] and i.get("connected")
+                         and client_from_tracker(i.get("client")))
+        bad = [e for e in working if e not in tracker]
+        add("tracker_has_every_inbox", len(working), bad,
+            f"all {_n(len(working), 'connected inbox', 'connected inboxes')} of current clients have a row in the "
+            "asset tracker",
+            f"{len(bad)} of {_n(len(working), 'connected inbox', 'connected inboxes')} of current clients have no row "
+            "in the asset tracker, so no expiry reminder or bill review covers them",
+            blocked=unread("Smartlead", "the tracker"))
     return out
 
 

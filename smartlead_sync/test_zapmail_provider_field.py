@@ -206,3 +206,35 @@ def test_paid_in_the_last_30_days(monkeypatch):
     out = asyncio.run(zf.paid_recently(days=30, today="2026-10-14"))
     assert out == {"days": 30, "paid": 68.25 + 9.75 + 105 + 84, "plans": 4,
                    "cancelled_since": 9.75, "unpaid": 19.5, "unpaid_plans": 1}
+
+
+# ── a pre-warmed plan's inboxes, by elimination (Zapmail does not list them) ──
+
+def _sub(kind, provider, n, inboxes=(), account="PRECISE_LEADS"):
+    return {"account": account, "kind": kind, "provider": provider, "mailboxes": n, "inboxes": list(inboxes),
+            "domains": [], "clients": []}
+
+
+def _box(email, provider="MICROSOFT", status="ACTIVE", account="PRECISE_LEADS"):
+    return {"email": email, "provider": provider, "status": status, "account": account}
+
+
+def test_a_prewarmed_plan_gets_the_active_inboxes_on_no_other_subscription_2026_11_11():
+    rows = [_sub("inboxes", "MICROSOFT", 2, ["a@branded.com", "b@branded.com"]), _sub("pre-warmed", "MICROSOFT", 2)]
+    boxes = [_box("a@branded.com"), _box("b@branded.com"), _box("x@plain.co"), _box("y@plain.co"),
+             _box("old@plain.co", status="EXPIRED"), _box("g@plain.co", provider="GOOGLE"),
+             _box("z@other.co", account="Belardi Wong")]
+    zf.prewarmed_by_count(rows, boxes, lambda d, account: "Bettrdata")
+    assert rows[1]["inboxes"] == ["x@plain.co", "y@plain.co"] and rows[1]["domains"] == ["plain.co"]
+    assert rows[1]["inboxes_by"] == "count" and rows[1]["clients"] == ["Bettrdata"]
+    assert rows[0]["inboxes"] == ["a@branded.com", "b@branded.com"] and "inboxes_by" not in rows[0]
+
+
+def test_a_prewarmed_plan_stays_unlisted_when_the_count_does_not_match_or_two_plans_exist():
+    boxes = [_box("x@plain.co"), _box("y@plain.co"), _box("w@plain.co")]
+    rows = [_sub("pre-warmed", "MICROSOFT", 2)]                       # three candidates for two slots
+    assert zf.prewarmed_by_count(rows, boxes)[0]["inboxes"] == []
+    rows = [_sub("pre-warmed", "MICROSOFT", 2), _sub("pre-warmed", "MICROSOFT", 1)]   # which plan holds which?
+    assert [r["inboxes"] for r in zf.prewarmed_by_count(rows, boxes)] == [[], []]
+    rows = [_sub("pre-warmed", "GOOGLE", 3)]                          # the three are Outlook
+    assert zf.prewarmed_by_count(rows, boxes)[0]["inboxes"] == []
