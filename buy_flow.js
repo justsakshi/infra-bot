@@ -7,6 +7,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const OFFER = JSON.parse(fs.readFileSync(
   process.env.INBOX_OFFER_FILE || path.join(__dirname, 'smartlead_sync', 'inbox_offer.json'), 'utf8'));
@@ -76,6 +77,93 @@ function totals(provider, picks, counts) {
   t.domainsUsd = round2(t.domainsUsd);
   t.firstChargeUsd = round2(t.monthlyUsd + t.domainsUsd);
   return t;
+}
+
+// ── Buying rule (smartlead_sync/buy_check.py): a warning on the confirm step, never a block ──
+// A kind of inbox (vendor + type) is proven once six of them passed their placement test twice;
+// until then the rule allows a trial of six. The owner chose a warning here (11 Nov 2026).
+const CHECK_TYPE = { google: 'google', outlook: 'outlook', microsoft: 'outlook', smtp: 'smtp' };
+const CHECK_TIMEOUT_MS = 20 * 1000;
+const COULD_NOT_CHECK = '_Could not check the buying rule just now, so no trial warning is shown._';
+const COULD_NOT_CHECK_ALL = '_Could not check the buying rule for every inbox type just now, so a trial warning may be missing._';
+
+/** Inboxes (not domains) of each inbox type in the order, named as buy_check.py names them. Empty rows left out. */
+function orderInboxes(provider, counts) {
+  const by = {};
+  typesFor(provider).forEach((t, i) => {
+    const key = String(t.key).toLowerCase();
+    const type = CHECK_TYPE[key] || key;
+    const n = rowMath(t, (counts || [])[i] || 0).inboxes;
+    if (n > 0) by[type] = (by[type] || 0) + n;
+  });
+  return Object.entries(by).map(([type, inboxes]) => ({ type, inboxes }));
+}
+
+/** One buy_check.py argument list per row of orderInboxes(). */
+function buyCheckArgs(provider, order) {
+  return order.map(o => ['buy_check.py', '--vendor', provider, '--type', o.type, '--count', String(o.inboxes), '--json']);
+}
+
+/**
+ * The lines to show on the confirm step. order: orderInboxes(); results: what buy_check.py answered for each
+ * row, in the same order (anything else, such as an {error} or a caught Error, counts as "could not check").
+ * Nothing when every type is fine. The check's error text is never shown.
+ */
+function buyWarnings(order, results) {
+  const lines = [];
+  let unread = 0;
+  order.forEach((o, i) => {
+    const r = (Array.isArray(results) ? results : [])[i];
+    const read = r && typeof r === 'object' && typeof r.ok === 'boolean' && (r.ok || (typeof r.why === 'string' && r.why.trim()));
+    if (!read) { unread += 1; return; }
+    if (r.ok) return;
+    const why = r.why.trim().replace(/\.+$/, '');
+    lines.push(':warning: Trial first: ' + why.charAt(0).toUpperCase() + why.slice(1) + '. This order has ' + o.inboxes + ' of them.');
+  });
+  if (unread) lines.push(lines.length ? COULD_NOT_CHECK_ALL : COULD_NOT_CHECK);
+  return lines;
+}
+
+/**
+ * Run buy_check.py and resolve its last-line JSON whatever the exit code. Not domain_suggest_command's runPy:
+ * that one rejects a non-zero exit without an "error" key, and buy_check.py exits 1 for "trial only",
+ * which is the answer the warning is made from.
+ */
+function runCheck(args, baseDir, timeoutMs = CHECK_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.env.INFRABOT_PYTHON || 'python', args, {
+      cwd: path.join(baseDir, 'smartlead_sync'),
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+    let stdout = '';
+    proc.stdout.on('data', d => { stdout += d; });
+    proc.stderr.on('data', d => { process.stderr.write('[buy-check] ' + d); });
+    const timer = setTimeout(() => { proc.kill(); reject(new Error('timed out')); }, timeoutMs);
+    proc.on('close', code => {
+      clearTimeout(timer);
+      try {
+        resolve(JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()));
+      } catch (e) {
+        reject(new Error('no JSON answer, exit code ' + code));
+      }
+    });
+    proc.on('error', err => { clearTimeout(timer); reject(err); });
+  });
+}
+
+/** Ask the buying rule about every inbox type in the order, all at once. Always resolves, with buyWarnings() lines. */
+async function orderWarnings(meta, check) {
+  const failed = err => { console.error('[buy-flow] buying rule check failed:', (err && err.message) || err); return null; };
+  try {
+    const order = orderInboxes(meta.p, meta.k);
+    const results = await Promise.all(buyCheckArgs(meta.p, order).map(async args => {
+      try { return await check(args); } catch (err) { return failed(err); }
+    }));
+    return buyWarnings(order, results);
+  } catch (err) {
+    failed(err);
+    return [COULD_NOT_CHECK];
+  }
 }
 
 function addDays(iso, n) {
@@ -175,10 +263,14 @@ function mixView(meta) {
   return shell(meta, blocks);
 }
 
-function confirmView(meta, defaults) {
+/** warnings: buyWarnings() lines, shown on top so they are read before Stage. None: the view as it always was. */
+function confirmView(meta, defaults, warnings = []) {
   const senders = { type: 'plain_text_input', action_id: 'value', placeholder: { type: 'plain_text', text: 'Jane Doe, John Roe' } };
   if (defaults.senders) senders.initial_value = defaults.senders;
-  const blocks = [...totalsBlocks(meta), divider(),
+  const trial = (warnings || []).filter(w => w.startsWith(':warning:'));
+  const notes = (warnings || []).filter(w => !w.startsWith(':warning:'));
+  const blocks = [...(trial.length ? [section(trial.join(NL))] : []), ...(notes.length ? [context(notes.join(NL))] : []),
+    ...totalsBlocks(meta), divider(),
     { type: 'input', block_id: 'senders', label: { type: 'plain_text', text: 'Sender names' }, element: senders,
       hint: { type: 'plain_text', text: 'First and last name each, comma-separated. Spread across the domains.' } }];
   // Both providers: ScaledMail sets it in the order, Zapmail in the job's Redirect step.
@@ -231,6 +323,8 @@ function loadDefaultSenders(baseDir) {
 function registerBuyFlow(app, baseDir, deps = {}) {
   const suggest = require('./domain_suggest_command');
   const runPy = deps.runPy || (args => suggest.runPy(args, baseDir, 3 * 60 * 1000));
+  // A test that swaps runPy gets it for the buying rule too, so no test ever starts Python.
+  const check = deps.check || deps.runPy || (args => runCheck(args, baseDir, CHECK_TIMEOUT_MS));
   const say = deps.say || require('./scaledmail_command').say;
   const profiles = deps.profiles || (() => suggest.loadProfiles(baseDir));
   const senders = deps.senders || (() => loadDefaultSenders(baseDir));
@@ -291,7 +385,8 @@ function registerBuyFlow(app, baseDir, deps = {}) {
   app.action('buy_next', async ({ ack, body, client }) => {
     await ack();
     const meta = metaOf(body);
-    await redraw(client, body, confirmView(meta, defaultsFor(meta.c, profiles(), senders())));
+    const warnings = await orderWarnings(meta, check);
+    await redraw(client, body, confirmView(meta, defaultsFor(meta.c, profiles(), senders()), warnings));
   });
 
   app.action('buy_back', async ({ ack, action, body, client }) => {
@@ -362,4 +457,5 @@ function registerBuyFlow(app, baseDir, deps = {}) {
 }
 
 module.exports = { OFFER, typesFor, domainMonthly, rowMath, usable, initialCounts, rebalance, setCount, split, totals,
-  addBusinessDays, readyRange, providerView, mixView, confirmView, registerBuyFlow, stageArgs, defaultsFor };
+  addBusinessDays, readyRange, providerView, mixView, confirmView, registerBuyFlow, stageArgs, defaultsFor,
+  orderInboxes, buyCheckArgs, buyWarnings, runCheck, orderWarnings };
