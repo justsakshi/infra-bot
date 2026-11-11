@@ -11,8 +11,9 @@ What it does (rules in smartlead/v2_results.py):
     a seed still pending or BOUNCED, or a test that sent fewer than 4, is not judged and never acted on;
   * own provider (Manveen 11 Nov 2026): a GMAIL inbox is judged on its Google result only, an OUTLOOK
     inbox on its Microsoft result only; an SMTP inbox, or one of unknown type, on both as before;
-  * a domain fails when half or more of its tested inboxes fail at their own provider: every other
-    inbox on that domain is taken out the same way, and none of them comes back while it still fails;
+  * a domain fails when half or more of its inboxes (all the job knows on it, tested or not) fail at
+    their own provider: every other inbox on that domain is taken out the same way, and none of them
+    comes back while it still fails;
   * FAIL, or WATCH in two Monday tests 6+ days apart: removed from every live campaign that is not a
     test campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
     tagged "DO NOT USE - failed v2 (auto)" so gtm presend refuses it. Warm-up stays on, and it
@@ -315,11 +316,12 @@ def plan(state: dict, nights=None) -> dict[str, dict]:
     inboxes of a failed domain. An inbox whose tag a person removed is not pulled again for a result they
     already overrode (state overrides: {email: night}).
 
-    Failed domains: per client and sending domain, among the inboxes with a new (not history) result in
-    ``nights`` (the nights being acted on; by default the newest night that has one), half or more failing
-    at their own provider fails the domain. Every other inbox the job knows on it (state clients: the fleet,
-    tested or not) is then pulled with the reason "its domain failed (N of M inboxes in spam)", and none of
-    its inboxes returns while it still fails. The decision carries ``domain`` {name, failed, tested}."""
+    Failed domains: per client and sending domain, the inboxes whose new (not history) result in ``nights``
+    (the nights being acted on; by default the newest night that has one) failed at their own provider are
+    counted against every inbox the job knows on the domain (state clients: the fleet, tested or not). Half
+    or more fails the domain. Every other inbox on it is then pulled with the reason "its domain failed (N
+    of M inboxes in spam)", and none of its inboxes returns while it still fails. The decision carries
+    ``domain`` {name, failed, inboxes}."""
     types, clients = state.get("types") or {}, state.get("clients") or {}
     if nights is None:
         new = [x["night"] for rs in state["results"].values() for x in rs if not x.get("history")]
@@ -339,7 +341,8 @@ def plan(state: dict, nights=None) -> dict[str, dict]:
     def key(mb: str) -> tuple:
         return clients.get(mb), mb.rsplit("@", 1)[-1]
 
-    failed = v2.failed_domains({mb: x["verdict"] for mb, x in shown.items()}, clients)
+    sizes = Counter(key(mb) for mb in clients)           # every inbox the job knows on the domain, tested or not
+    failed = v2.failed_domains({mb: x["verdict"] for mb, x in shown.items()}, clients, sizes)
     newest: dict[tuple, str] = {}
     for mb, x in shown.items():
         newest[key(mb)] = max(newest.get(key(mb), ""), x["night"])
@@ -347,7 +350,7 @@ def plan(state: dict, nights=None) -> dict[str, dict]:
         if key(mb) not in failed or (shown.get(mb) or {}).get("verdict") == v2.FAIL:
             continue                                     # another domain, or it failed itself (decided above)
         n, m = failed[key(mb)]
-        dom = {"name": key(mb)[1], "failed": n, "tested": m}
+        dom = {"name": key(mb)[1], "failed": n, "inboxes": m}
         why = f"its domain failed ({n} of {_inboxes(m)} in spam)"
         d = out.get(mb) or {"action": None, "why": "no result"}
         if d["action"] == v2.RETURN:
@@ -986,12 +989,12 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         by_domain[(client_of.get(e, "Not in Smartlead"), dom["name"])].append(e)
     for (client, name), es in sorted(by_domain.items()):
         dom = dom_pulled[es[0]]
-        by_client[client].append(f"• domain failed · {name} · {dom['failed']} of {_inboxes(dom['tested'])} in spam → "
+        by_client[client].append(f"• domain failed · {name} · {dom['failed']} of {_inboxes(dom['inboxes'])} in spam → "
                                  + _domain_tail(client, es, acted, names, write))
     waits = defaultdict(list)
     for e, d in decisions.items():
         if d.get("waits"):
-            waits[(d["domain"]["name"], d["domain"]["failed"], d["domain"]["tested"])].append(e)
+            waits[(d["domain"]["name"], d["domain"]["failed"], d["domain"]["inboxes"])].append(e)
     for (name, n, m), es in sorted(waits.items()):
         info.append(f"{name} still fails ({n} of {_inboxes(m)} in spam), so {_inboxes(len(es))} that passed twice "
                     f"stay{'s' if len(es) == 1 else ''} out of campaigns until it no longer does.")
@@ -1192,9 +1195,9 @@ def _fingerprint(doc: dict) -> str:
 
 def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
     """v2_verdicts docs (shared contract), one per inbox per night: nights from the last VERDICT_DAYS days
-    whose holds an acting run has worked out and whose files stopped arriving. The verdict is the combined
-    one of both providers with held providers set aside (``held`` names them): the readers of v2_verdicts
-    (usable list, renewal review, grid) have not been moved to the own-provider verdict the job acts on."""
+    whose holds an acting run has worked out and whose files stopped arriving. The verdict is the one the job
+    acts on: at the inbox's own provider, held providers set aside (``held`` names them). The readers of
+    v2_verdicts (usable list, gate self-test, renewal review, grid) therefore agree with what was pulled."""
     cut = (now.date() - timedelta(days=VERDICT_DAYS)).isoformat()
     skip = set(unsettled(state, now))
     at = now.astimezone(timezone.utc).isoformat(timespec="seconds")
@@ -1207,7 +1210,7 @@ def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
                 continue
             held = held_for(state, x)
             doc = {"_id": f"{mb}|{n}", "email": mb, "domain": mb.split("@", 1)[-1], "client": state["clients"].get(mb),
-                   "night": n, "verdict": v2.apply_hold(x, held) if held else x["verdict"],
+                   "night": n, "verdict": v2.own_verdict(x, (state.get("types") or {}).get(mb), held),
                    "google": _counts(x.get("google")), "microsoft": _counts(x.get("microsoft")),
                    "history": bool(x.get("history")), "weekly": v2.is_weekly_night(n), "pulled_on": pulled_on,
                    "held": sorted(held), "updated_at": at}

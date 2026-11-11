@@ -408,19 +408,19 @@ def test_a_failed_domain_takes_its_other_inboxes_out_too(job, monkeypatch):
     for n in range(5):
         monkeypatch.setitem(INBOXES, f"q{n + 1}@q.com", (50 + n, "Precise Leads"))
     job.sl.senders[1] |= {50, 51, 52, 53, 54}
-    write_csv(job.downloads, "dt-pl-1.csv", {**DT_PL_1, "q1@q.com": (0, 4), "q2@q.com": (4, 0), "q3@q.com": (4, 4),
+    write_csv(job.downloads, "dt-pl-1.csv", {**DT_PL_1, "q1@q.com": (0, 4), "q2@q.com": (4, 0), "q3@q.com": (0, 0),
                                              "q4@q.com": (4, 4)})                    # q5 is in no test
     job.run()
     job.clock = at(10, 10, 31)
     assert job.run() == 0
-    everyone = [20, 50, 51, 52, 53, 54]                           # 2 of 4 on q.com in spam: all five go, with pl-bad
+    everyone = [20, 50, 51, 52, 53, 54]                           # 3 of q.com's 5 in spam: all five go, with pl-bad
     assert ("tag", everyone, [77]) in job.sl.calls and ("remove", 1, everyone) in job.sl.calls
     assert job.sl.senders[1] == {10, 11}
     assert set(job.state()["pulled"]) == {"pl-bad@x.com"} | {f"q{n}@q.com" for n in range(1, 6)}
     head, parts = job.posts[-1]
     assert head[2] == "Took 6 inboxes out of 1 live campaign · tagged 0 in no campaign · returned 0"
     text = "\n".join(parts)
-    assert "• domain failed · q.com · 2 of 4 inboxes in spam → 3 more inboxes taken out of PL | A; tagged DO NOT USE" in text
+    assert "• domain failed · q.com · 3 of 5 inboxes in spam → 2 more inboxes taken out of PL | A; tagged DO NOT USE" in text
     assert "• pass" not in text and "Pulled earlier" not in text
 
 

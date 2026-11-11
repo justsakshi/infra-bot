@@ -362,3 +362,14 @@ def test_domains_are_counted_per_client():
     verdicts = {"a@bad.com": v2.FAIL, "b@bad.com": v2.PASS, "c@bad.com": v2.PASS}
     clients = {"a@bad.com": "One", "b@bad.com": "Two", "c@bad.com": "Two"}
     assert v2.failed_domains(verdicts, clients) == {("One", "bad.com"): (1, 1)}
+
+
+def test_a_domain_is_judged_on_all_its_inboxes_not_only_the_tested_ones():
+    """A one-off test of one inbox must not rest a 25-inbox domain: the share is of the domain's inboxes."""
+    client = {f"i{n}@big.com": "C" for n in range(4)}
+    one = {"i0@big.com": v2.FAIL}
+    assert v2.failed_domains(one, client) == {("C", "big.com"): (1, 1)}                      # no sizes known: as tested
+    assert v2.failed_domains(one, client, sizes={("C", "big.com"): 4}) == {}                 # 1 of 4 inboxes
+    two = {"i0@big.com": v2.FAIL, "i1@big.com": v2.FAIL}
+    assert v2.failed_domains(two, client, sizes={("C", "big.com"): 4}) == {("C", "big.com"): (2, 4)}
+    assert v2.failed_domains(two, client, sizes={("C", "big.com"): 1}) == {("C", "big.com"): (2, 2)}   # never below tested

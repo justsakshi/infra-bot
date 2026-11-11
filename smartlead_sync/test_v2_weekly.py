@@ -721,6 +721,8 @@ def test_a_later_short_test_does_not_hide_the_fail_the_job_acts_on(tmp_path):
 # --- own provider, failed domains (Manveen 11 Nov 2026) ------------------------------
 
 BAD = {"a@bad.com": (0, 4), "b@bad.com": (0, 4), "c@bad.com": (4, 4), "d@bad.com": (4, 4)}      # 2 of 4 in spam
+# 3 in spam, 2 pass: with untested@bad.com in the fleet the domain has 6 inboxes, so 3 of 6 fails it
+WIDE = {"a@bad.com": (0, 4), "b@bad.com": (0, 4), "c@bad.com": (0, 4), "d@bad.com": (4, 4), "e@bad.com": (4, 4)}
 FINE = {"a@fine.com": (0, 4), "b@fine.com": (4, 4), "c@fine.com": (4, 4), "d@fine.com": (4, 4)}  # 1 of 4
 
 
@@ -778,17 +780,24 @@ def test_watch_and_return_use_the_own_provider_verdict(tmp_path):
 
 
 def test_a_domain_with_half_its_inboxes_in_spam_rests_all_of_them(tmp_path):
-    clients = {e: "Precise Leads" for e in {**BAD, **FINE}}
-    clients["untested@bad.com"] = "Precise Leads"                # in the fleet, in no test
-    st = planned(tmp_path, {**BAD, **FINE}, clients=clients)
+    clients = {e: "Precise Leads" for e in {**WIDE, **FINE}}
+    clients["untested@bad.com"] = "Precise Leads"                # in the fleet, in no test: a sixth inbox
+    st = planned(tmp_path, {**WIDE, **FINE}, clients=clients)
     d = wk.plan(st, {"2026-11-09"})
-    assert pulls(d) == set(BAD) | {"untested@bad.com", "a@fine.com"}
+    assert pulls(d) == set(WIDE) | {"untested@bad.com", "a@fine.com"}
     assert d["a@bad.com"]["why"] == "failed 2026-11-09" and "domain" not in d["a@bad.com"]
-    for e in ("c@bad.com", "d@bad.com", "untested@bad.com"):     # passed, or never tested: out with the domain
-        assert d[e]["why"] == "its domain failed (2 of 4 inboxes in spam)"
-        assert d[e]["domain"] == {"name": "bad.com", "failed": 2, "tested": 4}
+    for e in ("d@bad.com", "e@bad.com", "untested@bad.com"):     # passed, or never tested: out with the domain
+        assert d[e]["why"] == "its domain failed (3 of 6 inboxes in spam)"
+        assert d[e]["domain"] == {"name": "bad.com", "failed": 3, "inboxes": 6}
     assert d["b@fine.com"]["action"] is None                     # 1 of 4: only the inbox that failed
     assert wk.plan(st) == d                                      # no nights given: the newest night with new results
+
+
+def test_an_untested_inbox_counts_toward_the_size_of_its_domain(tmp_path):
+    st = planned(tmp_path, BAD, clients={e: "Precise Leads" for e in BAD})
+    assert pulls(wk.plan(st)) == set(BAD)                        # 2 of 4 inboxes: the domain failed
+    st["clients"]["untested@bad.com"] = "Precise Leads"          # a fifth inbox, in no test: 2 of 5
+    assert pulls(wk.plan(st)) == {"a@bad.com", "b@bad.com"}      # under half: only the two that failed
 
 
 def test_a_domain_fails_on_own_provider_verdicts_only(tmp_path):
@@ -832,22 +841,22 @@ def test_history_results_never_fail_a_domain(tmp_path):
 
 
 def test_a_person_removing_the_tag_wins_over_a_domain_pull_until_the_next_result(tmp_path):
-    clients = {e: "Precise Leads" for e in BAD}
-    clients["untested@bad.com"] = "Precise Leads"
-    st = planned(tmp_path, BAD, clients=clients)
+    clients = {e: "Precise Leads" for e in WIDE}
+    clients["untested@bad.com"] = "Precise Leads"                # 3 of 6 inboxes in spam
+    st = planned(tmp_path, WIDE, clients=clients)
     f = fleet()
-    for n, e in enumerate(("c@bad.com", "untested@bad.com")):    # the job pulled both; a person took the tag off
+    for n, e in enumerate(("d@bad.com", "untested@bad.com")):    # the job pulled both; a person took the tag off
         st["pulled"][e] = {"on": "2026-11-10", "campaigns": [1]}
         f["PRECISE_LEADS"]["inboxes"][e] = {"id": 50 + n, "client": "Precise Leads", "tags": []}
     assert len(wk.reconcile(st, f, "2026-11-12")) == 2
     d = wk.plan(st)
-    assert d["c@bad.com"] == {"action": None, "why": "override"}
+    assert d["d@bad.com"] == {"action": None, "why": "override"}
     assert d["untested@bad.com"] == {"action": None, "why": "override"}
-    assert d["d@bad.com"]["action"] == v2.PULL                   # nobody overrode this one
-    for e, (g, m) in BAD.items():
+    assert d["e@bad.com"]["action"] == v2.PULL                   # nobody overrode this one
+    for e, (g, m) in WIDE.items():
         st["results"][e].append(result(v2.PASS if g else v2.FAIL, g, m, "2026-11-16"))
     d = wk.plan(st)                                              # the domain fails again a week later
-    assert d["c@bad.com"]["action"] == v2.PULL and d["untested@bad.com"]["action"] == v2.PULL
+    assert d["d@bad.com"]["action"] == v2.PULL and d["untested@bad.com"]["action"] == v2.PULL
 
 
 def test_a_state_file_from_before_inbox_types_still_loads_and_plans(tmp_path):
@@ -890,8 +899,9 @@ def test_the_fleet_carries_each_inbox_type_and_the_state_remembers_it(monkeypatc
 
 
 def bad_fleet():
+    """The fleet with bad.com's six inboxes: the five in WIDE and one that is in no test."""
     f = fleet()
-    for n, e in enumerate(sorted(BAD) + ["untested@bad.com"]):
+    for n, e in enumerate(sorted(WIDE) + ["untested@bad.com"]):
         f["PRECISE_LEADS"]["inboxes"][e] = {"id": 50 + n, "client": "Precise Leads", "tags": [], "type": "GMAIL"}
     return f
 
@@ -899,41 +909,42 @@ def bad_fleet():
 def test_report_gives_a_failed_domain_its_own_line(tmp_path):
     f = bad_fleet()
     st = fresh_state(tmp_path)
-    for e, (g, m) in BAD.items():
+    for e, (g, m) in WIDE.items():
         st["results"][e] = [result(v2.PASS if g else v2.FAIL, g, m)]
     wk.remember_fleet(st, f)
     d = wk.plan(st, GOT["nights"])
-    assert pulls(d) == set(BAD) | {"untested@bad.com"}
-    a = acted(removed={e: [1] for e in BAD}, tagged=["untested@bad.com"])
+    assert pulls(d) == set(WIDE) | {"untested@bad.com"}
+    a = acted(removed={e: [1] for e in WIDE}, tagged=["untested@bad.com"])
     head, parts = wk.build_report(st, GOT, d, f, a, True, set())
     text = "\n".join(parts)
-    assert "• fail · bad.com · 2 of 4 inboxes · Google 0/4, Microsoft 4/4 → taken out of PL | A; tagged DO NOT USE" in text
-    assert ("• domain failed · bad.com · 2 of 4 inboxes in spam → 3 more inboxes: 2 taken out of PL | A, 1 in no "
+    # the fail line counts the 5 tested inboxes; the domain line counts all 6 the job knows on the domain
+    assert "• fail · bad.com · 3 of 5 inboxes · Google 0/4, Microsoft 4/4 → taken out of PL | A; tagged DO NOT USE" in text
+    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam → 3 more inboxes: 2 taken out of PL | A, 1 in no "
             "campaign; tagged DO NOT USE") in text
     assert "• pass" not in text and "Pulled earlier" not in text  # the passing inboxes are in the domain line only
-    assert head[1] == "4 inboxes · 2 pass · 0 watch · 2 fail"
+    assert head[1] == "5 inboxes · 2 pass · 0 watch · 3 fail"
 
-    _, parts = wk.build_report(st, GOT, d, f, acted(removed={e: [1] for e in BAD}), False, set())     # a dry run
-    assert ("• domain failed · bad.com · 2 of 4 inboxes in spam → 2 more inboxes would be taken out of PL | A; "
+    _, parts = wk.build_report(st, GOT, d, f, acted(removed={e: [1] for e in WIDE}), False, set())    # a dry run
+    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam → 2 more inboxes would be taken out of PL | A; "
             "would be tagged DO NOT USE") in "\n".join(parts)
 
 
 def test_an_inbox_already_out_with_its_domain_is_not_pulled_twice_and_stays_in_the_domain_line(tmp_path):
     f = bad_fleet()
     st = fresh_state(tmp_path)
-    for e, (g, m) in BAD.items():
+    for e, (g, m) in WIDE.items():
         st["results"][e] = [result(v2.PASS if g else v2.FAIL, g, m)]
     wk.remember_fleet(st, f)
-    for e in list(BAD) + ["untested@bad.com"]:                   # the run before this one took all five out
+    for e in list(WIDE) + ["untested@bad.com"]:                  # the run before this one took all six out
         st["pulled"][e] = {"on": "2026-11-10", "campaigns": []}
     d = wk.plan(st, GOT["nights"])
     assert pulls(d) == set()
-    assert d["c@bad.com"]["domain"]["name"] == "bad.com" and d["untested@bad.com"]["action"] is None
-    # c is still the last good sender of a live campaign, so every run tries it again and says so
-    a = acted(blocked={"c@bad.com": [1]}, tagged=["c@bad.com"])
+    assert d["d@bad.com"]["domain"]["name"] == "bad.com" and d["untested@bad.com"]["action"] is None
+    # d is still the last good sender of a live campaign, so every run tries it again and says so
+    a = acted(blocked={"d@bad.com": [1]}, tagged=["d@bad.com"])
     _, parts = wk.build_report(st, GOT, d, f, a, True, set(st["pulled"]))
     text = "\n".join(parts)
-    assert ("• domain failed · bad.com · 2 of 4 inboxes in spam → 1 more inbox last good sender of live PL | A: not "
+    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam → 1 more inbox last good sender of live PL | A: not "
             "removed (see Needs you); tagged DO NOT USE") in text
     assert "• pass" not in text
 
@@ -961,3 +972,28 @@ def test_report_counts_an_inbox_by_its_own_provider_verdict(tmp_path):
     text = "\n".join(parts)
     assert head[1] == "2 inboxes · 1 pass · 0 watch · 1 fail"
     assert "g@one.com" not in text and "• fail · two.com · o@two.com · Google 4/4, Microsoft 0/4 →" in text
+
+
+def test_a_small_test_cannot_rest_a_big_domain(tmp_path):
+    """One inbox of a four-inbox domain is tested and fails: only that one is pulled."""
+    write_csv(tmp_path, "one-off.csv", {"a@big.com": (0, 4)})
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    st["clients"] = {f"{n}@big.com": "Precise Leads" for n in "abcd"}
+    st["types"] = {f"{n}@big.com": "GMAIL" for n in "abcd"}
+    d = wk.plan(st, got["nights"])
+    assert d["a@big.com"]["action"] == v2.PULL
+    assert all((d.get(f"{n}@big.com") or {}).get("action") is None for n in "bcd")
+
+
+def test_published_verdicts_follow_the_own_provider_rule(tmp_path):
+    """The verdict other tools read (v2_verdicts) is the one the job acts on, so the list, the self-test and the
+    bill review agree with what was pulled."""
+    write_csv(tmp_path, "w.csv", {"g@x.com": (4, 0), "o@x.com": (0, 4), "s@x.com": (0, 4)})
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    st["types"] = {"g@x.com": "GMAIL", "o@x.com": "OUTLOOK", "s@x.com": "SMTP"}
+    for n in got["nights"]:
+        st["holds"].setdefault(n, [])
+    docs = {d["email"]: d["verdict"] for d in wk.verdict_docs(st, NOW + timedelta(days=1)).values()}
+    assert docs == {"g@x.com": v2.PASS, "o@x.com": v2.PASS, "s@x.com": v2.FAIL}
