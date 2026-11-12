@@ -207,3 +207,33 @@ def test_an_expandi_lead_read_that_fails_twice_says_why():
     c = _FakeExpandi([True, "page 3: ReadTimeout", True, "page 3: ReadTimeout"])
     leads, why = asyncio.run(ds._expandi_leads(c, {"_instance_refs": [(1, 2), (3, 4)]}))
     assert (leads, why, c.calls) == ([], "page 3: ReadTimeout", 4)
+
+
+LOG = [["Full Name", "Compay Name", "Person LinkedIn", "Lead Category", "Reply date", "Campaign Name",
+        "Reply from Lead"],
+       ["Ann", "Acme", "li/ann", "Interested", "Oct 30, 2026", "Roundtable | Kenny", "yes"],
+       ["Bob", "Beta", "li/bob", "Not interested", "Oct 29, 2026", "Roundtable | Kenny", "no"],
+       ["Bob", "Beta", "li/bob", "Not interested", "Oct 30, 2026", "Roundtable | Kenny", "still no"]]
+
+
+def test_expandi_replies_count_when_the_api_could_not_be_read():
+    # 12 Nov: the whole BettrData read failed on Render and LinkedIn said
+    # "no activity" though the reply log could be read.
+    (r,) = ds.expandi_rows("BettrData", {}, LOG, [DAY])
+    assert r["counts"]["day"] == {"invites": None, "accepted": None, "replies": 1, "positive": 1}
+
+
+def test_expandi_rows_join_lead_lists_and_the_log_by_campaign():
+    leads = {"roundtable | kenny": [{"invited_at": "2026-10-30T09:00:00+00:00", "connected_at": None}],
+             "Quiet": [], "Unread": None}
+    rows = {r["campaign"]: r["counts"]["day"] for r in ds.expandi_rows("BettrData", leads, LOG, [DAY])}
+    assert rows == {"roundtable | kenny": {"invites": 1, "accepted": 0, "replies": 1, "positive": 1}}
+
+
+def test_an_error_in_the_post_never_carries_its_text():
+    import httpx
+    req = httpx.Request("GET", "https://api.example.com/x?api_key=SECRET")
+    exc = httpx.HTTPStatusError("boom https://api.example.com/x?api_key=SECRET", request=req,
+                                response=httpx.Response(429, request=req))
+    assert ds._why(exc) == "HTTPStatusError 429"
+    assert ds._why(RuntimeError("anything")) == "RuntimeError"
