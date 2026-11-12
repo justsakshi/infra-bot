@@ -105,7 +105,8 @@ from smartlead import reply_stats as rs
 
 
 def _day_doc(verdict, date_="2026-10-12", sent=420, replies=11, domain="x.com"):
-    return {"domain": domain, "date": date_, "verdict": verdict, "window_sent": sent, "window_replies": replies}
+    return {"domain": domain, "date": date_, "verdict": verdict, "window_sent": sent, "window_replies": replies,
+            "expected": 9.0}
 
 
 def test_the_reply_check_is_an_opinion_only_when_it_has_a_view():
@@ -117,6 +118,9 @@ def test_the_reply_check_is_an_opinion_only_when_it_has_a_view():
     for none in ("WATCH", "TOO FEW", "NO REFERENCE", "NO_SENDS", None):
         assert rs.second_opinion(_day_doc(none)) is None
     assert rs.second_opinion(_day_doc("OK", sent=20)) is None                # under the reply check's own floor
+    assert rs.second_opinion(_day_doc("OK", replies=5)) is None              # OK, but well under what its peers get
+    assert rs.second_opinion(_day_doc("OK", replies=1)) is None              # one reply is not a pattern
+    assert rs.second_opinion({**_day_doc("OK"), "expected": None}) is None   # nothing to compare with
     assert rs.second_opinion({}) is None
 
 
