@@ -97,3 +97,59 @@ def test_the_second_test_is_a_source_that_can_change_a_verdict():
     assert rr.decision_errors([err]) == [err]
     assert "two tests disagree" in rr.read_warning([err], 7, True) or "second" in rr.read_warning([err], 7, True)
     assert "a bill may be missing" not in rr.read_warning([err], 7, True)       # not mistaken for the Zapmail bills read
+
+
+# --- the reply check as a second opinion (12 Nov 2026): for inboxes with no second placement test ---------------
+
+from smartlead import reply_stats as rs
+
+
+def _day_doc(verdict, date_="2026-10-12", sent=420, replies=11, domain="x.com"):
+    return {"domain": domain, "date": date_, "verdict": verdict, "window_sent": sent, "window_replies": replies}
+
+
+def test_the_reply_check_is_an_opinion_only_when_it_has_a_view():
+    ok = rs.second_opinion(_day_doc("OK"))
+    assert ok["verdict"] == "PASS" and ok["source"] == "the reply check" and ok["on"] == "2026-10-12"
+    assert ok["said"] == "its domain got 11 replies on 420 emails in 14 days, in line with the client's other domains"
+    assert rs.second_opinion(_day_doc("ALERT", replies=1))["said"].endswith("1 reply on 420 emails in 14 days, far below "
+                                                                           "the client's other domains")
+    for none in ("WATCH", "TOO FEW", "NO REFERENCE", "NO_SENDS", None):
+        assert rs.second_opinion(_day_doc(none)) is None
+    assert rs.second_opinion(_day_doc("OK", sent=20)) is None                # under the reply check's own floor
+    assert rs.second_opinion({}) is None
+
+
+def test_only_a_domains_newest_fresh_day_is_read():
+    docs = [_day_doc("ALERT", "2026-10-11"), _day_doc("OK", "2026-10-12"), _day_doc("OK", "2026-10-05", domain="old.com"),
+            _day_doc("WATCH", "2026-10-12", domain="w.com"), _day_doc("OK", "2026-10-14", domain="later.com")]
+    got = rs.second_opinions(docs, T)
+    assert set(got) == {"@x.com"} and got["@x.com"]["verdict"] == "PASS"      # newest day wins; old, later and no-view are out
+
+
+def test_replies_that_disagree_with_a_failed_test_make_it_a_check():
+    e = "a@x.com"
+    bill = {"provider": "ScaledMail", "label": "1 Google", "bills_on": "2026-10-20", "price": 3.5, "inboxes": [e]}
+    second = rs.second_opinions([_day_doc("OK")], T)
+    row = rr.review_bill(bill, {e: _facts()}, T, True, v2={e: _v2(e, *TWO_FAILS)}, second=second)["rows"][0]
+    assert row["verdict"] == "CHECK"
+    assert row["why"] == ("failed v2 on the weekly tests of 5 Oct and 12 Oct; but the reply check on 12 Oct: its domain "
+                          "got 11 replies on 420 emails in 14 days, in line with the client's other domains: the test "
+                          "and the replies disagree, so not dropped on one")
+    agree = rs.second_opinions([_day_doc("ALERT", replies=0)], T)
+    row = rr.review_bill(bill, {e: _facts()}, T, True, v2={e: _v2(e, *TWO_FAILS)}, second=agree)["rows"][0]
+    assert row["verdict"] == "RETIRE" and row["why"].endswith("far below the client's other domains too")
+
+
+def test_an_inboxs_own_second_test_is_read_before_its_domains_replies():
+    e = "a@x.com"
+    bill = {"provider": "Zapmail", "label": "1 Google", "bills_on": "2026-10-20", "price": 3.25, "inboxes": [e]}
+    second = {**rs.second_opinions([_day_doc("OK")], T), e: _op("FAIL")}
+    row = rr.review_bill(bill, {e: _facts()}, T, True, v2={e: _v2(e, *TWO_FAILS)}, second=second)["rows"][0]
+    assert row["verdict"] == "RETIRE" and "Zapmail's own test" in row["why"] and "reply check" not in row["why"]
+
+
+def test_a_reply_check_that_cannot_be_read_is_named_with_its_effect():
+    err = f"{rr.REPLY_SOURCE} (Mongo domain_reply_stats): ServerSelectionTimeoutError"
+    assert rr.decision_errors([err]) == [err]
+    assert "a bill may be missing" not in rr.read_warning([err], 7, True)
