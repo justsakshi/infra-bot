@@ -18,6 +18,8 @@ What it does (rules in smartlead/v2_results.py):
     test campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
     tagged "DO NOT USE - failed v2 (auto)" so gtm presend refuses it. Warm-up stays on, and it
     stays in its DT test campaign, so next Monday tests it again;
+  * Google inboxes are report-only (REPORT_ONLY_TYPES, 12 Nov 2026: real replies disagree with the seed test; --act-types
+    GMAIL to act): a failing one is reported as "would be taken out", nothing in Smartlead changes for it;
   * Melior is report-only (REPORT_ONLY_CLIENTS, until the job is proven on the other clients; --act-clients Melior to act): its
     inboxes are listed as "would be taken out" and nothing in Smartlead changes for them;
   * a campaign left with no good sender is not touched (sending or scheduled: the post asks a person);
@@ -125,6 +127,13 @@ DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
 REPORT_ONLY_CLIENTS = {"Melior"}
 REPORT_ONLY_WHY = {"Melior": "until the job is proven on the other clients"}
 REPORT_ONLY_OWNER = {"Melior": "Ryan"}   # who decides a report-only client's stuck campaign
+# Inbox types the job only reports, never changes in Smartlead (12 Nov 2026). Real recipients disagree with the seed
+# test for Google-hosted inboxes: in the same campaigns, Gmail recipients replied or sent out-of-office messages to
+# Google-sent mail at 1.5-2.5 times the rate of Outlook-sent mail (Gmail sends no automatic reply to mail it filed as
+# spam), while v2 failed nearly every Google inbox. Until a real-recipient check agrees, a v2 fail does not move one.
+# --act-types GMAIL overrides this for a run. A client's own report-only stage is named first when both apply.
+REPORT_ONLY_TYPES = {"GMAIL": "Google inboxes"}
+REPORT_ONLY_TYPE_WHY = {"GMAIL": "until real replies agree with the seed test"}
 # Mongo (db smartlead.config.HEALTH_HISTORY_DB), read on Render: is the PC job alive, and what did v2 say.
 HEARTBEAT_COLLECTION = "v2_heartbeat"
 VERDICTS_COLLECTION = "v2_verdicts"
@@ -380,6 +389,28 @@ def remember_fleet(state: dict, fleet: dict) -> None:
 def report_only_clients(args) -> set[str]:
     acting = {c.strip().lower() for c in str(getattr(args, "act_clients", "") or "").split(",") if c.strip()}
     return {c for c in REPORT_ONLY_CLIENTS if c.lower() not in acting}
+
+
+def report_only_types(args) -> set[str]:
+    acting = {t.strip().upper() for t in str(getattr(args, "act_types", "") or "").split(",") if t.strip()}
+    return {t for t in REPORT_ONLY_TYPES if t not in acting}
+
+
+def ro_reason(client: str | None, inbox_type: str | None, ro_clients: set, ro_types: set) -> dict | None:
+    """Why an inbox is report-only, or None when the job acts on it: {"name", "why", "client"}. ``client`` is set
+    for a client's stage (its owner decides a stuck campaign) and None for an inbox type's."""
+    if client in ro_clients:
+        return {"name": client, "why": REPORT_ONLY_WHY.get(client, ""), "client": client}
+    typ = str(inbox_type or "").upper()
+    if typ in ro_types:
+        return {"name": REPORT_ONLY_TYPES[typ], "why": REPORT_ONLY_TYPE_WHY.get(typ, ""), "client": None}
+    return None
+
+
+def _ro_label(reason: dict | None, client: str) -> str:
+    """'Melior: report-only until ...' / 'Google inboxes: report-only until ...' for one report-only inbox."""
+    r = reason or {"name": client, "why": REPORT_ONLY_WHY.get(client, "")}
+    return f"{r['name']}: report-only{' ' + r['why'] if r['why'] else ''}"
 
 
 def plan(state: dict, nights=None) -> dict[str, dict]:
@@ -749,8 +780,7 @@ def _report_only_tail(kind: str, client: str, items: list[dict], names: dict) ->
             "parked": f"only failed senders left in paused/draft {cids}, so it would stay there; add a good sender "
                       f"before resuming it",
             "tagged": "in no campaign; would be tagged DO NOT USE"}[kind]
-    why = REPORT_ONLY_WHY.get(client, "")
-    return f"{tail} ({client}: report-only{' ' + why if why else ''}); nothing changed in Smartlead"
+    return f"{tail} ({_ro_label(items[0].get('reason') if items else None, client)}); nothing changed in Smartlead"
 
 
 def _inboxes(n: int) -> str:
@@ -819,8 +849,8 @@ def _domain_tail(client: str, es: list[str], acted: dict, names: dict, write: bo
     more = f"{len(es)} more inbox{'es' if len(es) != 1 else ''}"
     what = f"{more} {bits[0]}" if len(bits) == 1 else f"{more}: {', '.join(bits)}"
     if ro:
-        why = REPORT_ONLY_WHY.get(client, "")
-        return f"{what} ({client}: report-only{' ' + why if why else ''}); nothing changed in Smartlead"
+        first = next(report_only[e] for e in es if e in report_only)
+        return f"{what} ({_ro_label(first.get('reason'), client)}); nothing changed in Smartlead"
     return f"{what}; {'' if write else 'would be '}tagged DO NOT USE"
 
 
@@ -998,13 +1028,18 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             needs.append(f"{' and '.join(p.title() for p in extra)} results in {f.get('name', fid)} ({f['night']}) held: "
                          f"nearly every inbox in that test was below 4/4 there, which looks like a test problem, so "
                          f"nothing was pulled for it. Re-run that test in Smart Delivery today.")
-    ro_kinds: dict[str, Counter] = defaultdict(Counter)
+    ro_kinds: dict[tuple, Counter] = defaultdict(Counter)
     for e, rec in report_only.items():
-        ro_kinds[client_of.get(e, "Not in Smartlead")][_ro_kind(rec)] += 1
-    for client, kinds in sorted(ro_kinds.items()):
-        why = REPORT_ONLY_WHY.get(client, "")
-        needs.append(f"{client} is report-only{' ' + why if why else ''}, so nothing changed in Smartlead for it. "
-                     f"The job would {_ro_would(kinds)}. List under *{client}* below.")
+        r = rec.get("reason") or {"name": client_of.get(e, "Not in Smartlead"), "client": client_of.get(e, "Not in Smartlead")}
+        why = r.get("why", REPORT_ONLY_WHY.get(r["name"], ""))
+        ro_kinds[(r["name"], why, bool(r.get("client")))][_ro_kind(rec)] += 1
+    for (name, why, is_client), kinds in sorted(ro_kinds.items()):
+        if is_client:
+            needs.append(f"{name} is report-only{' ' + why if why else ''}, so nothing changed in Smartlead for it. "
+                         f"The job would {_ro_would(kinds)}. List under *{name}* below.")
+        else:
+            needs.append(f"{name} are report-only{' ' + why if why else ''}, so nothing changed in Smartlead for "
+                         f"them. The job would {_ro_would(kinds)}. Listed under each client below.")
     stuck, ro_stuck = defaultdict(list), defaultdict(list)
     for e, cids in acted["blocked"].items():
         for cid in cids:
@@ -1017,9 +1052,11 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                      f"Not changed: pause it or add a good sender.")
     for cid, es in sorted(ro_stuck.items()):
         client = client_of.get(sorted(es)[0], "Not in Smartlead")
-        why, owner = REPORT_ONLY_WHY.get(client, ""), REPORT_ONLY_OWNER.get(client)
+        r = report_only[sorted(es)[0]].get("reason") or {"name": client, "why": REPORT_ONLY_WHY.get(client, ""), "client": client}
+        owner = REPORT_ONLY_OWNER.get(r["client"]) if r.get("client") else None
+        verb = "is" if r.get("client") else "are"
         needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
-                     f"Not changed, as {client} is report-only{' ' + why if why else ''}: "
+                     f"Not changed, as {r['name']} {verb} report-only{' ' + r['why'] if r['why'] else ''}: "
                      f"{'ask ' + owner + ' to ' if owner else ''}pause it or add a good sender.")
     needs += copy_needs
     needs += [f"Error: {err}" for err in acted["errors"]]
@@ -1705,13 +1742,17 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
 
     # Report-only clients: planned like any other inbox, but nothing in Smartlead changes for them.
     ro, client_of = report_only_clients(args), state["clients"]
+    ro_t, type_of = report_only_types(args), state.get("types") or {}
+
+    def why_ro(e: str) -> dict | None:
+        return ro_reason(client_of.get(e), type_of.get(e), ro, ro_t)
     ro_pulls, ro_back = defaultdict(list), []
     for acc in list(pulls):
-        ro_pulls[acc] = [e for e in pulls[acc] if client_of.get(e) in ro]
-        pulls[acc] = [e for e in pulls[acc] if client_of.get(e) not in ro]
+        ro_pulls[acc] = [e for e in pulls[acc] if why_ro(e)]
+        pulls[acc] = [e for e in pulls[acc] if not why_ro(e)]
     for acc in list(returns):
-        ro_back += [e for e in returns[acc] if client_of.get(e) in ro]
-        returns[acc] = [e for e in returns[acc] if client_of.get(e) not in ro]
+        ro_back += [e for e in returns[acc] if why_ro(e)]
+        returns[acc] = [e for e in returns[acc] if not why_ro(e)]
 
     for acc, emails in pulls.items():
         if emails:
@@ -1720,13 +1761,15 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         if emails:
             rep = await do_pulls(acc, fleet[acc], emails, False, today, state, save)
             for e in emails:
-                acted["report_only"][e] = {k: list(rep[k].get(e, [])) for k in ("removed", "blocked", "parked")}
+                acted["report_only"][e] = {**{k: list(rep[k].get(e, [])) for k in ("removed", "blocked", "parked")},
+                                           "reason": why_ro(e)}
     for acc, emails in returns.items():
         if emails:
             _merge(acted, await do_returns(acc, fleet[acc], emails, write, today, state, save))
     for e in ro_back:
-        acted["notes"].append(f"{e} passed twice and would go back into its campaigns, but {client_of[e]} is "
-                              f"report-only, so nothing was changed.")
+        r = why_ro(e)
+        acted["notes"].append(f"{e} passed twice and would go back into its campaigns, but {r['name']} "
+                              f"{'is' if r.get('client') else 'are'} report-only, so nothing was changed.")
     if acted["leads"]:
         print(f"  leads moved {acted['leads']['moved']}, resumed {acted['leads']['resumed']}")
     ctx["errors"] += acted["errors"]
@@ -1767,6 +1810,9 @@ def main(argv=None) -> int:
     ap.add_argument("--act-clients", default="",
                     help=f"comma-separated clients to act on although they are report-only by default "
                          f"({', '.join(sorted(REPORT_ONLY_CLIENTS))})")
+    ap.add_argument("--act-types", default="",
+                    help=f"comma-separated Smartlead inbox types to act on although they are report-only by default "
+                         f"({', '.join(sorted(REPORT_ONLY_TYPES))})")
     ap.add_argument("--post", action="store_true", help="post to Slack (with --apply or --warn)")
     ap.add_argument("--history-only", action="store_true", help="file new CSVs as history, act on nothing")
     ap.add_argument("--replan", action="store_true", help="decide again from stored results without new files")

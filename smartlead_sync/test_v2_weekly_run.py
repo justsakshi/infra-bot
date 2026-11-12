@@ -596,6 +596,66 @@ def test_a_failed_domain_of_a_report_only_client_changes_nothing(job, monkeypatc
             "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
 
 
+
+# --- Google inboxes are report-only (12 Nov 2026: real replies disagree with the seed test) ---------------------
+
+def test_a_failing_google_inbox_is_reported_and_never_moved(job, monkeypatch):
+    monkeypatch.setitem(TYPES, "pl-bad@x.com", "GMAIL")
+    download_monday(job)
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert job.sl.calls == [] and job.state()["pulled"] == {} and job.sl.tagged == set()
+    head, parts = job.posts[-1]
+    assert head[2] == "Took 0 inboxes out of 0 live campaigns · tagged 0 in no campaign · returned 0"
+    assert ("• Google inboxes are report-only until real replies agree with the seed test, so nothing changed in "
+            "Smartlead for them. The job would take 1 inbox out of campaigns. Listed under each client below.") in parts[0]
+    text = "\n".join(parts)
+    assert ("pl-bad@x.com · Google 0/4, Microsoft 4/4 → would be taken out of PL | A (Google inboxes: report-only until "
+            "real replies agree with the seed test); nothing changed in Smartlead") in text
+
+
+def test_google_inboxes_are_acted_on_only_when_named_in_act_types(job, monkeypatch):
+    monkeypatch.setitem(TYPES, "pl-bad@x.com", "GMAIL")
+    download_monday(job)
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run(act_types="gmail") == 0
+    assert ("tag", [20], [77]) in job.sl.calls and ("remove", 1, [20]) in job.sl.calls
+    assert set(job.state()["pulled"]) == {"pl-bad@x.com"}
+    assert "Google inboxes: report-only" not in "\n".join(job.posts[-1][1])
+
+
+def test_an_outlook_inbox_is_still_acted_on(job, monkeypatch):
+    monkeypatch.setitem(TYPES, "pl-bad@x.com", "OUTLOOK")
+    write_csv(job.downloads, "dt-pl-1.csv", {**DT_PL_1, "pl-bad@x.com": (4, 0)})       # fails at Microsoft, its own provider
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert ("remove", 1, [20]) in job.sl.calls and set(job.state()["pulled"]) == {"pl-bad@x.com"}
+
+
+def test_a_report_only_clients_google_inbox_is_named_by_the_client(job, monkeypatch):
+    monkeypatch.setitem(TYPES, "mel-bad@y.com", "GMAIL")
+    write_csv(job.downloads, "dt-melior-1.csv", {**DT_MELIOR_1, "mel-bad@y.com": (0, 4)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    text = "\n".join(job.posts[-1][1])
+    assert "(Melior: report-only until the job is proven on the other clients)" in text
+    assert "Google inboxes: report-only" not in text
+
+
+def test_the_reason_names_the_client_stage_first():
+    assert wk.ro_reason("Melior", "GMAIL", {"Melior"}, {"GMAIL"})["name"] == "Melior"
+    r = wk.ro_reason("Precise Leads", "gmail", {"Melior"}, {"GMAIL"})
+    assert r == {"name": "Google inboxes", "why": "until real replies agree with the seed test", "client": None}
+    assert wk.ro_reason("Precise Leads", "OUTLOOK", {"Melior"}, {"GMAIL"}) is None
+    assert wk.ro_reason("Precise Leads", "GMAIL", {"Melior"}, set()) is None
+    assert wk.report_only_types(SimpleNamespace(act_types="GMAIL")) == set()
+    assert wk.report_only_types(SimpleNamespace()) == {"GMAIL"}
+
+
 # --- self-check ---------------------------------------------------------------------
 
 @pytest.fixture
