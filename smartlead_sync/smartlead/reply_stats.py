@@ -214,16 +214,29 @@ def new_alerts(verdicts: dict[str, dict], prior: dict[str, str]) -> list[str]:
 
 OPINION_SOURCE = "the reply check"
 OPINION_FRESH_DAYS = 3      # a stored day older than this is not used as an opinion
+ANSWERED_MIN_REPLIES = 2    # one reply is not a pattern
+
+
+def answered(doc: dict) -> bool:
+    """True when a stored reply-check day shows the domain is answered like its peers: verdict OK, at least
+    ANSWERED_MIN_REPLIES replies, and replies at WATCH_RATIO or more of what its peers' rate predicts. OK alone
+    is not enough: a domain with few sends is OK simply because nothing can be told from it (60 emails and no
+    reply is "OK")."""
+    replies, expected = _int((doc or {}).get("window_replies")), float((doc or {}).get("expected") or 0)
+    return (str((doc or {}).get("verdict") or "") == OK and replies >= ANSWERED_MIN_REPLIES
+            and expected > 0 and replies >= WATCH_RATIO * expected)
 
 
 def second_opinion(doc: dict) -> dict | None:
     """One stored day of a domain's reply check (reply_monitor's snapshot: date, verdict, window_sent,
-    window_replies) as a second opinion for the bill review, or None when the check has no view. OK is a PASS
-    (real recipients answer it like the client's other domains), ALERT is a FAIL. WATCH, too few sends, no
-    reference and no sends give no opinion: the bill is then judged on the placement test alone. This reads
+    window_replies, expected) as a second opinion for the bill review, or None when the check has no view. A
+    domain that is answered like the client's other domains (``answered``) is a PASS, ALERT is a FAIL. Anything
+    else (OK on thin numbers, WATCH, too few sends, no reference, no sends) gives no opinion: the bill is then
+    judged on the placement test alone. This reads
     replies from every recipient provider, so it says whether the domain reaches people, not where one
     provider files it."""
-    verdict = {OK: "PASS", ALERT: "FAIL"}.get(str((doc or {}).get("verdict") or ""))
+    stored = str((doc or {}).get("verdict") or "")
+    verdict = "PASS" if answered(doc) else "FAIL" if stored == ALERT else None
     sent, replies = _int((doc or {}).get("window_sent")), _int((doc or {}).get("window_replies"))
     if not verdict or not (doc or {}).get("date") or sent < MIN_SENT:
         return None

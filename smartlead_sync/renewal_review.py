@@ -384,7 +384,7 @@ def reply_opinions(domains: set[str], today: date, errors: list[str]) -> dict[st
     from smartlead.config import REPLY_STATS_COLLECTION
     try:
         since = (today - timedelta(days=rs.OPINION_FRESH_DAYS)).isoformat()
-        fields = {"_id": 0, "domain": 1, "date": 1, "verdict": 1, "window_sent": 1, "window_replies": 1}
+        fields = {"_id": 0, "domain": 1, "date": 1, "verdict": 1, "window_sent": 1, "window_replies": 1, "expected": 1}
         docs = list(_collection(REPLY_STATS_COLLECTION).find(
             {"date": {"$gte": since}, "domain": {"$in": sorted(domains)}}, fields))
     except Exception as exc:  # noqa: BLE001

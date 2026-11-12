@@ -143,3 +143,21 @@ Register-ScheduledTask -TaskName "InfraBot v2 weekly" -Action $a -Trigger $t -Se
 - A crash posts "v2 weekly job failed" once a day while it keeps failing. If that post is refused too, it is tried again the next hour. Details are in `task.log`.
 - State is saved after every change. A half-done lead move is retried every run, or daily once there are no new files, for up to 14 days.
 - No post on Tuesday at all: the PC was off or the task is disabled. Check `Get-ScheduledTask "InfraBot v2 weekly"` and `task.log`. The `v2_heartbeat` doc in Mongo shows when it last ran, so a check on Render can notice too.
+
+## Rules review: are the rules themselves still right?
+
+The job adapts what it does with each inbox every week. Its rules are fixed numbers, and a fixed rule can be wrong for a long time without anyone seeing it. `smartlead_sync/rules_review.py` holds each rule up against an outcome the rule did not use:
+
+- **The test decides.** Each sending domain's test result is compared with the daily reply check of the same domain, per client and inbox type. A group where the test fails domains that are answered like the client's other domains, or passes domains that get far fewer replies, is "in doubt".
+- **Back after two passes.** Counted from the stored results: how many inboxes came back, and how many of them failed again.
+
+Each rule comes out as holds, in doubt, or not enough data yet. A rule in doubt comes with a proposal. Nothing changes by itself: a rule changes only on a person's yes, through a normal code change.
+
+```
+python rules_review.py            # print it
+python rules_review.py --json     # with the evidence table
+python rules_review.py --post     # post it to the infra channel
+```
+
+It is read-only and is not on a schedule yet. "Answered" means the reply check says OK, the domain has at least two replies, and it has at least 70% of the replies its peers' rate predicts (`reply_stats.answered`). The reply check counts replies from every recipient provider, so it shows whether a domain reaches people, not where one provider files its mail.
+
