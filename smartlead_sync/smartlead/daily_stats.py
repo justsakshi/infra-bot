@@ -356,11 +356,22 @@ async def _expandi(periods: list[Period], failed: list[str], log: str) -> list[d
         if not cm.row_client_wanted(ws.name, CAMPAIGN_METRICS_CLIENTS):
             continue
         client = cm.display_client(ws.name)
+        # Three separate reads, each allowed to fail alone (12 Nov: the post
+        # said "Not fully read: Expandi BETTRDATA" and LinkedIn "no activity"
+        # with no reason; one try around everything hid which read failed and
+        # dropped the replies the sheet had).
+        log_values: list[list[str]] = []
+        if client == "BettrData":
+            try:
+                log_values = await asyncio.to_thread(
+                    lambda: SheetsWriter(BETTRDATA_TRACKER_SHEET_ID)._sh
+                    .worksheet(EXPANDI_LOG_TAB).get_all_values())
+            except Exception as exc:  # noqa: BLE001
+                print(f"{log} Expandi {ws.name} reply log failed: {_why(exc)}")
+                failed.append(f"Expandi {ws.name} reply log ({_why(exc)}), replies not counted")
+        leads_by: dict[str, list[dict] | None] = {}
+        short: list[str] = []
         try:
-            log_values = (await asyncio.to_thread(
-                lambda: SheetsWriter(BETTRDATA_TRACKER_SHEET_ID)._sh
-                .worksheet(EXPANDI_LOG_TAB).get_all_values())
-                if client == "BettrData" else [])
             store = ExpandiLeadStore()
             async with ExpandiClient(ws.api_key, ws.api_secret, ws.name) as exc_client:
                 raw: list[dict] = []
@@ -369,35 +380,75 @@ async def _expandi(periods: list[Period], failed: list[str], log: str) -> list[d
                         raw.extend(await exc_client.list_campaigns(acc["id"]))
                 camps = [c for c in _merge_by_name(raw) if not c.get("archived")
                          and int((c.get("stats") or {}).get("people_in_campaign") or 0)]
-                short: list[str] = []
                 for camp in camps:
                     name = str(camp.get("name", "")).strip()
                     leads, why = await _expandi_leads(exc_client, camp)
                     if why:
-                        # Until 11 Nov one short read dropped every BettrData
-                        # LinkedIn number, replies too (4-10 Nov posts said
-                        # "no activity"). Now only this campaign's invites and
-                        # accepts are left out; replies come from the log.
+                        # One campaign's list falling short leaves out only
+                        # its invites and accepts (11 Nov).
                         print(f"{log} Expandi {ws.name}: {name} lead list not fully read ({why})")
                         short.append(why)
-                    else:
+                        leads_by[name] = None
+                        continue
+                    leads_by[name] = leads
+                    try:
                         store.save(ws.name, name, leads)  # keeps the 09:00 cache current too
-                    every = expandi_log_replies(log_values, name, None, None)
-                    counts = {}
-                    for p in periods:
-                        lo, hi = p.window
-                        people, pos = first_reply_people(every, expandi_log_replies(log_values, name, lo, hi))
-                        known = expandi_counts(leads, p) if not why else {"invites": None, "accepted": None}
-                        counts[p.key] = {**known, "replies": people, "positive": pos}
-                    if any(moved(c) for c in counts.values()):
-                        rows.append({"client": client, "channel": "LinkedIn", "platform": "Expandi",
-                                     "campaign": name, "campaign_id": name, "counts": counts})
-                if short:
-                    failed.append(f"Expandi {ws.name} invites and accepts for {len(short)} of "
-                                  f"{len(camps)} campaigns ({short[0]}); replies are counted")
+                    except Exception as exc:  # noqa: BLE001 - a cache write must not cost the post
+                        print(f"{log} Expandi {ws.name}: {name} cache save failed: {_why(exc)}")
+            if short:
+                failed.append(f"Expandi {ws.name} invites and accepts for {len(short)} of "
+                              f"{len(camps)} campaigns ({short[0]}); replies are counted")
         except Exception as exc:  # noqa: BLE001
-            print(f"{log} Expandi {ws.name} failed: {exc}")
-            failed.append(f"Expandi {ws.name}")
+            print(f"{log} Expandi {ws.name} failed: {_why(exc)}")
+            failed.append(f"Expandi {ws.name} invites and accepts ({_why(exc)})"
+                          + ("; replies are counted from the reply log" if log_values else ""))
+        rows += expandi_rows(client, leads_by, log_values, periods)
+    return rows
+
+
+def _why(exc: BaseException) -> str:
+    """An error for the post: its type and HTTP status, never its text (an
+    HTTP error's text carries the request URL)."""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if code is None:
+        code = getattr(exc, "code", None) if isinstance(getattr(exc, "code", None), int) else None
+    return type(exc).__name__ + (f" {code}" if code else "")
+
+
+def log_campaigns(values: list[list[str]]) -> list[str]:
+    """Campaign names in the Expandi Responses log."""
+    if not values:
+        return []
+    head = [h.strip() for h in values[0]]
+    if "Campaign Name" not in head:
+        return []
+    i = head.index("Campaign Name")
+    return sorted({(r[i] if i < len(r) else "").strip() for r in values[1:]} - {""})
+
+
+def expandi_rows(client: str, leads_by: dict[str, list[dict] | None],
+                 log_values: list[list[str]], periods: list[Period]) -> list[dict]:
+    """One row per campaign that moved. Invites and accepts come from the lead
+    lists read (None when a list was not read: unknown, not 0); replies from
+    the log, for every campaign in it, so they count even when the Expandi API
+    could not be read at all."""
+    from smartlead.reply_view import expandi_log_replies, _same_name
+
+    names = list(leads_by)
+    names += [n for n in log_campaigns(log_values) if not any(_same_name(n, m) for m in names)]
+    rows = []
+    for name in names:
+        leads = leads_by.get(name)
+        every = expandi_log_replies(log_values, name, None, None)
+        counts = {}
+        for p in periods:
+            lo, hi = p.window
+            people, pos = first_reply_people(every, expandi_log_replies(log_values, name, lo, hi))
+            known = expandi_counts(leads, p) if leads is not None else {"invites": None, "accepted": None}
+            counts[p.key] = {**known, "replies": people, "positive": pos}
+        if any(moved(c) for c in counts.values()):
+            rows.append({"client": client, "channel": "LinkedIn", "platform": "Expandi",
+                         "campaign": name, "campaign_id": name, "counts": counts})
     return rows
 
 
