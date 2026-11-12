@@ -210,3 +210,36 @@ def judge(window: dict[str, dict], domains) -> dict[str, dict]:
 def new_alerts(verdicts: dict[str, dict], prior: dict[str, str]) -> list[str]:
     """Domains at ALERT today that were not at ALERT on their last judged day (prior = {domain: verdict})."""
     return [d for d, v in sorted(verdicts.items()) if v["verdict"] == ALERT and prior.get(d) != ALERT]
+
+
+OPINION_SOURCE = "the reply check"
+OPINION_FRESH_DAYS = 3      # a stored day older than this is not used as an opinion
+
+
+def second_opinion(doc: dict) -> dict | None:
+    """One stored day of a domain's reply check (reply_monitor's snapshot: date, verdict, window_sent,
+    window_replies) as a second opinion for the bill review, or None when the check has no view. OK is a PASS
+    (real recipients answer it like the client's other domains), ALERT is a FAIL. WATCH, too few sends, no
+    reference and no sends give no opinion: the bill is then judged on the placement test alone. This reads
+    replies from every recipient provider, so it says whether the domain reaches people, not where one
+    provider files it."""
+    verdict = {OK: "PASS", ALERT: "FAIL"}.get(str((doc or {}).get("verdict") or ""))
+    sent, replies = _int((doc or {}).get("window_sent")), _int((doc or {}).get("window_replies"))
+    if not verdict or not (doc or {}).get("date") or sent < MIN_SENT:
+        return None
+    level = "in line with" if verdict == "PASS" else "far below"
+    return {"verdict": verdict, "on": str(doc["date"])[:10], "source": OPINION_SOURCE, "inbox": replies, "sent": sent,
+            "said": (f"its domain got {replies} {'reply' if replies == 1 else 'replies'} on {sent} emails in "
+                     f"{WINDOW_DAYS} days, {level} the client's other domains")}
+
+
+def second_opinions(docs: list[dict], today: date) -> dict[str, dict]:
+    """{"@domain": opinion} from stored reply-check days, each domain's newest day within OPINION_FRESH_DAYS.
+    The "@" key marks a domain-wide opinion: an opinion about one inbox (a placement test) is looked up first."""
+    newest: dict[str, dict] = {}
+    floor = (today - timedelta(days=OPINION_FRESH_DAYS)).isoformat()
+    for d in docs or []:
+        dom, day = str(d.get("domain") or "").lower(), str(d.get("date") or "")[:10]
+        if dom and floor <= day <= today.isoformat() and day >= str(newest.get(dom, {}).get("date") or "")[:10]:
+            newest[dom] = d
+    return {"@" + dom: op for dom, d in newest.items() if (op := second_opinion(d))}

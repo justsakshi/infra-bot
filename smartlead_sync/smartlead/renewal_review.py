@@ -53,6 +53,7 @@ DNU = "do not use"      # gtm presend refuses any tag starting with this
 AUTO_DNU_TAG = "DO NOT USE - failed v2 (auto)"     # v2_weekly.TAG: the v2 job's own pull tag
 UNTESTED = "UNTESTED"
 SECOND_SOURCE = "second test"   # another placement test of the same inbox (today: Zapmail's own); can change a verdict
+REPLY_SOURCE = "reply check"    # the daily reply check of the inbox's domain, read where no second test exists
 SECOND_FRESH_DAYS = 14          # a second test older than this is not used
 VERDICTS = ("KEEP", "CHECK", "RETIRE", "UNTESTED")
 NO_V2 = f"no v2 result in the last {V2_FRESH_DAYS} days"
@@ -242,12 +243,15 @@ def with_second(verdict: str, why: str, s: dict | None, op: dict | None, today: 
         return verdict, why
     said = (f"{op.get('source') or 'a second test'} on {_day(on.isoformat())} put it in "
             f"{'the inbox' if op['verdict'] == PASS else 'spam'} ({op.get('inbox')} of {op.get('sent')})")
+    two = "two tests disagree"
+    if op.get("said"):                  # not a placement test (the reply check): it words its own finding
+        said, two = f"{op.get('source') or 'a second check'} on {_day(on.isoformat())}: {op['said']}", "the test and the replies disagree"
     v2_fail = bool(s["fails"])
     v2_pass = bool(s["latest_recent"] and s["latest_recent"]["verdict"] == PASS)
     if v2_fail and op["verdict"] == PASS:
-        return "CHECK", f"{why}; but {said}: two tests disagree, so not dropped on one"
+        return "CHECK", f"{why}; but {said}: {two}, so not dropped on one"
     if v2_pass and op["verdict"] == FAIL:
-        return "CHECK", f"{why}; but {said}: two tests disagree"
+        return "CHECK", f"{why}; but {said}: {two}"
     if (v2_fail and op["verdict"] == FAIL) or (v2_pass and op["verdict"] == PASS):
         return verdict, f"{why}; {said} too"
     if op["verdict"] == FAIL and verdict == UNTESTED:
@@ -270,8 +274,9 @@ def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool 
     """``bill`` = {provider, label, bills_on, price, inboxes:[emails], client(s), ...}.
     ``v2`` {email: v2_verdicts rows}; None means it could not be read, so nothing on the bill is
     KEEP. ``dbl`` {domain: dbl_status}; a listing adds the row's ``listed`` note and nothing else
-    (None = not read: no notes). ``second`` {email: a second placement test's opinion} (with_second);
-    None or no entry = no second test for that inbox."""
+    (None = not read: no notes). ``second`` {email: a second placement test's opinion, "@domain": a domain-wide
+    opinion such as the reply check's} (with_second); the inbox's own opinion is used first. None or no entry =
+    no second opinion for that inbox."""
     # The kill rule pools a domain across ALL its known mailboxes, not just this bill's.
     kills = kr.judge_all({e: (f or {}).get("tests") or [] for e, f in facts.items()}, today)
     rows = []
@@ -282,8 +287,8 @@ def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool 
         docs = None if v2 is None else v2.get(email.lower()) or []
         bl = None if dbl is None else dbl.get(email.lower().split("@")[-1]) or {}
         v, why = judge_inbox(email, facts.get(email), kills.get(email), today, complete, docs, bl)
-        v, why = with_second(v, why, v2_summary(docs, today) if docs else None,
-                             (second or {}).get(email.lower()), today)
+        op = (second or {}).get(email.lower()) or (second or {}).get("@" + email.lower().split("@")[-1])
+        v, why = with_second(v, why, v2_summary(docs, today) if docs else None, op, today)
         unused = complete and not (facts.get(email) or {}).get("in_smartlead")
         latest = v2_summary(docs, today)["latest_recent"] if docs else None
         row = {"email": email, "verdict": v, "why": why, "kind": "unused" if unused else "kill",
@@ -498,6 +503,7 @@ BLOCKLIST_SOURCE = "blocklist checks"  # Spamhaus DBL listings: notes only (11 N
 NOTE_ONLY = (CLASSIC_SOURCE, CAMPAIGNS_SOURCE, BLOCKLIST_SOURCE)
 READ_EFFECT = (("Zapmail", "a bill may be missing"), ("ScaledMail", "a bill may be missing"),
                (SECOND_SOURCE, "an inbox that a second test would dispute is judged on v2 alone"),
+               (REPLY_SOURCE, "an inbox whose replies would dispute its test is judged on v2 alone"),
                ("Smartlead", "some inboxes have no verdict"), ("v2 results", "no inbox is marked keep"),
                (BLOCKLIST_SOURCE, "Spamhaus listing notes are missing"),
                (CLASSIC_SOURCE, "classic early warnings are missing"),

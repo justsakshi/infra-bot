@@ -374,6 +374,25 @@ def second_opinions(bills: list[dict], today: date, errors: list[str]) -> dict[s
     return zp.own_provider_opinion(rows)
 
 
+def reply_opinions(domains: set[str], today: date, errors: list[str]) -> dict[str, dict]:
+    """{"@domain": opinion} from the daily reply check's stored days (reply_monitor.py, Mongo). Every vendor: it is
+    the only second opinion for inboxes with no second placement test. A read failure is a ``reply check`` error:
+    those rows are then judged on v2 alone."""
+    if not domains:
+        return {}
+    from smartlead import reply_stats as rs
+    from smartlead.config import REPLY_STATS_COLLECTION
+    try:
+        since = (today - timedelta(days=rs.OPINION_FRESH_DAYS)).isoformat()
+        fields = {"_id": 0, "domain": 1, "date": 1, "verdict": 1, "window_sent": 1, "window_replies": 1}
+        docs = list(_collection(REPLY_STATS_COLLECTION).find(
+            {"date": {"$gte": since}, "domain": {"$in": sorted(domains)}}, fields))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"{rr.REPLY_SOURCE} (Mongo {REPLY_STATS_COLLECTION}): {type(exc).__name__}")
+        return {}
+    return rs.second_opinions(docs, today)
+
+
 def _targets(bills: list[dict], facts: dict[str, dict]) -> tuple[set[str], set[str]]:
     """The bills' domains, and their inboxes plus Smartlead's inboxes on those domains
     (a renamed domain is judged on what Smartlead holds)."""
@@ -395,7 +414,9 @@ def run(days: int) -> dict:
         domains, emails = _targets(bills, facts)
         v2 = v2_results(domains, emails, today, errors)
         dbl = dbl_listings(domains, errors)
-        second = second_opinions(bills, today, errors)
+        # With v2 unread nothing is kept or dropped on it, so the reply check has nothing to dispute: not read.
+        replies = reply_opinions(domains, today, errors) if v2 is not None else {}
+        second = {**replies, **second_opinions(bills, today, errors)}
     reviews = sorted((rr.review_bill(b, facts, today, complete, v2=v2, dbl=dbl, second=second) for b in bills),
                      key=lambda r: r["bills_on"])
     from smartlead.zapmail_clients import infer_client

@@ -237,6 +237,7 @@ def _fake_run(monkeypatch, cli, bills, facts, zap_err=None, sm_err=None, v2=None
     if readers:
         monkeypatch.setattr(cli, "v2_results", lambda doms, emails, today, e: {} if v2 is None else v2)
         monkeypatch.setattr(cli, "dbl_listings", lambda doms, e: {} if dbl is None else dbl)
+        monkeypatch.setattr(cli, "reply_opinions", lambda doms, today, e: {})
 
 
 def _capture_posts(monkeypatch, cli, *argv):
