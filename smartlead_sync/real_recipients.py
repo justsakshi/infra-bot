@@ -100,6 +100,7 @@ async def read_account(acc, today: date, days: int, errors: Counter, rng: random
                 quiet = sorted(e for e, evt in items if not evt)
                 mix = Counter()
                 for e in rng.sample(quiet, min(rr.SAMPLE, len(quiet))):
+                    errors["_lookups"] += 1
                     s, _, err = await _history(c, cid, ids.get(e))
                     if err:
                         errors["message history " + err] += 1
@@ -110,6 +111,7 @@ async def read_account(acc, today: date, days: int, errors: Counter, rng: random
                 for e, evt in items:
                     if not evt:
                         continue
+                    errors["_lookups"] += 1
                     s, body, err = await _history(c, cid, ids.get(e))
                     if err:
                         errors["message history " + err] += 1
@@ -124,19 +126,23 @@ async def read_account(acc, today: date, days: int, errors: Counter, rng: random
     return cells
 
 
-async def gather(today: date, days: int, all_kinds: dict | None = None) -> tuple[list[dict], dict, int]:
+async def gather(today: date, days: int, all_kinds: dict | None = None
+                 ) -> tuple[list[dict], dict, int, int, int]:
+    """(cells, errors, accounts read, accounts tried, lead lookups made)."""
     errors: Counter = Counter()
     rng = random.Random(today.toordinal())
-    cells, read = [], 0
+    cells, read, total = [], 0, 0
     for acc in discover_accounts():
         if acc.name.strip().lower().replace("_", " ") in PAST_CLIENT_ACCOUNTS:
             continue
+        total += 1
         try:
             cells += await read_account(acc, today, days, errors, rng, all_kinds)
             read += 1
         except Exception as exc:  # noqa: BLE001 - one dead account must not hide the others
             errors[f"account {acc.name} " + type(exc).__name__] += 1
-    return cells, dict(errors), read
+    lookups = errors.pop("_lookups", 0)
+    return cells, dict(errors), read, total, lookups
 
 
 def _db():
@@ -145,23 +151,19 @@ def _db():
     return MongoClient(os.environ["MONGO_URI"], serverSelectionTimeoutMS=8000)[HEALTH_HISTORY_DB]
 
 
-def trust(today: date, cells: list[dict], all_kinds: dict, write: bool) -> tuple[list[str], list[str], str]:
-    """(changes, lines, error). Reads the v2 verdicts and the current trust, decides, and with ``write`` keeps it.
-    Never raises: on a Mongo problem nothing changes and the post says so."""
+def trust(today: date, cells: list[dict], all_kinds: dict, write: bool, not_saved_why: str = ""
+          ) -> tuple[list[str], list[str], str]:
+    """(changes, lines, error). Reads the recent v2 verdicts and the SAVED trust decision (never an env override: a
+    reader's V2_UNTRUSTED_TYPES must not become the decision, review 13 Nov 2026), decides, and with ``write`` keeps
+    it. Never raises: on a Mongo problem nothing changes and the post says so."""
     from smartlead import usable
     try:
         db = _db()
         v2 = usable.newest_judged(db["v2_verdicts"].find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1}))
-        share: dict[str, list] = defaultdict(lambda: [0, 0])
-        for e, kind in all_kinds.items():
-            if e in v2:
-                share[kind][1] += 1
-                share[kind][0] += v2[e]["verdict"] == "FAIL"
-        usable.refresh_trust(db)
-        current = set(usable.V2_NOT_TRUSTED)
-        new, changes, lines = rr.trust_decision(cells, {k: tuple(v) for k, v in share.items()}, current)
+        old = db[usable.TRUST_COLLECTION].find_one({"_id": "current"}) or {}
+        current = set(usable.trust_from(None, old or None)[0])
+        new, changes, lines = rr.trust_decision(cells, rr.recent_share(v2, all_kinds, today), current)
         if write and os.getenv("V2_TRUST_AUTO", "").strip().lower() != "off":
-            old = db[usable.TRUST_COLLECTION].find_one({"_id": "current"}) or {}
             since = (old.get("untrusted") or {})
             doc = {"_id": "current", "decided": today.isoformat(), "lines": lines,
                    "untrusted": {k: since.get(k) or {"since": today.isoformat()} for k in sorted(new)}}
@@ -171,7 +173,10 @@ def trust(today: date, cells: list[dict], all_kinds: dict, write: bool) -> tuple
                     {"_id": f"change-{today.isoformat()}", "changes": changes, "lines": lines,
                      "from": sorted(current), "to": sorted(new)}, upsert=True)
         elif changes:
-            changes = [c + " (not saved: V2_TRUST_AUTO=off or a dry run)" for c in changes]
+            why = not_saved_why or "V2_TRUST_AUTO=off or a dry run"
+            changes = [c + f" (not saved: {why})" for c in changes]
+        elif not_saved_why:
+            lines = lines + [f"This week's decision was not saved: {not_saved_why}."]
         return changes, lines, ""
     except Exception as exc:  # noqa: BLE001
         return [], [], type(exc).__name__
@@ -197,6 +202,7 @@ def main() -> int:
     ap.add_argument("--save", action="store_true", help="keep the week's cells in Mongo")
     ap.add_argument("--today", help="YYYY-MM-DD (default: today in IST)")
     ap.add_argument("--days", type=int, default=rr.DAYS)
+    ap.add_argument("--dump", help="also write the cells and inbox types to this JSON file (no lead addresses)")
     args = ap.parse_args()
 
     target = args.to or (CHANNEL if args.post else "")
@@ -206,11 +212,18 @@ def main() -> int:
         return 1
     today = date.fromisoformat(args.today) if args.today else datetime.now(IST).date()
     all_kinds: dict = {}
-    cells, errors, read = asyncio.run(gather(today, args.days, all_kinds))
+    cells, errors, read, total, lookups = asyncio.run(gather(today, args.days, all_kinds))
+    complete, why_not = rr.complete_read(read, total, errors, lookups)
+    if args.dump:
+        import json
+        with open(args.dump, "w", encoding="utf-8") as f:
+            json.dump({"today": today.isoformat(), "cells": cells, "kinds": all_kinds, "errors": errors,
+                       "read": read, "total": total, "lookups": lookups}, f, indent=1)
     if args.save:
         err = save(today, args.days, cells, errors)
         print(f"[real-recipients] Mongo: {'saved' if not err else 'not saved (' + err + ')'}")
-    changes, lines, terr = trust(today, cells, all_kinds, write=bool(args.save and read))
+    changes, lines, terr = trust(today, cells, all_kinds, write=bool(args.save and complete),
+                                 not_saved_why="" if complete else why_not)
     if terr:
         errors = {**errors, f"v2 trust ({terr}), so it was not changed": 1}
     head, parts = rr.format_post(cells, today, args.days, errors, trust=(changes, lines))

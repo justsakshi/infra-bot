@@ -251,6 +251,6 @@ def test_refresh_changes_the_shared_dict_every_reader_holds(monkeypatch):
         assert usable.refresh_trust({"v2_trust": Col(None)}) == "default" and "GMAIL" in v2_weekly.REPORT_ONLY_TYPES
         class Broken:
             def __getitem__(self, k): raise RuntimeError("down")
-        assert usable.refresh_trust(Broken()) == "default"                # Mongo down: the default holds
+        assert usable.refresh_trust(Broken()) == "unread" and "GMAIL" in v2_weekly.REPORT_ONLY_TYPES   # down: default
     finally:
         usable.V2_NOT_TRUSTED.clear(); usable.V2_NOT_TRUSTED.update(usable.DEFAULT_NOT_TRUSTED)

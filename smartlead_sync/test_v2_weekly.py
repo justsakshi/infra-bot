@@ -1214,3 +1214,23 @@ def test_d8_says_which_agreed_conditions_hold_for_a_report_only_client():
     st["overrides"]["z@y.com"] = "2026-11-15"                              # a person undid a pull after the switch
     assert wk.d8_status(st, {"Melior"})["Melior"][1][0].startswith("no inbox the job took out put back by a person (1")
     assert wk.d8_status(st, set()) == {}
+
+
+
+def test_a_run_with_mongo_down_uses_the_jobs_last_copy_of_the_trust_decision():
+    from smartlead import usable
+
+    class Broken:
+        def __getitem__(self, k): raise RuntimeError("down")
+
+    class Ok:
+        def __getitem__(self, k): return self
+        def find_one(self, q): return {"untrusted": {"GMAIL": {}, "OUTLOOK": {}}, "decided": "2026-11-15"}
+    try:
+        st = {}
+        assert wk.trust_for_run(st, Ok()).startswith("real-recipient") and st["v2_trust"].keys() == {"GMAIL", "OUTLOOK"}
+        assert wk.trust_for_run(st, Broken()) == "the job's last copy (Mongo not read)"
+        assert set(wk.REPORT_ONLY_TYPES) == {"GMAIL", "OUTLOOK"}          # not the Google-only default
+        assert wk.trust_for_run({}, Broken()) == "unread" and set(wk.REPORT_ONLY_TYPES) == {"GMAIL"}
+    finally:
+        usable.V2_NOT_TRUSTED.clear(); usable.V2_NOT_TRUSTED.update(usable.DEFAULT_NOT_TRUSTED)

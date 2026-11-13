@@ -64,13 +64,18 @@ def trust_from(env_value: str | None, doc: dict | None) -> tuple[dict[str, str],
 
 
 def refresh_trust(db=None) -> str:
-    """Set V2_NOT_TRUSTED in place from the env, Mongo, or the default. Never raises; returns where it came from."""
+    """Set V2_NOT_TRUSTED in place from the env, Mongo, or the default. Never raises; returns where it came from,
+    "unread" when Mongo could not be read (the default is then in place; a caller that acts may prefer its own last
+    copy, as v2_weekly does)."""
     doc = None
     if not os.getenv("V2_UNTRUSTED_TYPES", "").strip():
         try:
             doc = (db if db is not None else _db())[TRUST_COLLECTION].find_one({"_id": "current"})
         except Exception as exc:  # noqa: BLE001 - the default holds
             print(f"  [Usable] v2 trust not read ({type(exc).__name__}); using the default")
+            V2_NOT_TRUSTED.clear()
+            V2_NOT_TRUSTED.update(DEFAULT_NOT_TRUSTED)
+            return "unread"
     kinds, source = trust_from(os.getenv("V2_UNTRUSTED_TYPES"), doc)
     V2_NOT_TRUSTED.clear()
     V2_NOT_TRUSTED.update(kinds)

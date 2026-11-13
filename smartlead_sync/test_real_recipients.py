@@ -57,10 +57,10 @@ def test_the_post_compares_inside_campaigns_and_says_when_there_are_too_few_repl
 
 def test_cli_prints_without_posting_and_fails_when_no_account_was_read(monkeypatch, capsys):
     import real_recipients as cli
-    monkeypatch.setattr(cli, "gather", lambda today, days, kinds=None: _done(([cell("Melior", "Gmail", 10, {"Google": 5}, {"Google": 1})], {}, 1)))
+    monkeypatch.setattr(cli, "gather", lambda today, days, kinds=None: _done(([cell("Melior", "Gmail", 10, {"Google": 5}, {"Google": 1})], {}, 1, 1, 6)))
     monkeypatch.setattr("sys.argv", ["real_recipients.py", "--today", "2026-11-15"])
     assert cli.main() == 0 and "Real replies" in capsys.readouterr().out
-    monkeypatch.setattr(cli, "gather", lambda today, days, kinds=None: _done(([], {"account X HTTPStatusError": 1}, 0)))
+    monkeypatch.setattr(cli, "gather", lambda today, days, kinds=None: _done(([], {"account X HTTPStatusError": 1}, 0, 1, 0)))
     assert cli.main() == 1
 
 
@@ -114,11 +114,92 @@ def test_too_little_data_keeps_the_current_view():
 
 
 def test_a_campaign_with_almost_no_replies_anywhere_is_named_as_the_offer_or_list():
-    cells = [dict(cell("Precise Leads", "Microsoft", 240, {"Outlook": 25}, {}), name="Exhibitors"),
-             dict(cell("Precise Leads", "Gmail", 138, {"Gmail": 25}, {"Outlook": 1}), name="Exhibitors"),
-             dict(cell("Precise Leads", "Gmail", 400, {"Outlook": 25}, {"Outlook": 30}, "2"), name="Clay in Kochi")]
-    assert rr.quiet_campaigns(cells) == ["• Precise Leads · Exhibitors: 1 from 379 leads"]
+    cells = [dict(cell("Precise Leads", "Microsoft", 240, {"Outlook": 25}, {}), name="Show campaign"),
+             dict(cell("Precise Leads", "Gmail", 138, {"Gmail": 25}, {"Outlook": 1}), name="Show campaign"),
+             dict(cell("Precise Leads", "Gmail", 400, {"Outlook": 25}, {"Outlook": 30}, "2"), name="Event campaign")]
+    assert rr.quiet_campaigns(cells) == ["• Precise Leads · Show campaign: 1 from 379 leads"]
     head, parts = rr.format_post(cells, T, trust=(["Smartlead's test for Google inboxes is now trusted: x"], ["line"]))
     assert any("almost no replies from any provider" in h for h in head)
     assert "Smartlead's test for Google inboxes is now trusted: x" in head
     assert any(p.startswith("*Does Smartlead's test agree") for p in parts)
+
+
+# --- review findings, 13 Nov 2026 (each was a way to flip the trust setting wrongly) ----------------------------
+
+def test_campaigns_with_different_lists_do_not_pass_their_rate_to_the_type_that_sent_more_of_them():
+    """Inside each campaign Google and Outlook answer at about the same rate; summed, Google looked 3.0x better."""
+    cells = [cell("A", "Gmail", 2940, {"Google": 22, "Outlook": 3}, {"Google": 54, "Outlook": 6}, "a1"),
+             cell("B", "Gmail", 5970, {"Google": 3, "Outlook": 22}, {"Google": 4, "Outlook": 26}, "b1")]
+    assert rr.compare(cells, "Gmail")["strata"] == 0                      # 3 looked-up leads a side: left out
+    # The dangerous mirror: a good list (20 per 1,000 for both types) sent mostly from Outlook, a weak one (5 per
+    # 1,000 for both) mostly from Google. Summed, Google looks far worse and would be trusted again (mass pulls).
+    cells = [cell("A", "Gmail", 2940, {"Google": 10, "Outlook": 20}, {"Google": 20, "Outlook": 40}, "a1"),
+             cell("B", "Gmail", 5200, {"Google": 20, "Outlook": 6}, {"Google": 20, "Outlook": 6}, "b1")]
+    c = rr.compare(cells, "Gmail")
+    plain = rr.rate(c["Google"]) / rr.rate(c["Outlook"])
+    assert c["strata"] == 2 and plain < 0.6 and c["ratio"] == pytest.approx(1.0, abs=0.01)
+    assert rr.trust_decision(cells, {"GMAIL": (40, 50)}, {"GMAIL"})[0] == {"GMAIL"}   # stays: no pull on a list effect
+
+
+def test_a_cell_whose_sample_found_no_sender_is_left_out_not_read_as_1000_per_1000():
+    good = [cell("A", "Gmail", 400, {"Google": 12, "Outlook": 12}, {"Google": 4, "Outlook": 6}, "a1")]
+    blind = good + [cell("A", "Gmail", 300, {"unknown": 25}, {"Google": 9, "Outlook": 1}, "a2")]
+    assert not rr.sampled_ok(blind[1]) and rr.sampled_ok(cell("A", "Gmail", 0, {}, {"Google": 1}))
+    assert rr.compare(blind, "Gmail")["ratio"] == rr.compare(good, "Gmail")["ratio"]
+    assert ("A", "Google", "Gmail") in rr.estimates(blind)
+    assert rr.estimates(blind)[("A", "Google", "Gmail")]["events"] == 4
+
+
+def test_the_fail_share_has_a_band_so_a_type_near_half_does_not_flip_every_week():
+    world = _google_world(13, 10)                                          # about 1.3x
+    assert rr.trust_decision(world, {"GMAIL": (26, 50)}, set())[0] == set()        # 52%: in the band, stays
+    assert rr.trust_decision(world, {"GMAIL": (24, 50)}, {"GMAIL"})[0] == {"GMAIL"}  # 48%: in the band, stays
+    assert rr.trust_decision(world, {"GMAIL": (31, 50)}, set())[0] == {"GMAIL"}      # 62%: v2 fails most
+    assert rr.trust_decision(world, {"GMAIL": (19, 50)}, {"GMAIL"})[0] == set()      # 38%: v2 fails few
+
+
+def test_only_recent_verdicts_count_toward_the_fail_share():
+    v2 = {"a@g.com": {"verdict": "FAIL", "night": "2026-11-09"}, "b@g.com": {"verdict": "FAIL", "night": "2026-08-01"},
+          "c@g.com": {"verdict": "PASS", "night": "2026-11-09"}, "d@o.com": {"verdict": "FAIL", "night": "2026-11-09"}}
+    kinds = {"a@g.com": "GMAIL", "b@g.com": "GMAIL", "c@g.com": "GMAIL", "d@o.com": "OUTLOOK", "e@o.com": "OUTLOOK"}
+    assert rr.recent_share(v2, kinds, T) == {"GMAIL": (1, 2), "OUTLOOK": (1, 1)}
+
+
+def test_a_decision_is_saved_only_from_a_complete_read():
+    assert rr.complete_read(3, 3, {}, 900) == (True, "")
+    assert rr.complete_read(2, 3, {}, 900) == (False, "1 of 3 Smartlead accounts not read")
+    assert rr.complete_read(3, 3, {"campaign statistics HTTPStatusError": 1}, 900)[1] == "1 campaign read(s) failed"
+    assert rr.complete_read(3, 3, {"message history NoLeadId": 28}, 900)[0]                 # 3%: fine
+    assert rr.complete_read(3, 3, {"message history ReadTimeout": 60}, 900)[1] == "60 of 900 lead lookups failed"
+    assert not rr.complete_read(0, 0, {}, 0)[0]
+
+
+class _Col:
+    def __init__(self, doc=None): self.doc, self.written = doc, []
+    def find_one(self, q): return self.doc if q.get("_id") == "current" else None
+    def find(self, *a, **k): return []
+    def replace_one(self, q, doc, upsert=False): self.written.append(doc)
+
+
+class _Db(dict):
+    def __getitem__(self, k): return self.setdefault(k, _Col())
+
+
+def test_a_readers_env_override_never_becomes_the_saved_decision(monkeypatch):
+    import real_recipients as cli
+    db = _Db()
+    db["v2_trust"] = _Col({"_id": "current", "untrusted": {"GMAIL": {"since": "2026-11-12"}}})
+    monkeypatch.setattr(cli, "_db", lambda: db)
+    monkeypatch.setenv("V2_UNTRUSTED_TYPES", "none")
+    changes, lines, err = cli.trust(T, [], {}, write=True)                # no data at all
+    assert err == "" and changes == []
+    assert db["v2_trust"].written[0]["untrusted"] == {"GMAIL": {"since": "2026-11-12"}}     # Google stays untrusted
+
+
+def test_a_partial_read_shows_the_decision_but_does_not_save_it(monkeypatch):
+    import real_recipients as cli
+    db = _Db()
+    monkeypatch.setattr(cli, "_db", lambda: db)
+    monkeypatch.delenv("V2_UNTRUSTED_TYPES", raising=False)
+    changes, lines, _ = cli.trust(T, [], {}, write=False, not_saved_why="1 of 3 Smartlead accounts not read")
+    assert db["v2_trust"].written == [] and lines[-1].endswith("not saved: 1 of 3 Smartlead accounts not read.")

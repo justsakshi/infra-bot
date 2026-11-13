@@ -941,7 +941,8 @@ def copy_check_lines(rec: dict) -> tuple[str, list[str], list[str]]:
 
 def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, acted: dict, write: bool,
                  pulled_before: set, act_from: str | None = None, behind: int | None = None,
-                 report_only_clients: set | None = None) -> tuple[list[str], list[str]]:
+                 report_only_clients: set | None = None, report_only_types: set | None = None
+                 ) -> tuple[list[str], list[str]]:
     """(headline lines, thread parts). ``got["copy_checks"]``: keys of the judged copy checks to report with
     it. With no night to report (a copy check that arrived on its own) the post is the copy check's alone."""
     nights = sorted(got["nights"])
@@ -1059,7 +1060,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         client = client_of.get(sorted(es)[0], "Not in Smartlead")
         r = report_only[sorted(es)[0]].get("reason") or {"name": client, "why": REPORT_ONLY_WHY.get(client, ""), "client": client}
         types = state.get("types") or {}
-        if not r.get("client") or all(str(types.get(e) or "").upper() in REPORT_ONLY_TYPES for e in es):
+        untrusted = report_only_types if report_only_types is not None else set(REPORT_ONLY_TYPES)
+        if not r.get("client") or all(str(types.get(e) or "").upper() in untrusted for e in es):
             continue    # its senders failed only a test that is not trusted for their type: the campaign is fine
         needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
                      f"Not changed, as {r['name']} is report-only{' ' + r['why'] if r['why'] else ''}: "
@@ -1602,6 +1604,20 @@ def _crash_alert(state_dir: Path, exc: BaseException, ctx: dict) -> None:
         traceback.print_exc()
 
 
+def trust_for_run(state: dict, db=None) -> str:
+    """Load the shared v2 trust for this run (usable.refresh_trust). Mongo down: use the last decision this job saw
+    (state "v2_trust"), not the default, which could start pulling a type the weekly check had stopped trusting
+    (review 13 Nov 2026). Returns where it came from."""
+    src = usable.refresh_trust(db)
+    if src == "unread" and state.get("v2_trust") is not None:
+        V2_NOT_TRUSTED.clear()
+        V2_NOT_TRUSTED.update(state["v2_trust"])
+        return "the job's last copy (Mongo not read)"
+    if src != "unread":
+        state["v2_trust"] = dict(V2_NOT_TRUSTED)
+    return src
+
+
 def d8_status(state: dict, clients: set[str]) -> dict[str, tuple[list[str], list[str]]]:
     """{client: (conditions met, conditions still waiting)} for each report-only client. Pure."""
     nights = {f["night"] for f in state["files"].values()
@@ -1653,8 +1669,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     now = now_ist()
     today = now.date().isoformat()
     state["since"] = state["since"] or today
-    print(f"[v2-weekly] untrusted v2 types: {', '.join(sorted(V2_NOT_TRUSTED)) or 'none'} "
-          f"(from {usable.refresh_trust()}; now {', '.join(sorted(V2_NOT_TRUSTED)) or 'none'})")
+    src = trust_for_run(state)
+    print(f"[v2-weekly] v2 test not trusted for: {', '.join(sorted(V2_NOT_TRUSTED)) or 'no type'} (from {src})")
     write = _writes(args, today)
     can_post = bool(args.post) and persist
     behind = (ctx.get("git") or (None, None))[1]
@@ -1781,9 +1797,13 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     for acc in list(pulls):
         ro_pulls[acc] = [e for e in pulls[acc] if why_ro(e)]
         pulls[acc] = [e for e in pulls[acc] if not why_ro(e)]
+    # A type whose test is not trusted still comes back after two passes: only a report-only CLIENT holds returns, or
+    # a type that stopped being trusted would leave its pulled inboxes out for good (review 13 Nov 2026).
+    def why_ro_back(e: str) -> dict | None:
+        return ro_reason(client_of.get(e), None, ro, set())
     for acc in list(returns):
-        ro_back += [e for e in returns[acc] if why_ro(e)]
-        returns[acc] = [e for e in returns[acc] if not why_ro(e)]
+        ro_back += [e for e in returns[acc] if why_ro_back(e)]
+        returns[acc] = [e for e in returns[acc] if not why_ro_back(e)]
 
     for acc, emails in pulls.items():
         if emails:
@@ -1798,7 +1818,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         if emails:
             _merge(acted, await do_returns(acc, fleet[acc], emails, write, today, state, save))
     for e in ro_back:
-        r = why_ro(e)
+        r = why_ro_back(e)
         acted["notes"].append(f"{e} passed twice and would go back into its campaigns, but {r['name']} "
                               f"{'is' if r.get('client') else 'are'} report-only, so nothing was changed.")
     if acted["leads"]:
@@ -1808,7 +1828,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     # Copy checks read and not yet reported ride with this report, judged against the results just acted on.
     got["copy_checks"] = copy_checks_due(state, now, settled=False)
     judge_copy_checks(state, got["copy_checks"])
-    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from, behind, ro)
+    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from, behind, ro,
+                               report_only_types=ro_t)
     text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
     print(text)
     state["log"].append({"at": now.isoformat(timespec="minutes"), "write": write, "nights": sorted(got["nights"]),
