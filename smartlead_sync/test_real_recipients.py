@@ -34,12 +34,13 @@ def test_the_fair_comparison_uses_only_campaigns_that_used_both_types():
     cells = [cell("Bettrdata", "Gmail", 100, {"Google": 10, "Outlook": 10}, {"Google": 8, "Outlook": 4}, "1"),
              cell("Bettrdata", "Gmail", 500, {"Google": 25}, {"Google": 1}, "2")]          # Google only: left out
     p = rr.paired(cells)[("Bettrdata", "Gmail")]
-    assert p["Google"] == {"leads": 58.0, "events": 8} and p["Outlook"] == {"leads": 54.0, "events": 4}
+    assert p["Google"] == {"leads": 58.0, "events": 8, "sampled": 10}
+    assert p["Outlook"] == {"leads": 54.0, "events": 4, "sampled": 10}
     assert rr.rate(p["Google"]) == pytest.approx(1000 * 8 / 58)
 
 
 def test_the_post_compares_inside_campaigns_and_says_when_there_are_too_few_replies():
-    cells = [cell("Melior", "Gmail", 200, {"Google": 12, "Outlook": 12}, {"Google": 20, "Outlook": 9}),
+    cells = [cell("Melior", "Gmail", 200, {"Google": 25, "Outlook": 25}, {"Google": 20, "Outlook": 9}),
              cell("Melior", "Microsoft", 300, {"Google": 5, "Outlook": 20}, {"Google": 2, "Outlook": 4}),
              cell("Precise Leads", "Gmail", 100, {"Outlook": 25}, {"Outlook": 5}, "9")]
     head, parts = rr.format_post(cells, T, 28, {"message history HTTPStatusError": 3})
@@ -72,3 +73,10 @@ def test_the_bot_schedules_it_on_sunday_morning():
     root = pathlib.Path(__file__).resolve().parents[1]
     assert "{ job: 'real-recipients', cron: '0 7 * * 0'" in (root / "bot_health.js").read_text(encoding="utf-8")
     assert "runJob('real-recipients', ['real_recipients.py', '--post', '--save']" in (root / "index.js").read_text(encoding="utf-8")
+
+
+def test_a_ratio_on_a_handful_of_looked_up_leads_is_not_shown():
+    """First live run (13 Nov 2026): 7 looked-up Outlook leads made a 1.5x read as 0.5x."""
+    cells = [cell("Bettrdata", "Gmail", 1500, {"Google": 113, "Outlook": 7}, {"Google": 40, "Outlook": 5})]
+    head, _ = rr.format_post(cells, T)
+    assert "(too few leads looked up to compare)" in next(h for h in head if h.startswith("Bettrdata."))

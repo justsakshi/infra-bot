@@ -26,6 +26,8 @@ from datetime import date
 DAYS = 28
 SAMPLE = 25                 # quiet leads looked up per (campaign, recipient provider)
 FEW = 5                     # fewer events than this on either side: the ratio is shown as too few to read
+MIN_SAMPLED = 20            # fewer leads looked up than this on either side: its lead count is a guess, no ratio
+                            # (first live run, 13 Nov 2026: 7 looked-up leads turned a 1.5x into a 0.5x)
 RECIPIENT = {"google": "Gmail", "microsoft": "Microsoft", "proofpoint": "Proofpoint"}   # anything else: "other"
 SENDER = {"GMAIL": "Google", "OUTLOOK": "Outlook", "SMTP": "SMTP"}
 BOUNCE = re.compile(r"address not found|message blocked|not delivered|couldn'?t be delivered|could not be delivered|"
@@ -76,7 +78,8 @@ def estimates(cells: list[dict]) -> dict[tuple[str, str, str], dict]:
 def paired(cells: list[dict], a: str = "Google", b: str = "Outlook") -> dict[tuple[str, str], dict]:
     """{(client, recipient): {a: {"leads", "events"}, b: {...}}} over campaigns where both sender types emailed that
     recipient provider (both in the sampled mix or both with events). Pure."""
-    out: dict[tuple, dict] = defaultdict(lambda: {a: {"leads": 0.0, "events": 0}, b: {"leads": 0.0, "events": 0}})
+    out: dict[tuple, dict] = defaultdict(lambda: {a: {"leads": 0.0, "events": 0, "sampled": 0},
+                                                  b: {"leads": 0.0, "events": 0, "sampled": 0}})
     for c in cells:
         known = {k: v for k, v in (c.get("mix") or {}).items() if k != "unknown"}
         evs = c.get("events_by_sender") or {}
@@ -87,6 +90,7 @@ def paired(cells: list[dict], a: str = "Google", b: str = "Outlook") -> dict[tup
             o = out[(c["client"], c["recipient"])][st]
             o["leads"] += (c.get("quiet", 0) * known.get(st, 0) / n if n else 0.0) + evs.get(st, 0)
             o["events"] += evs.get(st, 0)
+            o["sampled"] += known.get(st, 0)
     return dict(out)
 
 
@@ -101,6 +105,8 @@ def _ratio(x: dict, y: dict) -> str:
         return ""
     if min(x["events"], y["events"]) < FEW:
         return " (too few replies to compare)"
+    if min(x.get("sampled", MIN_SAMPLED), y.get("sampled", MIN_SAMPLED)) < MIN_SAMPLED:
+        return " (too few leads looked up to compare)"
     return f" ({rx / ry:.1f}x)" if ry else ""
 
 
@@ -137,9 +143,8 @@ def format_post(cells: list[dict], today: date, days: int = DAYS, errors: dict |
             g, m = est.get((cl, st, "Gmail")), est.get((cl, st, "Microsoft"))
             if g and m and g["leads"] >= 1 and m["leads"] >= 1 and rate(g):
                 r = rate(m) / rate(g)
-                few = min(g["events"], m["events"]) < FEW
                 gaps.append(f"• {cl}, {st} inboxes: Microsoft recipients {_per(m)} vs Gmail {_per(g)}"
-                            + (" (too few replies to compare)" if few else f" ({r:.1f}x)"))
+                            + (_ratio(m, g) or f" ({r:.1f}x)"))
     parts = []
     if gaps:
         parts.append("\n".join(["*Microsoft against Gmail recipients, same sending inbox type*"] + gaps))
