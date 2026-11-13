@@ -1500,6 +1500,14 @@ async function start() {
       if (await onceToday('provider-watch')) return runJob('provider-watch', ['provider_reply_watch.py', '--post'], { slot });
     });
 
+    // Real-recipient reply check (Manveen, 13 Nov 2026: make it weekly): Sundays 07:00 IST in the infra channel.
+    // Replies and out-of-office messages per 1,000 leads by sending inbox type and recipient provider, the one
+    // deliverability signal the team trusts. Read-only. REAL_RECIPIENTS_POST=off stops it.
+    at('real-recipients', async ({ slot }) => {
+      if (process.env.REAL_RECIPIENTS_POST === 'off') return;
+      if (await onceToday('real-recipients')) return runJob('real-recipients', ['real_recipients.py', '--post', '--save'], { slot });
+    });
+
     // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: hold or step back
     // daily limits per domain; it never raises one (smartlead/volume_rule.py). Changes only the pilot
     // domains (volume_review.py --pilot-add); every other domain is reported.

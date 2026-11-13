@@ -59,6 +59,9 @@ const JOBS = [
   { job: 'fleet-watch', cron: '30 10 * * *', title: 'Fleet watch',
     codes: { 1: 'a source could not be read, or the post was refused' } },
   { job: 'provider-watch', cron: '40 10 * * 1', title: 'Microsoft/Proofpoint watch', when: env => env.PROVIDER_WATCH_POST !== 'off' },
+  // Sundays 07:00 IST: no other job reads Smartlead then, and it makes about an hour of message-history calls.
+  { job: 'real-recipients', cron: '0 7 * * 0', title: 'Real-recipient reply check', when: env => env.REAL_RECIPIENTS_POST !== 'off',
+    codes: { 1: 'no Smartlead account could be read, or the post was refused' } },
   { job: 'fleet-scorecard', cron: '50 10 * * 1', title: 'Fleet scorecard' },
   { job: 'retest', cron: '0 11 * * *', title: 'Auto placement test' },
   // After the 10:00 sync has written the list. Posts only when a check disagrees, and every Monday.
