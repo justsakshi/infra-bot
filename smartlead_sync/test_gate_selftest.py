@@ -74,7 +74,7 @@ def test_a_held_back_inbox_in_a_sending_campaign_is_caught_and_report_only_clien
     assert r["says"] == "2 inboxes tagged or failed are still attached to sending campaigns: Precise Leads · PL | A (2)"
     assert r["note"] == "1 inbox held back still sends in 1 campaign of a report-only client (Melior · Melior | Legal (1))"
     only_melior = _run(inboxes, campaigns[1:], rows, v2)["held_back_not_sending"]
-    assert only_melior["ok"] and only_melior["note"]                      # Ryan decides: listed, not failed
+    assert only_melior["ok"] and only_melior["note"]                      # report-only: listed, not failed
     head, _ = gs.format_post([only_melior], NOW.date())
     assert head[0].startswith("✅") and head[1].startswith("• Note: 1 inbox held back")
 
@@ -155,3 +155,18 @@ def test_the_tracker_check_fails_when_the_tracker_was_not_read_and_is_absent_whe
     r = _run(inboxes, campaigns, rows, v2, tracker=set(), errors=["the tracker (Mongo assets): not read"])
     assert not r["tracker_has_every_inbox"]["ok"] and r["tracker_has_every_inbox"]["says"].startswith("not checked")
     assert "tracker_has_every_inbox" not in _run(inboxes, campaigns, rows, v2)
+
+
+def test_a_google_inbox_that_failed_v2_or_one_a_person_put_back_is_not_held_back_2026_11_13():
+    """The v2 job does not act on Google inboxes (PR #69) or on an inbox whose tag a person removed; the self-test
+    must not call them held back either, or the bot contradicts the decision in the channel every morning."""
+    inboxes = [{"email": "g@b.co", "tags": [], "type": "GMAIL"}, {"email": "back@x.com", "tags": [], "type": "OUTLOOK"},
+               {"email": "o@x.com", "tags": [], "type": "OUTLOOK"}]
+    rows = [_row("g@b.co", reason="no_v2_pass"), _row("back@x.com", reason="no_v2_pass"), _row("o@x.com", reason="failed_v2")]
+    v2 = {"g@b.co": {"verdict": "FAIL", "night": "2026-11-09"},
+          "back@x.com": {"verdict": "FAIL", "night": "2026-11-09", "overridden": True},
+          "o@x.com": {"verdict": "FAIL", "night": "2026-11-09"}}
+    campaigns = [{"client": "Bettrdata", "campaign": "BD | Roundtable", "emails": ["g@b.co", "back@x.com", "o@x.com"]}]
+    r = _run(inboxes, campaigns, rows, v2)
+    assert r["list_marks_failed_v2"]["ok"] and r["list_marks_failed_v2"]["checked"] == 1      # only o@x.com counts
+    assert r["held_back_not_sending"]["bad"] == ["o@x.com"]

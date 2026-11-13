@@ -49,6 +49,12 @@ KINDS = {
     "over_limit": ("above the highest daily limit for its type", "Lower it or record it as approved", "inbox"),
     "hand_limit": ("limit changed by hand", "Confirm the change was meant", "inbox"),
 }
+# Kinds the daily post names (13 Nov 2026, Manveen: the channel was "spammy, not understandable"). The others are
+# still opened, closed and counted in Monday's scorecard, but the daily post leaves them out: disconnected and DO NOT
+# USE inboxes in live campaigns are already in the daily inbox post (inbox_status), and warm-up spam, low warm-up
+# reputation, single classic placement fails and blocklists outside live campaigns asked nobody to do anything today.
+DAILY_KINDS = {"listed_live", "warmup_off", "bounce_high", "kill", "smtp_ip", "early_campaign", "over_limit",
+               "hand_limit"}
 BLOCKLIST_KINDS = ("blocklist", "listed_live")
 # A case whose check stops firing because a stronger case on the same inbox fired is replaced, not cleared:
 # a disconnected inbox cannot warm up, a second failed test is the kill list, a raise above the standard is over_limit.
@@ -416,15 +422,15 @@ def _group_part(kind: str, action: str, cs: list[dict], note) -> str:
 
 def watch_post(new: list[dict], open_count: dict[str, int], today: date, *, unknown: int = 0
                ) -> tuple[list[str], list[str]]:
-    """(headline lines, thread parts) for the daily post: a count per action in the channel, the inboxes
-    and domains in the thread. ``new``: cases to announce, today's and any from earlier days whose post
-    did not go out; ``open_count``: the other open cases by kind; ``unknown``: how many of those could
-    not be checked today."""
+    """(headline lines, thread parts) for the daily post: a count per problem in the channel, the inboxes
+    and domains with what to do in the thread. ``new``: cases to announce, today's and any from earlier days
+    whose post did not go out. ``open_count`` and ``unknown`` are kept for callers; the post no longer
+    repeats the open count every day (Monday's scorecard has it)."""
     t = today.isoformat()
     groups = _groups(new)
     n = sum(len(cs) for _, cs in groups)
-    head = [f"⚠️ Fleet watch, {_day(today)}: {n} new problem{'s' if n != 1 else ''} "
-            f"(suggestions only, nothing was changed)"]
+    head = [f"⚠️ New inbox problem{'s' if n != 1 else ''}, {_day(today)}: {n} "
+            f"(what to do is in the thread; the bot changed nothing)"]
     per_kind = Counter()
     for (kind, _), cs in groups:
         per_kind[kind] += len(cs)
@@ -436,11 +442,6 @@ def watch_post(new: list[dict], open_count: dict[str, int], today: date, *, unkn
         k = sum(1 for _, cs in groups for c in cs if c.get("opened_on", t) < t)
         head.append(f"{k} of them {'was' if k == 1 else 'were'} found on {', '.join(_day(d) for d in earlier)}, "
                     f"but that post did not go out.")
-    total = sum(open_count.values())
-    if total:
-        head.append(f"Still open: {total} (" + ", ".join(
-            f"{KINDS[k][0]} {v}" for k, v in open_count.items() if v and k in KINDS) + ")"
-            + (f"; {unknown} of them could not be checked today" if unknown else ""))
     return head, thread
 
 

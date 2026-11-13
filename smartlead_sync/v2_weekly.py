@@ -103,6 +103,7 @@ except ImportError:  # pragma: no cover
 
 sys.path.insert(0, str(HERE))
 from smartlead import v2_results as v2  # noqa: E402
+from smartlead.usable import V2_NOT_TRUSTED  # noqa: E402
 
 TAG = "DO NOT USE - failed v2 (auto)"
 DNU = "do not use"                       # gtm presend refuses any tag starting with this
@@ -132,7 +133,7 @@ REPORT_ONLY_OWNER = {"Melior": "Ryan"}   # who decides a report-only client's st
 # Google-sent mail at 1.5-2.5 times the rate of Outlook-sent mail (Gmail sends no automatic reply to mail it filed as
 # spam), while v2 failed nearly every Google inbox. Until a real-recipient check agrees, a v2 fail does not move one.
 # --act-types GMAIL overrides this for a run. A client's own report-only stage is named first when both apply.
-REPORT_ONLY_TYPES = {"GMAIL": "Google inboxes"}
+REPORT_ONLY_TYPES = V2_NOT_TRUSTED   # one rule for the job and every reader of v2_verdicts (smartlead/usable.py)
 REPORT_ONLY_TYPE_WHY = {"GMAIL": "until real replies agree with the seed test"}
 # Mongo (db smartlead.config.HEALTH_HISTORY_DB), read on Render: is the PC job alive, and what did v2 say.
 HEARTBEAT_COLLECTION = "v2_heartbeat"
@@ -1372,7 +1373,9 @@ def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
     """v2_verdicts docs (shared contract), one per inbox per night: nights from the last VERDICT_DAYS days
     whose holds an acting run has worked out and whose files stopped arriving. The verdict is the one the job
     acts on: at the inbox's own provider, held providers set aside (``held`` names them). The readers of
-    v2_verdicts (usable list, gate self-test, renewal review, grid) therefore agree with what was pulled."""
+    v2_verdicts (usable list, gate self-test, renewal review, grid) therefore agree with what was pulled.
+    ``overridden``: a person removed the job's tag after this night's result, so the job leaves the inbox alone
+    until a newer one; the readers do not hold it back for this fail either (usable.fail_set_aside)."""
     cut = (now.date() - timedelta(days=VERDICT_DAYS)).isoformat()
     skip = set(unsettled(state, now))
     at = now.astimezone(timezone.utc).isoformat(timespec="seconds")
@@ -1388,7 +1391,8 @@ def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
                    "night": n, "verdict": v2.own_verdict(x, (state.get("types") or {}).get(mb), held),
                    "google": _counts(x.get("google")), "microsoft": _counts(x.get("microsoft")),
                    "history": bool(x.get("history")), "weekly": v2.is_weekly_night(n), "pulled_on": pulled_on,
-                   "held": sorted(held), "updated_at": at}
+                   "held": sorted(held), "overridden": n <= str((state.get("overrides") or {}).get(mb) or ""),
+                   "updated_at": at}
             out[doc["_id"]] = doc
     return out
 

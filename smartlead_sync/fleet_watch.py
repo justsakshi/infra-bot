@@ -15,7 +15,10 @@ messages: smartlead/fleet.py.
     python fleet_watch.py --baseline      # record what is already wrong as known; never posted
     python fleet_watch.py --scorecard [--post]
 
-Daily 10:30 IST; scorecard Mondays 10:50 IST. Exits 1 when a post was refused.
+Daily 10:30 IST; scorecard Mondays 10:50 IST. The daily post names only fl.DAILY_KINDS and goes out only when
+one of those is new; the other kinds are recorded quietly for the scorecard. A source that could not be read is
+not posted on its own: the run exits 1, and the bot-health post lists it as a failed run. Exits 1 when a post
+was refused or a source was not read.
 """
 from __future__ import annotations
 
@@ -328,19 +331,27 @@ def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: 
         store.save_cases(open_now + closed)
     new_keys = {c["key"] for c in opened}
     resend = [c for c in open_now if c.get("announced") is False and not c.get("baseline") and c["key"] not in new_keys]
-    backlog = [c for c in open_now if c.get("announced") is None and not c.get("baseline")] if store else []
-    to_post = opened + resend
-    posting = {c["key"] for c in to_post}
+    backlog = [c for c in open_now if c.get("announced") is None and not c.get("baseline")
+               and c["kind"] in fl.DAILY_KINDS] if store else []
+    due = opened + resend
+    to_post = [c for c in due if c["kind"] in fl.DAILY_KINDS]
+    quiet = [c for c in due if c["kind"] not in fl.DAILY_KINDS]
+    posting = {c["key"] for c in due}
     rest = [c for c in open_now if c["key"] not in posting and not c.get("baseline")]
     head, thread = fl.watch_post(to_post, dict(Counter(c["kind"] for c in rest)), today,
                                  unknown=sum(1 for c in rest if c.get("unknown")))
-    if errors:
-        head.append(":warning: Could not read: " + "; ".join(errors))
+    if errors and to_post:
+        head.append("Could not read today, so some problems may be missing: " + "; ".join(errors))
     out = {"records": len(records), "opened": len(opened), "resent": len(resend), "backlog": len(backlog),
-           "open": len(open_now), "closed": len(closed), "text": fl.as_text(head, thread), "failed": False}
-    if post and (to_post or errors):
+           "open": len(open_now), "closed": len(closed), "text": fl.as_text(head, thread), "failed": bool(errors),
+           "quiet": len(quiet), "errors": list(errors)}
+    if errors:
+        print("[fleet-watch] could not read: " + "; ".join(errors))
+    if post and quiet and store:
+        store.mark_announced(quiet, today)          # recorded for the scorecard; not a daily post
+    if post and to_post:
         out["posted"] = bool(poster(head, thread))
-        if out["posted"] and store and to_post:
+        if out["posted"] and store:
             store.mark_announced(to_post, today)
         out["failed"] |= not out["posted"]
     if post and backlog:

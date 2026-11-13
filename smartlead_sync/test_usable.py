@@ -77,8 +77,8 @@ def test_newest_judged_skips_incomplete_rows_and_listed_domains_reads_the_newest
             {"email": "a@x.com", "night": "2026-11-09", "verdict": "INCOMPLETE"},       # not a verdict: the fail stands
             {"email": "b@x.com", "night": "2026-11-05", "verdict": "FAIL"},
             {"email": "b@x.com", "night": "2026-11-09", "verdict": "PASS"}]
-    assert usable.newest_judged(rows) == {"a@x.com": {"verdict": "FAIL", "night": "2026-11-05"},
-                                          "b@x.com": {"verdict": "PASS", "night": "2026-11-09"}}
+    assert usable.newest_judged(rows) == {"a@x.com": {"verdict": "FAIL", "night": "2026-11-05", "overridden": False},
+                                          "b@x.com": {"verdict": "PASS", "night": "2026-11-09", "overridden": False}}
     bl = [{"domain": "old.com", "date": "2026-10-26", "listed_on": ["Spamhaus DBL (127.0.1.2)"]},
           {"domain": "old.com", "date": "2026-11-09", "listed_on": []},                # delisted since
           {"domain": "now.com", "date": "2026-11-09", "listed_on": ["SURBL (ABUSE)", "Spamhaus DBL (127.0.1.2)"]},
@@ -205,3 +205,24 @@ def test_every_inbox_row_value_fits_one_sheet_cell():
     assert cells["tags"] == "ScaledMail, DO NOT USE - Google spam (Nov 2026)"
     assert _serialize([]) == "" and _serialize(("a", 2)) == "a, 2" and _serialize({"b", "a"}) == "a, b"
     assert _serialize({"k": [1]}) == '{"k": [1]}' and _serialize(True) == "Yes" and _serialize(None) is None
+
+
+def test_a_google_fail_or_an_overridden_fail_is_a_note_not_a_hold_2026_11_13():
+    from datetime import date
+    today = date(2026, 11, 13)
+    fail = {"verdict": "FAIL", "night": "2026-11-09"}
+    assert usable.gate([], fail, None, today, kind="Outlook") == (["failed_v2"], [])
+    reasons, notes = usable.gate([], fail, None, today, kind="Gmail", require_v2_pass=True)
+    assert reasons == ["no_v2_pass"] and notes == ["failed v2 on 9 Nov, not counted: the v2 test is not used for Google inboxes"]
+    assert usable.gate([], fail, None, today, kind="GMAIL")[0] == []           # no pass required yet: no hold at all
+    back = {**fail, "overridden": True}
+    assert usable.fail_set_aside(back, "OUTLOOK") == "a person put it back after this result"
+    assert not usable.holds_back(back, "OUTLOOK") and usable.holds_back(fail, "OUTLOOK")
+    assert not usable.holds_back({"verdict": "PASS"}, "OUTLOOK") and usable.fail_set_aside({"verdict": "PASS"}, "GMAIL") == ""
+    assert usable.kind_of("Gmail") == "GMAIL" and usable.kind_of("Outlook") == "OUTLOOK" and usable.kind_of("smtp") == "SMTP"
+    assert usable.gate(["DO NOT USE - x"], fail, None, today, kind="Gmail")[0] == ["do_not_use"]   # a tag still holds
+
+
+def test_the_v2_job_and_the_readers_share_one_list_of_untrusted_types():
+    import v2_weekly
+    assert v2_weekly.REPORT_ONLY_TYPES is usable.V2_NOT_TRUSTED

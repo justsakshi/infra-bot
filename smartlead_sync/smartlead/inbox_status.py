@@ -10,6 +10,8 @@ Each daily sync gives every inbox exactly one state (first match wins):
   pulled             the v2 job took it out of campaigns after a failed test; it returns after two passes
   failed             its newest Smart Delivery v2 verdict is FAIL and it is not pulled
   disconnected       Smartlead cannot connect to it
+  set_aside          its newest v2 verdict is FAIL, but that fail is not counted (usable.fail_set_aside: a Google
+                     inbox, or a person put it back after the result); it may send, nothing asks to take it out
   sending            in a campaign that is sending, with a v2 pass in the last 10 days
   sending_unproven   in a campaign that is sending, without that pass
   free               FREE on the list: may be given to a campaign
@@ -34,16 +36,20 @@ from smartlead import usable
 
 AUTO_TAG = "do not use - failed v2 (auto)"      # v2_weekly.TAG, lower case
 SENDING_STATUSES = {"ACTIVE", "IN_PROGRESS"}
-REPORT_ONLY = {"melior": "Ryan"}                # v2_weekly.REPORT_ONLY_CLIENTS: the job only reports for these
+# v2_weekly.REPORT_ONLY_CLIENTS: the job only reports for these. A safety stage until the job is proven, the same
+# rules as every client (Manveen, 11 Nov 2026); never framed as the client's or anyone's call.
+REPORT_ONLY = {"melior": "Melior"}
 STATUS_COLLECTION = "inbox_status"
 HISTORY_COLLECTION = "inbox_status_history"
 META_COLLECTION = "inbox_status_meta"           # {_id: "post", date}: the post goes out once a day
 HELD = ("do_not_use", "pulled", "failed")       # must not send
-ORDER = ("sending", "sending_unproven", "free", "warming", "idle", "failed", "pulled", "do_not_use",
+ORDER = ("sending", "sending_unproven", "set_aside", "free", "warming", "idle", "failed", "pulled", "do_not_use",
          "disconnected", "gone")
-LABEL = {"sending": "sending with a v2 pass", "sending_unproven": "sending without a v2 pass", "free": "free",
-         "warming": "warming up", "idle": "idle", "failed": "failed v2", "pulled": "pulled by the v2 job",
-         "do_not_use": "tagged do not use", "disconnected": "disconnected", "gone": "gone from Smartlead"}
+LABEL = {"sending": "sending, passed the weekly test", "sending_unproven": "sending, no test result in 10 days",
+         "set_aside": "failed the weekly test but it is not counted (Google, or put back by hand)",
+         "free": "free to give to a campaign", "warming": "warming up", "idle": "not in use",
+         "failed": "failed the weekly test", "pulled": "taken out by the weekly job",
+         "do_not_use": "tagged DO NOT USE", "disconnected": "disconnected", "gone": "gone from Smartlead"}
 
 
 def _fresh_pass(v2_status: str, v2_date: str, today: date) -> bool:
@@ -56,16 +62,18 @@ def _fresh_pass(v2_status: str, v2_date: str, today: date) -> bool:
 
 
 def state_of(tags, v2_status: str, v2_date: str, connected: bool, sending: bool, free: bool,
-             warmup_state: str, today: date) -> str:
+             warmup_state: str, today: date, set_aside: str = "") -> str:
     names = [str(t).strip().lower() for t in tags or []]
     if any(t.startswith(usable.DO_NOT_USE) and t != AUTO_TAG for t in names):
         return "do_not_use"
     if AUTO_TAG in names:
         return "pulled"
-    if str(v2_status or "").upper() == "FAIL":
+    if str(v2_status or "").upper() == "FAIL" and not set_aside:
         return "failed"
     if not connected:
         return "disconnected"
+    if str(v2_status or "").upper() == "FAIL":
+        return "set_aside"
     if sending:
         return "sending" if _fresh_pass(v2_status, v2_date, today) else "sending_unproven"
     if free:
@@ -90,14 +98,18 @@ def states(rows: list[dict], today: date) -> list[dict]:
                           if str(r.get("campaign_status") or "").upper() in SENDING_STATUSES
                           and not _is_test_campaign(r.get("campaign_name", ""))})
         tags = sorted({t for r in rs for t in r.get("tags") or []})
+        aside = first.get("v2_set_aside")
+        if aside is None:   # a row from before the list carried it: the type rule still applies
+            aside = usable.fail_set_aside({"verdict": first.get("v2_status")}, first.get("provider"))
         state = state_of(tags, first.get("v2_status", ""), first.get("v2_date", ""), bool(first.get("connection_ok")),
                          bool(sending), str(first.get("availability") or "").upper() == "FREE",
-                         first.get("warmup_state", ""), today)
+                         first.get("warmup_state", ""), today, set_aside=aside or "")
         out.append({"email": email, "domain": email.split("@")[-1],
                     "client": str(first.get("sub_client") or first.get("client") or ""),
                     "account": str(first.get("client") or ""), "provider": str(first.get("provider") or ""),
                     "account_id": str(first.get("account_id") or ""), "state": state, "campaigns": sending,
                     "v2_status": str(first.get("v2_status") or ""), "v2_date": str(first.get("v2_date") or ""),
+                    "set_aside": str(aside or ""),
                     "availability": str(first.get("availability") or ""),
                     "busy_reason": str(first.get("busy_reason") or ""), "tags": tags, "date": today.isoformat()})
     return out
@@ -139,13 +151,18 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
             if not group:
                 continue
             emails = sorted({r["email"] for _, rs in group for r in rs})
-            text = (f"{_n(len(emails))} that must not send {'is' if len(emails) == 1 else 'are'} still in "
-                    f"{_n(len(group), 'sending campaign')}")
+            one = len(emails) == 1
+            where = _n(len(group), "live campaign")
             if who:
-                owners = sorted({REPORT_ONLY[k[0].lower()] for k, _ in group})
-                text += f" ({', '.join(sorted({k[0] for k, _ in group}))}: the v2 job only reports, {' and '.join(owners)} decides)"
+                names = " and ".join(sorted({REPORT_ONLY[k[0].lower()] for k, _ in group}))
+                text = (f"{_n(len(emails))} of {names} that failed the weekly test or {'is' if one else 'are'} tagged "
+                        f"DO NOT USE still {'sends' if one else 'send'} in {where}. The weekly job does not act on "
+                        f"{names} yet while it is being proven, so {'it stays' if one else 'they stay'} until "
+                        f"someone takes {'it' if one else 'them'} out")
             else:
-                text += ": take them off, or wait for the v2 job to do it when this week's result is in"
+                text = (f"{_n(len(emails))} that failed the weekly test or {'is' if one else 'are'} tagged DO NOT USE "
+                        f"{'is' if one else 'are'} still in {where}. Take {'it' if one else 'them'} out, or the weekly "
+                        f"job takes out the failed ones when this week's results are in")
             detail = [f"• {k[0]} · {k[1]}: " + "; ".join(
                 f"{_names(sorted(r['email'] for r in rs if r['state'] == s))} ({LABEL[s]})"
                 for s in HELD if any(r["state"] == s for r in rs)) for k, rs in group]
@@ -161,9 +178,9 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
     if short:
         one = len(short) == 1
         items.append({"key": "campaign_short", "detail": short,
-                      "text": f"{_n(len(short), 'sending campaign')} {'has' if one else 'have'} lost half or more of "
-                              f"{'its' if one else 'their'} inboxes: give {'it' if one else 'them'} proven inboxes or "
-                              f"slow {'it' if one else 'them'} down"})
+                      "text": f"{_n(len(short), 'live campaign')} {'has' if one else 'have'} lost half or more of "
+                              f"{'its' if one else 'their'} inboxes. Add inboxes that passed the weekly test, or lower "
+                              f"{'its' if one else 'their'} daily sending"})
 
     off = [r for r in records if r["state"] == "disconnected" and r["campaigns"]]
     if off:
@@ -171,8 +188,8 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
         for r in off:
             by_client[r["client"]].append(r["email"])
         items.append({"key": "disconnected",
-                      "text": f"{_n(len(off))} in sending campaigns cannot connect in Smartlead: reconnect "
-                              f"{'it' if len(off) == 1 else 'them'}",
+                      "text": f"{_n(len(off))} in live campaigns {'is' if len(off) == 1 else 'are'} disconnected in "
+                              f"Smartlead. Reconnect {'it' if len(off) == 1 else 'them'}",
                       "detail": [f"• {c}: {_names(sorted(es))}" for c, es in sorted(by_client.items())]})
 
     unproven = [r for r in records if r["state"] == "sending_unproven"]
@@ -181,8 +198,8 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
         for r in unproven:
             by_client[r["client"]].append(r["email"])
         items.append({"key": "sending_unproven",
-                      "text": f"{_n(len(unproven))} {'is' if len(unproven) == 1 else 'are'} sending without a v2 pass in "
-                              f"the last {usable.V2_FRESH_DAYS} days: download this week's v2 result files",
+                      "text": f"{_n(len(unproven))} {'is' if len(unproven) == 1 else 'are'} sending with no weekly test "
+                              f"result in the last {usable.V2_FRESH_DAYS} days. Download this week's test result files",
                       "detail": [f"• {c}: {len(es)} ({_names(sorted(es), 4)})" for c, es in sorted(by_client.items())]})
     return items
 
@@ -192,18 +209,16 @@ def format_post(records: list[dict], changes: list[dict], items: list[dict], tod
     """(headline lines, thread parts) for the one daily fleet post. Pure."""
     count = Counter(r["state"] for r in records)
     day = f"{today.day} {today.strftime('%b')}"
-    head = [(f"⚠️ Inbox fleet {day}: {len(items)} thing{'s' if len(items) != 1 else ''} need{'' if len(items) != 1 else 's'} you"
-             if items else f"✅ Inbox fleet {day}: nothing needs you")]
-    head += [f"{i}. {it['text']}" for i, it in enumerate(items, 1)]
-    head.append(f"{_n(len(records))}: " + ", ".join(f"{count[s]} {LABEL[s]}" for s in ORDER if count.get(s)))
-    moved = Counter((c.get("from") or "new", c["to"]) for c in changes)
-    if moved:
-        bits = [f"{k} {LABEL.get(a, a)} → {LABEL.get(b, b)}" for (a, b), k in moved.most_common(6)]
-        more = len(moved) - 6
-        head.append("Since the last run: " + ", ".join(bits) + (f" and {more} more kinds of change" if more > 0 else ""))
+    head = [(f"⚠️ Inboxes, {day}: {len(items)} thing{'s' if len(items) != 1 else ''} need{'' if len(items) != 1 else 's'} you"
+             if items else f"✅ Inboxes, {day}: nothing needs you")]
+    head += [f"{i}. {it['text']}." for i, it in enumerate(items, 1)]
+    live = sum(1 for r in records if r["campaigns"])
+    head.append(f"{_n(len(records))} in Smartlead, {live} in live campaigns. The list is in the thread.")
     if saved_error:
         head.append(f"History not saved today ({saved_error})")
     parts = ["\n".join([f"*{i}. {it['text']}*"] + it["detail"]) for i, it in enumerate(items, 1)]
+    parts.append("\n".join(["*Every inbox, by where it stands*"]
+                           + [f"• {LABEL[s]}: {count[s]}" for s in ORDER if count.get(s)]))
     by_client: dict[str, Counter] = defaultdict(Counter)
     for r in records:
         by_client[r["client"] or "no client"][r["state"]] += 1
@@ -219,10 +234,11 @@ def format_post(records: list[dict], changes: list[dict], items: list[dict], tod
                                   + (f" and {len(set(ds)) - 12} more domains" if len(set(ds)) > 12 else "")
                                   for c, ds in sorted(idle_off.items())]))
     if changes:
-        lines = [f"• {c['email']}: {LABEL.get(c.get('from') or '', 'new')} → {LABEL.get(c['to'], c['to'])}"
-                 for c in changes if c.get("from")][:40]
-        if lines:
-            parts.append("\n".join(["*Changes since the last run*"] + lines))
+        moved = Counter((c.get("from") or "new", c["to"]) for c in changes)
+        lines = [f"• {k}: {LABEL.get(a, a)} → {LABEL.get(b, b)}" for (a, b), k in moved.most_common()]
+        lines += [f"• {c['email']}: {LABEL.get(c.get('from') or '', 'new')} → {LABEL.get(c['to'], c['to'])}"
+                  for c in changes if c.get("from")][:40]
+        parts.append("\n".join(["*Changes since the last run*"] + lines))
     return head, parts
 
 

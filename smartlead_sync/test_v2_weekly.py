@@ -999,6 +999,20 @@ def test_published_verdicts_follow_the_own_provider_rule(tmp_path):
     assert docs == {"g@x.com": v2.PASS, "o@x.com": v2.PASS, "s@x.com": v2.FAIL}
 
 
+def test_a_published_fail_a_person_overrode_says_so(tmp_path):
+    """13 Nov 2026: a person removed the job's tag after this result, so the job leaves the inbox alone; the readers
+    (list, daily post, self-test) must not hold it back for that fail either."""
+    write_csv(tmp_path, "w.csv", {"s@x.com": (0, 4), "t@x.com": (0, 4)})
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    st["types"] = {"s@x.com": "SMTP", "t@x.com": "SMTP"}
+    for n in got["nights"]:
+        st["holds"].setdefault(n, [])
+    st["overrides"]["s@x.com"] = max(got["nights"])
+    docs = {d["email"]: (d["verdict"], d["overridden"]) for d in wk.verdict_docs(st, NOW + timedelta(days=1)).values()}
+    assert docs == {"s@x.com": (v2.FAIL, True), "t@x.com": (v2.FAIL, False)}
+
+
 # --- the copy check: a file that grades the email and never an inbox (11 Nov 2026) --------------------
 
 def test_a_state_file_without_copy_checks_still_loads(tmp_path):

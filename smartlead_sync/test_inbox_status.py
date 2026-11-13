@@ -63,21 +63,25 @@ def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well():
     items = st.needs_you(st.states(rows, T), T, require_pass=True)
     assert [i["key"] for i in items] == ["held_but_sending", "held_but_sending_report_only", "campaign_short",
                                          "disconnected", "sending_unproven"]
-    assert items[0]["text"] == ("2 inboxes that must not send are still in 1 sending campaign: take them off, or wait "
-                                "for the v2 job to do it when this week's result is in")
-    assert items[0]["detail"] == ["• Precise Leads · Camp A: tagged@x.com (tagged do not use); failed@x.com (failed v2)"]
-    assert items[1]["text"] == ("1 inbox that must not send is still in 1 sending campaign (Melior: the v2 job only "
-                                "reports, Ryan decides)")
-    assert items[2]["text"] == ("1 sending campaign has lost half or more of its inboxes: give it proven inboxes or "
-                                "slow it down")
-    assert items[2]["detail"] == ["• Melior · Melior Legal: 1 of 2 inboxes can send (1 pulled by the v2 job)"]
-    assert items[3]["text"] == "2 inboxes in sending campaigns cannot connect in Smartlead: reconnect them"
+    assert items[0]["text"] == ("2 inboxes that failed the weekly test or are tagged DO NOT USE are still in 1 live "
+                                "campaign. Take them out, or the weekly job takes out the failed ones when this week's "
+                                "results are in")
+    assert items[0]["detail"] == ["• Precise Leads · Camp A: tagged@x.com (tagged DO NOT USE); failed@x.com (failed the "
+                                  "weekly test)"]
+    assert items[1]["text"] == ("1 inbox of Melior that failed the weekly test or is tagged DO NOT USE still sends in 1 "
+                                "live campaign. The weekly job does not act on Melior yet while it is being proven, so "
+                                "it stays until someone takes it out")
+    assert "Ryan" not in items[1]["text"]                         # a safety stage, nobody's call (11 Nov 2026)
+    assert items[2]["text"] == ("1 live campaign has lost half or more of its inboxes. Add inboxes that passed the "
+                                "weekly test, or lower its daily sending")
+    assert items[2]["detail"] == ["• Melior · Melior Legal: 1 of 2 inboxes can send (1 taken out by the weekly job)"]
+    assert items[3]["text"] == "2 inboxes in live campaigns are disconnected in Smartlead. Reconnect them"
     assert items[3]["detail"] == ["• Bettrdata: off1@b.co, off2@b.co"]                      # bench@b.co is not a job
     head, parts = st.format_post(st.states(rows, T), [], items, T)
     assert ("*Not connected and in no sending campaign (the renewal review asks about these at their bill)*\n"
             "• Bettrdata: 1 inbox on b.co") in parts
-    assert items[4]["text"] == ("1 inbox is sending without a v2 pass in the last 10 days: download this week's v2 "
-                                "result files")
+    assert items[4]["text"] == ("1 inbox is sending with no weekly test result in the last 10 days. Download this "
+                                "week's test result files")
     # before the v2 pass is required, sending without one is not a job for a person
     assert "sending_unproven" not in [i["key"] for i in st.needs_you(st.states(rows, T), T, require_pass=False)]
 
@@ -86,7 +90,7 @@ def test_a_campaign_with_no_usable_inbox_is_named():
     rows = [_row("a@x.com", "Camp Z", "ACTIVE", tags=[AUTO]), _row("b@x.com", "Camp Z", "ACTIVE", connection_ok=False)]
     items = {i["key"]: i for i in st.needs_you(st.states(rows, T), T, require_pass=False)}
     assert items["campaign_short"]["detail"] == [
-        "• Precise Leads · Camp Z: 0 of 2 inboxes can send (1 disconnected, 1 pulled by the v2 job)"]
+        "• Precise Leads · Camp Z: 0 of 2 inboxes can send (1 disconnected, 1 taken out by the weekly job)"]
 
 
 def test_history_records_each_change_once_and_gone_only_on_a_full_read():
@@ -175,17 +179,47 @@ def test_post_says_nothing_needs_you_or_lists_it_and_goes_out_once_a_day(monkeyp
     good = [_row(f"g{i}@x.com", "Camp A", "ACTIVE", v2_status="PASS", v2_date="2026-11-09") for i in range(3)]
     res = st.run(good, T, True, post=True, db=db)
     assert res["posted"] and res["needs_you"] == [] and len(sent) == 1
-    assert sent[0][1] == ["✅ Inbox fleet 11 Nov: nothing needs you", "3 inboxes: 3 sending with a v2 pass"]   # baseline: no "since"
+    assert sent[0][1] == ["✅ Inboxes, 11 Nov: nothing needs you",
+                          "3 inboxes in Smartlead, 3 in live campaigns. The list is in the thread."]
     assert not st.run(good, T, True, post=True, db=db)["posted"] and len(sent) == 1          # same day: once
     nxt = date(2026, 11, 12)
     bad = good[:2] + [_row("g2@x.com", "Camp A", "ACTIVE", v2_status="FAIL", v2_date="2026-11-11")]
     res = st.run(bad, nxt, True, post=True, db=db)
     assert res["posted"] and res["needs_you"] == ["held_but_sending"]
     head = sent[1][1]
-    assert head[0] == "⚠️ Inbox fleet 12 Nov: 1 thing needs you"
-    assert head[1].startswith("1. 1 inbox that must not send is still in 1 sending campaign")
-    assert head[2] == "3 inboxes: 2 sending with a v2 pass, 1 failed v2"
-    assert head[3] == "Since the last run: 1 sending with a v2 pass → failed v2"
+    assert head[0] == "⚠️ Inboxes, 12 Nov: 1 thing needs you"
+    assert head[1].startswith("1. 1 inbox that failed the weekly test or is tagged DO NOT USE is still in 1 live campaign.")
+    assert head[2] == "3 inboxes in Smartlead, 3 in live campaigns. The list is in the thread."
+    assert len(head) == 3                                         # the counts and changes are in the thread
+    assert ("*Every inbox, by where it stands*\n• sending, passed the weekly test: 2\n• failed the weekly test: 1"
+            in sent[1][2])
+    assert any("• 1: sending, passed the weekly test → failed the weekly test" in p for p in sent[1][2])
     assert any(p.startswith("*By client*") for p in sent[1][2])
     monkeypatch.setenv("FLEET_STATUS_POST", "off")
     assert not st.run(bad, date(2026, 11, 13), True, post=True, db=db)["posted"]
+
+
+def test_a_google_inbox_that_failed_v2_is_not_held_back_and_nothing_asks_to_take_it_out():
+    """13 Nov 2026: the daily post called 24 BettrData Google inboxes "must not send" after they were put back on
+    purpose, contradicting the v2 job (Google inboxes report-only, PR #69). One rule now: usable.fail_set_aside."""
+    rows = [_row(f"g{i}@b.co", "BD Roundtable", "ACTIVE", provider="Gmail", v2_status="FAIL", v2_date="2026-11-09")
+            for i in range(3)]
+    rows += [_row("o@b.co", "BD Roundtable", "ACTIVE", v2_status="PASS", v2_date="2026-11-09")]
+    recs = _states(rows)
+    assert {e: r["state"] for e, r in recs.items()} == {"g0@b.co": "set_aside", "g1@b.co": "set_aside",
+                                                         "g2@b.co": "set_aside", "o@b.co": "sending"}
+    assert recs["g0@b.co"]["set_aside"] == "the v2 test is not used for Google inboxes"
+    assert st.needs_you(list(recs.values()), T, require_pass=True) == []        # not held, not short, not unproven
+
+
+def test_a_fail_a_person_overrode_is_set_aside_but_an_outlook_fail_still_holds():
+    rows = [_row("back@x.com", "Camp A", "ACTIVE", v2_status="FAIL", v2_date="2026-11-09",
+                 v2_set_aside="a person put it back after this result"),
+            _row("bad@x.com", "Camp A", "ACTIVE", v2_status="FAIL", v2_date="2026-11-09", v2_set_aside=""),
+            _row("ok@x.com", "Camp A", "ACTIVE", v2_status="PASS", v2_date="2026-11-09"),
+            _row("ok2@x.com", "Camp A", "ACTIVE", v2_status="PASS", v2_date="2026-11-09")]
+    recs = _states(rows)
+    assert recs["back@x.com"]["state"] == "set_aside" and recs["bad@x.com"]["state"] == "failed"
+    items = st.needs_you(list(recs.values()), T, require_pass=True)
+    assert [i["key"] for i in items] == ["held_but_sending"] and "bad@x.com" in items[0]["detail"][0]
+    assert "back@x.com" not in items[0]["detail"][0]
