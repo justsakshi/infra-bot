@@ -273,7 +273,7 @@ def test_report_only_melior_is_reported_by_what_would_happen_and_never_touched(j
         "out of campaigns, leave 1 inbox in a live campaign where it is the last good sender and tag 1 inbox that is "
         "in no campaign. List under *Melior* below.",
         "• Melior | Solo (3) is live with only failed inboxes left (mel-solo@y.com). Not changed, as Melior is "
-        "report-only until the job is proven on the other clients: ask Ryan to pause it or add a good sender.",
+        "report-only until the job is proven on the other clients: pause it or add a good sender.",
         "• No result this week from DT PL #2 (1 inbox): download its CSV into Downloads."]
     ro = " (Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead"
     melior = next(p for p in parts if p.startswith("*Melior*"))

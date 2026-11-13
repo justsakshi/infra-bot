@@ -57,10 +57,10 @@ def test_the_post_compares_inside_campaigns_and_says_when_there_are_too_few_repl
 
 def test_cli_prints_without_posting_and_fails_when_no_account_was_read(monkeypatch, capsys):
     import real_recipients as cli
-    monkeypatch.setattr(cli, "gather", lambda today, days: _done(([cell("Melior", "Gmail", 10, {"Google": 5}, {"Google": 1})], {}, 1)))
+    monkeypatch.setattr(cli, "gather", lambda today, days, kinds=None: _done(([cell("Melior", "Gmail", 10, {"Google": 5}, {"Google": 1})], {}, 1)))
     monkeypatch.setattr("sys.argv", ["real_recipients.py", "--today", "2026-11-15"])
     assert cli.main() == 0 and "Real replies" in capsys.readouterr().out
-    monkeypatch.setattr(cli, "gather", lambda today, days: _done(([], {"account X HTTPStatusError": 1}, 0)))
+    monkeypatch.setattr(cli, "gather", lambda today, days, kinds=None: _done(([], {"account X HTTPStatusError": 1}, 0)))
     assert cli.main() == 1
 
 
@@ -80,3 +80,45 @@ def test_a_ratio_on_a_handful_of_looked_up_leads_is_not_shown():
     cells = [cell("Bettrdata", "Gmail", 1500, {"Google": 113, "Outlook": 7}, {"Google": 40, "Outlook": 5})]
     head, _ = rr.format_post(cells, T)
     assert "(too few leads looked up to compare)" in next(h for h in head if h.startswith("Bettrdata."))
+
+
+# --- does Smartlead's test agree with real recipients? (13 Nov 2026) --------------------------------------------
+
+def _google_world(g_events, o_events):
+    """Gmail recipients in one campaign using both types: 25 looked-up leads a side, 100 quiet leads each."""
+    return [cell("Melior", "Gmail", 200, {"Google": 25, "Outlook": 25}, {"Google": g_events, "Outlook": o_events})]
+
+
+def test_google_becomes_untrusted_when_v2_fails_most_but_real_gmail_recipients_answer_as_well():
+    new, changes, lines = rr.trust_decision(_google_world(20, 8), {"GMAIL": (54, 60)}, set())
+    assert "GMAIL" in new and changes and "now NOT trusted" in changes[0]
+    assert any("fails 54 of 60 Google inboxes at Gmail" in x for x in lines)
+
+
+def test_google_is_trusted_again_when_real_recipients_agree_it_does_worse():
+    new, changes, _ = rr.trust_decision(_google_world(5, 20), {"GMAIL": (54, 60)}, {"GMAIL"})
+    assert "GMAIL" not in new and "now trusted" in changes[0]
+
+
+def test_a_type_v2_passes_is_trusted_and_one_noisy_week_in_between_changes_nothing():
+    assert rr.trust_decision(_google_world(20, 8), {"GMAIL": (5, 60)}, {"GMAIL"})[0] == set()   # it fails few
+    new, changes, lines = rr.trust_decision(_google_world(9, 10), {"GMAIL": (54, 60)}, {"GMAIL"})
+    assert new == {"GMAIL"} and changes == [] and any("in between" in x for x in lines)
+
+
+def test_too_little_data_keeps_the_current_view():
+    thin = [cell("Melior", "Gmail", 30, {"Google": 6, "Outlook": 6}, {"Google": 2, "Outlook": 1})]
+    new, changes, lines = rr.trust_decision(thin, {"GMAIL": (54, 60)}, {"GMAIL"})
+    assert new == {"GMAIL"} and changes == [] and "Not enough to judge" in lines[0]
+    assert rr.trust_decision(_google_world(20, 8), {"GMAIL": (5, 6)}, set())[0] == set()        # 6 judged: too few
+
+
+def test_a_campaign_with_almost_no_replies_anywhere_is_named_as_the_offer_or_list():
+    cells = [dict(cell("Precise Leads", "Microsoft", 240, {"Outlook": 25}, {}), name="Exhibitors"),
+             dict(cell("Precise Leads", "Gmail", 138, {"Gmail": 25}, {"Outlook": 1}), name="Exhibitors"),
+             dict(cell("Precise Leads", "Gmail", 400, {"Outlook": 25}, {"Outlook": 30}, "2"), name="Clay in Kochi")]
+    assert rr.quiet_campaigns(cells) == ["• Precise Leads · Exhibitors: 1 from 379 leads"]
+    head, parts = rr.format_post(cells, T, trust=(["Smartlead's test for Google inboxes is now trusted: x"], ["line"]))
+    assert any("almost no replies from any provider" in h for h in head)
+    assert "Smartlead's test for Google inboxes is now trusted: x" in head
+    assert any(p.startswith("*Does Smartlead's test agree") for p in parts)
