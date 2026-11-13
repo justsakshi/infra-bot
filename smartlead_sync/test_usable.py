@@ -226,3 +226,31 @@ def test_a_google_fail_or_an_overridden_fail_is_a_note_not_a_hold_2026_11_13():
 def test_the_v2_job_and_the_readers_share_one_list_of_untrusted_types():
     import v2_weekly
     assert v2_weekly.REPORT_ONLY_TYPES is usable.V2_NOT_TRUSTED
+
+
+
+def test_trust_comes_from_the_env_then_the_weekly_check_then_the_default():
+    assert usable.trust_from("", None) == ({"GMAIL": "Google inboxes"}, "default")
+    doc = {"untrusted": {"OUTLOOK": {"since": "2026-11-15"}}, "decided": "2026-11-15"}
+    assert usable.trust_from("", doc) == ({"OUTLOOK": "Outlook inboxes"}, "real-recipient check of 2026-11-15")
+    assert usable.trust_from("none", doc) == ({}, "env V2_UNTRUSTED_TYPES")
+    assert usable.trust_from("gmail,OUTLOOK", doc)[0] == {"GMAIL": "Google inboxes", "OUTLOOK": "Outlook inboxes"}
+    assert usable.trust_from("", {"untrusted": {}})[0] == {}             # the check decided: everything trusted
+
+
+def test_refresh_changes_the_shared_dict_every_reader_holds(monkeypatch):
+    import v2_weekly
+
+    class Col:
+        def __init__(self, doc): self.doc = doc
+        def find_one(self, q): return self.doc
+    monkeypatch.delenv("V2_UNTRUSTED_TYPES", raising=False)
+    try:
+        assert usable.refresh_trust({"v2_trust": Col({"untrusted": {}, "decided": "2026-11-15"})}).startswith("real-recipient")
+        assert v2_weekly.REPORT_ONLY_TYPES == {} and not usable.fail_set_aside({"verdict": "FAIL"}, "Gmail")
+        assert usable.refresh_trust({"v2_trust": Col(None)}) == "default" and "GMAIL" in v2_weekly.REPORT_ONLY_TYPES
+        class Broken:
+            def __getitem__(self, k): raise RuntimeError("down")
+        assert usable.refresh_trust(Broken()) == "unread" and "GMAIL" in v2_weekly.REPORT_ONLY_TYPES   # down: default
+    finally:
+        usable.V2_NOT_TRUSTED.clear(); usable.V2_NOT_TRUSTED.update(usable.DEFAULT_NOT_TRUSTED)

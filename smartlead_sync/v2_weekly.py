@@ -103,6 +103,7 @@ except ImportError:  # pragma: no cover
 
 sys.path.insert(0, str(HERE))
 from smartlead import v2_results as v2  # noqa: E402
+from smartlead import usable  # noqa: E402
 from smartlead.usable import V2_NOT_TRUSTED  # noqa: E402
 
 TAG = "DO NOT USE - failed v2 (auto)"
@@ -127,13 +128,16 @@ DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
 # for every client; a client listed here is only reported on until the job is known to be safe.
 REPORT_ONLY_CLIENTS = {"Melior"}
 REPORT_ONLY_WHY = {"Melior": "until the job is proven on the other clients"}
-REPORT_ONLY_OWNER = {"Melior": "Ryan"}   # who decides a report-only client's stuck campaign
+# Switching a report-only client on (DECISIONS.md D8, Manveen 11 Nov 2026: "i agree with all 4"): the job says when
+# all four hold; the switch itself stays his call.
+D8_FROM = "2026-11-14"   # the first weekly tests on the new rules
 # Inbox types the job only reports, never changes in Smartlead (12 Nov 2026). Real recipients disagree with the seed
 # test for Google-hosted inboxes: in the same campaigns, Gmail recipients replied or sent out-of-office messages to
 # Google-sent mail at 1.5-2.5 times the rate of Outlook-sent mail (Gmail sends no automatic reply to mail it filed as
 # spam), while v2 failed nearly every Google inbox. Until a real-recipient check agrees, a v2 fail does not move one.
 # --act-types GMAIL overrides this for a run. A client's own report-only stage is named first when both apply.
-REPORT_ONLY_TYPES = V2_NOT_TRUSTED   # one rule for the job and every reader of v2_verdicts (smartlead/usable.py)
+REPORT_ONLY_TYPES = V2_NOT_TRUSTED   # one rule for the job and every reader of v2_verdicts (smartlead/usable.py);
+# refreshed in place at the start of each run from the weekly real-recipient check (usable.refresh_trust)
 REPORT_ONLY_TYPE_WHY = {"GMAIL": "until real replies agree with the seed test"}
 # Mongo (db smartlead.config.HEALTH_HISTORY_DB), read on Render: is the PC job alive, and what did v2 say.
 HEARTBEAT_COLLECTION = "v2_heartbeat"
@@ -937,7 +941,8 @@ def copy_check_lines(rec: dict) -> tuple[str, list[str], list[str]]:
 
 def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, acted: dict, write: bool,
                  pulled_before: set, act_from: str | None = None, behind: int | None = None,
-                 report_only_clients: set | None = None) -> tuple[list[str], list[str]]:
+                 report_only_clients: set | None = None, report_only_types: set | None = None
+                 ) -> tuple[list[str], list[str]]:
     """(headline lines, thread parts). ``got["copy_checks"]``: keys of the judged copy checks to report with
     it. With no night to report (a copy check that arrived on its own) the post is the copy check's alone."""
     nights = sorted(got["nights"])
@@ -1054,11 +1059,20 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     for cid, es in sorted(ro_stuck.items()):
         client = client_of.get(sorted(es)[0], "Not in Smartlead")
         r = report_only[sorted(es)[0]].get("reason") or {"name": client, "why": REPORT_ONLY_WHY.get(client, ""), "client": client}
-        owner = REPORT_ONLY_OWNER.get(r["client"]) if r.get("client") else None
-        verb = "is" if r.get("client") else "are"
+        types = state.get("types") or {}
+        untrusted = report_only_types if report_only_types is not None else set(REPORT_ONLY_TYPES)
+        if not r.get("client") or all(str(types.get(e) or "").upper() in untrusted for e in es):
+            continue    # its senders failed only a test that is not trusted for their type: the campaign is fine
         needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
-                     f"Not changed, as {r['name']} {verb} report-only{' ' + r['why'] if r['why'] else ''}: "
-                     f"{'ask ' + owner + ' to ' if owner else ''}pause it or add a good sender.")
+                     f"Not changed, as {r['name']} is report-only{' ' + r['why'] if r['why'] else ''}: "
+                     f"pause it or add a good sender.")
+    for name, (ok, waiting) in d8_status(state, report_only_clients or set()).items():
+        if not waiting:
+            needs.append(f"All four agreed conditions for acting on {name} hold (D8). Switching it on is your call: "
+                         f"say yes and the job starts taking failing {name} inboxes out like the other clients'.")
+        else:
+            info.append(f"{name} stays report-only: {len(ok)} of 4 agreed conditions hold (D8). Waiting on: "
+                        + "; ".join(waiting) + ".")
     needs += copy_needs
     needs += [f"Error: {err}" for err in acted["errors"]]
     if got["pending"]:
@@ -1590,6 +1604,33 @@ def _crash_alert(state_dir: Path, exc: BaseException, ctx: dict) -> None:
         traceback.print_exc()
 
 
+def trust_for_run(state: dict, db=None) -> str:
+    """Load the shared v2 trust for this run (usable.refresh_trust). Mongo down: use the last decision this job saw
+    (state "v2_trust"), not the default, which could start pulling a type the weekly check had stopped trusting
+    (review 13 Nov 2026). Returns where it came from."""
+    src = usable.refresh_trust(db)
+    if src == "unread" and state.get("v2_trust") is not None:
+        V2_NOT_TRUSTED.clear()
+        V2_NOT_TRUSTED.update(state["v2_trust"])
+        return "the job's last copy (Mongo not read)"
+    if src != "unread":
+        state["v2_trust"] = dict(V2_NOT_TRUSTED)
+    return src
+
+
+def d8_status(state: dict, clients: set[str]) -> dict[str, tuple[list[str], list[str]]]:
+    """{client: (conditions met, conditions still waiting)} for each report-only client. Pure."""
+    nights = {f["night"] for f in state["files"].values()
+              if f.get("status") == "ingested" and f.get("night") and f["night"] >= D8_FROM and v2.is_weekly_night(f["night"])}
+    wrong = [e for e, n in (state.get("overrides") or {}).items() if str(n) >= D8_FROM]
+    conds = [("the 11 Nov evening run finished clean", True),
+             ("one weekly test on the new rules", bool(nights)),
+             ("no inbox the job took out was put back by a person since" if not wrong
+              else f"no inbox the job took out put back by a person ({len(wrong)} were since {D8_FROM})", not wrong),
+             ("one taken-out inbox coming back on its own after two passes", bool(state.get("returned")))]
+    return {c: ([n for n, ok in conds if ok], [n for n, ok in conds if not ok]) for c in sorted(clients)}
+
+
 async def run(args) -> int:
     state_dir = Path(args.state_dir)
     persist = bool(args.apply or args.warn or args.history_only)
@@ -1628,6 +1669,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     now = now_ist()
     today = now.date().isoformat()
     state["since"] = state["since"] or today
+    src = trust_for_run(state)
+    print(f"[v2-weekly] v2 test not trusted for: {', '.join(sorted(V2_NOT_TRUSTED)) or 'no type'} (from {src})")
     write = _writes(args, today)
     can_post = bool(args.post) and persist
     behind = (ctx.get("git") or (None, None))[1]
@@ -1754,9 +1797,13 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     for acc in list(pulls):
         ro_pulls[acc] = [e for e in pulls[acc] if why_ro(e)]
         pulls[acc] = [e for e in pulls[acc] if not why_ro(e)]
+    # A type whose test is not trusted still comes back after two passes: only a report-only CLIENT holds returns, or
+    # a type that stopped being trusted would leave its pulled inboxes out for good (review 13 Nov 2026).
+    def why_ro_back(e: str) -> dict | None:
+        return ro_reason(client_of.get(e), None, ro, set())
     for acc in list(returns):
-        ro_back += [e for e in returns[acc] if why_ro(e)]
-        returns[acc] = [e for e in returns[acc] if not why_ro(e)]
+        ro_back += [e for e in returns[acc] if why_ro_back(e)]
+        returns[acc] = [e for e in returns[acc] if not why_ro_back(e)]
 
     for acc, emails in pulls.items():
         if emails:
@@ -1771,7 +1818,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         if emails:
             _merge(acted, await do_returns(acc, fleet[acc], emails, write, today, state, save))
     for e in ro_back:
-        r = why_ro(e)
+        r = why_ro_back(e)
         acted["notes"].append(f"{e} passed twice and would go back into its campaigns, but {r['name']} "
                               f"{'is' if r.get('client') else 'are'} report-only, so nothing was changed.")
     if acted["leads"]:
@@ -1781,7 +1828,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     # Copy checks read and not yet reported ride with this report, judged against the results just acted on.
     got["copy_checks"] = copy_checks_due(state, now, settled=False)
     judge_copy_checks(state, got["copy_checks"])
-    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from, behind, ro)
+    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from, behind, ro,
+                               report_only_types=ro_t)
     text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
     print(text)
     state["log"].append({"at": now.isoformat(timespec="minutes"), "write": write, "nights": sorted(got["nights"]),

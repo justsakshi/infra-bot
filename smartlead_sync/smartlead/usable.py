@@ -39,7 +39,47 @@ NOT_READ = "v2 results and blocklists not read today"
 # Inbox types whose v2 FAIL does not hold them back (12 Nov 2026): in the same campaigns, Gmail recipients answered
 # Google-sent mail 1.5-2.5 times as often as Outlook-sent mail while v2 failed nearly every Google inbox. One rule for
 # every reader: the v2 job (REPORT_ONLY_TYPES), the list, the daily fleet post and the gate self-test.
-V2_NOT_TRUSTED = {"GMAIL": "Google inboxes"}
+TYPE_NAMES = {"GMAIL": "Google inboxes", "OUTLOOK": "Outlook inboxes", "SMTP": "SMTP inboxes"}
+DEFAULT_NOT_TRUSTED = {"GMAIL": "Google inboxes"}
+# Shared by every reader and refreshed IN PLACE by refresh_trust() (v2_weekly.REPORT_ONLY_TYPES is this same dict).
+# Since 13 Nov 2026 the weekly real-recipient check decides it from real replies (real_recipients.trust_decision) and
+# keeps it in Mongo v2_trust; the default above holds until it has, or when Mongo cannot be read.
+V2_NOT_TRUSTED = dict(DEFAULT_NOT_TRUSTED)
+TRUST_COLLECTION = "v2_trust"
+
+
+def trust_from(env_value: str | None, doc: dict | None) -> tuple[dict[str, str], str]:
+    """({type: name}, where it came from). Env V2_UNTRUSTED_TYPES ("GMAIL,OUTLOOK", or "none") wins over the Mongo
+    doc, which wins over the default. Pure."""
+    env_value = str(env_value or "").strip()
+    if env_value:
+        if env_value.lower() in ("none", "off", "-"):
+            return {}, "env V2_UNTRUSTED_TYPES"
+        kinds = [kind_of(x) for x in env_value.split(",") if x.strip()]
+        return {k: TYPE_NAMES.get(k, k) for k in kinds}, "env V2_UNTRUSTED_TYPES"
+    if isinstance(doc, dict) and isinstance(doc.get("untrusted"), dict):
+        return ({kind_of(k): TYPE_NAMES.get(kind_of(k), k) for k in doc["untrusted"]},
+                f"real-recipient check of {doc.get('decided') or 'an earlier week'}")
+    return dict(DEFAULT_NOT_TRUSTED), "default"
+
+
+def refresh_trust(db=None) -> str:
+    """Set V2_NOT_TRUSTED in place from the env, Mongo, or the default. Never raises; returns where it came from,
+    "unread" when Mongo could not be read (the default is then in place; a caller that acts may prefer its own last
+    copy, as v2_weekly does)."""
+    doc = None
+    if not os.getenv("V2_UNTRUSTED_TYPES", "").strip():
+        try:
+            doc = (db if db is not None else _db())[TRUST_COLLECTION].find_one({"_id": "current"})
+        except Exception as exc:  # noqa: BLE001 - the default holds
+            print(f"  [Usable] v2 trust not read ({type(exc).__name__}); using the default")
+            V2_NOT_TRUSTED.clear()
+            V2_NOT_TRUSTED.update(DEFAULT_NOT_TRUSTED)
+            return "unread"
+    kinds, source = trust_from(os.getenv("V2_UNTRUSTED_TYPES"), doc)
+    V2_NOT_TRUSTED.clear()
+    V2_NOT_TRUSTED.update(kinds)
+    return source
 
 
 def kind_of(type_or_provider) -> str:
@@ -199,6 +239,7 @@ def load_gate_data() -> dict:
     from smartlead.config import BLACKLIST_COLLECTION
     try:
         db = _db()
+        refresh_trust(db)
         v2 = newest_judged(db["v2_verdicts"].find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1, "overridden": 1}))
         listed = listed_domains(db[BLACKLIST_COLLECTION].find({}, {"_id": 0, "domain": 1, "date": 1, "listed_on": 1}))
         return {"v2": v2, "listed": listed, "checked": True, "error": ""}

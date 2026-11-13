@@ -653,7 +653,7 @@ def test_report_only_lines_say_what_would_happen_to_each_inbox(tmp_path):
             "inbox in a live campaign where it is the last good sender and tag 1 inbox that is in no campaign. "
             "List under *Melior* below.") in parts[0]
     assert ("• Melior | Solo (5) is live with only failed inboxes left (last@y.com). Not changed, as Melior is "
-            "report-only until the job is proven on the other clients: ask Ryan to pause it or add a good sender.") in parts[0]
+            "report-only until the job is proven on the other clients: pause it or add a good sender.") in parts[0]
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert ("• fail · y.com · last@y.com · Google 0/4, Microsoft 4/4 → last good sender of live Melior | Solo, so it "
             "would stay there (Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
@@ -1199,3 +1199,38 @@ def test_copy_checks_go_to_mongo_as_one_document_per_client_and_night(tmp_path):
                                                               "copy check.csv")
     assert d["google"] == {"inbox": 20, "sent": 20, "senders": 5, "left_out": 0, "verdict": v2.PASS}
     assert d["outlook"]["verdict"] == v2.NOT_JUDGED and d["updated_at"].endswith("+00:00")
+
+
+
+def test_d8_says_which_agreed_conditions_hold_for_a_report_only_client():
+    st = {"files": {"a": {"status": "ingested", "night": "2026-11-11"}}, "overrides": {"x@y.com": "2026-11-09"},
+          "returned": []}
+    ok, waiting = wk.d8_status(st, {"Melior"})["Melior"]
+    assert len(ok) == 2 and waiting == ["one weekly test on the new rules",
+                                        "one taken-out inbox coming back on its own after two passes"]
+    st["files"]["b"] = {"status": "ingested", "night": "2026-11-15"}       # a Sunday: a weekly night
+    st["returned"] = [{"email": "r@y.com"}]
+    assert wk.d8_status(st, {"Melior"})["Melior"][1] == []
+    st["overrides"]["z@y.com"] = "2026-11-15"                              # a person undid a pull after the switch
+    assert wk.d8_status(st, {"Melior"})["Melior"][1][0].startswith("no inbox the job took out put back by a person (1")
+    assert wk.d8_status(st, set()) == {}
+
+
+
+def test_a_run_with_mongo_down_uses_the_jobs_last_copy_of_the_trust_decision():
+    from smartlead import usable
+
+    class Broken:
+        def __getitem__(self, k): raise RuntimeError("down")
+
+    class Ok:
+        def __getitem__(self, k): return self
+        def find_one(self, q): return {"untrusted": {"GMAIL": {}, "OUTLOOK": {}}, "decided": "2026-11-15"}
+    try:
+        st = {}
+        assert wk.trust_for_run(st, Ok()).startswith("real-recipient") and st["v2_trust"].keys() == {"GMAIL", "OUTLOOK"}
+        assert wk.trust_for_run(st, Broken()) == "the job's last copy (Mongo not read)"
+        assert set(wk.REPORT_ONLY_TYPES) == {"GMAIL", "OUTLOOK"}          # not the Google-only default
+        assert wk.trust_for_run({}, Broken()) == "unread" and set(wk.REPORT_ONLY_TYPES) == {"GMAIL"}
+    finally:
+        usable.V2_NOT_TRUSTED.clear(); usable.V2_NOT_TRUSTED.update(usable.DEFAULT_NOT_TRUSTED)
