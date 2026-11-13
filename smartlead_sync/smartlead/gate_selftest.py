@@ -46,7 +46,8 @@ def checks(inboxes: list[dict], campaigns: list[dict], rows: list[dict], v2: dic
     by_email = {str(r.get("Email") or "").strip().lower(): r for r in rows if str(r.get("Email") or "").strip()}
     tagged = {i["email"] for i in inboxes if i["email"] and usable.is_do_not_use(i.get("tags"))}
     auto = {i["email"] for i in inboxes if any(str(t).strip().lower() == AUTO_TAG for t in i.get("tags") or [])}
-    failed = {e for e, d in v2.items() if str(d.get("verdict") or "").upper() == "FAIL"}
+    kinds = {i["email"]: i.get("type") or "" for i in inboxes}
+    failed = {e for e, d in v2.items() if usable.holds_back(d, kinds.get(e, ""))}   # set-aside fails hold nothing back
     out = []
 
     def add(name, checked, bad, good, wrong, blocked=(), note=""):

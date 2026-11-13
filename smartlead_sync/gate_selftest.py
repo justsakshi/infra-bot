@@ -16,7 +16,8 @@ This job reads the four sources again, each from its origin, and compares them:
 
 Checks (smartlead/gate_selftest.checks):
   1. every inbox tagged DO NOT USE is BUSY on the list with reason do_not_use
-  2. every inbox whose newest v2 verdict is FAIL is BUSY on the list with reason failed_v2
+  2. every inbox whose newest v2 verdict is FAIL is BUSY on the list with reason failed_v2 (a fail that is set
+     aside, usable.fail_set_aside: a Google inbox or one a person put back, is not held back anywhere)
   3. once a v2 pass is required: every FREE inbox has a v2 pass in the last 10 days
   4. no tagged or failed inbox is attached to a sending campaign (report-only clients are listed, not failed)
   5. the v2 job on the PC ran in the last 26 hours and is in act mode
@@ -63,6 +64,7 @@ async def smartlead_side(errors: list[str]) -> tuple[list[dict], list[dict]]:
                 for a in await c.list_email_accounts():
                     inboxes.append({"email": str(a.get("from_email") or "").strip().lower(),
                                     "tags": usable.tag_names(a), "account": acc.name,
+                                    "type": str(a.get("type") or ""),
                                     "connected": bool(a.get("is_smtp_success")) and bool(a.get("is_imap_success")),
                                     "client": client_label(acc.name, a.get("client_id"))})
                 for camp in await c.list_campaigns() or []:

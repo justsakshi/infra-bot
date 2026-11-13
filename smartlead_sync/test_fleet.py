@@ -104,9 +104,9 @@ def test_watch_post_counts_per_action_in_the_channel_and_lists_in_the_thread():
     for c in new:
         c["opened_on"] = "2026-10-20"
     head, thread = fl.watch_post(new, open_count={"warmup_off": 2, "kill": 1, "no_test": 4}, today=TODAY)
-    assert head[0] == "⚠️ Fleet watch, 20 Oct: 3 new problems (suggestions only, nothing was changed)"
+    assert head[0] == "⚠️ New inbox problems, 20 Oct: 3 (what to do is in the thread; the bot changed nothing)"
     assert head[1:3] == ["Warmup off: 2", "Kill list: 1"]                       # what is wrong, short
-    assert any(l.startswith("Still open: 7 (") for l in head)
+    assert not any(l.startswith("Still open") for l in head)      # not repeated daily (13 Nov 2026); scorecard has it
     assert "*Turn warmup back on* (warmup off, 2):\n• w1@d.com\n• w2@d.com" in thread
     assert "*Take it out of campaigns, do not renew* (kill list, 1):\n• k@e.com" in thread
     assert "w1@d.com" not in "\n".join(head)                      # the inboxes are in the thread only
@@ -348,10 +348,10 @@ def test_watch_post_resends_earlier_cases_and_shows_a_listed_live_domain_once():
     earlier = dict(cases["warmup_off:a@d.com"], opened_on="2026-10-18")
     new = [earlier, cases["blocklist:d.com"], cases["listed_live:d.com"]]
     head, thread = fl.watch_post(new, {"no_test": 2}, TODAY, unknown=1)
-    assert head[0] == "⚠️ Fleet watch, 20 Oct: 2 new problems (suggestions only, nothing was changed)"
+    assert head[0] == "⚠️ New inbox problems, 20 Oct: 2 (what to do is in the thread; the bot changed nothing)"
     assert head[1:3] == ["On Spamhaus DBL or URIBL and in live campaigns: 1", "Warmup off: 1"]
     assert "1 of them was found on 18 Oct, but that post did not go out." in head
-    assert "Still open: 2 (no placement test in 21 days 2); 1 of them could not be checked today" in head
+    assert not any("Still open" in l for l in head)
     assert "• a@d.com, found 18 Oct" in "\n".join(thread)
     assert not any("on a blocklist, " in p for p in thread)            # shown under listed_live only
 
@@ -385,7 +385,7 @@ def test_scorecard_lists_every_open_blocklist_case_including_baseline_ones():
 def test_the_headline_counts_add_up_when_one_kind_has_several_actions():
     cases = run([rec("g@d.com", setup=False, limit=25), rec("o@o.com", kind="outlook", setup=False, limit=12)])
     head, thread = fl.watch_post(cases, {}, TODAY)
-    assert head == ["⚠️ Fleet watch, 20 Oct: 2 new problems (suggestions only, nothing was changed)",
+    assert head == ["⚠️ New inbox problems, 20 Oct: 2 (what to do is in the thread; the bot changed nothing)",
                     "Above the highest daily limit for its type: 2"]
     assert thread == ["*Lower to 10 or record it as approved* (above the highest daily limit for its type, 1):\n• o@o.com (12/day, highest for its type 10)",
                       "*Lower to 20 or record it as approved* (above the highest daily limit for its type, 1):\n• g@d.com (25/day, highest for its type 20)"]

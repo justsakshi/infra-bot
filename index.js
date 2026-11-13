@@ -972,6 +972,8 @@ async function runDailySummary() {
 }
 
 /* -------------------- 4:00 PM IST Summary (Structured) -------------------- */
+// The renewal check's count for the day, read by the 4 PM reminder (which posts only when something expires).
+let lastExpiringCount = null;
 // Returns true when posted, 'skipped' when another instance already posted today, false on an error.
 async function runNoonSummary() {
   try {
@@ -1045,6 +1047,13 @@ async function runNoonSummary() {
 
     const totalExpiring = groups.reduce((sum, g) => sum + g.assets.length, 0);
     console.log(`[runNoonSummary] totalExpiring: ${totalExpiring}`);
+    // Nothing expiring: no post (13 Nov 2026, the channel was too noisy). The weekday bot-health post shows the
+    // job ran; the 4 PM reminder reads this day's count and stays quiet too.
+    lastExpiringCount = { day: dayjs().format('YYYY-MM-DD'), total: totalExpiring };
+    if (!totalExpiring) {
+      console.log('[runNoonSummary] nothing expires in the next 3 working days: no post');
+      return 'quiet';
+    }
 
     const baseUrl = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : 'https://infra-bot-1.onrender.com';
     const { text: summaryTitle, blocks } = renewalLabels.renewalCheckBlocks(groups, { channel: CHANNEL, baseUrl, now: dayjs() });
@@ -1075,11 +1084,18 @@ async function runSimpleReminder() {
 
     const CHANNEL = 'C0AGVSUNEFP';
     const baseUrl = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : 'https://infra-bot-1.onrender.com';
-    console.log('[runSimpleReminder] Sending 5:15 PM reminder...');
+    // Only when the 10:00 check found something expiring today (a restart since then loses the count: post, as before).
+    const today = dayjs().format('YYYY-MM-DD');
+    const count = lastExpiringCount && lastExpiringCount.day === today ? lastExpiringCount.total : null;
+    if (count === 0) {
+      console.log('[runSimpleReminder] nothing expires in the next 3 working days: no reminder');
+      return 'quiet';
+    }
+    console.log('[runSimpleReminder] Sending 4 PM reminder...');
     await app.client.chat.postMessage({
       token: process.env.SLACK_BOT_TOKEN,
       channel: CHANNEL,
-      text: renewalLabels.reminderText(baseUrl)
+      text: renewalLabels.reminderText(baseUrl, count)
     });
     console.log('✅ Simple reminder sent');
     return true;

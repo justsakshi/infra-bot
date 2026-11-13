@@ -56,7 +56,8 @@ const JOBS = [
   { job: 'billing-watch', cron: '5 10,12,14,16,18,20 * * *', title: 'Billing watch' },
   { job: 'campaign-stats-post', cron: '15 10 * * 1-5', title: 'Campaign stats post', when: env => env.CAMPAIGN_STATS_POST !== 'off' },
   { job: 'infra-audit', cron: '20 10 * * 1-5', title: 'Infra audit' },
-  { job: 'fleet-watch', cron: '30 10 * * *', title: 'Fleet watch' },
+  { job: 'fleet-watch', cron: '30 10 * * *', title: 'Fleet watch',
+    codes: { 1: 'a source could not be read, or the post was refused' } },
   { job: 'provider-watch', cron: '40 10 * * 1', title: 'Microsoft/Proofpoint watch', when: env => env.PROVIDER_WATCH_POST !== 'off' },
   { job: 'fleet-scorecard', cron: '50 10 * * 1', title: 'Fleet scorecard' },
   { job: 'retest', cron: '0 11 * * *', title: 'Auto placement test' },
@@ -362,7 +363,8 @@ function slotList(slots, max = 6) {
 }
 
 /**
- * The daily / after-restart post: { text, thread } (thread null when nothing is wrong).
+ * The daily / after-restart post: { text, thread }. The thread has what failed, if anything, and the live-write
+ * flags (13 Nov 2026: moved out of the post itself, which repeated them every day).
  * kind 'daily' | 'restart'; upSince: when this process started.
  */
 function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = false, runs = [], heartbeat, env = {}, upSince, jobs = JOBS, deploy }) {
@@ -384,7 +386,6 @@ function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = fa
   const parts = dep.red ? [dep.text, head] : [head];       // undeployed code goes first: every post below it is stale
   if (kind === 'daily' || v2.red) parts.push(v2.text);
   if (dep.text && !dep.red) parts.push(dep.text);
-  parts.push(flagsLine(env));
 
   let thread = null;
   if (problems.length) {
@@ -411,6 +412,7 @@ function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = fa
     }
     thread = sections.join('\n\n');
   }
+  thread = thread ? `${thread}\n\n${flagsLine(env)}` : flagsLine(env);
   return { text: parts.join('\n\n'), thread, summary: s, red: v2.red || dep.red };
 }
 

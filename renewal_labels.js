@@ -102,9 +102,11 @@ function renewalCheckBlocks(groups, { channel, baseUrl, now = dayjs() }) {
   return { text: title, blocks };
 }
 
-/** The 4 PM weekday nudge. */
-function reminderText(baseUrl) {
-  return `🔔 Reminder: please review and renew any expiring domains or inboxes. <${baseUrl}/|Open dashboard>`;
+/** The 4 PM weekday nudge; ``count`` = what the 10:00 check found expiring (null = not known). */
+function reminderText(baseUrl, count = null) {
+  const what = count ? `${plural(count, 'domain or inbox', 'domains or inboxes')} expire${count === 1 ? 's' : ''} in the next 3 working days`
+    : 'some domains or inboxes may expire soon';
+  return `🔔 Reminder: ${what}. Renew ${count === 1 ? 'it' : 'them'} or let ${count === 1 ? 'it' : 'them'} go on purpose. <${baseUrl}/|Open dashboard>`;
 }
 
 module.exports = { expirySource, assetLine, estimatedNote, countLine, expiringDetail, renewalCheckBlocks, reminderText };

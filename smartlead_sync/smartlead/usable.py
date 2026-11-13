@@ -12,7 +12,10 @@ look at the three things that showed the Google batch was in spam:
 That day 88 inboxes were FREE: 49 on listed domains, 83 with no v2 result. The 60 tagged ones were BUSY only
 because their grid rows happened to be stale.
 
-Always BUSY: tagged DO NOT USE (``do_not_use``), newest judged v2 verdict FAIL (``failed_v2``).
+Always BUSY: tagged DO NOT USE (``do_not_use``), newest judged v2 verdict FAIL (``failed_v2``), unless that
+fail is set aside (``fail_set_aside``): the inbox is of a type whose v2 test is not trusted (Google inboxes since
+12 Nov 2026, the same rule as v2_weekly.REPORT_ONLY_TYPES), or a person removed the v2 job's tag after it (the
+verdict doc's ``overridden``). A set-aside fail is a note, and the inbox still has no v2 pass.
 BUSY when the switch is on, a note until then:
   AVAILABILITY_BLOCK_LISTED=true     listed sending domain -> ``blocklisted``
   AVAILABILITY_REQUIRE_V2_PASS=true  no v2 pass in the last 10 days -> ``no_v2_pass``
@@ -33,6 +36,36 @@ V2_FRESH_DAYS = 10                   # a weekly test plus three days: results ar
 JUDGED = ("PASS", "WATCH", "FAIL")   # INCOMPLETE and anything else is not a verdict
 SENDER_LISTS = ("spamhaus", "uribl")  # lists that judge the sending domain (SURBL lists links in the copy)
 NOT_READ = "v2 results and blocklists not read today"
+# Inbox types whose v2 FAIL does not hold them back (12 Nov 2026): in the same campaigns, Gmail recipients answered
+# Google-sent mail 1.5-2.5 times as often as Outlook-sent mail while v2 failed nearly every Google inbox. One rule for
+# every reader: the v2 job (REPORT_ONLY_TYPES), the list, the daily fleet post and the gate self-test.
+V2_NOT_TRUSTED = {"GMAIL": "Google inboxes"}
+
+
+def kind_of(type_or_provider) -> str:
+    """Smartlead's account type ("GMAIL", "OUTLOOK", "SMTP") or the sync's provider ("Gmail", "Outlook") -> the
+    Smartlead type, upper case; "" when unknown."""
+    s = str(type_or_provider or "").strip().upper()
+    if "GMAIL" in s or "GOOGLE" in s:
+        return "GMAIL"
+    if any(k in s for k in ("OUTLOOK", "OFFICE", "MICROSOFT", "EXCHANGE")):
+        return "OUTLOOK"
+    return s
+
+
+def fail_set_aside(v2: dict | None, kind="") -> str:
+    """Why a FAIL verdict does not hold this inbox back ("" = it does, or it is not a FAIL). Pure."""
+    if str((v2 or {}).get("verdict") or "").upper() != "FAIL":
+        return ""
+    if (v2 or {}).get("overridden"):
+        return "a person put it back after this result"
+    name = V2_NOT_TRUSTED.get(kind_of(kind))
+    return f"the v2 test is not used for {name}" if name else ""
+
+
+def holds_back(v2: dict | None, kind="") -> bool:
+    """Does this verdict keep the inbox out of campaigns? FAIL, and not set aside. Pure."""
+    return str((v2 or {}).get("verdict") or "").upper() == "FAIL" and not fail_set_aside(v2, kind)
 
 
 def require_v2_pass(today: date) -> bool:
@@ -88,12 +121,13 @@ def _day(iso: str) -> str:
 
 
 def gate(tags, v2: dict | None, listed: bool | None, today: date, *, checked: bool = True,
-         block_listed: bool = False, require_v2_pass: bool = False) -> tuple[list[str], list[str]]:
+         block_listed: bool = False, require_v2_pass: bool = False, kind: str = "") -> tuple[list[str], list[str]]:
     """(busy reasons, notes) for one inbox.
 
     ``v2`` = its newest judged verdict {"verdict", "night"} or None; ``listed`` = its domain is on
     Spamhaus DBL / URIBL (None = no blocklist row for it). ``checked`` False = Mongo was not read:
-    only the tag rule applies and nothing is claimed about v2 or blocklists.
+    only the tag rule applies and nothing is claimed about v2 or blocklists. ``kind`` = the inbox's type or
+    provider (see ``fail_set_aside``).
     """
     reasons, notes = [], []
     if is_do_not_use(tags):
@@ -102,7 +136,8 @@ def gate(tags, v2: dict | None, listed: bool | None, today: date, *, checked: bo
         return reasons, notes
     verdict = str((v2 or {}).get("verdict") or "").upper()
     night = str((v2 or {}).get("night") or "")
-    if verdict == "FAIL":
+    aside = fail_set_aside(v2, kind)
+    if verdict == "FAIL" and not aside:
         reasons.append("failed_v2")
     else:
         fresh = False
@@ -112,7 +147,8 @@ def gate(tags, v2: dict | None, listed: bool | None, today: date, *, checked: bo
             except ValueError:
                 fresh = False
         if not fresh:
-            why = (f"v2 watch on {_day(night)}" if verdict == "WATCH"
+            why = (f"failed v2 on {_day(night)}, not counted: {aside}" if aside
+                   else f"v2 watch on {_day(night)}" if verdict == "WATCH"
                    else f"last v2 pass {_day(night)}, older than {V2_FRESH_DAYS} days" if verdict == "PASS"
                    else "no v2 result")
             if require_v2_pass:
@@ -126,7 +162,7 @@ def gate(tags, v2: dict | None, listed: bool | None, today: date, *, checked: bo
 
 
 def newest_judged(rows) -> dict[str, dict]:
-    """{email: {"verdict", "night"}}: each inbox's newest v2 row that is a verdict. Pure."""
+    """{email: {"verdict", "night", "overridden"}}: each inbox's newest v2 row that is a verdict. Pure."""
     out: dict[str, dict] = {}
     for d in rows or []:
         email, night = str(d.get("email") or "").lower(), str(d.get("night") or "")
@@ -134,7 +170,7 @@ def newest_judged(rows) -> dict[str, dict]:
         if not email or verdict not in JUDGED:
             continue
         if email not in out or night > out[email]["night"]:
-            out[email] = {"verdict": verdict, "night": night}
+            out[email] = {"verdict": verdict, "night": night, "overridden": bool(d.get("overridden"))}
     return out
 
 
@@ -163,7 +199,7 @@ def load_gate_data() -> dict:
     from smartlead.config import BLACKLIST_COLLECTION
     try:
         db = _db()
-        v2 = newest_judged(db["v2_verdicts"].find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1}))
+        v2 = newest_judged(db["v2_verdicts"].find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1, "overridden": 1}))
         listed = listed_domains(db[BLACKLIST_COLLECTION].find({}, {"_id": 0, "domain": 1, "date": 1, "listed_on": 1}))
         return {"v2": v2, "listed": listed, "checked": True, "error": ""}
     except Exception as exc:  # noqa: BLE001 - the tag rule still holds; the sheet says the rest was not read
@@ -179,10 +215,12 @@ def apply(item: dict, data: dict | None, today: date, *, block_listed: bool, req
     v2 = (data or {}).get("v2", {}).get(email)
     listed = email.split("@")[-1] in (data or {}).get("listed", set()) if checked else None
     reasons, notes = gate(item.get("tags"), v2, listed, today, checked=checked,
-                          block_listed=block_listed, require_v2_pass=require_v2_pass)
+                          block_listed=block_listed, require_v2_pass=require_v2_pass,
+                          kind=item.get("type") or item.get("provider") or "")
     if data is not None and not checked:
         notes.append(NOT_READ)
     item["v2_status"] = (v2 or {}).get("verdict", "")
+    item["v2_set_aside"] = fail_set_aside(v2, item.get("type") or item.get("provider") or "") if checked else ""
     item["v2_date"] = (v2 or {}).get("night", "")
     item["use_notes"] = "; ".join(notes)
     return reasons

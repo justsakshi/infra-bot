@@ -55,5 +55,11 @@ console.log(n + ' passed');
   assert2.strictEqual(expiringDetail('Today', groups[0].assets),
     '*Expiring today*\n1 domain · 1 inbox\n\n*Melior*\n🌐 x.com · Zapmail\n📧 r@x.com · Zapmail');
   assert2.ok(/<https:\/\/h\/\|Open dashboard>/.test(reminderText('https://h')));
-  console.log('renewal check layout: 8 passed');
+  // 13 Nov 2026: the reminder names what expires; with nothing expiring neither post goes out
+  assert2.ok(reminderText('https://h', 3).startsWith('🔔 Reminder: 3 domains or inboxes expire in the next 3 working days. Renew them'));
+  assert2.ok(reminderText('https://h', 1).includes('1 domain or inbox expires in the next 3 working days. Renew it'));
+  const src = require('fs').readFileSync(require('path').join(__dirname, 'index.js'), 'utf8');
+  assert2.ok(/if \(!totalExpiring\) \{[\s\S]{0,200}return 'quiet';/.test(src), 'renewal check: no post when nothing expires');
+  assert2.ok(/if \(count === 0\) \{[\s\S]{0,200}return 'quiet';/.test(src), '4 PM reminder: no post when nothing expires');
+  console.log('renewal check layout: 12 passed');
 }

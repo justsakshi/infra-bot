@@ -218,9 +218,9 @@ const quietEnv = { COPY_SYNC_DISABLED: 'true', PROVIDER_WATCH_POST: 'off' };
 const dueQuiet = h.expectedSlots(new Date(+since - 3 * 60000), new Date(+at - 3 * 60000), quietEnv).length;
 eq(dueQuiet, due.length - 1, 'PROVIDER_WATCH_POST=off: Monday 10:40 is not expected');
 let post = h.healthPost({ kind: 'daily', now: at, since, runs: allRan, heartbeat: hb(2), env: { ...quietEnv, RETEST_ENABLED: 'true' } });
-eq(post.thread, null, 'nothing wrong: no thread');
+eq(post.thread, 'Live-write flags on: `RETEST_ENABLED`.', 'nothing wrong: the thread has only the flags (13 Nov 2026)');
 eq(post.text, `Bot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled runs ran, none failed.\n\n`
-  + 'PC v2 job: last ran 2 h ago, newest v2 night Mon 9 Nov, mode warn.\n\nLive-write flags on: `RETEST_ENABLED`.');
+  + 'PC v2 job: last ran 2 h ago, newest v2 night Mon 9 Nov, mode warn.');
 
 post = h.healthPost({ kind: 'daily', now: at, since, runs: [...less, ...withFails.slice(allRan.length)], heartbeat: hb(30), env: quietEnv });
 ok(post.text.startsWith(`Bot health since Mon 9 Nov 10:05 IST: 2 of ${dueQuiet} scheduled runs did not run, 2 runs failed, 1 run started but never finished. Details in the thread.\n\n🔴 PC v2 job: last ran 30 h ago`), post.text);
@@ -228,10 +228,11 @@ ok(post.thread.includes('Did not run (no run recorded for that time):\n• Fleet
 ok(post.thread.includes('• Kill warnings, Mon 9 Nov 13:30: exit code 1.'), post.thread);
 ok(post.thread.includes('• DT senders, Tue 10 Nov 06:00: could not start: spawn python ENOENT.'), post.thread);
 ok(post.thread.includes('• Auto placement test, started Mon 9 Nov 11:00'), post.thread);
-ok(post.thread.split('\n\n').length === 3, 'blank lines between the sections');
+ok(post.thread.split('\n\n').length === 4, 'blank lines between the sections, the flags last');
+ok(post.thread.endsWith('Live-write flags on: none.') && !post.text.includes('Live-write'), 'flags in the thread only');
 
 post = h.healthPost({ kind: 'restart', now: at, since, runs: allRan, heartbeat: hb(2), env: quietEnv, upSince: ist('2026-11-10T10:02:00') });
-eq(post.text, `Bot restarted at 10:02 IST. Bot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled runs ran, none failed.\n\nLive-write flags on: none.`,
+eq(post.text, `Bot restarted at 10:02 IST. Bot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled runs ran, none failed.`,
   'restart: no v2 line when it is fine');
 post = h.healthPost({ kind: 'restart', now: at, since, runs: allRan, heartbeat: null, env: quietEnv, upSince: at });
 ok(post.text.includes('\n\n🔴 PC v2 job: no heartbeat'), 'restart: the v2 line when it is red');
@@ -267,10 +268,10 @@ eq(h.deployLine({ running: RUN, behindBy: NaN }).red, false, 'no number: not an 
 post = h.healthPost({ kind: 'daily', now: at, since, runs: allRan, heartbeat: hb(2), env: quietEnv, deploy: { running: RUN, behindBy: 4, mainSha: MAIN } });
 ok(post.text.startsWith('🔴 Not deployed: the bot runs `b201107`') && post.red, 'undeployed code is the first line and makes the post red');
 ok(post.text.includes(`\n\nBot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled runs ran, none failed.\n\n`), 'the rest of the post is unchanged');
-eq(post.thread, null, 'no thread for it');
+eq(post.thread, 'Live-write flags on: none.', 'only the flags in the thread');
 post = h.healthPost({ kind: 'restart', now: at, since, runs: allRan, heartbeat: hb(2), env: quietEnv, upSince: at, deploy: { running: MAIN, behindBy: 0, mainSha: MAIN } });
 eq(post.text, `Bot restarted at 10:05 IST. Bot health since Mon 9 Nov 10:05 IST: all ${dueQuiet} scheduled runs ran, none failed.\n\n`
-  + 'Code running: `3c38dbc`, the latest on main.\n\nLive-write flags on: none.', 'after a deploy the restart post confirms the commit');
+  + 'Code running: `3c38dbc`, the latest on main.', 'after a deploy the restart post confirms the commit');
 ok(!post.red, 'up to date is not red');
 ok(/async function deployState\(\)[\s\S]{0,900}RENDER_GIT_COMMIT[\s\S]{0,900}compare\/\$\{running\}\.\.\.\$\{branch\}/.test(fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8')),
   'index.js compares the running commit with main');

@@ -140,7 +140,7 @@ def test_a_refused_post_leaves_cases_unannounced_and_the_next_run_sends_them_aga
     assert [c["announced"] for c in s.cases.docs] == [False]
     out = day(s, [rec(warmup_on=False, date="2026-10-21")], date(2026, 10, 21), p)
     head, thread = p.calls[1]
-    assert head[0].endswith("1 new problem (suggestions only, nothing was changed)")
+    assert head[0].startswith("⚠️ New inbox problem, 21 Oct: 1 ")
     assert "1 of them was found on 20 Oct, but that post did not go out." in head
     assert out["posted"] is True and [c["announced"] for c in s.cases.docs] == [True]
     day(s, [rec(warmup_on=False, date="2026-10-22")], date(2026, 10, 22), p)
@@ -149,21 +149,21 @@ def test_a_refused_post_leaves_cases_unannounced_and_the_next_run_sends_them_aga
 
 def test_cases_from_before_this_change_are_posted_once_as_a_backlog():
     s = fw.FleetStore(FakeCol(), FakeCol())
-    s.save_cases([{"key": "disconnected:b@d.com", "kind": "disconnected", "scope": "inbox", "target": "b@d.com",
-                   "domain": "d.com", "client": "Precise Leads", "action": "Reconnect it in Smartlead",
+    s.save_cases([{"key": "warmup_off:b@d.com", "kind": "warmup_off", "scope": "inbox", "target": "b@d.com",
+                   "domain": "d.com", "client": "Precise Leads", "action": "Turn warmup back on",
                    "line": "b@d.com", "opened_on": "2026-11-03", "acted_on": None, "closed_on": None,
                    "at_open": {}, "baseline": False},
                   {"key": "blocklist:old.com", "kind": "blocklist", "scope": "domain", "target": "old.com",
                    "domain": "old.com", "client": "Bettrdata", "action": "x", "line": "old.com (SURBL (ABUSE))",
                    "opened_on": "2026-10-15", "acted_on": None, "closed_on": None, "at_open": {}, "baseline": True}])
     p = Poster()
-    out = day(s, [rec(), rec("b@d.com", connected=False)], date(2026, 11, 8), p)
+    out = day(s, [rec(), rec("b@d.com", warmup_on=False)], date(2026, 11, 8), p)
     assert out["backlog"] == 1 and len(p.calls) == 1               # nothing new today: only the backlog post
     head, thread = p.calls[0]
     assert head == ["📋 Fleet watch: 1 problem found since 3 Nov is still open (list in the thread, shown once; "
                     "suggestions only, nothing was changed)"]
     assert "• b@d.com, open since 3 Nov" in thread[0] and "old.com" not in "\n".join(thread)    # baseline stays quiet
-    day(s, [rec(), rec("b@d.com", connected=False)], date(2026, 11, 9), p)
+    day(s, [rec(), rec("b@d.com", warmup_on=False)], date(2026, 11, 9), p)
     assert len(p.calls) == 1
 
 
@@ -173,7 +173,8 @@ def test_a_day_without_the_account_closes_nothing():
     day(s, [rec(warmup_on=False)], date(2026, 10, 20), p)
     out = day(s, [], date(2026, 10, 21), p, read=(), errors=["Smartlead PRECISE_LEADS: 402"])
     assert out["closed"] == 0 and s.cases.docs[0]["closed_on"] is None and s.cases.docs[0]["unknown"] is True
-    assert ":warning: Could not read: Smartlead PRECISE_LEADS: 402" in p.calls[-1][0]
+    # nothing new to say: no post for the read error alone; the run fails, so the bot-health post lists it
+    assert len(p.calls) == 1 and out["failed"] is True and out["errors"] == ["Smartlead PRECISE_LEADS: 402"]
 
 
 def test_the_store_marks_announced_cases_by_key_and_open_day():
@@ -272,8 +273,9 @@ def test_an_account_whose_inbox_count_drops_closes_nothing_that_day():
     half = [dict(r, date="2026-10-21") for r in fleet[:5]]
     out = day(s, half, date(2026, 10, 21), p, roster=left)
     assert out["closed"] == 0 and s.cases.docs[0]["closed_on"] is None
-    assert ":warning: Could not read: Smartlead PRECISE_LEADS in full: 5 inboxes today, 10 at the last run, " \
-           "so none of its cases close today" in p.calls[-1][0]
+    assert len(p.calls) == 1 and out["failed"] is True
+    assert out["errors"] == ["Smartlead PRECISE_LEADS in full: 5 inboxes today, 10 at the last run, "
+                             "so none of its cases close today"]
     out = day(s, [dict(r, date="2026-10-22") for r in fleet[:5]], date(2026, 10, 22), p, roster=left)
     assert out["closed"] == 1 and s.cases.docs[0]["closed_why"] == "gone"       # same count two runs running
 
@@ -286,3 +288,23 @@ def test_the_store_counts_inboxes_per_account_on_the_last_day_recorded():
     s.save_metrics({"z@d.com": {"2026-10-19": {"sent": 3}}})                  # metric-only: not an inbox record
     assert s.last_counts("2026-10-20", "2026-10-12") == {"PRECISE_LEADS": 1, "BETTRDATA": 1}
     assert s.last_counts("2026-10-18", "2026-10-12") == {}
+
+
+def test_kinds_nobody_acts_on_daily_are_recorded_but_not_posted():
+    """13 Nov 2026: the channel was "spammy, not understandable". A disconnected inbox is already in the daily inbox
+    post; it is still a case (Monday's scorecard counts it) but the daily fleet post stays quiet about it."""
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    p = Poster()
+    out = day(s, [rec(connected=False)], date(2026, 11, 13), p)
+    assert out["opened"] == 1 and out["quiet"] == 1 and p.calls == []
+    assert all(c["announced"] is True for c in s.cases.docs)
+    day(s, [rec(connected=False)], date(2026, 11, 14), p)
+    assert p.calls == []                                           # not resent, not a backlog either
+
+
+def test_a_post_that_goes_out_says_what_could_not_be_read():
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    p = Poster()
+    out = day(s, [rec(warmup_on=False)], date(2026, 11, 13), p, errors=["blocklist history (Mongo)"])
+    assert out["failed"] is True and len(p.calls) == 1
+    assert "Could not read today, so some problems may be missing: blocklist history (Mongo)" in p.calls[0][0]
