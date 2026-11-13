@@ -115,9 +115,85 @@ def _per(d: dict) -> str:
     return "none sent" if r is None else f"{r:.0f}"
 
 
-def format_post(cells: list[dict], today: date, days: int = DAYS, errors: dict | None = None
-                ) -> tuple[list[str], list[str]]:
-    """(headline lines, thread parts) for the weekly post. Pure."""
+# ── does Smartlead's test agree with real recipients? (13 Nov 2026, "make sure our live pipeline is dynamic") ──
+# Each inbox type is judged by v2 at its own provider (a Google inbox at Google seeds, an Outlook inbox at Microsoft
+# seeds), so it is checked against real recipients at that provider, inside campaigns that used both types.
+OWN = {"GMAIL": ("Gmail", "Google", "Outlook"), "OUTLOOK": ("Microsoft", "Outlook", "Google")}
+MIN_JUDGED = 10             # inboxes of the type with a v2 verdict, below which v2's view is not read
+MOST_FAIL = 0.5             # v2 fails at least this share of the type: it says "this type is in spam"
+AGREE_BELOW = 0.7           # real replies at most this ratio against the other type: they agree it does worse
+DISAGREE_FROM = 1.0         # at least this: real recipients answer it as well as the other type, so v2 is wrong
+                            # between the two: no change (hysteresis: one noisy week cannot flip it)
+
+
+def pooled(cells: list[dict], recipient: str, a: str, b: str) -> dict:
+    """Same-campaign comparison at one recipient provider, summed over every client. Pure."""
+    out = {a: {"leads": 0.0, "events": 0, "sampled": 0}, b: {"leads": 0.0, "events": 0, "sampled": 0}}
+    for (cl, rp), p in paired(cells, a, b).items():
+        if rp == recipient:
+            for st in (a, b):
+                for k in out[st]:
+                    out[st][k] += p[st][k]
+    return out
+
+
+def trust_decision(cells: list[dict], v2_share: dict[str, tuple[int, int]], current: set[str]
+                   ) -> tuple[set[str], list[str], list[str]]:
+    """(types whose v2 fail should not hold an inbox back, what changed, one line per type). ``v2_share``:
+    {type: (inboxes failing v2, inboxes with a verdict)}; ``current``: the types not trusted now. A type changes only
+    on enough evidence both ways; otherwise it stays as it is. Pure."""
+    new, changes, lines = set(current), [], []
+    for kind, (rp, mine, other) in OWN.items():
+        name = TYPE_NAMES_SHORT[kind]
+        fails, judged = v2_share.get(kind, (0, 0))
+        p = pooled(cells, rp, mine, other)
+        x, y = p[mine], p[other]
+        enough = (judged >= MIN_JUDGED and min(x["events"], y["events"]) >= FEW
+                  and min(x["sampled"], y["sampled"]) >= MIN_SAMPLED and rate(y))
+        share = fails / judged if judged else 0.0
+        seen = (f"Smartlead's test fails {fails} of {judged} {name} inboxes at {rp}; real {rp} recipients: "
+                f"{mine} inboxes {_per(x)}, {other} inboxes {_per(y)} per 1,000")
+        if not enough:
+            lines.append(f"{seen}. Not enough to judge, so it stays {'not trusted' if kind in current else 'trusted'}.")
+            continue
+        ratio = rate(x) / rate(y)
+        if share >= MOST_FAIL and ratio >= DISAGREE_FROM:
+            new.add(kind)
+            verdict = "not trusted: real recipients answer them as well as the other inboxes"
+        elif share < MOST_FAIL or ratio <= AGREE_BELOW:
+            new.discard(kind)
+            verdict = ("trusted: it fails few of them" if share < MOST_FAIL
+                       else "trusted: real recipients agree they do worse")
+        else:
+            verdict = f"in between, so it stays {'not trusted' if kind in current else 'trusted'}"
+        lines.append(f"{seen} ({ratio:.1f}x). Smartlead's test for {name} inboxes is {verdict}.")
+        if (kind in new) != (kind in current):
+            changes.append(f"Smartlead's test for {name} inboxes is now {'NOT trusted' if kind in new else 'trusted'}: "
+                           + ("a failed test no longer takes them out of campaigns; the weekly job only reports it."
+                              if kind in new else "the weekly job takes failing ones out of campaigns again."))
+    return new, changes, lines
+
+
+TYPE_NAMES_SHORT = {"GMAIL": "Google", "OUTLOOK": "Outlook"}
+QUIET_MIN_LEADS = 200       # a campaign this big with almost no replies from ANY provider
+QUIET_MAX_RATE = 3.0        # per 1,000: the offer or the list, not the inboxes (Exhibitors, 13 Nov: 1 in 465)
+
+
+def quiet_campaigns(cells: list[dict]) -> list[str]:
+    """Campaigns that reached QUIET_MIN_LEADS+ leads with replies under QUIET_MAX_RATE per 1,000 at every provider
+    together. Pure."""
+    by: dict[tuple, list] = defaultdict(lambda: [0, 0])
+    for c in cells:
+        k = (c["client"], c.get("name") or c.get("campaign"))
+        by[k][0] += c.get("quiet", 0) + sum((c.get("events_by_sender") or {}).values())
+        by[k][1] += sum((c.get("events_by_sender") or {}).values())
+    return [f"• {cl} · {name}: {ev} from {n} leads" for (cl, name), (n, ev) in sorted(by.items())
+            if n >= QUIET_MIN_LEADS and 1000 * ev / n < QUIET_MAX_RATE]
+
+
+def format_post(cells: list[dict], today: date, days: int = DAYS, errors: dict | None = None,
+                trust: tuple[list[str], list[str]] | None = None) -> tuple[list[str], list[str]]:
+    """(headline lines, thread parts) for the weekly post. ``trust`` = (changes, lines) from trust_decision. Pure."""
     day = f"{today.day} {today.strftime('%b')}"
     head = [f"📬 Real replies, {days} days to {day}: replies and out-of-office messages per 1,000 leads, bounces left out"]
     pairs = paired(cells)
@@ -146,6 +222,15 @@ def format_post(cells: list[dict], today: date, days: int = DAYS, errors: dict |
                 gaps.append(f"• {cl}, {st} inboxes: Microsoft recipients {_per(m)} vs Gmail {_per(g)}"
                             + (_ratio(m, g) or f" ({r:.1f}x)"))
     parts = []
+    changes, tlines = trust or ([], [])
+    head += changes
+    quiet = quiet_campaigns(cells)
+    if quiet:
+        head.append(f"{len(quiet)} campaign{'s' if len(quiet) != 1 else ''} got almost no replies from any provider: "
+                    "that points at the offer or the list, not the inboxes (list in the thread).")
+        parts.append("\n".join(["*Almost no replies from any provider*"] + quiet))
+    if tlines:
+        parts.append("\n".join(["*Does Smartlead's test agree with real recipients?*"] + [f"• {x}" for x in tlines]))
     if gaps:
         parts.append("\n".join(["*Microsoft against Gmail recipients, same sending inbox type*"] + gaps))
     lines = ["*Every cell* (client · sending inbox · recipient: leads emailed, estimated · replies and out-of-office · "

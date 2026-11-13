@@ -10,6 +10,10 @@ post: smartlead/real_recipients.py.
 Read-only against Smartlead (campaign list, statistics, leads, message history) and DNS. One message-history call per
 looked-up lead, paced to stay well under Smartlead's 200 calls a minute, so a run takes about an hour. Scheduled in
 index.js: Sundays 07:00 IST, when no other job reads Smartlead. REAL_RECIPIENTS_POST=off stops it.
+
+It also decides whether Smartlead's v2 test is trusted per inbox type (rr.trust_decision) and, with --save, keeps that
+in Mongo v2_trust, which the list, the daily inbox post, the gate self-test and the v2 job read (usable.refresh_trust).
+V2_TRUST_AUTO=off: the decision is shown but not saved. V2_UNTRUSTED_TYPES on any reader overrides it.
 Exits 1 when no account could be read or the post was refused.
 """
 from __future__ import annotations
@@ -55,13 +59,16 @@ async def _history(c, cid: str, lid) -> tuple[str | None, str, str | None]:
     return sender, body, None
 
 
-async def read_account(acc, today: date, days: int, errors: Counter, rng: random.Random) -> list[dict]:
+async def read_account(acc, today: date, days: int, errors: Counter, rng: random.Random,
+                       all_kinds: dict | None = None) -> list[dict]:
     from smartlead.sheets import _is_test_campaign
     cells = []
     oldest = (today - timedelta(days=days + 120)).isoformat()
     async with SmartleadClient(acc.api_key, acc.name) as c:
-        kinds = {str(a.get("from_email") or "").strip().lower(): rr.sender_of(kind_of(a.get("type")))
-                 for a in await c.list_email_accounts() or []}
+        accounts = await c.list_email_accounts() or []
+        kinds = {str(a.get("from_email") or "").strip().lower(): rr.sender_of(kind_of(a.get("type"))) for a in accounts}
+        if all_kinds is not None:
+            all_kinds.update({str(a.get("from_email") or "").strip().lower(): kind_of(a.get("type")) for a in accounts})
         for camp in await c.list_campaigns() or []:
             name = str(camp.get("name") or "")
             status = str(camp.get("status") or "").upper()
@@ -117,7 +124,7 @@ async def read_account(acc, today: date, days: int, errors: Counter, rng: random
     return cells
 
 
-async def gather(today: date, days: int) -> tuple[list[dict], dict, int]:
+async def gather(today: date, days: int, all_kinds: dict | None = None) -> tuple[list[dict], dict, int]:
     errors: Counter = Counter()
     rng = random.Random(today.toordinal())
     cells, read = [], 0
@@ -125,19 +132,55 @@ async def gather(today: date, days: int) -> tuple[list[dict], dict, int]:
         if acc.name.strip().lower().replace("_", " ") in PAST_CLIENT_ACCOUNTS:
             continue
         try:
-            cells += await read_account(acc, today, days, errors, rng)
+            cells += await read_account(acc, today, days, errors, rng, all_kinds)
             read += 1
         except Exception as exc:  # noqa: BLE001 - one dead account must not hide the others
             errors[f"account {acc.name} " + type(exc).__name__] += 1
     return cells, dict(errors), read
 
 
+def _db():
+    from pymongo import MongoClient
+    from smartlead.config import HEALTH_HISTORY_DB
+    return MongoClient(os.environ["MONGO_URI"], serverSelectionTimeoutMS=8000)[HEALTH_HISTORY_DB]
+
+
+def trust(today: date, cells: list[dict], all_kinds: dict, write: bool) -> tuple[list[str], list[str], str]:
+    """(changes, lines, error). Reads the v2 verdicts and the current trust, decides, and with ``write`` keeps it.
+    Never raises: on a Mongo problem nothing changes and the post says so."""
+    from smartlead import usable
+    try:
+        db = _db()
+        v2 = usable.newest_judged(db["v2_verdicts"].find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1}))
+        share: dict[str, list] = defaultdict(lambda: [0, 0])
+        for e, kind in all_kinds.items():
+            if e in v2:
+                share[kind][1] += 1
+                share[kind][0] += v2[e]["verdict"] == "FAIL"
+        usable.refresh_trust(db)
+        current = set(usable.V2_NOT_TRUSTED)
+        new, changes, lines = rr.trust_decision(cells, {k: tuple(v) for k, v in share.items()}, current)
+        if write and os.getenv("V2_TRUST_AUTO", "").strip().lower() != "off":
+            old = db[usable.TRUST_COLLECTION].find_one({"_id": "current"}) or {}
+            since = (old.get("untrusted") or {})
+            doc = {"_id": "current", "decided": today.isoformat(), "lines": lines,
+                   "untrusted": {k: since.get(k) or {"since": today.isoformat()} for k in sorted(new)}}
+            db[usable.TRUST_COLLECTION].replace_one({"_id": "current"}, doc, upsert=True)
+            if changes:
+                db[usable.TRUST_COLLECTION].replace_one({"_id": f"change-{today.isoformat()}"},
+                    {"_id": f"change-{today.isoformat()}", "changes": changes, "lines": lines,
+                     "from": sorted(current), "to": sorted(new)}, upsert=True)
+        elif changes:
+            changes = [c + " (not saved: V2_TRUST_AUTO=off or a dry run)" for c in changes]
+        return changes, lines, ""
+    except Exception as exc:  # noqa: BLE001
+        return [], [], type(exc).__name__
+
+
 def save(today: date, days: int, cells: list[dict], errors: dict) -> str:
     """Keep the week's cells (no lead addresses in them). Never raises; returns an error text or ""."""
     try:
-        from pymongo import MongoClient
-        from smartlead.config import HEALTH_HISTORY_DB
-        db = MongoClient(os.environ["MONGO_URI"], serverSelectionTimeoutMS=8000)[HEALTH_HISTORY_DB]
+        db = _db()
         db[COLLECTION].replace_one({"_id": today.isoformat()}, {
             "_id": today.isoformat(), "days": days, "cells": cells, "errors": errors,
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, upsert=True)
@@ -162,11 +205,15 @@ def main() -> int:
         print("[real-recipients] SLACK_BOT_TOKEN missing - cannot post.")
         return 1
     today = date.fromisoformat(args.today) if args.today else datetime.now(IST).date()
-    cells, errors, read = asyncio.run(gather(today, args.days))
+    all_kinds: dict = {}
+    cells, errors, read = asyncio.run(gather(today, args.days, all_kinds))
     if args.save:
         err = save(today, args.days, cells, errors)
         print(f"[real-recipients] Mongo: {'saved' if not err else 'not saved (' + err + ')'}")
-    head, parts = rr.format_post(cells, today, args.days, errors)
+    changes, lines, terr = trust(today, cells, all_kinds, write=bool(args.save and read))
+    if terr:
+        errors = {**errors, f"v2 trust ({terr}), so it was not changed": 1}
+    head, parts = rr.format_post(cells, today, args.days, errors, trust=(changes, lines))
     print("\n".join(head) + "\n\n" + "\n\n".join(parts))
     if not read:
         print("[real-recipients] no Smartlead account could be read")

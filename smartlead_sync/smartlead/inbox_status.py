@@ -46,7 +46,7 @@ HELD = ("do_not_use", "pulled", "failed")       # must not send
 ORDER = ("sending", "sending_unproven", "set_aside", "free", "warming", "idle", "failed", "pulled", "do_not_use",
          "disconnected", "gone")
 LABEL = {"sending": "sending, passed the weekly test", "sending_unproven": "sending, no test result in 10 days",
-         "set_aside": "failed the weekly test but it is not counted (Google, or put back by hand)",
+         "set_aside": "failed the weekly test but it is not counted (test not trusted for its type, or put back by hand)",
          "free": "free to give to a campaign", "warming": "warming up", "idle": "not in use",
          "failed": "failed the weekly test", "pulled": "taken out by the weekly job",
          "do_not_use": "tagged DO NOT USE", "disconnected": "disconnected", "gone": "gone from Smartlead"}
