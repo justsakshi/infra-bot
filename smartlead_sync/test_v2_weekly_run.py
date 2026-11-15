@@ -785,7 +785,9 @@ def test_a_csv_of_a_run_already_read_from_the_api_is_not_counted_twice(job):
     job.run()
     posts = len(job.posts)
     job.clock = at(10, 11, 30)                                   # before Tuesday noon's reminder
-    write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1, when=at(10, 11, 10))
+    # Smartlead's bytes differ from the job's own CSV of the run (else the content hash alone would catch it)
+    write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1, header='"Mailbox","Provider","Landed","Sent at","Send status"\n',
+              when=at(10, 11, 10))
     write_csv(job.downloads, "dt-pl-1-run-1 (1).csv", DT_PL_1, header=HEAD + "\n", when=at(10, 11, 20))
     assert job.run() == 0
     st = job.state()
