@@ -2,9 +2,10 @@
 """Weekly Smart Delivery v2 job: read the result CSVs, take failing inboxes out of campaigns,
 bring them back once they pass twice, and post what happened.
 
-Why it runs on Manveen's PC: v2 has no API, webhook or email (Smartlead support, 5-6 Nov 2026),
-so the results only exist as the CSVs he downloads. A Windows scheduled task runs this every hour;
-it reads new v2 CSVs in his Downloads folder (by content hash, so a file is read once).
+Where the results come from: a Windows scheduled task on Manveen's PC runs this every hour. Each run reads
+every completed v2 run from the Smart Delivery API (smartlead/v2_api.py; Smartlead support, 15 Nov 2026: v2 has
+an API after all), and any v2 CSVs he downloaded into his Downloads folder (by content hash, so a file is read
+once). A run that came both ways is read once (api_files, csv_twin). V2_API=off or --no-api: CSVs only.
 
 What it does (rules in smartlead/v2_results.py):
   * every inbox gets PASS / WATCH / FAIL per provider (4 of 4 seeds in the inbox / 2-3 / 3+ in spam);
@@ -52,7 +53,8 @@ Modes:
     python v2_weekly.py --apply --post --act-from 2026-11-16   # --warn until that date, then act
     python v2_weekly.py --history-only          # file the CSVs as history: kept, never acted on
     python v2_weekly.py --replan --apply --post # act on stored results without new files
-    python v2_weekly.py --self-check            # Slack channel, both Smartlead keys, Downloads, Mongo; posts nothing
+    python v2_weekly.py --self-check            # Slack channel, both Smartlead keys, the v2 API, Downloads, Mongo
+    python v2_weekly.py --no-api                # CSVs only (or V2_API=off)
 
 Exit codes: 0 fine, 1 a Smartlead step failed (see the post), 2 crashed, 3 a Slack post failed
 ("UNPOSTED" in the log; the report is queued and posted again next run). --self-check: 1 if a check failed.
@@ -102,6 +104,7 @@ except ImportError:  # pragma: no cover
     pass
 
 sys.path.insert(0, str(HERE))
+from smartlead import v2_api  # noqa: E402
 from smartlead import v2_results as v2  # noqa: E402
 from smartlead import usable  # noqa: E402
 from smartlead.usable import V2_NOT_TRUSTED  # noqa: E402
@@ -144,6 +147,12 @@ HEARTBEAT_COLLECTION = "v2_heartbeat"
 VERDICTS_COLLECTION = "v2_verdicts"
 COPY_CHECKS_COLLECTION = "copy_checks"   # one doc per client per night: what the copy check said about the email
 VERDICT_DAYS = 42                        # nights older than this are no longer re-sent to Mongo
+# The v2 API (15 Nov 2026) holds every run, also the ones Manveen never downloaded on purpose: stopped tests, one-off
+# and duplicate runs from 7-11 Nov. Read now, they would be new results for old nights and could pull inboxes. Runs
+# that completed before the weekly "synced" tests began (13 Nov 2026) are never read from the API.
+API_FROM = "2026-11-13"
+TWIN_DAYS = 3                            # a run's CSV: its night is 0-3 days before the run completed (a test runs ~33 h)
+READ = ("ingested", "history", "copy_check")   # file statuses whose rows the job has taken in
 
 
 class FleetIncomplete(RuntimeError):
@@ -212,20 +221,111 @@ def scan(folder: Path, state: dict, now: datetime, unrecognised: list | None = N
     return out
 
 
+class ApiRun:
+    """A v2 run read from the API, standing in for its CSV download in ingest() (smartlead/v2_api.py)."""
+
+    def __init__(self, account: str, run: dict):
+        self.name = run["name"]
+        self.meta = {"source": "api", "account": account, "run_id": run["run_id"], "test": run["test"],
+                     "completed_at": run["completed_at"]}
+
+
+def _keep(path, text: str, dest: Path) -> None:
+    """The copy of a run kept in runs/ (rejudge reads it): the download itself, or a run from the API as a CSV."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(path, ApiRun):
+        dest.write_text(text, encoding="utf-8", newline="")
+    else:
+        shutil.copy2(path, dest)
+
+
+def csv_twin(state: dict, name: str, night: str | None) -> str | None:
+    """A CSV download of a run already read from the API (same run name, same night): the name of that run, else
+    None. Smartlead's download and the API rows are the same run with different bytes, so the content hash cannot
+    tell; the run name can."""
+    key = v2_api.run_key(name)
+    for f in state["files"].values():
+        if (f.get("source") == "api" and f.get("status") in READ and night and f.get("night") == night
+                and v2_api.run_key(f.get("name") or "") == key):
+            return f["name"]
+    return None
+
+
+def already_read(state: dict, run: dict) -> bool:
+    """Skip an API run before fetching its emails: it was read from the API before (any outcome: a completed run
+    does not change), or its CSV download was read (same run name, night 0-3 days before it completed)."""
+    key, done = v2_api.run_key(run["name"]), v2_api.completed_on({"completedAt": run["completed_at"]})
+    for f in state["files"].values():
+        if f.get("run_id") == run["run_id"]:
+            return True
+        if (f.get("source") != "api" and f.get("status") in READ and f.get("night") and done
+                and v2_api.run_key(f.get("name") or "") == key
+                and 0 <= (done - date.fromisoformat(f["night"])).days <= TWIN_DAYS):
+            return True
+    return False
+
+
+def api_on(args) -> bool:
+    return not getattr(args, "no_api", False) and os.getenv("V2_API", "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def api_accounts() -> list[tuple[str, str]]:
+    """(account, key) of the client accounts, as load_fleet finds them."""
+    from smartlead.accounts import discover_accounts
+    return [(a.name, a.api_key) for a in discover_accounts() if a.name.upper() in ACCOUNTS]
+
+
+def _api_client(account: str, key: str):
+    return v2_api.Client(key)
+
+
+def api_files(state: dict, now: datetime, errors: list[str]) -> list[tuple[ApiRun, str, str]]:
+    """Completed v2 runs from the API not read yet, as ingest() takes files: [(ApiRun, sha256, csv text)]. Only
+    runs that completed on or after the job's first day, API_FROM, and MAX_AGE_DAYS ago. One account failing
+    (logged as its error type only: the key is in the URL) never stops the other account or the CSVs."""
+    floor = max(date.fromisoformat(API_FROM), now.date() - timedelta(days=MAX_AGE_DAYS),
+                date.fromisoformat(state["since"]) if state.get("since") else date.min)
+    out = []
+    for account, key in api_accounts():
+        try:
+            runs, bad = v2_api.completed_runs(_api_client(account, key), floor, lambda r: already_read(state, r))
+        except Exception as exc:  # noqa: BLE001
+            runs, bad = [], [v2_api.describe(exc)]
+        for b in bad:
+            errors.append(f"v2 API {account}: {b}")
+            print(f"[v2-weekly] v2 API {account}: {b}")
+        for run in runs:
+            text = v2_api.to_csv(run["rows"])
+            out.append((ApiRun(account, run), hashlib.sha256(text.encode("utf-8")).hexdigest(), text))
+    return out
+
+
 def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, persist: bool) -> dict:
     """Read new files into state. Returns {ingested: [...], pending: [...], nights: set of nights to act on,
-    copy_checks: [keys of state["copy_checks"] read now]}.
+    copy_checks: [keys of state["copy_checks"] read now]}. A file is a CSV (path, sha, text) or a run from the
+    API (ApiRun, sha, its rows as CSV text): read the same way.
     A test from before the job's first day (state["since"]) is filed as history whatever the flags say.
     A copy-check file (v2.is_copy_check_file) is kept apart: it goes to state["copy_checks"] and never into
-    state["results"], so no inbox is judged, pulled, returned or held on it."""
-    got = {"ingested": [], "pending": [], "nights": set(), "unrecognised": [], "copy_checks": []}
+    state["results"], so no inbox is judged, pulled, returned or held on it.
+    A CSV of a run already read from the API is filed as "duplicate" and not read again (csv_twin); an API run
+    whose CSV was read is never fetched (already_read). An API run that finished with too many results missing
+    goes to ``api_pending`` (a fresh download would not help), a CSV downloaded too early to ``pending``."""
+    got = {"ingested": [], "pending": [], "api_pending": [], "duplicates": [], "api": [], "nights": set(),
+           "unrecognised": [], "copy_checks": []}
     for path, sha, text in files:
+        api = isinstance(path, ApiRun)
         rows = v2.parse(text)
         night = v2.night_of(rows)
-        info = {"name": path.name, "night": night, "rows": len(rows), "seen": now.isoformat(timespec="minutes")}
+        info = {"name": path.name, "night": night, "rows": len(rows), "seen": now.isoformat(timespec="minutes"),
+                **(path.meta if api else {})}
+        twin = None if api else csv_twin(state, path.name, night)
+        if twin:
+            state["files"][sha] = {**info, "status": "duplicate"}
+            got["duplicates"].append(path.name)
+            continue
         if not v2.file_ready(rows) or not night:
             state["files"][sha] = {**info, "status": "pending"}
-            got["pending"].append(path.name)
+            got["api_pending" if api else "pending"].append(path.name)
             continue
         sent_last = v2.last_sent(rows)
         old = history or bool(state.get("since") and night < state["since"])
@@ -240,10 +340,10 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
                                              "senders": v2.copy_counts(rows)}
             state["files"][sha] = {**info, "status": "copy_check", "client": client, "inboxes": len(mailboxes)}
             if persist:
-                keep = state_dir / "runs"
-                keep.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, keep / f"{night}__{sha[:8]}__{path.name}")
+                _keep(path, text, state_dir / "runs" / f"{night}__{sha[:8]}__{path.name}")
             got["copy_checks"].append(key)
+            if api:
+                got["api"].append(path.name)
             continue
         summary = v2.summarise(rows)
         info["per_provider"] = v2.emails_per_provider(rows)
@@ -255,10 +355,10 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             state["results"][mb] = v2.merge_results(state["results"].get(mb, []), [res])
         state["files"][sha] = {**info, "status": "history" if old else "ingested", "inboxes": len(summary)}
         if persist:
-            keep = state_dir / "runs"
-            keep.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, keep / f"{night}__{sha[:8]}__{path.name}")
+            _keep(path, text, state_dir / "runs" / f"{night}__{sha[:8]}__{path.name}")
         got["ingested"].append(path.name)
+        if api:
+            got["api"].append(path.name)
         if not old:
             got["nights"].add(night)
             state["needs_action"] = True
@@ -1077,6 +1177,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     needs += [f"Error: {err}" for err in acted["errors"]]
     if got["pending"]:
         needs.append(f"Downloaded before the results were in (download again later): {', '.join(got['pending'])}")
+    if got.get("api_pending"):
+        needs.append(api_pending_lines(got["api_pending"])[0] + ": nothing was read from them; check the seed "
+                     "list and run the test again")
     dead = Counter()
     for k, items in groups.items():
         if k[1] == "not_sent":
@@ -1332,6 +1435,12 @@ def reminder_lines(night: str, missing: list[str], some_in: bool) -> list[str]:
                "The job reads them within the hour. Until then nothing is pulled or returned."])
 
 
+def api_pending_lines(names: list[str]) -> list[str]:
+    """v2 runs Smartlead marked complete with more than a fifth of their results never arriving: not read, once."""
+    return [f"v2 runs finished with more than a fifth of the results missing: {', '.join(names)}",
+            "\nSmart Delivery marked them complete, so a fresh download will not help. Nothing was read from them."]
+
+
 def unrecognised_lines(names: list[str]) -> list[str]:
     many = len(names) != 1
     return [f"unrecognised v2 CSV format: {', '.join(names)}",
@@ -1550,6 +1659,19 @@ async def self_check(args) -> int:
             rows.append((True, f"Smartlead {name}", "key works"))
         except Exception as exc:  # noqa: BLE001
             rows.append((False, f"Smartlead {name}", _short(exc)))
+    if api_on(args):
+        keys = dict((n.upper(), k) for n, k in api_accounts())
+        for name in ACCOUNTS:
+            if name not in keys:
+                rows.append((False, f"v2 API {name}", "no key loaded (check --env-dir)"))
+                continue
+            try:
+                n = len(_api_client(name, keys[name]).tests())
+                rows.append((True, f"v2 API {name}", f"reachable, {n} test{'s' if n != 1 else ''}"))
+            except Exception as exc:  # noqa: BLE001 - its text could hold the URL with the key
+                rows.append((False, f"v2 API {name}", v2_api.describe(exc)))
+    else:
+        rows.append((True, "v2 API", "off (V2_API=off or --no-api): CSVs only"))
     folder = Path(args.folder)
     try:
         n = sum(1 for x in os.listdir(folder) if x.lower().endswith(".csv"))
@@ -1690,6 +1812,12 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         save()
     odd: list = []
     got = ingest(scan(Path(args.folder), state, now, odd), state, state_dir, args.history_only, now, persist)
+    if api_on(args):          # after the CSVs, so a run whose CSV was just read is not fetched again
+        more = ingest(api_files(state, now, ctx["errors"]), state, state_dir, args.history_only, now, persist)
+        for k, v in more.items():
+            got[k] = got[k] | v if isinstance(v, set) else got[k] + v
+    else:
+        print("[v2-weekly] v2 API off (V2_API=off or --no-api): CSVs only")
     if persist:
         for p, sha in odd:
             state["files"][sha] = {"name": p.name, "status": "unrecognised", "seen": now.isoformat(timespec="minutes"),
@@ -1700,6 +1828,9 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         got["unrecognised"] = sorted(p.name for p, _ in odd)
     print(f"[v2-weekly] {now:%Y-%m-%d %H:%M} IST ({'act' if write else 'warn' if persist else 'dry run'}): "
           f"{len(got['ingested'])} new file(s), {len(got['pending'])} not ready"
+          + (f", {len(got['api'])} from the v2 API" if got["api"] else "")
+          + (f", {len(got['api_pending'])} API run(s) with too many results missing" if got["api_pending"] else "")
+          + (f", {len(got['duplicates'])} CSV(s) already read from the API" if got["duplicates"] else "")
           + (f", {len(odd)} unrecognised" if odd else "")
           + (f", {len(got['copy_checks'])} copy check(s)" if got["copy_checks"] else "")
           + (f": {', '.join(got['ingested'])}" if got["ingested"] else "")
@@ -1726,6 +1857,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         if got["pending"] and can_post:
             _post_noted(state, ctx, [f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
                                      "\nDownload them again in a few hours. Nothing was read from them."], [])
+        if got["api_pending"] and can_post:
+            _post_noted(state, ctx, api_pending_lines(got["api_pending"]), [])
         if got["unrecognised"] and can_post and _post_noted(state, ctx, unrecognised_lines(got["unrecognised"]), []):
             _mark_told(state, got["unrecognised"])
         if state["repair"] and write and state["repair_day"] != today:
@@ -1868,8 +2001,10 @@ def main(argv=None) -> int:
     ap.add_argument("--post", action="store_true", help="post to Slack (with --apply or --warn)")
     ap.add_argument("--history-only", action="store_true", help="file new CSVs as history, act on nothing")
     ap.add_argument("--replan", action="store_true", help="decide again from stored results without new files")
+    ap.add_argument("--no-api", action="store_true", help="read CSVs only, not the Smart Delivery v2 API (or V2_API=off)")
     ap.add_argument("--self-check", action="store_true",
-                    help="check the Slack channel, both Smartlead keys, the Downloads folder and Mongo; posts nothing")
+                    help="check the Slack channel, both Smartlead keys, the v2 API, the Downloads folder and Mongo; "
+                         "posts nothing")
     ap.add_argument("--env-dir", help="smartlead_sync folder holding the .env (read before anything else)")
     ap.add_argument("--log", help="append all output to this file (the scheduled task runs windowless)")
     args = ap.parse_args(argv)

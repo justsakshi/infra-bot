@@ -2,18 +2,26 @@
 
 Keeps every inbox that sends for PL, Melior and BettrData proven in the inbox, week after week, without anyone running it.
 
-Code: `smartlead_sync/v2_weekly.py` (files, state, Smartlead, Slack, Mongo) and `smartlead_sync/smartlead/v2_results.py` (the rules). Tests: `test_v2_results.py`, `test_v2_weekly.py`, and `test_v2_weekly_run.py` (whole hourly runs against a fake Downloads folder, fleet, Slack and Mongo).
+Code: `smartlead_sync/v2_weekly.py` (files, state, Smartlead, Slack, Mongo), `smartlead_sync/smartlead/v2_results.py` (the rules) and `smartlead_sync/smartlead/v2_api.py` (results from the Smart Delivery v2 API). Tests: `test_v2_results.py`, `test_v2_api.py`, `test_v2_weekly.py`, and `test_v2_weekly_run.py` (whole hourly runs against a fake Downloads folder, v2 API, fleet, Slack and Mongo).
 
 ## The week
 
 | When | What happens | Who |
 |---|---|---|
 | Sun 00:00 IST | Smart Delivery v2 tests DT PL #1-3, DT Melior #1-4 and DT BettrData #1-2 (weekly, one by one, 5-minute gap, 4 emails per provider). The gap is for the whole test and 5 minutes is the least Smartlead allows, so a 50-mailbox test (400 emails) takes about 33 hours and is in on Monday morning. A test that starts on a Saturday, Sunday or Monday counts as the week's test | Smartlead, automatic |
-| Tue morning | Download each test's CSV into `C:\Users\Manveen\Downloads`, the copy checks too (below) | Manveen, about 2 minutes |
-| Within 2 hours of the last download | The job reads them and acts, then posts in the infra channel | Job |
+| Each hour | The job reads every finished run from the Smart Delivery v2 API, and any v2 CSV in `C:\Users\Manveen\Downloads` | Job |
+| About 2 hours after the last run of a night finished | The job acts on the night, then posts in the infra channel | Job |
 | Tue 12:00 IST | If any DT test has no result for the week, one reminder post naming each missing test | Job |
 
-The download is the only manual step: v2 has no API, webhook or email (Smartlead support, 5-6 Nov 2026). A request for one went to Smartlead on 6 Nov.
+Nothing needs downloading any more. Smartlead support said on 15 Nov 2026 that v2 has an API, and it was checked read-only the same day with both keys. Each hourly run reads every finished run of both accounts (PRECISE_LEADS, which holds the PL and Melior tests, and BETTRDATA) with the same keys the job already uses.
+
+- **What it reads.** Runs that finished on or after 13 Nov 2026, the day the weekly "synced" tests began, and within the last 21 days. Older runs are never read from the API: they include stopped, one-off and duplicate tests from 7-11 Nov that were never downloaded on purpose, and reading them now would act on old results.
+- **Same as a download.** Each run becomes the rows its CSV would have, under the CSV's own file name (`<test name>-run-<n>.csv`), so everything after that is the same: the night, the copy check by name, the verdicts. On the 14 Nov runs the API rows equal the downloaded CSVs row for row. A copy of each run is kept in `runs\` as a CSV.
+- **Read once.** A run is fetched once. A run whose CSV was already read is not fetched, and a CSV of a run already read from the API is filed as `duplicate` (matched by the run's file name, `(1)`-style copies included, and its night).
+- **A run that finished with more than a fifth of its results missing** is not read, and posted once: a fresh download would not help.
+- **Errors.** One account or one test failing never stops the other account or the CSVs. The error is logged and listed in the heartbeat's `errors` as what was read plus the HTTP status or the error type only, because the key is in the URL.
+
+**Fallback: the download.** Downloading a test's CSV into Downloads still works. If the API is down, or switched off with `V2_API=off` in the `.env` or `--no-api` on the task, download each test's CSV (the copy checks too) on Tuesday morning; the job reads it within the hour.
 
 ## The rules
 
@@ -54,9 +62,9 @@ python copy_sync.py --create-copy-check "DT BettrData" --apply
 
 It clones the client's `DT <client> #1` campaign (one step, same settings and schedule, the placeholder lead, paused), then loads the email and attaches the senders. It refuses to create a second one.
 
-**Each week (Manveen).** In Smart Delivery v2, one more test per client, on the copy-check campaign: 4 emails per provider, 5-minute gap, and the words "copy check" in the test's name (for example `PL copy check`). Download its CSV into Downloads with the others.
+**Each week (Manveen).** In Smart Delivery v2, one more test per client, on the copy-check campaign: 4 emails per provider, 5-minute gap, and the words "copy check" in the test's name (for example `PL copy check`). The job reads its result from the API like the others (or from its CSV in Downloads).
 
-The name matters. The CSV's file name comes from the test's name, and "copy check" in it (also `copy-check`, `copy_check`, `copycheck`) is how the job knows the file. Without it the job can still tell when every inbox in the file is a sender of a copy-check campaign, but it only knows the senders as of its last weekly run, so a sender attached since then makes an unnamed file look like an inbox test.
+The name matters. The CSV's file name comes from the test's name (a run read from the API gets the same name), and "copy check" in it (also `copy-check`, `copy_check`, `copycheck`) is how the job knows the file. Without it the job can still tell when every inbox in the file is a sender of a copy-check campaign, but it only knows the senders as of its last weekly run, so a sender attached since then makes an unnamed file look like an inbox test.
 
 **What the job does with it.**
 
@@ -104,7 +112,7 @@ cd "$repo\infra-bot-v2weekly\smartlead_sync"
 & "$repo\infra-bot\smartlead_sync\.venv\Scripts\python.exe" v2_weekly.py --self-check --env-dir "$repo\infra-bot\smartlead_sync"
 ```
 
-It checks the Slack channel exists and the bot is a member, both Smartlead keys work, the Downloads folder is readable and Mongo answers.
+It checks the Slack channel exists and the bot is a member, both Smartlead keys work, the v2 API answers for both accounts (it prints how many tests each has), the Downloads folder is readable and Mongo answers.
 
 Then file the old audit CSVs as history, so they can never start an action. (The job also files any test from before its first day as history, so doing this in the wrong order is safe.)
 
@@ -130,6 +138,7 @@ Register-ScheduledTask -TaskName "InfraBot v2 weekly" -Action $a -Trigger $t -Se
 | Want to | Run (from the worktree's `smartlead_sync`) |
 |---|---|
 | Check it can reach everything | `python v2_weekly.py --self-check --env-dir ...\infra-bot\smartlead_sync` (posts nothing) |
+| Read CSVs only, not the v2 API | add `--no-api`, or set `V2_API=off` in the `.env` |
 | See what it would do now | `python v2_weekly.py --env-dir ...\infra-bot\smartlead_sync` (dry run: no state, no Smartlead, no Slack) |
 | Act again on stored results | `python v2_weekly.py --replan --apply --post --env-dir ...` |
 | Let it act on Melior too | add `--act-clients Melior` to the task's arguments |
