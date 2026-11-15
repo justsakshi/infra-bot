@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import v2_weekly as wk
+from smartlead import v2_api
 from smartlead import v2_results as v2
 from smartlead.config import AccountConfig
 
@@ -93,6 +94,45 @@ class FakeSL:
         self.senders[int(cid)] |= set(ids)
 
 
+class FakeV2:
+    """One account's Smart Delivery v2 API (smartlead/v2_api.py): tests with one run each, 50 emails a page.
+    Records every path read; ``fail`` = (path prefix, exception or HTTP status)."""
+
+    def __init__(self):
+        self.tests, self.reads, self.fail = [], [], None
+
+    def add(self, name, inboxes, sent=MON9, completed="2026-11-10T03:00:00.000Z", status="ACTIVE", missing=0):
+        """inboxes: {email: (google_inbox_of_4, microsoft_inbox_of_4)}; ``missing``: that many emails never arrived."""
+        emails = []
+        for mb, (g, m) in inboxes.items():
+            for prov, n in (("GOOGLE_WORKSPACE", g), ("MICROSOFT_365", m)):
+                emails += [{"senderEmail": mb, "provider": prov, "placement": "INBOX" if i < n else "SPAM",
+                            "sentAt": sent, "bounce": None} for i in range(4)]
+        for e in emails[:missing]:
+            e["placement"] = "MISSING"
+        tid = f"t{len(self.tests) + 1}"
+        self.tests.append({"id": tid, "name": name, "status": status,
+                           "run": {"runId": f"{tid}-run", "runNo": 1, "completedAt": completed}, "emails": emails})
+
+    def get(self, path, params):
+        self.reads.append(path)
+        if self.fail and path.startswith(self.fail[0]):
+            if isinstance(self.fail[1], int):
+                return self.fail[1], None
+            raise self.fail[1]
+        if path == "/tests":
+            items = [{"id": t["id"], "name": t["name"], "status": t["status"], "type": "AUTO"} for t in self.tests]
+        elif path.endswith("/history"):
+            items = [t["run"] for t in self.tests if path == f"/tests/{t['id']}/history"]
+        else:
+            items = next(t["emails"] for t in self.tests if path == f"/runs/{t['run']['runId']}/emails")
+        n = int(params.get("cursor") or 0)
+        return 200, {"items": items[n * 50:(n + 1) * 50], "nextCursor": str(n + 1) if (n + 1) * 50 < len(items) else None}
+
+    def emails_read(self):
+        return [p for p in self.reads if p.startswith("/runs/")]
+
+
 def fleet_from(sl):
     inboxes = {e: {"id": i, "client": c, "tags": [wk.TAG] if i in sl.tagged else [], "type": TYPES.get(e, "")}
                for e, (i, c) in INBOXES.items()}
@@ -133,7 +173,8 @@ class FakeDB:
 @pytest.fixture
 def job(tmp_path, monkeypatch):
     h = SimpleNamespace(clock=at(10, 9), posts=[], post_ok=True, db=FakeDB(), db_down=None, sl=FakeSL(),
-                        fleet_error=None, fleet_calls=0, downloads=tmp_path / "Downloads", state_dir=tmp_path / "state")
+                        fleet_error=None, fleet_calls=0, downloads=tmp_path / "Downloads", state_dir=tmp_path / "state",
+                        v2api={})                                 # account: FakeV2; none unless a test adds one
     h.downloads.mkdir()
     st = wk.load_state(h.state_dir)
     st["since"] = "2026-11-07"                                    # the job's first day, as on the PC
@@ -154,6 +195,10 @@ def job(tmp_path, monkeypatch):
         return fleet_from(h.sl)
     monkeypatch.setattr(wk, "load_fleet", fake_load_fleet)
     monkeypatch.setattr(wk, "_client", lambda account, key: h.sl)
+    monkeypatch.delenv("V2_API", raising=False)
+    monkeypatch.setattr(wk, "API_FROM", "2026-11-07")             # these tests run in the week of 9 Nov
+    monkeypatch.setattr(wk, "api_accounts", lambda: [(a, f"key-{a}") for a in h.v2api])
+    monkeypatch.setattr(wk, "_api_client", lambda account, key: v2_api.Client(key, get=h.v2api[account].get))
 
     def fake_db():
         if h.db_down:
@@ -665,6 +710,8 @@ def checkable(job, monkeypatch):
     monkeypatch.setattr(accs, "discover_accounts", lambda: [AccountConfig(name="PRECISE_LEADS", api_key="k1"),
                                                             AccountConfig(name="BETTRDATA", api_key="k2")])
     job.slack = {"ok": True, "channel": {"name": "domain-inboxes-expiry-reminder", "is_member": True}}
+    job.v2api.update(PRECISE_LEADS=FakeV2(), BETTRDATA=FakeV2())
+    job.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1)
     monkeypatch.setattr(wk, "_slack_api", lambda method, token, **p: dict(job.slack, asked=(method, p)))
     job.check = lambda: asyncio.run(wk.self_check(SimpleNamespace(folder=str(job.downloads))))
     return job
@@ -675,7 +722,9 @@ def test_self_check_passes_when_everything_is_reachable(checkable, capsys):
     out = capsys.readouterr().out
     assert "PASS  Slack channel C0AGVSUNEFP: #domain-inboxes-expiry-reminder, the bot is a member" in out
     assert "PASS  Smartlead PRECISE_LEADS: key works" in out and "PASS  Smartlead BETTRDATA: key works" in out
-    assert "PASS  Mongo: reachable, database infrabot" in out and "5 passed, 0 failed" in out
+    assert "PASS  v2 API PRECISE_LEADS: reachable, 1 test" in out and "PASS  v2 API BETTRDATA: reachable, 0 tests" in out
+    assert "PASS  Mongo: reachable, database infrabot" in out and "7 passed, 0 failed" in out
+    assert checkable.v2api["PRECISE_LEADS"].reads == ["/tests"]     # the test list only, no results read
     assert checkable.posts == [] and checkable.sl.calls == []     # posts nothing, changes nothing
 
 
@@ -684,8 +733,12 @@ def test_self_check_fails_when_the_bot_cannot_post_or_a_part_is_missing(checkabl
     checkable.slack = {"ok": True, "channel": {"name": "domain-inboxes-expiry-reminder", "is_member": False}}
     monkeypatch.setattr(accs, "discover_accounts", lambda: [AccountConfig(name="PRECISE_LEADS", api_key="k1")])
     checkable.db_down = RuntimeError("timed out")
+    del checkable.v2api["BETTRDATA"]
+    checkable.v2api["PRECISE_LEADS"].fail = ("/tests", RuntimeError("https://x/tests?api_key=SECRET123"))
     assert checkable.check() == 1
     out = capsys.readouterr().out
+    assert "FAIL  v2 API PRECISE_LEADS: tests: RuntimeError" in out and "FAIL  v2 API BETTRDATA: no key loaded" in out
+    assert "SECRET" not in out
     assert "FAIL  Slack channel C0AGVSUNEFP: the bot is not a member of #domain-inboxes-expiry-reminder" in out
     assert "FAIL  Smartlead BETTRDATA: no key loaded" in out and "FAIL  Mongo: RuntimeError: timed out" in out
     checkable.slack = {"ok": False, "error": "channel_not_found"}
@@ -694,3 +747,127 @@ def test_self_check_fails_when_the_bot_cannot_post_or_a_part_is_missing(checkabl
     checkable.slack = {"ok": False, "error": "missing_scope", "needed": "channels:read"}
     assert checkable.check() == 1
     assert "the bot token lacks the channels:read scope" in capsys.readouterr().out
+
+
+# --- results from the v2 API (15 Nov 2026) --------------------------------------------------
+
+def api_week(h):
+    """The Monday tests as the API holds them: named so their CSVs would be dt-pl-1-run-1.csv, dt-melior-1-run-1.csv."""
+    h.v2api.setdefault("PRECISE_LEADS", FakeV2())
+    h.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1)
+    h.v2api["PRECISE_LEADS"].add("DT Melior #1", DT_MELIOR_1)
+    return h.v2api["PRECISE_LEADS"]
+
+
+def test_runs_from_the_api_are_read_and_acted_on_like_downloads(job, capsys):
+    api_week(job)
+    assert job.run() == 0
+    out = capsys.readouterr().out
+    assert "2 new file(s), 0 not ready, 2 from the v2 API" in out and "waiting: files for 2026-11-09" in out
+    st = job.state()
+    files = sorted(st["files"].values(), key=lambda f: f["name"])
+    assert [(f["name"], f["status"], f["source"], f["account"]) for f in files] == [
+        ("dt-melior-1-run-1.csv", "ingested", "api", "PRECISE_LEADS"), ("dt-pl-1-run-1.csv", "ingested", "api", "PRECISE_LEADS")]
+    assert sorted(p.name.split("__")[2] for p in (job.state_dir / "runs").iterdir()) == \
+        ["dt-melior-1-run-1.csv", "dt-pl-1-run-1.csv"]                 # kept as CSVs, so rejudge can read them
+    assert st["results"]["pl-bad@x.com"][0]["verdict"] == v2.FAIL
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert ("tag", [20], [77]) in job.sl.calls and ("remove", 1, [20]) in job.sl.calls
+    assert job.posts[-1][0][0] == "v2 placement results, tests of Mon 9 Nov"
+    assert len(job.v2api["PRECISE_LEADS"].emails_read()) == 2      # each run fetched once, never again
+
+
+def test_a_csv_of_a_run_already_read_from_the_api_is_not_counted_twice(job):
+    api_week(job)
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.run()
+    posts = len(job.posts)
+    job.clock = at(10, 11, 30)                                   # before Tuesday noon's reminder
+    # Smartlead's bytes differ from the job's own CSV of the run (else the content hash alone would catch it)
+    write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1, header='"Mailbox","Provider","Landed","Sent at","Send status"\n',
+              when=at(10, 11, 10))
+    write_csv(job.downloads, "dt-pl-1-run-1 (1).csv", DT_PL_1, header=HEAD + "\n", when=at(10, 11, 20))
+    assert job.run() == 0
+    st = job.state()
+    assert sorted(f["status"] for f in st["files"].values()) == ["duplicate", "duplicate", "ingested", "ingested"]
+    assert [len(st["results"][e]) for e in DT_PL_1] == [1, 1, 1]
+    assert not st["needs_action"] and len(job.posts) == posts       # nothing new to act on or post
+    assert job.heartbeat()["files_read"] == 2
+
+
+def test_a_run_whose_csv_was_read_is_not_fetched_from_the_api(job, capsys):
+    write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1)
+    write_csv(job.downloads, "dt-melior-1-run-1 (2).csv", DT_MELIOR_1)
+    api = api_week(job)
+    api.add("pl weekly", {"pl-other@z.com": (4, 4)})          # no CSV for this one
+    assert job.run() == 0
+    assert api.emails_read() == ["/runs/t3-run/emails"]
+    assert "3 new file(s), 0 not ready, 1 from the v2 API" in capsys.readouterr().out
+    st = job.state()
+    assert sorted((f["name"], f.get("source", "csv")) for f in st["files"].values()) == [
+        ("dt-melior-1-run-1 (2).csv", "csv"), ("dt-pl-1-run-1.csv", "csv"), ("pl-weekly-run-1.csv", "api")]
+
+
+def test_the_api_can_be_switched_off(job, monkeypatch, capsys):
+    api = api_week(job)
+    write_csv(job.downloads, "dt-pl-2.csv", {"pl-other@z.com": (4, 4)})
+    monkeypatch.setenv("V2_API", "off")
+    assert job.run() == 0
+    assert "v2 API off" in capsys.readouterr().out and api.reads == []
+    assert [f["name"] for f in job.state()["files"].values()] == ["dt-pl-2.csv"]
+    monkeypatch.delenv("V2_API")
+    job.run(no_api=True)
+    assert api.reads == []
+    job.run()
+    assert api.emails_read() and len(job.state()["files"]) == 3
+
+
+def test_one_account_failing_stops_neither_the_other_nor_the_csvs(job, capsys):
+    api_week(job).fail = ("/tests", RuntimeError("https://sl-sd-api.smartlead.ai/tests?api_key=SECRET123"))
+    job.v2api["BETTRDATA"] = FakeV2()
+    job.v2api["BETTRDATA"].add("DT BettrData #1", {"pl-other@z.com": (4, 4)})
+    write_csv(job.downloads, "dt-pl-1.csv", DT_PL_1)
+    assert job.run() == 0
+    out = capsys.readouterr().out
+    assert "v2 API PRECISE_LEADS: tests: RuntimeError" in out and "SECRET" not in out
+    assert "2 new file(s)" in out and "1 from the v2 API" in out
+    assert set(job.state()["results"]) == set(DT_PL_1) | {"pl-other@z.com"}
+    assert job.heartbeat()["errors"] == ["v2 API PRECISE_LEADS: tests: RuntimeError"]
+    job.v2api["PRECISE_LEADS"].fail = ("/tests/t1/history", 503)        # one test's history: the others still read
+    job.clock = at(10, 9, 30)
+    job.run()
+    assert "v2 API PRECISE_LEADS: 'DT PL #1': test history (HTTP 503)" in capsys.readouterr().out
+    assert job.v2api["PRECISE_LEADS"].emails_read() == ["/runs/t2-run/emails"]
+
+
+def test_a_copy_check_run_from_the_api_is_known_by_its_name(job, capsys):
+    job.v2api["PRECISE_LEADS"] = FakeV2()
+    job.v2api["PRECISE_LEADS"].add("PL copy check", {"pl-ok1@x.com": (0, 0), "pl-ok2@x.com": (0, 0)})
+    assert job.run(apply=False) == 0
+    out = capsys.readouterr().out
+    assert "v2 copy check, test of Mon 9 Nov" in out and job.state()["files"] == {}       # a dry run saves nothing
+    assert job.run() == 0
+    (f,) = job.state()["files"].values()
+    assert (f["name"], f["status"], f["source"]) == ("pl-copy-check-run-1.csv", "copy_check", "api")
+    assert job.state()["results"] == {}                           # never an inbox result
+
+
+def test_runs_before_api_from_are_never_fetched(job, monkeypatch):
+    monkeypatch.setattr(wk, "API_FROM", "2026-11-13")
+    api = api_week(job)
+    assert job.run() == 0
+    assert api.emails_read() == [] and job.state()["files"] == {}
+
+
+def test_a_finished_run_with_too_many_results_missing_is_told_once(job):
+    job.v2api["PRECISE_LEADS"] = FakeV2()
+    job.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1, missing=6)          # 6 of 24 never arrived
+    assert job.run() == 0
+    (head, _), = job.posts
+    assert head[0] == "v2 runs finished with more than a fifth of the results missing: dt-pl-1-run-1.csv"
+    assert [f["status"] for f in job.state()["files"].values()] == ["pending"] and job.state()["results"] == {}
+    job.clock = at(10, 10)
+    assert job.run() == 0 and len(job.posts) == 1
+    assert job.v2api["PRECISE_LEADS"].emails_read() == ["/runs/t1-run/emails"]

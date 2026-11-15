@@ -1,8 +1,8 @@
 """Smart Delivery v2 results: read the CSV, judge each inbox, decide pull or return. Pure: no network.
 
-v2 has no API (Smartlead support, 5 and 6 Nov 2026): the only way out is the CSV download
-(Mailbox, Provider, Landed, Sent at, Send status; 4 Google + 4 Microsoft seeds per inbox).
-v2_weekly.py reads the files Manveen downloads and acts on what this module decides.
+The results come as the CSV download (Mailbox, Provider, Landed, Sent at, Send status; 4 Google + 4 Microsoft seeds
+per inbox) or, since 15 Nov 2026, from the v2 API, which smartlead/v2_api.py turns into the same rows.
+v2_weekly.py reads both and acts on what this module decides.
 
 Rules (pipeline doc PL_INBOX_FLEET_PIPELINE_SHORT_2026-11-06, Manveen 4 Nov: "remove all inboxes
 affected from any future campaign unless they improve"; 7 Nov audit PLACEMENT-10: never pull on a
