@@ -954,3 +954,54 @@ def test_an_incomplete_download_never_overwrites_its_complete_re_download(job):
     assert st["results"]["pl-ok1@x.com"][-1]["verdict"] == v2.PASS
     assert sorted(f["status"] for f in st["files"].values()) == ["ingested", "superseded"]
     assert not any("Download" in x for h, _ in job.posts[posts:] for x in h)
+
+
+def test_a_readable_but_less_complete_copy_never_overwrites_a_fuller_one_read_in_the_same_batch(job):
+    # Jury round 2: 'X (1).csv' sorts before 'X.csv', so the fresh download was read first and the older one, ready
+    # but with 2 seeds still out, was read over it (same send time, the later read won).
+    write_csv(job.downloads, "dt-pl-1-run-1 (1).csv", DT_PL_1)                       # complete
+    p = write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1)
+    out, n = [], 0
+    for x in p.read_text(encoding="utf-8").splitlines(keepends=True):
+        if x.startswith("pl-bad@x.com,GOOGLE") and n < 2:
+            x, n = x.replace(",Spam,", ",Never arrived,"), n + 1
+        out.append(x)
+    p.write_text("".join(out), encoding="utf-8")
+    t = at(10, 8, 50).timestamp()
+    os.utime(p, (t, t))
+    assert job.run() == 0
+    st = job.state()
+    assert st["results"]["pl-bad@x.com"][-1]["verdict"] == v2.FAIL
+    assert sorted(f["status"] for f in st["files"].values()) == ["ingested", "superseded"]
+
+
+def test_a_stuck_api_run_fetched_again_with_other_bytes_is_still_told_once(job):
+    job.v2api["PRECISE_LEADS"] = FakeV2()
+    job.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1)
+    emails = job.v2api["PRECISE_LEADS"].tests[0]["emails"]
+    for e in emails[:6]:
+        e["placement"] = "SOMETHING_NEW"
+    job.clock = at(11, 20, 30)
+    job.run()
+    emails.reverse()                                                  # same run, rows in another order: new bytes
+    job.clock = at(11, 21, 30)
+    job.run()
+    assert sum(h[0].startswith("v2 results still not readable") for h, _ in job.posts) == 1
+
+
+def test_a_run_that_sent_nothing_is_not_called_stuck_48_hours_and_is_told_once(job):
+    job.v2api["PRECISE_LEADS"] = FakeV2()
+    job.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1, sent=None)
+    for e in job.v2api["PRECISE_LEADS"].tests[0]["emails"]:
+        e["placement"] = "NOT_SENT"
+    assert job.run() == 0
+    heads = [h[0] for h, _ in job.posts]
+    assert not any(h.startswith("v2 results still not readable") for h in heads)
+    assert heads.count("v2 run that sent no emails: dt-pl-1-run-1.csv") == 1
+    (f,) = job.state()["files"].values()
+    assert f["status"] == "nothing_sent"
+    job.clock = at(10, 11)
+    reads = len(job.v2api["PRECISE_LEADS"].emails_read())
+    job.run()
+    assert [h[0] for h, _ in job.posts].count("v2 run that sent no emails: dt-pl-1-run-1.csv") == 1
+    assert len(job.v2api["PRECISE_LEADS"].emails_read()) == reads           # not fetched again

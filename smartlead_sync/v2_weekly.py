@@ -313,7 +313,7 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
     pending and read again next run (an API run fetched again); a seed still missing 48 hours after sending is
     final (v2.pending_seeds). Only a CSV's first pending read is reported (``pending``): an API run needs no one."""
     got = {"ingested": [], "pending": [], "api_pending": [], "duplicates": [], "api": [], "nights": set(),
-           "unrecognised": [], "copy_checks": []}
+           "unrecognised": [], "copy_checks": [], "nothing_sent": []}
     for path, sha, text in files:
         api = isinstance(path, ApiRun)
         if (state["files"].get(sha) or {}).get("status") == "superseded":
@@ -335,13 +335,23 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
                                        for k, f in state["files"].items()):
             state["files"][sha] = {**info, "status": "superseded"}     # a fuller copy of this run is already read
             continue
+        if ready and not night and rows:
+            state["files"][sha] = {**info, "status": "nothing_sent"}     # no seed went out: nothing will come in
+            if was != "nothing_sent":
+                got["nothing_sent"].append(path.name)
+            continue
         if not ready or not night:
-            told = bool((state["files"].get(sha) or {}).get("told_stuck"))
-            state["files"][sha] = {**info, "status": "pending", "sent_last": v2.last_sent(rows),
-                                   **({"told_stuck": True} if told else {})}
+            state["files"][sha] = {**info, "status": "pending", "sent_last": v2.last_sent(rows)}
             if was != "pending":
                 got["api_pending" if api else "pending"].append(path.name)
             continue
+        missing = v2.pending_seeds(rows, now)
+        if any(k != sha and f.get("status") in READ and f.get("night") == night
+               and v2_api.run_key(f.get("name") or "") == key and f.get("pending_seeds") is not None
+               and f["pending_seeds"] < missing for k, f in state["files"].items()):
+            state["files"][sha] = {**info, "status": "superseded"}     # a copy with fewer seeds out is already read
+            continue
+        info["pending_seeds"] = missing
         for k, f in state["files"].items():      # an earlier pending copy of this run is never read over this one
             if (k != sha and f.get("status") == "pending" and f.get("night") == night
                     and v2_api.run_key(f.get("name") or "") == key):
@@ -367,7 +377,6 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
         summary = v2.summarise(rows)
         info["per_provider"] = v2.emails_per_provider(rows)
         info["by_provider"] = v2.emails_by_provider(rows)
-        info["pending_seeds"] = v2.pending_seeds(rows, now)
         info["sent_last"] = sent_last
         for mb, s in summary.items():
             res = {"night": night, "verdict": s["verdict"], "google": s["google"], "microsoft": s["microsoft"],
@@ -385,16 +394,22 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
     return got
 
 
-def stuck_pending(state: dict, now: datetime) -> list[str]:
-    """Pending files still not readable 48 hours after their last send, not told yet: a result other than
-    'Never arrived' (or no send time) never turns final by itself, so a person is told once."""
-    out = []
+def stuck_key(f: dict) -> str:
+    """One run, however many copies or API fetches of it were filed (each has its own content hash)."""
+    return f"{v2_api.run_key(f.get('name') or '')}|{f.get('night') or ''}"
+
+
+def stuck_pending(state: dict, now: datetime) -> list[dict]:
+    """Pending files still not readable 48 hours after their last send, their run not told yet: a result other than
+    'Never arrived' never turns final by itself, so a person is told once per run. A file with no send time is not
+    called stuck (a run that sent nothing is filed as nothing_sent)."""
+    told, out = set(state.get("told_stuck") or []), {}
     for f in state["files"].values():
         sent = v2._ts(str(f.get("sent_last") or ""))
-        if (f.get("status") == "pending" and not f.get("told_stuck")
-                and (sent is None or now - sent >= v2.FINAL_AFTER)):
-            out.append(f["name"])
-    return sorted(set(out))
+        if (f.get("status") == "pending" and sent is not None and now - sent >= v2.FINAL_AFTER
+                and stuck_key(f) not in told):
+            out.setdefault(stuck_key(f), f)
+    return sorted(out.values(), key=lambda f: f["name"])
 
 
 def settle_pending(state: dict, now: datetime) -> None:
@@ -1931,14 +1946,17 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
             _post_noted(state, ctx, [f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
                                      "\nDownload them again in a few hours. If not, the job reads them as they are "
                                      "48 hours after sending, with the missing results left out."], [])
+        if got["nothing_sent"] and can_post:
+            _post_noted(state, ctx, [f"v2 run that sent no emails: {', '.join(sorted(set(got['nothing_sent'])))}",
+                                     "\nSmart Delivery sent none of its test emails, so there is nothing to read. "
+                                     "Usually the plan's allowance had run out or the inboxes were disconnected when "
+                                     "it started; look at the run in Smart Delivery."], [])
         stuck = stuck_pending(state, now)
         if stuck and can_post and _post_noted(state, ctx, [
-                f"v2 results still not readable 48 hours after sending: {', '.join(stuck)}",
+                f"v2 results still not readable 48 hours after sending: {', '.join(sorted({f['name'] for f in stuck}))}",
                 "\nSome seeds have no result the job knows. Nothing was read from them; look at the run in Smart "
                 "Delivery."], []):
-            for f in state["files"].values():
-                if f.get("status") == "pending" and f.get("name") in stuck:
-                    f["told_stuck"] = True
+            state["told_stuck"] = (list(state.get("told_stuck") or []) + [stuck_key(f) for f in stuck])[-200:]
         if got["unrecognised"] and can_post and _post_noted(state, ctx, unrecognised_lines(got["unrecognised"]), []):
             _mark_told(state, got["unrecognised"])
         if state["repair"] and write and state["repair_day"] != today:
