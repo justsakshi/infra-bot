@@ -483,7 +483,8 @@ def test_an_inbox_smartlead_shows_connected_is_not_called_disconnected(tmp_path)
     head, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
     text = "\n".join(head + parts)
     assert "connected in Smartlead." not in text
-    assert "x.com: 1 inbox did not send in the test, and Smartlead can't log in to it. Reconnect it." in text
+    assert ("1 inbox did not send in the test, and Smartlead can't log in to it (x.com 1). Reconnect it, or delete it "
+            "in Smartlead if it was cancelled.") in text
     assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): most likely the test "
             "ran short (the plan's allowance). If it misses next week's test too, look at it.") in text
     assert "• not sent · x.com · ok@x.com → did not send in the test; connected in Smartlead" in text
@@ -501,7 +502,7 @@ def test_an_inbox_of_unknown_connection_keeps_the_old_advice(tmp_path):
     st["results"]["ok@x.com"] = [_not_sent()]
     st["results"]["bad@x.com"] = [_not_sent()]
     head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
-    assert "x.com: 2 inboxes did not send in the test. Check they are connected in Smartlead." in "\n".join(parts)
+    assert "2 inboxes did not send in the test (x.com 2). Check they are connected in Smartlead." in "\n".join(parts)
 
 
 def test_a_download_ask_is_dropped_48_hours_after_sending(tmp_path):
@@ -721,7 +722,7 @@ def test_report_only_lines_say_what_would_happen_to_each_inbox(tmp_path):
     assert "out of campaigns" not in parts[0] and "2 of 2" not in text
     assert ("• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would leave 1 "
             "inbox in a live campaign where it is the last good sender and tag 1 inbox that is in no campaign. "
-            "List under *Melior* below.") in parts[0]
+            "List under *Melior* below.") in parts[-1] and "is report-only until" not in parts[0].split("Solo")[0]
     assert ("• Melior | Solo (5) is live with only failed inboxes left (last@y.com). Not changed, as Melior is "
             "report-only until the job is proven on the other clients: pause it or add a good sender.") in parts[0]
     melior = next(p for p in parts if p.startswith("*Melior*"))
@@ -1317,3 +1318,32 @@ def test_a_post_shows_one_copy_check_per_client_the_newest(tmp_path):
     head, parts = wk.build_report(st, got, wk.plan(st), fleet(), acted(), True, set())
     assert sum("copy check" in x.lower() for x in head) == 1
     assert sum(x.count("• copy check") for x in parts) == 1
+
+
+def test_an_action_from_an_older_fail_names_it_and_a_short_provider_shows_what_was_sent(tmp_path):
+    # Cold read, 16 Nov 2026: "incomplete ... Google 1/4 -> would be taken out" read as a quarter in the inbox and
+    # as a pull on an incomplete result; the pull comes from the earlier fail this short test can't clear.
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4)]
+    short = {"night": "2026-11-09", "verdict": v2.INCOMPLETE, "history": False,
+             "google": v2.provider_verdict(["Inbox"]), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    st["results"]["bad@x.com"] = [result(v2.FAIL, 0, 4, "2026-11-02"), short]
+    d = wk.plan(st)
+    assert d["bad@x.com"]["action"] == v2.PULL
+    _, parts = wk.build_report(st, GOT, d, fleet(), acted(removed={"bad@x.com": [1]}), True, set())
+    assert ("• incomplete · x.com · bad@x.com · Google 1/1 (only 1 sent), Microsoft 4/4 → failed Mon 2 Nov, and this "
+            "test can't clear it: taken out of PL | A; tagged DO NOT USE") in "\n".join(parts)
+
+
+def test_not_sent_inboxes_on_several_domains_make_one_line_each_kind(tmp_path):
+    st = fresh_state(tmp_path)
+    f = fleet()
+    f["PRECISE_LEADS"]["inboxes"]["c@z.com"] = {"id": 12, "client": "Precise Leads", "tags": []}
+    for e in ("ok@x.com", "bad@x.com", "c@z.com"):
+        st["results"][e] = [_not_sent()]
+        f["PRECISE_LEADS"]["inboxes"][e]["connected"] = False
+    _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
+    needs = parts[0]
+    assert ("• 3 inboxes did not send in the test, and Smartlead can't log in to them (x.com 2, z.com 1). Reconnect "
+            "them, or delete them in Smartlead if they were cancelled.") in needs
+    assert needs.count("did not send") == 1

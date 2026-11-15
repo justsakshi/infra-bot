@@ -153,6 +153,7 @@ VERDICT_DAYS = 42                        # nights older than this are no longer 
 API_FROM = "2026-11-13"
 TWIN_DAYS = 3                            # a run's CSV: its night is 0-3 days before the run completed (a test runs ~33 h)
 READ = ("ingested", "history", "copy_check")   # file statuses whose rows the job has taken in
+ACTING = ("pulled", "pull_failed", "blocked", "parked", "tagged")   # report statuses where the job acted (or would)
 
 
 class FleetIncomplete(RuntimeError):
@@ -336,12 +337,14 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             state["files"][sha] = {**info, "status": "superseded"}     # a fuller copy of this run is already read
             continue
         if ready and not night and rows:
-            state["files"][sha] = {**info, "status": "nothing_sent"}     # no seed went out: nothing will come in
+            state["files"][sha] = {**info, "status": "nothing_sent",     # no seed went out: nothing will come in
+                                   "mailboxes": sorted({r["mailbox"] for r in rows})}
             if was != "nothing_sent":
                 got["nothing_sent"].append(path.name)
             continue
         if not ready or not night:
-            state["files"][sha] = {**info, "status": "pending", "sent_last": v2.last_sent(rows)}
+            state["files"][sha] = {**info, "status": "pending", "sent_last": v2.last_sent(rows),
+                                   "mailboxes": sorted({r["mailbox"] for r in rows})}
             if was != "pending":
                 got["api_pending" if api else "pending"].append(path.name)
             continue
@@ -910,9 +913,19 @@ def _range(vals: list[int]) -> str:
 
 
 def _seeds(items: list[tuple[str, dict]]) -> str:
-    g = [x["google"].get("inbox", 0) for _, x in items if (x.get("google") or {}).get("reported")]
-    m = [x["microsoft"].get("inbox", 0) for _, x in items if (x.get("microsoft") or {}).get("reported")]
-    return ", ".join(p for p in (f"Google {_range(g)}/4" if g else "", f"Microsoft {_range(m)}/4" if m else "") if p)
+    """'Google 3/4, Microsoft 4/4'. A provider that got fewer than 4 emails reads 'Google 1/1 (only 1 sent)':
+    '1/4' read like a quarter in the inbox when only one email went out (cold read, 16 Nov 2026)."""
+    out = []
+    for prov in ("google", "microsoft"):
+        got = [x[prov] for _, x in items if (x.get(prov) or {}).get("reported")]
+        if not got:
+            continue
+        inbox, sent = [int(p.get("inbox", 0)) for p in got], [int(p.get("sent") or v2.PASS_SEEDS) for p in got]
+        if all(n == v2.PASS_SEEDS for n in sent):
+            out.append(f"{prov.title()} {_range(inbox)}/4")
+        else:
+            out.append(f"{prov.title()} {_range(inbox)}/{_range(sent)} (only {_range(sent)} sent)")
+    return ", ".join(out)
 
 
 def _names(cids, names: dict) -> str:
@@ -1223,10 +1236,10 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         ro_kinds[(r["name"], why, bool(r.get("client")))][_ro_kind(rec)] += 1
     for (name, why, is_client), kinds in sorted(ro_kinds.items()):
         if is_client:
-            needs.append(f"{name} is report-only{' ' + why if why else ''}, so nothing changed in Smartlead for it. "
+            info.append(f"{name} is report-only{' ' + why if why else ''}, so nothing changed in Smartlead for it. "
                          f"The job would {_ro_would(kinds)}. List under *{name}* below.")
         else:
-            needs.append(f"{name} are report-only{' ' + why if why else ''}, so nothing changed in Smartlead for "
+            info.append(f"{name} are report-only{' ' + why if why else ''}, so nothing changed in Smartlead for "
                          f"them. The job would {_ro_would(kinds)}. Listed under each client below.")
     stuck, ro_stuck = defaultdict(list), defaultdict(list)
     for e, cids in acted["blocked"].items():
@@ -1262,13 +1275,18 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     dead, off, ok = Counter(), Counter(), Counter()
     for k, items in groups.items():
         {"not_sent": dead, "not_sent_off": off, "not_sent_ok": ok}.get(k[1], Counter())[k[3]] += len(items)
-    for dom, n in sorted(dead.items()):
-        needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test. Check "
+    def _per_dom(c: Counter) -> str:
+        return ", ".join(f"{dom} {n}" for dom, n in sorted(c.items()))
+    if dead:
+        n = sum(dead.values())
+        needs.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test ({_per_dom(dead)}). Check "
                      f"{'they are' if n != 1 else 'it is'} connected in Smartlead.")
-    for dom, n in sorted(off.items()):
+    if off:
+        n = sum(off.values())
         it = "them" if n != 1 else "it"
-        needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test, and Smartlead can't log in "
-                     f"to {it}. Reconnect {it}.")
+        needs.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test, and Smartlead can't log in to {it} "
+                     f"({_per_dom(off)}). Reconnect {it}, or delete {it} in Smartlead if {'they were' if n != 1 else 'it was'} "
+                     f"cancelled.")
     if ok:          # 16 Nov 2026: connected inboxes "did not send" when the plan's allowance ran out
         n = sum(ok.values())
         info.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test although Smartlead shows "
@@ -1335,10 +1353,38 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                 no_result.append(c["name"])
                 waiting |= {(acc, i) for i in c["senders"]}
     if no_result and weekly:
-        n_wait = len(waiting | copy_waiting)
-        needs.append(f"No result this week from {', '.join(sorted(no_result))} ({n_wait} inbox{'es' if n_wait != 1 else ''}): "
-                     f"no finished v2 run found. Check {'they have' if len(no_result) != 1 else 'it has'} a weekly "
-                     f"test in Smart Delivery.")      # the job reads every finished run from the API each hour
+        # What the job knows of a run with no result yet: still coming in (pending) or sent nothing (nothing_sent).
+        week0 = min(v2.week_start(v2.week_of(n)) for n in nights).isoformat()
+        held = {}
+        for f in state["files"].values():
+            when = f.get("night") or str(f.get("completed_at") or f.get("seen") or "")[:10]
+            if f.get("status") in ("pending", "nothing_sent") and when >= week0:
+                for e in f.get("mailboxes") or []:
+                    held.setdefault(e, f["status"])
+        by_why, n_by = defaultdict(list), Counter()
+        for acc, f in fleet.items():
+            for c in f.get("dt", {}).values():
+                if c["name"] not in no_result:
+                    continue
+                es = [e for e, i in f["inboxes"].items() if i["id"] in c["senders"]]
+                kinds = {held.get(e) for e in es} - {None}
+                why = "nothing_sent" if kinds == {"nothing_sent"} else "pending" if kinds else "none"
+                by_why[why].append(c["name"])
+                n_by[why] += len(c["senders"])
+        for why, cs in sorted(by_why.items()):
+            n, they = n_by[why], len(cs) != 1
+            nm = f"{', '.join(sorted(cs))} ({n} inbox{'es' if n != 1 else ''})"
+            if why == "pending":
+                info.append(f"No result yet from {nm}: {'their runs are' if they else 'its run is'} in, with results "
+                            f"still coming in. The job reads {'them' if they else 'it'} by itself, at the latest 48 "
+                            f"hours after sending.")
+            elif why == "nothing_sent":
+                needs.append(f"No result this week from {nm}: {'their runs' if they else 'its run'} sent no test "
+                             f"emails (the plan's allowance had run out, or the inboxes were disconnected). Run "
+                             f"{'them' if they else 'it'} again in Smart Delivery.")
+            else:
+                needs.append(f"No result this week from {nm}: no finished v2 run found. Check "
+                             f"{'they have' if they else 'it has'} a weekly test in Smart Delivery.")
     untested, missed = defaultdict(list), defaultdict(list)
     if weekly:
         newest = date.fromisoformat(max(nights))
@@ -1428,6 +1474,11 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             tail = _incomplete_tail(items)
         else:
             tail = "not in Smartlead"
+        why = str((decisions.get(es[0]) or {}).get("why") or "")
+        if (verdict not in v2.JUDGED and why.startswith("failed ") and st != "incomplete"
+                and (st in ACTING or st.startswith("report_only_"))):
+            # the action comes from an older fail this week's result can't clear (cold read, 16 Nov 2026)
+            tail = f"failed {_day(why.split()[-1])}, and this test can't clear it: {tail}"
         who = items[0][0] if len(items) == 1 else f"{len(items)} of {per_dom[dom]} inboxes"
         label = verdict.lower().replace("_", " ")
         by_client[client].append(" · ".join(x for x in (f"• {label}", dom, who, _seeds(items)) if x) + f" → {tail}")
@@ -2059,7 +2110,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     # Copy checks read and not yet reported ride with this report, judged against the results just acted on.
     got["copy_checks"] = copy_checks_due(state, now, settled=False)
     judge_copy_checks(state, got["copy_checks"])
-    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, args.act_from, behind, ro,
+    watch_till = args.act_from if args.act_from and today < args.act_from else None    # never after its date
+    head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, watch_till, behind, ro,
                                report_only_types=ro_t)
     text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
     print(text)

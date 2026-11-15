@@ -312,11 +312,11 @@ def test_report_only_melior_is_reported_by_what_would_happen_and_never_touched(j
     head, parts = job.posts[-1]
     assert head[1] == "7 inboxes · 3 pass · 0 watch · 4 fail"
     assert head[2] == "Took 1 inbox out of 1 live campaign · tagged 0 in no campaign · returned 0"
-    assert head[-1] == "\n*Needs you: 3*"
+    assert head[-1] == "\n*Needs you: 2*"                                  # report-only: For info, not a task
+    assert ("• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would take 1 inbox "
+            "out of campaigns, leave 1 inbox in a live campaign where it is the last good sender and tag 1 inbox that is "
+            "in no campaign. List under *Melior* below.") in parts[-1]
     assert parts[0].split("\n")[2:] == [
-        "• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would take 1 inbox "
-        "out of campaigns, leave 1 inbox in a live campaign where it is the last good sender and tag 1 inbox that is "
-        "in no campaign. List under *Melior* below.",
         "• Melior | Solo (3) is live with only failed inboxes left (mel-solo@y.com). Not changed, as Melior is "
         "report-only until the job is proven on the other clients: pause it or add a good sender.",
         "• No result this week from DT PL #2 (1 inbox): no finished v2 run found. Check it has a weekly test in "
@@ -637,7 +637,7 @@ def test_a_failed_domain_of_a_report_only_client_changes_nothing(job, monkeypatc
     assert job.sl.calls == [] and job.state()["pulled"] == {} and job.sl.senders[2] == {30, 31, 32}
     head, parts = job.posts[-1]
     assert head[2] == "Took 0 inboxes out of 0 live campaigns · tagged 0 in no campaign · returned 0"
-    assert "The job would take 2 inboxes out of campaigns. List under *Melior* below." in parts[0]
+    assert "The job would take 2 inboxes out of campaigns. List under *Melior* below." in parts[-1]
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert ("• domain failed · y.com · 1 of 2 inboxes in spam → 1 more inbox would be taken out of Melior | B "
             "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
@@ -656,7 +656,7 @@ def test_a_failing_google_inbox_is_reported_and_never_moved(job, monkeypatch):
     head, parts = job.posts[-1]
     assert head[2] == "Took 0 inboxes out of 0 live campaigns · tagged 0 in no campaign · returned 0"
     assert ("• Google inboxes are report-only until real replies agree with the seed test, so nothing changed in "
-            "Smartlead for them. The job would take 1 inbox out of campaigns. Listed under each client below.") in parts[0]
+            "Smartlead for them. The job would take 1 inbox out of campaigns. Listed under each client below.") in parts[-1]
     text = "\n".join(parts)
     assert ("pl-bad@x.com · Google 0/4, Microsoft 4/4 → would be taken out of PL | A (Google inboxes: report-only until "
             "real replies agree with the seed test); nothing changed in Smartlead") in text
@@ -1005,3 +1005,43 @@ def test_a_run_that_sent_nothing_is_not_called_stuck_48_hours_and_is_told_once(j
     job.run()
     assert [h[0] for h, _ in job.posts].count("v2 run that sent no emails: dt-pl-1-run-1.csv") == 1
     assert len(job.v2api["PRECISE_LEADS"].emails_read()) == reads           # not fetched again
+
+
+def test_a_dt_test_whose_run_is_still_coming_in_is_not_called_missing(job):
+    write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1)
+    p = write_csv(job.downloads, "dt-pl-2-run-1.csv", {"pl-other@z.com": (4, 4)})
+    p.write_text(p.read_text(encoding="utf-8").replace("Inbox", "Never arrived", 6), encoding="utf-8")
+    t = at(10, 8, 50).timestamp()
+    os.utime(p, (t, t))
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    head, parts = job.posts[-1]
+    text = "\n".join(parts)
+    assert not any("DT PL #2" in x and "no finished v2 run found" in x for x in text.split("\n"))
+    assert ("• No result yet from DT PL #2 (1 inbox): its run is in, with results still coming in. The job reads it "
+            "by itself, at the latest 48 hours after sending.") in parts[-1]
+
+
+def test_a_dt_test_whose_run_sent_nothing_says_so(job):
+    write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1)
+    job.v2api["PRECISE_LEADS"] = FakeV2()
+    job.v2api["PRECISE_LEADS"].add("DT PL #2", {"pl-other@z.com": (4, 4)}, sent=None)
+    for e in job.v2api["PRECISE_LEADS"].tests[0]["emails"]:
+        e["placement"] = "NOT_SENT"
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    head, parts = job.posts[-1]
+    assert not any("DT PL #2" in x and "no finished v2 run found" in x for x in "\n".join(parts).split("\n"))
+    assert ("• No result this week from DT PL #2 (1 inbox): its run sent no test emails (the plan's allowance had run "
+            "out, or the inboxes were disconnected). Run it again in Smart Delivery.") in parts[0]
+
+
+def test_the_watch_week_line_is_gone_after_its_date(job):
+    write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1)
+    job.run(apply=False, warn=True, act_from="2026-11-10")
+    job.clock = at(10, 10, 31)
+    assert job.run(apply=False, warn=True, act_from="2026-11-10") == 0
+    (head, _), = job.posts                                       # a plan posted without changing anything
+    assert head[2].startswith("Would take") and not any(x.startswith("Watch week") for x in head)
