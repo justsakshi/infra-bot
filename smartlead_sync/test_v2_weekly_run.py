@@ -252,7 +252,7 @@ def test_watch_week_waits_for_the_night_to_settle_then_reports_without_changing_
             "would be tagged DO NOT USE") in text
     assert ("• fail · y.com · mel-bad@y.com · Google 4/4, Microsoft 0/4 → would be taken out of Melior | B "
             "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in text
-    assert "No result this week from DT PL #2 (1 inbox): download its CSV" in parts[0]
+    assert "No result this week from DT PL #2 (1 inbox): no finished v2 run found" in parts[0]
     assert "2 commits behind main" in text
     v = job.verdicts()
     assert set(v) == {f"{e}|2026-11-09" for e in DT_PL_1} | {f"{e}|2026-11-09" for e in DT_MELIOR_1}
@@ -319,7 +319,8 @@ def test_report_only_melior_is_reported_by_what_would_happen_and_never_touched(j
         "in no campaign. List under *Melior* below.",
         "• Melior | Solo (3) is live with only failed inboxes left (mel-solo@y.com). Not changed, as Melior is "
         "report-only until the job is proven on the other clients: pause it or add a good sender.",
-        "• No result this week from DT PL #2 (1 inbox): download its CSV into Downloads."]
+        "• No result this week from DT PL #2 (1 inbox): no finished v2 run found. Check it has a weekly test in "
+        "Smart Delivery."]
     ro = " (Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead"
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert melior.split("\n")[2:] == [
@@ -542,7 +543,8 @@ def test_a_copy_check_campaign_is_named_missing_until_its_csv_arrives(job, monke
     job.run()
     job.clock = at(10, 10, 31)
     job.run()
-    assert "• No result this week from DT PL copy check (2 inboxes): download its CSV into Downloads." in \
+    assert ("• No result this week from DT PL copy check (2 inboxes): no finished v2 run found. Check it has a weekly "
+            "test in Smart Delivery.") in \
         job.posts[-1][1][0].split("\n")                           # its senders' inbox tests are not its result
     job.clock = at(10, 12)
     assert job.run() == 0
@@ -861,13 +863,39 @@ def test_runs_before_api_from_are_never_fetched(job, monkeypatch):
     assert api.emails_read() == [] and job.state()["files"] == {}
 
 
-def test_a_finished_run_with_too_many_results_missing_is_told_once(job):
+def test_seeds_missing_from_a_finished_run_are_final_48_hours_after_sending(job):
     job.v2api["PRECISE_LEADS"] = FakeV2()
-    job.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1, missing=6)          # 6 of 24 never arrived
-    assert job.run() == 0
-    (head, _), = job.posts
-    assert head[0] == "v2 runs finished with more than a fifth of the results missing: dt-pl-1-run-1.csv"
+    job.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1, missing=6)          # 6 of 24 never arrived; sent Mon 20:01 IST
+    assert job.run() == 0                                                   # Tue 09:00, 13 h after sending
     assert [f["status"] for f in job.state()["files"].values()] == ["pending"] and job.state()["results"] == {}
+    assert job.posts == []                                  # nothing for a person to do: the job reads it again itself
     job.clock = at(10, 10)
-    assert job.run() == 0 and len(job.posts) == 1
-    assert job.v2api["PRECISE_LEADS"].emails_read() == ["/runs/t1-run/emails"]
+    assert job.run() == 0 and job.posts == []
+    assert job.v2api["PRECISE_LEADS"].emails_read() == ["/runs/t1-run/emails"] * 2
+    job.clock = at(11, 20, 30)                                              # 48 h after sending
+    assert job.run() == 0
+    st = job.state()
+    assert [f["status"] for f in st["files"].values()] == ["ingested"] and set(st["results"]) == set(DT_PL_1)
+    assert st["results"]["pl-ok1@x.com"][0]["google"]["verdict"] == v2.INCOMPLETE    # what never arrived is not judged
+    assert st["results"]["pl-bad@x.com"][0]["verdict"] == v2.FAIL
+    text = "\n".join(x for head, parts in job.posts for x in head + parts)
+    assert "more than a fifth" not in text and "Download it again" not in text
+    job.clock = at(11, 21, 30)
+    job.run()
+    assert len(job.v2api["PRECISE_LEADS"].emails_read()) == 3              # read: never fetched again
+
+
+def test_a_csv_downloaded_before_its_seeds_arrived_is_read_again_by_itself(job):
+    p = write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1)
+    p.write_text(p.read_text(encoding="utf-8").replace("Inbox", "Never arrived", 6), encoding="utf-8")
+    t = at(10, 8, 50).timestamp()
+    os.utime(p, (t, t))
+    assert job.run() == 0
+    assert [f["status"] for f in job.state()["files"].values()] == ["pending"]
+    told = len(job.posts)
+    job.clock = at(10, 10)
+    assert job.run() == 0 and len(job.posts) == told                       # told once, not every hour
+    job.clock = at(11, 20, 30)
+    assert job.run() == 0
+    st = job.state()
+    assert [f["status"] for f in st["files"].values()] == ["ingested"] and set(st["results"]) == set(DT_PL_1)

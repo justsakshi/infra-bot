@@ -211,8 +211,8 @@ def scan(folder: Path, state: dict, now: datetime, unrecognised: list | None = N
             continue
         sha = hashlib.sha256(raw).hexdigest()
         known = state["files"].get(sha)
-        if known and known.get("status") != "unrecognised":
-            continue
+        if known and known.get("status") not in ("unrecognised", "pending"):
+            continue                    # a pending file is read again each run: its missing seeds turn final
         text = raw.decode("utf-8-sig", errors="replace")
         if v2.is_v2_csv(text):
             out.append((p, sha, text))
@@ -252,11 +252,12 @@ def csv_twin(state: dict, name: str, night: str | None) -> str | None:
 
 
 def already_read(state: dict, run: dict) -> bool:
-    """Skip an API run before fetching its emails: it was read from the API before (any outcome: a completed run
-    does not change), or its CSV download was read (same run name, night 0-3 days before it completed)."""
+    """Skip an API run before fetching its emails: it was read from the API before (any outcome but pending: a
+    completed run does not change), or its CSV download was read (same run name, night 0-3 days before it
+    completed). A pending run is fetched again each run until its missing seeds are final (48 h after sending)."""
     key, done = v2_api.run_key(run["name"]), v2_api.completed_on({"completedAt": run["completed_at"]})
     for f in state["files"].values():
-        if f.get("run_id") == run["run_id"]:
+        if f.get("run_id") == run["run_id"] and f.get("status") != "pending":
             return True
         if (f.get("source") != "api" and f.get("status") in READ and f.get("night") and done
                 and v2_api.run_key(f.get("name") or "") == key
@@ -308,8 +309,9 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
     A copy-check file (v2.is_copy_check_file) is kept apart: it goes to state["copy_checks"] and never into
     state["results"], so no inbox is judged, pulled, returned or held on it.
     A CSV of a run already read from the API is filed as "duplicate" and not read again (csv_twin); an API run
-    whose CSV was read is never fetched (already_read). An API run that finished with too many results missing
-    goes to ``api_pending`` (a fresh download would not help), a CSV downloaded too early to ``pending``."""
+    whose CSV was read is never fetched (already_read). A file with too many results not in yet is filed as
+    pending and read again next run (an API run fetched again); a seed still missing 48 hours after sending is
+    final (v2.pending_seeds). Only a CSV's first pending read is reported (``pending``): an API run needs no one."""
     got = {"ingested": [], "pending": [], "api_pending": [], "duplicates": [], "api": [], "nights": set(),
            "unrecognised": [], "copy_checks": []}
     for path, sha, text in files:
@@ -323,10 +325,17 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             state["files"][sha] = {**info, "status": "duplicate"}
             got["duplicates"].append(path.name)
             continue
-        if not v2.file_ready(rows) or not night:
+        was = (state["files"].get(sha) or {}).get("status")
+        if not v2.file_ready(rows, now) or not night:
             state["files"][sha] = {**info, "status": "pending"}
-            got["api_pending" if api else "pending"].append(path.name)
+            if was != "pending":
+                got["api_pending" if api else "pending"].append(path.name)
             continue
+        key = v2_api.run_key(path.name)
+        for k, f in state["files"].items():      # an earlier pending copy of this run is never read over this one
+            if (k != sha and f.get("status") == "pending" and f.get("night") == night
+                    and v2_api.run_key(f.get("name") or "") == key):
+                f["status"] = "superseded"
         sent_last = v2.last_sent(rows)
         old = history or bool(state.get("since") and night < state["since"])
         mailboxes = sorted({r["mailbox"] for r in rows})
@@ -348,7 +357,8 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
         summary = v2.summarise(rows)
         info["per_provider"] = v2.emails_per_provider(rows)
         info["by_provider"] = v2.emails_by_provider(rows)
-        info["pending_seeds"] = v2.pending_seeds(rows)
+        info["pending_seeds"] = v2.pending_seeds(rows, now)
+        info["sent_last"] = sent_last
         for mb, s in summary.items():
             res = {"night": night, "verdict": s["verdict"], "google": s["google"], "microsoft": s["microsoft"],
                    "sent_last": sent_last, "file": sha[:12], "history": old}
@@ -363,6 +373,22 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             got["nights"].add(night)
             state["needs_action"] = True
     return got
+
+
+def settle_pending(state: dict, now: datetime) -> None:
+    """A file read with some seeds not in yet keeps asking for a fresh download only until 48 hours after its last
+    send (v2.FINAL_AFTER): after that its missing seeds will not arrive, so the ask is dropped."""
+    last: dict[str, str] = {}
+    for rs in state["results"].values():
+        for x in rs:
+            if x.get("file") and x.get("sent_last"):
+                last[x["file"]] = max(last.get(x["file"], ""), x["sent_last"])
+    for sha, f in state["files"].items():
+        if f.get("status") != "ingested" or not f.get("pending_seeds"):
+            continue
+        sent = v2._ts(str(f.get("sent_last") or last.get(sha[:12]) or ""))
+        if sent is not None and now - sent >= v2.FINAL_AFTER:
+            f["pending_seeds"] = 0
 
 
 def unsettled(state: dict, now: datetime) -> list[str]:
@@ -608,6 +634,15 @@ def _client(account: str, key: str):
     return SmartleadClient(key, account)
 
 
+def _connected(a: dict) -> bool | None:
+    """Smartlead can log in to the inbox (SMTP and IMAP both work); None when the list call did not say.
+    16 Nov 2026: False on exactly the 15 inboxes whose Google login had lapsed."""
+    smtp, imap = a.get("is_smtp_success"), a.get("is_imap_success")
+    if smtp is None and imap is None:
+        return None
+    return bool(smtp) and bool(imap)
+
+
 async def load_fleet() -> dict:
     """Inboxes, live non-test campaigns and DT test campaigns of the client accounts. Raises
     FleetIncomplete if an account's key is missing, so state is never reconciled against half a fleet."""
@@ -626,7 +661,7 @@ async def load_fleet() -> dict:
                 if e and a.get("id") is not None:
                     tags = [str(t.get("tag_name") or t.get("name") or "") for t in (a.get("tags") or []) if isinstance(t, dict)]
                     inboxes[e] = {"id": int(a["id"]), "client": client_label(acc.name, a.get("client_id")), "tags": tags,
-                                  "type": str(a.get("type") or "").strip().upper()}
+                                  "type": str(a.get("type") or "").strip().upper(), "connected": _connected(a)}
             if not inboxes:
                 raise FleetIncomplete(f"{name}: Smartlead returned no inboxes")
             camps, dt = {}, {}
@@ -1073,6 +1108,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             latest[e] = _shown(own(e))                      # acted on from an older result: still named
     fleet = fleet or {}
     client_of = {e: i["client"] for f in fleet.values() for e, i in f["inboxes"].items()}
+    connected = {e: i.get("connected") for f in fleet.values() for e, i in f["inboxes"].items()}
     names = {cid: c["name"] for f in fleet.values() for cid, c in {**f["camps"], **f.get("dt", {})}.items()}
     would = "" if write else "would be "
     per_dom = Counter(e.split("@")[1] for e in latest)
@@ -1083,6 +1119,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             continue
         eff = v2.own_verdict(x, types.get(mb), held_for(state, x))
         st = status_of(mb, x, eff, decisions.get(mb, {}), acted, pulled_before, mb in client_of)
+        if st == "not_sent" and connected.get(mb) is not None:
+            st = "not_sent_ok" if connected[mb] else "not_sent_off"
         if st:
             groups[(client_of.get(mb, "Not in Smartlead"), st, x["verdict"], mb.split("@")[1])].append((mb, x))
 
@@ -1177,27 +1215,35 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     needs += [f"Error: {err}" for err in acted["errors"]]
     if got["pending"]:
         needs.append(f"Downloaded before the results were in (download again later): {', '.join(got['pending'])}")
-    if got.get("api_pending"):
-        needs.append(api_pending_lines(got["api_pending"])[0] + ": nothing was read from them; check the seed "
-                     "list and run the test again")
-    dead = Counter()
+    dead, off, ok = Counter(), Counter(), Counter()
     for k, items in groups.items():
-        if k[1] == "not_sent":
-            dead[k[3]] += len(items)
+        {"not_sent": dead, "not_sent_off": off, "not_sent_ok": ok}.get(k[1], Counter())[k[3]] += len(items)
     for dom, n in sorted(dead.items()):
         needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test. Check "
                      f"{'they are' if n != 1 else 'it is'} connected in Smartlead.")
+    for dom, n in sorted(off.items()):
+        it = "them" if n != 1 else "it"
+        needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test, and Smartlead can't log in "
+                     f"to {it}. Reconnect {it}.")
+    if ok:          # 16 Nov 2026: 20 connected inboxes "did not send" because the plan's allowance ran out
+        n = sum(ok.values())
+        info.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test although Smartlead shows "
+                    f"{'them' if n != 1 else 'it'} connected ({', '.join(sorted(ok))}): the test ran short, not the "
+                    f"inbox{'es' if n != 1 else ''}. Nothing to fix on {'them' if n != 1 else 'it'}.")
     thin = sorted((f["name"], f["per_provider"], f.get("by_provider") or {}) for f in state["files"].values()
                   if f.get("night") in got["nights"] and f.get("status") == "ingested"
                   and 0 < int(f.get("per_provider") or v2.PASS_SEEDS) < v2.PASS_SEEDS)
-    for name, n, by in thin:
-        if len(set(by.values())) > 1:       # the two providers got different counts: name both
-            sends = " and ".join(f"{c} {p.title()}" for p, c in sorted(by.items())) + " emails per inbox"
-            needs.append(f"{name}: this test sends {sends}, so the job can't judge its inboxes (it needs 4 of 4 at "
-                         f"each). In Smart Delivery, set the test to 4 emails per provider and check its seed list.")
-            continue
-        needs.append(f"{name}: this test sends {n} email{'s' if n != 1 else ''} per provider, so the job can't judge its "
-                     f"inboxes (it needs 4 of 4). In Smart Delivery, set the test to 4 emails per provider.")
+    if thin:
+        # One line for all of them. A test does not keep its emails per provider: each run gets the plan's allowance
+        # when it starts (Smartlead support, 15 Nov 2026), so "set the test to 4" was advice no one could follow.
+        # 16 Nov: of seven runs started minutes apart, the first two got 4 and the rest 1.
+        runs = ", ".join(f"{name} ({', '.join(f'{c} {p.title()}' for p, c in sorted(by.items()))})"
+                         if len(set(by.values())) > 1 else f"{name} ({n} per provider)" for name, n, by in thin)
+        k = len(thin)
+        needs.append(f"{k} test run{'s' if k != 1 else ''} sent fewer than 4 emails per provider, so the job can't "
+                     f"judge {'their' if k != 1 else 'its'} inboxes (it needs 4 of 4): {runs}. Each run gets what the "
+                     f"Smart Delivery plan allows when it starts, and runs started close together use it up: start "
+                     f"the tests apart, or ask Smartlead what the plan allows.")
     current = {x.get("file") for rs in state["results"].values() for x in rs}
     partial = sorted((f["name"], f["pending_seeds"]) for sha, f in state["files"].items()
                      if f.get("night") in got["nights"] and f.get("status") == "ingested" and f.get("pending_seeds")
@@ -1247,7 +1293,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     if no_result and weekly:
         n_wait = len(waiting | copy_waiting)
         needs.append(f"No result this week from {', '.join(sorted(no_result))} ({n_wait} inbox{'es' if n_wait != 1 else ''}): "
-                     f"download {'their CSVs' if len(no_result) != 1 else 'its CSV'} into Downloads.")
+                     f"no finished v2 run found. Check {'they have' if len(no_result) != 1 else 'it has'} a weekly "
+                     f"test in Smart Delivery.")      # the job reads every finished run from the API each hour
     untested, missed = defaultdict(list), defaultdict(list)
     if weekly:
         newest = date.fromisoformat(max(nights))
@@ -1293,7 +1340,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     out_before = defaultdict(lambda: [0, set()])
     order = {"pull_failed": -1, "pulled": 0, "report_only_removed": 0.5, "blocked": 1, "report_only_blocked": 1.5,
              "parked": 2, "report_only_parked": 2.5, "tagged": 3, "report_only_tagged": 3.5, "held": 4,
-             "override": 5, "fail_idle": 6, "watch": 7, "not_sent": 8, "incomplete": 9, "missing": 10}
+             "override": 5, "fail_idle": 6, "watch": 7, "not_sent": 8, "not_sent_off": 8, "not_sent_ok": 8.5, "incomplete": 9, "missing": 10}
     for (client, st, verdict, dom), items in sorted(groups.items(), key=lambda kv: (kv[0][0], order.get(kv[0][1], 99), kv[0][3])):
         es = [e for e, _ in items]
         if st == "out_before":
@@ -1329,8 +1376,10 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                 tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; if next week's test is below 4/4 too, it counts as failed"
             else:
                 tail = "2-3 of 4 seeds in the inbox. Stays in campaigns; a one-off test never counts toward two weeks running"
-        elif st == "not_sent":
+        elif st in ("not_sent", "not_sent_off"):
             tail = "did not send in the test (see Needs you)"
+        elif st == "not_sent_ok":
+            tail = "did not send in the test; connected in Smartlead, so the test ran short"
         elif st == "incomplete":
             tail = _incomplete_tail(items)
         else:
@@ -1433,12 +1482,6 @@ def reminder_lines(night: str, missing: list[str], some_in: bool) -> list[str]:
                if missing else [])
             + ["\nDownload each test's CSV from Smart Delivery v2 into Downloads on Manveen's PC. "
                "The job reads them within the hour. Until then nothing is pulled or returned."])
-
-
-def api_pending_lines(names: list[str]) -> list[str]:
-    """v2 runs Smartlead marked complete with more than a fifth of their results never arriving: not read, once."""
-    return [f"v2 runs finished with more than a fifth of the results missing: {', '.join(names)}",
-            "\nSmart Delivery marked them complete, so a fresh download will not help. Nothing was read from them."]
 
 
 def unrecognised_lines(names: list[str]) -> list[str]:
@@ -1818,6 +1861,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
             got[k] = got[k] | v if isinstance(v, set) else got[k] + v
     else:
         print("[v2-weekly] v2 API off (V2_API=off or --no-api): CSVs only")
+    settle_pending(state, now)
     if persist:
         for p, sha in odd:
             state["files"][sha] = {"name": p.name, "status": "unrecognised", "seen": now.isoformat(timespec="minutes"),
@@ -1829,7 +1873,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     print(f"[v2-weekly] {now:%Y-%m-%d %H:%M} IST ({'act' if write else 'warn' if persist else 'dry run'}): "
           f"{len(got['ingested'])} new file(s), {len(got['pending'])} not ready"
           + (f", {len(got['api'])} from the v2 API" if got["api"] else "")
-          + (f", {len(got['api_pending'])} API run(s) with too many results missing" if got["api_pending"] else "")
+          + (f", {len(got['api_pending'])} API run(s) with results still coming in" if got["api_pending"] else "")
           + (f", {len(got['duplicates'])} CSV(s) already read from the API" if got["duplicates"] else "")
           + (f", {len(odd)} unrecognised" if odd else "")
           + (f", {len(got['copy_checks'])} copy check(s)" if got["copy_checks"] else "")
@@ -1856,9 +1900,8 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
             state["reminded"].append(due)
         if got["pending"] and can_post:
             _post_noted(state, ctx, [f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
-                                     "\nDownload them again in a few hours. Nothing was read from them."], [])
-        if got["api_pending"] and can_post:
-            _post_noted(state, ctx, api_pending_lines(got["api_pending"]), [])
+                                     "\nDownload them again in a few hours. If not, the job reads them as they are "
+                                     "48 hours after sending, with the missing results left out."], [])
         if got["unrecognised"] and can_post and _post_noted(state, ctx, unrecognised_lines(got["unrecognised"]), []):
             _mark_told(state, got["unrecognised"])
         if state["repair"] and write and state["repair_day"] != today:

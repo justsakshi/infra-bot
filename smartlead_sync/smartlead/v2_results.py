@@ -53,6 +53,8 @@ PULL, RETURN = "PULL", "RETURN"
 PASS_SEEDS = 4              # seeds per provider; a test that sent another number is reported, never judged
 FAIL_SPAM = 3               # this many of 4 seeds in spam: fail
 PENDING_SHARE = 0.2         # more results than this still pending: the file was downloaded too early
+NEVER_ARRIVED = "Never arrived"
+FINAL_AFTER = timedelta(hours=48)    # a seed not arrived this long after sending never will
 HOLD_SHARE, HOLD_MIN = 0.8, 10
 RETURN_GAP_DAYS = 6         # two results 6+ days apart: two different weeks (return, and WATCH-WATCH pull)
 OWN_PROVIDER = {"GMAIL": "google", "OUTLOOK": "microsoft"}      # Smartlead inbox type -> the provider it is judged on
@@ -161,17 +163,28 @@ def week_start(monday: date) -> date:
     return monday - timedelta(days=2)
 
 
-def pending_seeds(rows: list[dict]) -> int:
-    """Seeds sent but with no final result yet (neither Inbox, Spam nor BOUNCED)."""
-    return sum(1 for r in rows if r["landed"] != "NOT_SENT" and r["landed"] not in FINAL)
+def _gone(r: dict, now: datetime | None) -> bool:
+    """A seed that never arrived and was sent FINAL_AFTER or longer before ``now``: it will not arrive any more.
+    It still counts as neither Inbox nor Spam, so the inbox is not judged on it."""
+    if now is None or r["landed"] != NEVER_ARRIVED:
+        return False
+    sent = _ts(r.get("sent_at") or "")
+    return sent is not None and now - sent >= FINAL_AFTER
 
 
-def file_ready(rows: list[dict]) -> bool:
+def pending_seeds(rows: list[dict], now: datetime | None = None) -> int:
+    """Seeds sent but with no final result yet (neither Inbox, Spam nor BOUNCED). With ``now``, a seed that
+    never arrived 48 hours after sending is final too (16 Nov 2026: v2 had shown 'Never arrived' 40+ hours after
+    sending, and support says a run is watched for about 2.5 hours)."""
+    return sum(1 for r in rows if r["landed"] != "NOT_SENT" and r["landed"] not in FINAL and not _gone(r, now))
+
+
+def file_ready(rows: list[dict], now: datetime | None = None) -> bool:
     """False when too many seeds have not answered yet (downloaded before the results came in)."""
     sent = [r for r in rows if r["landed"] != "NOT_SENT"]
     if not sent:
         return True
-    return pending_seeds(rows) / len(sent) <= PENDING_SHARE
+    return pending_seeds(rows, now) / len(sent) <= PENDING_SHARE
 
 
 # --- verdicts --------------------------------------------------------------------

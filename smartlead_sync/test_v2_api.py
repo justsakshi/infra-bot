@@ -129,3 +129,29 @@ def test_completed_runs_reads_finished_runs_since_a_date_and_skips_what_it_is_to
     get.calls.clear()
     runs, _ = v2_api.completed_runs(v2_api.Client("K", get=get), date(2026, 11, 14), skip=lambda r: r["run_id"] == "r1")
     assert runs == [] and not any(p == "/runs/r1/emails" for p, _ in get.calls)
+
+
+# --- rate limit (16 Nov 2026: HTTP 429 on the first live read) ----------------------------------
+
+def test_a_rate_limited_call_waits_and_tries_again():
+    calls, waits = [], []
+
+    def get(path, params):
+        calls.append(path)
+        return (429, None) if len(calls) < 3 else (200, {"items": [{"id": "t1"}], "nextCursor": None})
+    c = v2_api.Client("k", get=get, sleep=waits.append)
+    assert c.tests() == [{"id": "t1"}] and len(calls) == 3
+    assert waits == [v2_api.RATE_WAIT, 2 * v2_api.RATE_WAIT]
+
+
+def test_a_call_still_rate_limited_after_the_retries_is_an_error():
+    waits = []
+    c = v2_api.Client("k", get=lambda path, params: (429, None), sleep=waits.append)
+    with pytest.raises(v2_api.V2ApiError, match="429"):
+        c.tests()
+    assert len(waits) == v2_api.RATE_RETRIES
+    other = []
+    c = v2_api.Client("k", get=lambda path, params: (503, None), sleep=other.append)
+    with pytest.raises(v2_api.V2ApiError, match="503"):
+        c.tests()
+    assert other == []                                                   # only a 429 is waited out

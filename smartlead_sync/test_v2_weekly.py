@@ -467,13 +467,76 @@ def test_report_warn_week_and_untested_and_spacing(tmp_path):
     assert all("\n\n" in p for p in parts)                                 # title, blank line, lines
 
 
+
+def _not_sent(night="2026-11-09"):
+    dead = v2.provider_verdict(["NOT_SENT"] * 4)
+    return {"night": night, "verdict": v2.NOT_SENT, "history": False, "google": dict(dead), "microsoft": dict(dead)}
+
+
+def test_an_inbox_smartlead_shows_connected_is_not_called_disconnected(tmp_path):
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [_not_sent()]
+    st["results"]["bad@x.com"] = [_not_sent()]
+    f = fleet()
+    f["PRECISE_LEADS"]["inboxes"]["ok@x.com"]["connected"] = True
+    f["PRECISE_LEADS"]["inboxes"]["bad@x.com"]["connected"] = False
+    head, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
+    text = "\n".join(head + parts)
+    assert "connected in Smartlead." not in text
+    assert "x.com: 1 inbox did not send in the test, and Smartlead can't log in to it. Reconnect it." in text
+    assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): the test ran short, "
+            "not the inbox. Nothing to fix on it.") in text
+    assert "• not sent · x.com · ok@x.com → did not send in the test; connected in Smartlead" in text
+
+
+def test_an_inbox_of_unknown_connection_keeps_the_old_advice(tmp_path):
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [_not_sent()]
+    st["results"]["bad@x.com"] = [_not_sent()]
+    head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
+    assert "x.com: 2 inboxes did not send in the test. Check they are connected in Smartlead." in "\n".join(parts)
+
+
+def test_a_download_ask_is_dropped_48_hours_after_sending(tmp_path):
+    st = fresh_state(tmp_path)
+    sha = "c" * 64
+    st["files"][sha] = {"name": "dt-run-1.csv", "night": "2026-11-09", "status": "ingested", "pending_seeds": 2}
+    st["results"]["ok@x.com"] = [{**result(v2.INCOMPLETE, 4, 4), "file": sha[:12],
+                                  "sent_last": "2026-11-09T14:31:00+00:00"}]             # 20:01 IST
+    head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
+    assert "dt-run-1.csv: 2 seed results had not come in" in "\n".join(parts)
+    wk.settle_pending(st, datetime(2026, 11, 11, 20, 0, tzinfo=v2.IST))                  # 47 h 59 min after
+    assert st["files"][sha]["pending_seeds"] == 2
+    wk.settle_pending(st, datetime(2026, 11, 11, 20, 1, tzinfo=v2.IST))
+    assert st["files"][sha]["pending_seeds"] == 0
+    head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
+    assert "seed results had not come in" not in "\n".join(parts)
+
+
+def test_a_short_test_is_blamed_on_the_plan_allowance_in_one_line(tmp_path):
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4)]
+    st["files"]["a" * 64] = {"name": "pl-weekly-run-1.csv", "night": "2026-11-09", "status": "ingested",
+                             "per_provider": 1, "by_provider": {"google": 1, "microsoft": 4}}
+    st["files"]["b" * 64] = {"name": "pl-two-run-1.csv", "night": "2026-11-09", "status": "ingested",
+                             "per_provider": 1, "by_provider": {"google": 1, "microsoft": 1}}
+    head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
+    text = "\n".join(head + parts)
+    assert "set the test to 4" not in text
+    (line,) = [x for x in text.split("\n") if "fewer than 4 emails per provider" in x]
+    assert line.startswith("• 2 test runs sent fewer than 4 emails per provider, so the job can't judge their inboxes "
+                           "(it needs 4 of 4): pl-two-run-1.csv (1 per provider), "
+                           "pl-weekly-run-1.csv (1 Google, 4 Microsoft).")
+    assert "Each run gets what the Smart Delivery plan allows when it starts" in line
+
+
 def test_inboxes_whose_dt_csv_is_missing_are_not_called_untested(tmp_path):
     st = fresh_state(tmp_path)
     st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4)]
     f = fleet()
     f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT PL #2", "status": "ACTIVE", "senders": {10}}}   # bad@x.com, no CSV
     _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
-    assert "No result this week from DT PL #2 (1 inbox): download its CSV" in parts[0]
+    assert "No result this week from DT PL #2 (1 inbox): no finished v2 run found" in parts[0]
     assert not any("in no DT test" in p for p in parts)
 
 
@@ -540,12 +603,13 @@ def test_a_one_email_test_is_reported_not_judged(tmp_path):
     f = fleet()
     f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
     head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
-    assert "bd-run-1.csv: this test sends 1 email per provider" in parts[0]
+    assert ("1 test run sent fewer than 4 emails per provider, so the job can't judge its inboxes (it needs 4 of 4): "
+            "bd-run-1.csv (1 per provider).") in parts[0]
     assert any("the test sent 1 email per provider, too few to judge; nothing done" in x for x in parts)
 
 
 def test_a_test_thin_at_one_provider_asks_for_a_person(tmp_path):
-    """1 Google and 4 Microsoft emails per inbox: not judged, and the post says how to fix the test."""
+    """1 Google and 4 Microsoft emails per inbox: not judged, and the post names both counts and the cause."""
     lines = [HEAD] + [f"{mb},{p},Inbox,2026-11-09T14:31:00.000Z,SENT\n"
                       for mb in ("a@x.com", "b@x.com", "c@x.com")
                       for p in ["GOOGLE_WORKSPACE"] + ["MICROSOFT_365"] * 4]
@@ -560,8 +624,7 @@ def test_a_test_thin_at_one_provider_asks_for_a_person(tmp_path):
     f = fleet()
     f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
     head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
-    assert ("bd-run-1.csv: this test sends 1 Google and 4 Microsoft emails per inbox, so the job can't judge its "
-            "inboxes (it needs 4 of 4 at each)") in parts[0]
+    assert "(it needs 4 of 4): bd-run-1.csv (1 Google, 4 Microsoft). Each run gets what the Smart Delivery" in parts[0]
 
 
 def test_a_midweek_test_skips_the_weekly_checks(tmp_path):
@@ -1179,7 +1242,7 @@ def test_a_copy_check_campaign_has_a_result_once_its_clients_copy_check_arrived(
                                 8: {"name": "DT PL copy check", "status": "PAUSED", "senders": {11}}}
     report = lambda: "\n".join(wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())[1])   # noqa: E731
     # ok@x.com's inbox-test result is not the copy check's result
-    assert "No result this week from DT PL copy check (1 inbox): download its CSV into Downloads." in report()
+    assert "No result this week from DT PL copy check (1 inbox): no finished v2 run found. Check it has a weekly test in Smart Delivery." in report()
     st["copy_checks"]["Precise Leads|2026-11-01"] = {"client": "Precise Leads", "night": "2026-11-01"}
     assert "No result this week from DT PL copy check" in report()            # last week's does not count
     st["copy_checks"]["Melior|2026-11-08"] = {"client": "Melior", "night": "2026-11-08"}
