@@ -722,7 +722,7 @@ def test_report_only_lines_say_what_would_happen_to_each_inbox(tmp_path):
     assert "out of campaigns" not in parts[0] and "2 of 2" not in text
     assert ("• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would leave 1 "
             "inbox in a live campaign where it is the last good sender and tag 1 inbox that is in no campaign. "
-            "List under *Melior* below.") in parts[-1] and "is report-only until" not in parts[0].split("Solo")[0]
+            "List under *Melior* above.") in parts[-1] and "is report-only until" not in parts[0].split("Solo")[0]
     assert ("• Melior | Solo (5) is live with only failed inboxes left (last@y.com). Not changed, as Melior is "
             "report-only until the job is proven on the other clients: pause it or add a good sender.") in parts[0]
     melior = next(p for p in parts if p.startswith("*Melior*"))
@@ -1347,3 +1347,51 @@ def test_not_sent_inboxes_on_several_domains_make_one_line_each_kind(tmp_path):
     assert ("• 3 inboxes did not send in the test, and Smartlead can't log in to them (x.com 2, z.com 1). Reconnect "
             "them, or delete them in Smartlead if they were cancelled.") in needs
     assert needs.count("did not send") == 1
+
+
+def _dt_no_result_report(tmp_path, files):
+    st = fresh_state(tmp_path)
+    st["files"] = files
+    f = fleet()
+    f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT PL #2", "status": "ACTIVE", "senders": {10, 11}}}
+    _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
+    return parts
+
+
+def test_a_re_run_still_coming_in_beats_an_earlier_run_that_sent_nothing(tmp_path):
+    # Review of PR 75: the older empty run was found first and the post kept saying "run it again" after the re-run.
+    parts = _dt_no_result_report(tmp_path, {
+        "a": {"name": "dt-pl-2-run-1.csv", "status": "nothing_sent", "night": None, "seen": "2026-11-09T21:00+05:30",
+              "mailboxes": ["bad@x.com", "ok@x.com"]},
+        "b": {"name": "dt-pl-2-run-2.csv", "status": "pending", "night": "2026-11-09",
+              "mailboxes": ["bad@x.com", "ok@x.com"]}})
+    text = "\n".join(parts)
+    assert "No result yet from DT PL #2 (2 inboxes): its run is in, with results still coming in." in text
+    assert "sent no test emails" not in text
+
+
+def test_one_sender_in_an_unrelated_pending_test_does_not_hide_a_missing_weekly_test(tmp_path):
+    parts = _dt_no_result_report(tmp_path, {
+        "a": {"name": "one-off-run-1.csv", "status": "pending", "night": "2026-11-09", "mailboxes": ["bad@x.com"]}})
+    assert ("No result this week from DT PL #2 (2 inboxes): no finished v2 run found. Check it has a weekly test in "
+            "Smart Delivery.") in parts[0]
+
+
+def test_a_line_names_an_older_fail_only_when_every_inbox_on_it_shares_it(tmp_path):
+    st = fresh_state(tmp_path)
+    short = lambda: {"night": "2026-11-09", "verdict": v2.INCOMPLETE, "history": False,           # noqa: E731
+                     "google": v2.provider_verdict(["Inbox"]), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    st["results"]["bad@x.com"] = [result(v2.FAIL, 0, 4, "2026-11-02"), short()]
+    st["results"]["ok@x.com"] = [result(v2.FAIL, 0, 4, "2026-10-26"), short()]
+    d = wk.plan(st)
+    assert {d[e]["why"] for e in ("bad@x.com", "ok@x.com")} == {"failed 2026-11-02", "failed 2026-10-26"}
+    _, parts = wk.build_report(st, GOT, d, fleet(), acted(removed={"bad@x.com": [1], "ok@x.com": [1]}), True, set())
+    text = "\n".join(parts)
+    assert "• incomplete · x.com · 2 of 2 inboxes · Google 1/1 (only 1 sent), Microsoft 4/4 → taken out of PL | A" in text
+    assert "failed Mon" not in text
+
+
+def test_seed_counts_that_differ_inside_a_line_read_as_in_the_inbox_and_sent():
+    one = {"google": v2.provider_verdict(["Inbox"]), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    four = {"google": v2.provider_verdict(["Spam"] * 4), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    assert wk._seeds([("a@x.com", one), ("b@x.com", four)]) == "Google 0-1 in the inbox, 1-4 sent, Microsoft 4/4"

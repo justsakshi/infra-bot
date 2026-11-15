@@ -921,10 +921,11 @@ def _seeds(items: list[tuple[str, dict]]) -> str:
         if not got:
             continue
         inbox, sent = [int(p.get("inbox", 0)) for p in got], [int(p.get("sent") or v2.PASS_SEEDS) for p in got]
-        if all(n == v2.PASS_SEEDS for n in sent):
-            out.append(f"{prov.title()} {_range(inbox)}/4")
+        if len(set(sent)) == 1:
+            n = sent[0]
+            out.append(f"{prov.title()} {_range(inbox)}/{n}" + (f" (only {n} sent)" if n < v2.PASS_SEEDS else ""))
         else:
-            out.append(f"{prov.title()} {_range(inbox)}/{_range(sent)} (only {_range(sent)} sent)")
+            out.append(f"{prov.title()} {_range(inbox)} in the inbox, {_range(sent)} sent")
     return ", ".join(out)
 
 
@@ -1237,10 +1238,10 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     for (name, why, is_client), kinds in sorted(ro_kinds.items()):
         if is_client:
             info.append(f"{name} is report-only{' ' + why if why else ''}, so nothing changed in Smartlead for it. "
-                         f"The job would {_ro_would(kinds)}. List under *{name}* below.")
+                         f"The job would {_ro_would(kinds)}. List under *{name}* above.")
         else:
             info.append(f"{name} are report-only{' ' + why if why else ''}, so nothing changed in Smartlead for "
-                         f"them. The job would {_ro_would(kinds)}. Listed under each client below.")
+                         f"them. The job would {_ro_would(kinds)}. Listed under each client above.")
     stuck, ro_stuck = defaultdict(list), defaultdict(list)
     for e, cids in acted["blocked"].items():
         for cid in cids:
@@ -1355,24 +1356,30 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     if no_result and weekly:
         # What the job knows of a run with no result yet: still coming in (pending) or sent nothing (nothing_sent).
         week0 = min(v2.week_start(v2.week_of(n)) for n in nights).isoformat()
-        held = {}
+        held: dict[str, str] = {}
         for f in state["files"].values():
             when = f.get("night") or str(f.get("completed_at") or f.get("seen") or "")[:10]
             if f.get("status") in ("pending", "nothing_sent") and when >= week0:
                 for e in f.get("mailboxes") or []:
-                    held.setdefault(e, f["status"])
-        by_why, n_by = defaultdict(list), Counter()
+                    if held.get(e) != "pending":         # a re-run still coming in beats an earlier empty run
+                        held[e] = f["status"]
+        by_why, inboxes_by = defaultdict(list), defaultdict(set)
         for acc, f in fleet.items():
             for c in f.get("dt", {}).values():
                 if c["name"] not in no_result:
                     continue
                 es = [e for e, i in f["inboxes"].items() if i["id"] in c["senders"]]
-                kinds = {held.get(e) for e in es} - {None}
-                why = "nothing_sent" if kinds == {"nothing_sent"} else "pending" if kinds else "none"
+                kinds = [held.get(e) for e in es]
+                # Only when every sender sits in such a run: one sender in an unrelated one-off test must not hide a
+                # missing weekly test. A copy-check campaign's senders are tested inboxes, so it keeps the old line.
+                if not es or None in kinds or v2.is_copy_check_campaign(c["name"]):
+                    why = "none"
+                else:
+                    why = "pending" if "pending" in kinds else "nothing_sent"
                 by_why[why].append(c["name"])
-                n_by[why] += len(c["senders"])
+                inboxes_by[why] |= {(acc, i) for i in c["senders"]}
         for why, cs in sorted(by_why.items()):
-            n, they = n_by[why], len(cs) != 1
+            n, they = len(inboxes_by[why]), len(cs) != 1
             nm = f"{', '.join(sorted(cs))} ({n} inbox{'es' if n != 1 else ''})"
             if why == "pending":
                 info.append(f"No result yet from {nm}: {'their runs are' if they else 'its run is'} in, with results "
@@ -1474,7 +1481,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             tail = _incomplete_tail(items)
         else:
             tail = "not in Smartlead"
-        why = str((decisions.get(es[0]) or {}).get("why") or "")
+        whys = {str((decisions.get(e) or {}).get("why") or "") for e in es}
+        why = whys.pop() if len(whys) == 1 else ""        # one reason for the whole line, or none is named
         if (verdict not in v2.JUDGED and why.startswith("failed ") and st != "incomplete"
                 and (st in ACTING or st.startswith("report_only_"))):
             # the action comes from an older fail this week's result can't clear (cold read, 16 Nov 2026)
