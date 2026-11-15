@@ -316,6 +316,8 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
            "unrecognised": [], "copy_checks": []}
     for path, sha, text in files:
         api = isinstance(path, ApiRun)
+        if (state["files"].get(sha) or {}).get("status") == "superseded":
+            continue                    # a newer copy of this run was read in this batch
         rows = v2.parse(text)
         night = v2.night_of(rows)
         info = {"name": path.name, "night": night, "rows": len(rows), "seen": now.isoformat(timespec="minutes"),
@@ -326,12 +328,20 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             got["duplicates"].append(path.name)
             continue
         was = (state["files"].get(sha) or {}).get("status")
-        if not v2.file_ready(rows, now) or not night:
-            state["files"][sha] = {**info, "status": "pending"}
+        key = v2_api.run_key(path.name)
+        ready = v2.file_ready(rows, now)
+        if not ready and night and any(k != sha and f.get("status") in READ and f.get("night") == night
+                                       and v2_api.run_key(f.get("name") or "") == key
+                                       for k, f in state["files"].items()):
+            state["files"][sha] = {**info, "status": "superseded"}     # a fuller copy of this run is already read
+            continue
+        if not ready or not night:
+            told = bool((state["files"].get(sha) or {}).get("told_stuck"))
+            state["files"][sha] = {**info, "status": "pending", "sent_last": v2.last_sent(rows),
+                                   **({"told_stuck": True} if told else {})}
             if was != "pending":
                 got["api_pending" if api else "pending"].append(path.name)
             continue
-        key = v2_api.run_key(path.name)
         for k, f in state["files"].items():      # an earlier pending copy of this run is never read over this one
             if (k != sha and f.get("status") == "pending" and f.get("night") == night
                     and v2_api.run_key(f.get("name") or "") == key):
@@ -373,6 +383,18 @@ def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, pe
             got["nights"].add(night)
             state["needs_action"] = True
     return got
+
+
+def stuck_pending(state: dict, now: datetime) -> list[str]:
+    """Pending files still not readable 48 hours after their last send, not told yet: a result other than
+    'Never arrived' (or no send time) never turns final by itself, so a person is told once."""
+    out = []
+    for f in state["files"].values():
+        sent = v2._ts(str(f.get("sent_last") or ""))
+        if (f.get("status") == "pending" and not f.get("told_stuck")
+                and (sent is None or now - sent >= v2.FINAL_AFTER)):
+            out.append(f["name"])
+    return sorted(set(out))
 
 
 def settle_pending(state: dict, now: datetime) -> None:
@@ -636,9 +658,11 @@ def _client(account: str, key: str):
 
 def _connected(a: dict) -> bool | None:
     """Smartlead can log in to the inbox (SMTP and IMAP both work); None when the list call did not say.
-    16 Nov 2026: False on exactly the 15 inboxes whose Google login had lapsed."""
+    16 Nov 2026: False exactly on the inboxes whose Google login had lapsed."""
     smtp, imap = a.get("is_smtp_success"), a.get("is_imap_success")
-    if smtp is None and imap is None:
+    if smtp is False or imap is False:
+        return False
+    if smtp is None or imap is None:
         return None
     return bool(smtp) and bool(imap)
 
@@ -1082,6 +1106,11 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     it. With no night to report (a copy check that arrived on its own) the post is the copy check's alone."""
     nights = sorted(got["nights"])
     copies = [state["copy_checks"][k] for k in got.get("copy_checks") or [] if k in state.get("copy_checks", {})]
+    newest = {}                 # one copy check per client in a post: the newest test (two read together contradicted)
+    for rec in copies:
+        if rec["client"] not in newest or rec["night"] > newest[rec["client"]]["night"]:
+            newest[rec["client"]] = rec
+    copies = list(newest.values())
     copy_head, copy_by_client, copy_needs = [], defaultdict(list), []
     for rec in sorted(copies, key=lambda r: (r["client"], r["night"])):
         line, lines, needs_ = copy_check_lines(rec)
@@ -1225,18 +1254,18 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         it = "them" if n != 1 else "it"
         needs.append(f"{dom}: {n} inbox{'es' if n != 1 else ''} did not send in the test, and Smartlead can't log in "
                      f"to {it}. Reconnect {it}.")
-    if ok:          # 16 Nov 2026: 20 connected inboxes "did not send" because the plan's allowance ran out
+    if ok:          # 16 Nov 2026: connected inboxes "did not send" when the plan's allowance ran out
         n = sum(ok.values())
         info.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test although Smartlead shows "
-                    f"{'them' if n != 1 else 'it'} connected ({', '.join(sorted(ok))}): the test ran short, not the "
-                    f"inbox{'es' if n != 1 else ''}. Nothing to fix on {'them' if n != 1 else 'it'}.")
+                    f"{'them' if n != 1 else 'it'} connected ({', '.join(sorted(ok))}): most likely the test ran short "
+                    f"(the plan's allowance). If {'they' if n != 1 else 'it'} miss{'' if n != 1 else 'es'} next week's "
+                    f"test too, look at {'them' if n != 1 else 'it'}.")
     thin = sorted((f["name"], f["per_provider"], f.get("by_provider") or {}) for f in state["files"].values()
                   if f.get("night") in got["nights"] and f.get("status") == "ingested"
                   and 0 < int(f.get("per_provider") or v2.PASS_SEEDS) < v2.PASS_SEEDS)
     if thin:
         # One line for all of them. A test does not keep its emails per provider: each run gets the plan's allowance
         # when it starts (Smartlead support, 15 Nov 2026), so "set the test to 4" was advice no one could follow.
-        # 16 Nov: of seven runs started minutes apart, the first two got 4 and the rest 1.
         runs = ", ".join(f"{name} ({', '.join(f'{c} {p.title()}' for p, c in sorted(by.items()))})"
                          if len(set(by.values())) > 1 else f"{name} ({n} per provider)" for name, n, by in thin)
         k = len(thin)
@@ -1379,7 +1408,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         elif st in ("not_sent", "not_sent_off"):
             tail = "did not send in the test (see Needs you)"
         elif st == "not_sent_ok":
-            tail = "did not send in the test; connected in Smartlead, so the test ran short"
+            tail = "did not send in the test; connected in Smartlead, most likely the test ran short"
         elif st == "incomplete":
             tail = _incomplete_tail(items)
         else:
@@ -1902,6 +1931,14 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
             _post_noted(state, ctx, [f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
                                      "\nDownload them again in a few hours. If not, the job reads them as they are "
                                      "48 hours after sending, with the missing results left out."], [])
+        stuck = stuck_pending(state, now)
+        if stuck and can_post and _post_noted(state, ctx, [
+                f"v2 results still not readable 48 hours after sending: {', '.join(stuck)}",
+                "\nSome seeds have no result the job knows. Nothing was read from them; look at the run in Smart "
+                "Delivery."], []):
+            for f in state["files"].values():
+                if f.get("status") == "pending" and f.get("name") in stuck:
+                    f["told_stuck"] = True
         if got["unrecognised"] and can_post and _post_noted(state, ctx, unrecognised_lines(got["unrecognised"]), []):
             _mark_told(state, got["unrecognised"])
         if state["repair"] and write and state["repair_day"] != today:

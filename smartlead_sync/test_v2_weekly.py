@@ -484,9 +484,16 @@ def test_an_inbox_smartlead_shows_connected_is_not_called_disconnected(tmp_path)
     text = "\n".join(head + parts)
     assert "connected in Smartlead." not in text
     assert "x.com: 1 inbox did not send in the test, and Smartlead can't log in to it. Reconnect it." in text
-    assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): the test ran short, "
-            "not the inbox. Nothing to fix on it.") in text
+    assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): most likely the test "
+            "ran short (the plan's allowance). If it misses next week's test too, look at it.") in text
     assert "• not sent · x.com · ok@x.com → did not send in the test; connected in Smartlead" in text
+
+
+@pytest.mark.parametrize("smtp,imap,want", [(True, True, True), (True, False, False), (False, True, False),
+                                            (None, True, None), (None, False, False), (None, None, None)])
+def test_connected_needs_both_logins_and_is_unknown_when_smartlead_says_nothing(smtp, imap, want):
+    a = {k: v for k, v in (("is_smtp_success", smtp), ("is_imap_success", imap)) if v is not None}
+    assert wk._connected(a) is want
 
 
 def test_an_inbox_of_unknown_connection_keeps_the_old_advice(tmp_path):
@@ -1297,3 +1304,16 @@ def test_a_run_with_mongo_down_uses_the_jobs_last_copy_of_the_trust_decision():
         assert wk.trust_for_run({}, Broken()) == "unread" and set(wk.REPORT_ONLY_TYPES) == {"GMAIL"}
     finally:
         usable.V2_NOT_TRUSTED.clear(); usable.V2_NOT_TRUSTED.update(usable.DEFAULT_NOT_TRUSTED)
+
+
+
+def test_a_post_shows_one_copy_check_per_client_the_newest(tmp_path):
+    st = fresh_state(tmp_path)
+    for night, inbox in (("2026-11-13", [0, 4]), ("2026-11-16", [4, 4])):
+        st["copy_checks"][f"Precise Leads|{night}"] = {
+            "client": "Precise Leads", "night": night, "file": f"c-{night}.csv", "history": False,
+            "senders": {"ok@x.com": {"google": [0, 0], "microsoft": list(inbox)}}}
+    got = dict(GOT, copy_checks=["Precise Leads|2026-11-13", "Precise Leads|2026-11-16"])
+    head, parts = wk.build_report(st, got, wk.plan(st), fleet(), acted(), True, set())
+    assert sum("copy check" in x.lower() for x in head) == 1
+    assert sum(x.count("• copy check") for x in parts) == 1

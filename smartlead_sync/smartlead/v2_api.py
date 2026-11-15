@@ -26,8 +26,10 @@ MAX_PAGES = 200             # a listing that keeps handing out cursors stops her
 TIMEOUT = 20.0              # seconds a call may take (15 Nov: all of PL read in a few seconds)
 MAX_ERRORS = 3              # an account whose calls keep failing is left for the next hourly run
 RATE_WAIT = 15.0             # seconds to wait after HTTP 429, doubled on the next try (the account allows
-                            # 200 calls a minute, shared with other tools; 16 Nov 2026 the first live read hit it)
+                            # 200 calls a minute, shared with other tools; the first live read hit it)
 RATE_RETRIES = 2            # tries after a 429 before the call counts as failed
+RATE_BUDGET = 300.0         # seconds one run may spend waiting out 429s; then a 429 fails at once (the task stops
+                            # after 45 min, and MAX_ERRORS counts only failed calls)
 
 # API placement -> the CSV's Landed value. Checked on the 14 Nov runs against their CSVs: MISSING is the CSV's
 # "Never arrived" (pending until 48 h after sending, then final: v2_results), NOT_SENT stays NOT_SENT. TAB is "Inbox (tab)" in
@@ -61,6 +63,7 @@ class Client:
         self._fake = get
         self._timeout = timeout
         self._sleep = sleep or time.sleep
+        self._waited = 0.0
 
     def _once(self, path: str, what: str, params: dict) -> tuple[int, dict | None, float | None]:
         """(status, json body or None, seconds the server asked to wait or None)."""
@@ -81,9 +84,11 @@ class Client:
     def _get(self, path: str, what: str, **params) -> dict:
         status, body, after = self._once(path, what, params)
         for n in range(RATE_RETRIES):
-            if status != 429:
+            wait = min(after, 60.0) if after and after > 0 else RATE_WAIT * (n + 1)
+            if status != 429 or self._waited + wait > RATE_BUDGET:
                 break
-            self._sleep(min(after, 60.0) if after and after > 0 else RATE_WAIT * (n + 1))
+            self._waited += wait
+            self._sleep(wait)
             status, body, after = self._once(path, what, params)
         if status != 200:
             raise V2ApiError(what, status)

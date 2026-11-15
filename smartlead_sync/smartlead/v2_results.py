@@ -103,9 +103,10 @@ def parse(text: str) -> list[dict]:
 
 def _ts(s: str) -> datetime | None:
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)      # Smartlead writes UTC
 
 
 def night_of(rows: list[dict]) -> str | None:
@@ -174,7 +175,7 @@ def _gone(r: dict, now: datetime | None) -> bool:
 
 def pending_seeds(rows: list[dict], now: datetime | None = None) -> int:
     """Seeds sent but with no final result yet (neither Inbox, Spam nor BOUNCED). With ``now``, a seed that
-    never arrived 48 hours after sending is final too (16 Nov 2026: v2 had shown 'Never arrived' 40+ hours after
+    never arrived 48 hours after sending is final too (Nov 2026: v2 had shown 'Never arrived' well over a day after
     sending, and support says a run is watched for about 2.5 hours)."""
     return sum(1 for r in rows if r["landed"] != "NOT_SENT" and r["landed"] not in FINAL and not _gone(r, now))
 

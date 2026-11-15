@@ -155,3 +155,13 @@ def test_a_call_still_rate_limited_after_the_retries_is_an_error():
     with pytest.raises(v2_api.V2ApiError, match="503"):
         c.tests()
     assert other == []                                                   # only a 429 is waited out
+
+
+
+def test_waiting_out_429s_stops_at_the_run_budget():
+    waits = []
+    c = v2_api.Client("k", get=lambda path, params: (429, None), sleep=waits.append)
+    for _ in range(20):
+        with pytest.raises(v2_api.V2ApiError, match="429"):
+            c.tests()
+    assert sum(waits) <= v2_api.RATE_BUDGET and len(waits) < 40      # later calls fail at once

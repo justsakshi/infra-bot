@@ -511,3 +511,10 @@ def test_the_client_of_a_file_is_the_client_of_most_of_its_mailboxes():
     clients = {"a@x.com": "Melior", "b@x.com": "Melior", "c@y.com": "Precise Leads"}
     assert v2.majority_client(["a@x.com", "b@x.com", "c@y.com", "new@z.com"], clients) == "Melior"
     assert v2.majority_client(["new@z.com"], clients) == "Unknown" and v2.majority_client([], {}) == "Unknown"
+
+
+
+def test_a_send_time_without_a_zone_is_read_as_utc():
+    rows = v2.parse(csv_text([("a@x.com", G, "Inbox", "2026-11-13 19:22:00")] * 4
+                             + [("a@x.com", M, "Never arrived", "2026-11-13 19:22:00")] * 4))
+    assert v2.pending_seeds(rows, datetime(2026, 11, 16, tzinfo=timezone.utc)) == 0

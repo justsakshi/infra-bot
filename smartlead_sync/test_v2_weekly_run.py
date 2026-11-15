@@ -899,3 +899,58 @@ def test_a_csv_downloaded_before_its_seeds_arrived_is_read_again_by_itself(job):
     assert job.run() == 0
     st = job.state()
     assert [f["status"] for f in st["files"].values()] == ["ingested"] and set(st["results"]) == set(DT_PL_1)
+
+
+def test_a_copy_check_with_seeds_missing_is_read_on_what_arrived_48_hours_after_sending(job, monkeypatch):
+    for e in ("pl-ok1@x.com", "pl-ok2@x.com"):
+        monkeypatch.setitem(TYPES, e, "OUTLOOK")
+    job.v2api["PRECISE_LEADS"] = FakeV2()
+    job.v2api["PRECISE_LEADS"].add("PL copy check", {"pl-ok1@x.com": (0, 4), "pl-ok2@x.com": (0, 4)}, missing=4)
+    assert job.run() == 0                                     # 13 h after sending: 4 of 16 not in
+    (f,) = job.state()["files"].values()
+    assert f["status"] == "pending" and job.state()["copy_checks"] == {} and job.posts == []
+    job.clock = at(11, 20, 30)
+    assert job.run() == 0
+    st = job.state()
+    (f,) = st["files"].values()
+    assert f["status"] == "copy_check" and st["results"] == {}            # never an inbox result
+    (rec,) = st["copy_checks"].values()
+    assert rec["senders"]["pl-ok1@x.com"]["google"] == [0, 0]                # the 4 that never arrived: not counted
+    assert rec["senders"]["pl-ok2@x.com"]["microsoft"] == [4, 4]
+
+
+def test_a_run_still_unreadable_48_hours_after_sending_is_told_once(job):
+    job.v2api["PRECISE_LEADS"] = FakeV2()
+    job.v2api["PRECISE_LEADS"].add("DT PL #1", DT_PL_1)
+    for e in job.v2api["PRECISE_LEADS"].tests[0]["emails"][:6]:
+        e["placement"] = "SOMETHING_NEW"                                    # never final by itself
+    job.run()
+    assert job.posts == []
+    job.clock = at(11, 20, 30)
+    job.run()
+    stuck = [h for h, _ in job.posts if h[0].startswith("v2 results still not readable")]
+    assert [h[0] for h in stuck] == ["v2 results still not readable 48 hours after sending: dt-pl-1-run-1.csv"]
+    job.clock = at(11, 21, 30)
+    job.run()
+    assert sum(h[0].startswith("v2 results still not readable") for h, _ in job.posts) == 1
+    assert job.state()["results"] == {}
+
+
+
+def test_an_incomplete_download_never_overwrites_its_complete_re_download(job):
+    p = write_csv(job.downloads, "dt-pl-1-run-1.csv", DT_PL_1)
+    p.write_text(p.read_text(encoding="utf-8").replace("Inbox", "Never arrived", 6), encoding="utf-8")
+    t = at(10, 8, 50).timestamp()
+    os.utime(p, (t, t))
+    job.run()
+    job.clock = at(10, 11)
+    write_csv(job.downloads, "dt-pl-1-run-1 (1).csv", DT_PL_1, when=at(10, 10, 50))   # the fresh download
+    job.run()
+    assert job.state()["results"]["pl-ok1@x.com"][-1]["verdict"] == v2.PASS
+    posts = len(job.posts)
+    job.clock = at(12, 9)                                         # 60 h after sending
+    job.run()
+    st = job.state()
+    assert st["results"]["pl-ok1@x.com"][-1]["verdict"] == v2.PASS
+    assert sorted(f["status"] for f in st["files"].values()) == ["ingested", "superseded"]
+    assert not any("Download" in x for h, _ in job.posts[posts:] for x in h)
