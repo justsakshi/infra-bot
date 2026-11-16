@@ -3,6 +3,7 @@
 v2 has an API after all (Smartlead support, 15 Nov 2026; checked read-only the same day with both keys):
 base https://sl-sd-api.smartlead.ai/api/v1/smart-delivery, every call with ?api_key=<the account's normal key>.
   GET /tests                 {items: [{id, name, type: AUTO|MANUAL, status: ACTIVE|STOPPED|COMPLETED}], nextCursor}
+  GET /tests/{id}            {id, name, status, campaignId, schedule, senders: [{email, emailAccountId}], ...}
   GET /tests/{id}/history    {from, to, items: [{runId, runNo, completedAt, score, band, counts}], nextCursor}
   GET /runs/{runId}/emails   {items: [{provider, senderEmail, placement, sentAt, bounce, ...}], nextCursor}, 50 a page
 
@@ -81,7 +82,7 @@ class Client:
         except Exception as exc:  # noqa: BLE001 - the library's text holds the URL with the key
             raise V2ApiError(f"{what}: {type(exc).__name__}") from None
 
-    def _get(self, path: str, what: str, **params) -> dict:
+    def _get(self, path: str, what: str, items: bool = True, **params) -> dict:
         status, body, after = self._once(path, what, params)
         for n in range(RATE_RETRIES):
             wait = min(after, 60.0) if after and after > 0 else RATE_WAIT * (n + 1)
@@ -92,7 +93,7 @@ class Client:
             status, body, after = self._once(path, what, params)
         if status != 200:
             raise V2ApiError(what, status)
-        if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+        if not isinstance(body, dict) or (items and not isinstance(body.get("items"), list)):
             raise V2ApiError(f"{what}: unexpected reply")
         return body
 
@@ -109,6 +110,12 @@ class Client:
 
     def tests(self) -> list[dict]:
         return self._all("/tests", "tests")
+
+    def test(self, test_id: str) -> dict:
+        """One test: {id, name, status, campaignId, schedule, senders: [{email, emailAccountId}], ...} (read 17 Nov
+        2026). A test keeps the senders it was created with; adding inboxes to its campaign does not change it."""
+        body = self._get(f"/tests/{test_id}", "test", items=False)
+        return body.get("data") if isinstance(body.get("data"), dict) else body
 
     def history(self, test_id: str) -> list[dict]:
         return self._all(f"/tests/{test_id}/history", "test history")

@@ -35,7 +35,7 @@ buttons are the step.
 | API keys (`key-health`) | 09:45 | alert | rejected key: urgent ask; unreachable: broken line |
 | Campaign stats job (`campaign-metrics`) | 09:00 | failure post | broken line naming the source and the error type |
 | Daily sheet sync (`smartlead-sync`) | 10:00 | failure post | broken line |
-| Test campaigns (`dt-senders`) | 06:00 | post | done lines (also: pulled inboxes put on a DT campaign for the weekly retest); untracked domains, pulled inboxes with no room on a DT campaign: ask |
+| Test campaigns (`dt-senders`) | 06:00 | post | done lines (also: pulled inboxes put on a DT campaign for the weekly retest); untracked domains, pulled inboxes with no room on a DT campaign, inboxes in no active weekly v2 test or in two, two active tests with one name: ask; v2 tests or asset tracker unreadable: broken line |
 | Test copy (`copy-sync`) | Fri-Sun 18:30, Mon/Tue 05:00 | post | done line; fixable problems: ask |
 | Blocklists (`blacklist`) | Mon 09:00 | post | thread only; a check that could not run: broken line. A listing is never an ask |
 | Fleet watch (`fleet-watch`) | 10:30 | post per new case | one ask per open kind; blocklist listings thread only |

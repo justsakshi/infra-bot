@@ -31,6 +31,11 @@ Pulled inboxes stay in a weekly test (Manveen, 16 Nov 2026): an inbox the v2 job
 (tag "DO NOT USE - failed v2 (auto)") stays on, or is put on, one of its client's DT campaigns even when its domain is
 not in the sheet, until the tag is off (back in use) or the inbox is gone or disconnected (cancelled). Only room the
 other inboxes leave: never over 50, never a new campaign; with no room, a digest ask (plan(retest=...)).
+
+Coverage rule (Manveen, 16 Nov 2026: "make sure we have all inboxes in test except scaled mail canceld orders";
+docs/V2_WEEKLY.md): every connected inbox we use in exactly one ACTIVE weekly v2 test. The active tests come from the
+v2 API; their senders stay on their test's DT campaign (plan(pinned=...)); inboxes in no test or in two, and two
+tests with one name, are digest asks (coverage_asks). ScaledMail cancelled orders (asset tracker) are left out.
 """
 from __future__ import annotations
 
@@ -69,10 +74,13 @@ def _dt_number(name: str) -> int:
         return 0
 
 
-def _fill_first(dts: list[dict], members: set[int], cap: int) -> dict:
+def _fill_first(dts: list[dict], members: set[int], cap: int, pinned: dict | None = None) -> dict:
     """Lay out one client's DT campaigns: earlier campaigns full (cap each)
     before later ones hold anything; an inbox stays put unless it must move.
+    ``pinned`` {inbox id: campaign id}: a sender of an active weekly v2 test never moves off its test's campaign
+    (the coverage rule, 17 Nov 2026); the others fill first around them.
     Returns {"adds": {campaign: [ids]}, "removes": {id: [ids]}, "create": [...]}."""
+    pinned = pinned or {}
     dts = sorted(dts, key=lambda c: _dt_number(c["name"]))
     n_needed = max(len(dts), -(-len(members) // cap)) if members else len(dts)
     slots = [{"key": c["id"], "have": set(c["attached"]) & members} for c in dts]
@@ -86,14 +94,17 @@ def _fill_first(dts: list[dict], members: set[int], cap: int) -> dict:
     for _ in slots:
         targets.append(min(cap, left))
         left -= targets[-1]
-    keep = [sorted(sl["have"])[:t] for sl, t in zip(slots, targets)]
+    keep = []
+    for sl, t in zip(slots, targets):
+        here = sorted(i for i in sl["have"] if pinned.get(i) == sl["key"])
+        keep.append(here[:cap] + sorted(sl["have"] - set(here))[:max(0, t - len(here))])
     kept = {i for ks in keep for i in ks}
     pool = sorted(members - kept)
     adds: dict = {}
     removes: dict = {}
     where = {i: sl["key"] for sl in slots for i in sl["have"]}
     for sl, ks, t in zip(slots, keep, targets):
-        room = t - len(ks)
+        room = max(0, t - len(ks))
         take, pool = pool[:room], pool[room:]
         if take:
             adds[sl["key"]] = take
@@ -113,7 +124,7 @@ def is_pulled(account: dict) -> bool:
 
 
 def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_others: bool = False,
-         retest: list[dict] | None = None) -> dict:
+         retest: list[dict] | None = None, pinned: dict | None = None) -> dict:
     """inboxes = [{id, email, client}]; campaigns = [{id, name, client, role: main|dt,
     status, attached: set of inbox ids}]. Every current-client inbox goes on its
     client's main test campaign, and on exactly one of its DT campaigns, filled
@@ -127,7 +138,10 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
     client's DT campaigns even when their domain is not in the sheet, so the weekly test keeps checking them until
     they are back in use (Manveen 16 Nov 2026). They only take room the other inboxes leave in the DT campaigns the
     client needs anyway: never a new campaign, never more than ``cap``. Also returns "retest": {campaign: [ids]}
-    (pulled inboxes newly put on, a subset of "adds") and "no_room": {client: [ids]} (pulled inboxes left on none)."""
+    (pulled inboxes newly put on, a subset of "adds") and "no_room": {client: [ids]} (pulled inboxes left on none).
+
+    ``pinned`` = {inbox id: DT campaign id} (pins()): senders of an active weekly v2 test stay on their test's campaign,
+    in the sheet or not, never moved or taken off (a v2 test keeps the senders it was created with)."""
     from smartlead.inbox_intake import CURRENT_CLIENTS
     adds: dict = {}
     removes: dict = {}
@@ -164,7 +178,8 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
         if not dts:
             continue
         on_dt = {i for c in dts for i in c["attached"]}
-        base = ids if drop_others else ids | on_dt
+        mine_pinned = {i: k for i, k in (pinned or {}).items() if any(c["id"] == k and i in c["attached"] for c in dts)}
+        base = (ids if drop_others else ids | on_dt) | set(mine_pinned)
         # pulled inboxes outside ``base``: those already on a DT campaign keep their place first, then by id
         extra = sorted(pulled_by_client.get(client, set()) - base, key=lambda i: (i not in on_dt, i))
         room = (max(len(dts), -(-len(base) // cap)) if base else len(dts)) * cap - len(base)
@@ -173,11 +188,11 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
             no_room[client] = left
         if drop_others:
             for c in dts:
-                gone = sorted(c["attached"] - ids - fit)
+                gone = sorted(c["attached"] - ids - fit - set(mine_pinned))
                 if gone:
                     drops[int(c["id"])] = gone
                     c["attached"] = c["attached"] - set(gone)
-        lay = _fill_first(dts, base | fit, cap)
+        lay = _fill_first(dts, base | fit, cap, mine_pinned)
         adds.update(lay["adds"])
         removes.update(lay["removes"])
         create += lay["create"]
@@ -265,6 +280,59 @@ async def apply(sl, p: dict, batch: int = BATCH) -> dict:
     return out
 
 
+def pins(tests: list[dict], campaigns: list[dict]) -> dict[int, int]:
+    """{inbox id: campaign id} for every sender of an active weekly test (``_weekly_tests``) whose campaign is a DT
+    campaign: the inbox stays there. Pure."""
+    dt = {int(c["id"]) for c in campaigns if c.get("role") == "dt"}
+    return {int(i): int(t["campaign_id"]) for t in tests if int(t.get("campaign_id") or 0) in dt
+            for i in t.get("sender_ids") or ()}
+
+
+def is_copy_test(name) -> bool:
+    """The weekly copy check ("... synced copy"): a handful of inboxes already in another test send the client's
+    current copy, so its senders are tested twice by design."""
+    return "copy" in str(name or "").lower()
+
+
+def twins(tests: list[dict]) -> dict[str, int]:
+    """{name: how many} for names that more than one active weekly test carries (an old test left running next to
+    its recreated copy, as BettrData's on 17 Nov 2026). Pure."""
+    from collections import Counter
+    n = Counter(str(t.get("name")) for t in tests)
+    return {k: v for k, v in sorted(n.items()) if v > 1}
+
+
+def cancelled_domains(tracker: dict[str, dict]) -> set[str]:
+    """ScaledMail domains whose order is cancelled: the asset tracker's domain row is no longer Active
+    (scaledmail_asset_sync only ever downgrades it). Their inboxes are left out of the coverage rule (Manveen
+    16 Nov 2026: "all inboxes in test except scaled mail canceld orders"). Pure."""
+    return {n for n, d in tracker.items() if "@" not in n and "scaled" in str(d.get("provider") or "").lower()
+            and str(d.get("status") or "") != "Active"}
+
+
+def coverage(members: dict[str, str], tests: list[dict]) -> dict[str, dict]:
+    """The coverage rule (Manveen 16 Nov 2026: "make sure we have all inboxes in test except scaled mail canceld
+    orders"): every connected inbox we use in exactly one ACTIVE weekly v2 test. ``members`` {email: client};
+    ``tests`` = active weekly tests [{name, senders}]. {client: {"inboxes": n, "none": [emails in no test],
+    "dupes": {email: [test names]}}}. Pure."""
+    where: dict[str, list[str]] = {}
+    for t in tests:
+        if is_copy_test(t.get("name")):     # it reuses a few inboxes on purpose (copy_sync), so never a duplicate
+            continue
+        for e in t.get("senders") or ():
+            where.setdefault(str(e).lower(), []).append(str(t.get("name")))
+    out: dict[str, dict] = {}
+    for e, client in sorted(members.items()):
+        c = out.setdefault(client, {"inboxes": 0, "none": [], "dupes": {}})
+        c["inboxes"] += 1
+        names = sorted(where.get(e.lower(), []))
+        if not names:
+            c["none"].append(e)
+        elif len(names) > 1:
+            c["dupes"][e] = names
+    return out
+
+
 def test_gaps(dts: list[dict], tests: list[dict]) -> list[dict]:
     """dts = [{id, name, emails}]; tests = scheduled tests [{id, name, campaign_id,
     senders}]. Per DT campaign, the inboxes no scheduled test on it includes. Pure."""
@@ -284,7 +352,8 @@ def _n(k: int) -> str:
 
 
 def gap_text(gaps: list[dict]) -> str:
-    lines = ["Placement tests to update in Smart Delivery (the bot cannot edit scheduled tests):"]
+    lines = ["Placement tests to update in Smart Delivery (a v2 test keeps the senders it was created with, so a "
+             "missing inbox needs a new weekly test, at most 50 senders, starting Saturday after 05:30 IST):"]
     for g in gaps:
         if g["test"] is None:
             lines.append(f"{g['campaign']}: no scheduled test yet. Create a weekly test with all {_n(g['count'])} on it.")
@@ -376,6 +445,20 @@ def infra_report(results: dict, known: set[str] | None, errors: list[str], dm_fa
         thread.append("Taken out after a failed v2 test, but every DT campaign of the client holds "
                       f"{DT_CAP}, so the weekly test does not check them. Make room, or create the next DT campaign and "
                       "its weekly test:\n" + "\n".join(f"• {cl}: {_n(k)}" for cl, k in sorted(room.items())))
+    none = {cl: c for r in rows for cl, c in (r.get("coverage") or {}).items() if c.get("none")}
+    dupes = {cl: c for r in rows for cl, c in (r.get("coverage") or {}).items() if c.get("dupes")}
+    if none:
+        k = sum(len(c["none"]) for c in none.values())
+        parts.append(f"{_n(k)} in no active weekly v2 test")
+        for cl, c in sorted(none.items()):
+            on = c.get("on") or {}
+            thread.append(f"{cl}: {_n(len(c['none']))} of {c['inboxes']} in no active weekly v2 test:\n"
+                          + "\n".join(f"• {e} ({on.get(e) or 'no DT campaign'})" for e in c["none"]))
+    if dupes:
+        parts.append(f"{_n(sum(len(c['dupes']) for c in dupes.values()))} in 2 or more weekly tests")
+        for cl, c in sorted(dupes.items()):
+            thread.append(f"{cl}: in 2 or more active weekly v2 tests:\n"
+                          + "\n".join(f"• {e}: {', '.join(n)}" for e, n in sorted(c["dupes"].items())))
     head = []
     if parts or errors or dm_failed:
         head.append(f"🧪 Test campaigns, {today.day} {today:%b}: " + (", ".join(parts) if parts else "could not finish"))
@@ -392,6 +475,47 @@ def _tab(client: str) -> str:
     """The deliverability sheet's tab for a client (smartlead/tracked.TABS), or a plain hint."""
     from smartlead.tracked import TABS
     return next((t for t in TABS if t.lower() == str(client).lower()), "the client's tab")
+
+
+def coverage_asks(results: dict) -> list:
+    """Digest asks of the coverage rule, per client: inboxes in no active weekly v2 test (the step names their DT
+    campaigns), inboxes in two or more, and an account whose tests could not be read (broken). Pure."""
+    from smartlead import digest as dg
+    asks = []
+    for acc, r in sorted(results.items()):
+        if not isinstance(r, dict) or "coverage" not in r:
+            continue
+        for name, k in sorted((r.get("twins") or {}).items()):
+            asks.append(dg.Ask(f"{k} active weekly v2 tests in {acc} are called \"{name}\", so the same inboxes are "
+                               "tested and paid for twice.",
+                               "In Smart Delivery, stop the older one (its created date is in the test list).",
+                               key=f"{SOURCE}:coverage-twins:{acc}:{name}"))
+        if r["coverage"] is None:
+            asks.append(dg.Ask(f"The weekly-test coverage check could not read the v2 tests of {acc} "
+                               f"({r.get('coverage_error') or 'error'}), so it does not know which inboxes are tested.",
+                               "Nothing to do if the next run (06:00 IST) reads them; if it keeps failing, look at the "
+                               "dt-senders log.", key="dt-senders:coverage-unread", kind="broken"))
+            continue
+        for client, c in sorted(r["coverage"].items()):
+            none, dupes = c.get("none") or [], c.get("dupes") or {}
+            if none:
+                on = c.get("on") or {}
+                where = sorted({on.get(e) or "no DT campaign" for e in none})
+                verb = "is" if len(none) == 1 else "are"
+                asks.append(dg.Ask(
+                    f"{len(none)} {client} inbox{'es' if len(none) != 1 else ''} {verb} in no active weekly v2 test, "
+                    f"so nothing checks {'its' if len(none) == 1 else 'their'} placement.",
+                    f"In Smart Delivery, create a weekly v2 test with them (at most {DT_CAP} senders a test), starting "
+                    f"Saturday after 05:30 IST, on {', '.join(where)}. A v2 test keeps the senders it was created "
+                    "with, so adding them to a campaign is not enough. The list is in the thread.",
+                    key=f"{SOURCE}:coverage:{client}"))
+            if dupes:
+                asks.append(dg.Ask(
+                    f"{_n(len(dupes))} of {client} {'is' if len(dupes) == 1 else 'are'} in 2 or more active weekly v2 "
+                    "tests, so their seed emails are paid twice.",
+                    "Stop one of the tests named in the thread, or recreate it without them.",
+                    key=f"{SOURCE}:coverage-dupes:{client}"))
+    return asks
 
 
 def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_failed: bool,
@@ -447,6 +571,7 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
             f"Make room on a DT campaign of {client}, or create the next DT campaign and its weekly test; the next run "
             f"(06:00 IST) puts {'them' if k != 1 else 'it'} on.",
             key=f"{SOURCE}:no-room:{client}"))
+    asks += coverage_asks(results)
     if errors:
         names = sorted({e.split(":", 1)[0] for e in errors})
         asks.append(dg.Ask(f"The test-campaign job could not finish: {', '.join(names)}.",
@@ -471,8 +596,27 @@ def _post_infra(head: list[str], thread: list[str]) -> bool:
     return bool(token and notify.post_with_thread(token, notify.infra_channel("DT_SENDERS_CHANNEL"), head, thread))
 
 
+def _weekly_tests(key: str) -> list[dict]:
+    """ACTIVE recurring Smart Delivery v2 tests with their senders: [{id, name, campaign_id, senders: {emails},
+    sender_ids: {inbox ids}}]. Read-only, no credit. Raises v2_api.V2ApiError (no URL, no key in its text).
+    Since 17 Nov 2026 the weekly tests are v2 (docs/V2_WEEKLY.md); the classic reader below is no longer called."""
+    from smartlead import v2_api
+    cl = v2_api.Client(key)
+    out = []
+    for t in cl.tests():
+        if str(t.get("status")).upper() != "ACTIVE" or not t.get("schedule"):
+            continue
+        d = cl.test(str(t["id"]))
+        snd = [x for x in d.get("senders") or [] if isinstance(x, dict)]
+        out.append({"id": t["id"], "name": d.get("name") or t.get("name"),
+                    "campaign_id": int(d.get("campaignId") or t.get("campaignId") or 0),
+                    "senders": {str(x.get("email") or "").strip().lower() for x in snd if x.get("email")},
+                    "sender_ids": {int(x["emailAccountId"]) for x in snd if str(x.get("emailAccountId") or "").isdigit()}})
+    return out
+
+
 async def _scheduled_tests(key: str) -> list[dict]:
-    """Active scheduled (recurring) tests with their senders. Read-only, no credit."""
+    """Classic (v1) active scheduled tests with their senders. Read-only, no credit. Unused since 17 Nov 2026."""
     import httpx
     from smartlead.config import SMARTDELIVERY_BASE_URL
     ua = {"User-Agent": "Mozilla/5.0"}
@@ -543,6 +687,12 @@ def main() -> int:
     from smartlead.tracked import only_tracked, tracked_domains
     out: dict = {}
     tracked = tracked_domains()
+    from smartlead.zapmail_asset_sync import read_tracker
+    try:
+        tracker = read_tracker()
+    except Exception:  # noqa: BLE001 - coverage is then not judged (a broken ask), the rest goes on
+        tracker = {}
+    cancelled = cancelled_domains(tracker) if tracker else None
     if tracked is None:
         print("  [dt-senders] deliverability sheet unreadable: keeping every inbox, dropping none", file=sys.stderr)
 
@@ -555,7 +705,15 @@ def main() -> int:
             camps = await _campaigns(c, acc.name)
             pulled_ids = {int(a["id"]) for a in listed if is_pulled(a)}
             pulled = [b for b in boxes if int(b["id"]) in pulled_ids]
-            p = plan(only_tracked(boxes, tracked), camps, drop_others=tracked is not None, retest=pulled)
+            from smartlead import v2_api
+            try:
+                tests, tests_error = await asyncio.to_thread(_weekly_tests, acc.api_key), ""
+                pinned = pins(tests, camps)
+            except v2_api.V2ApiError as exc:     # tests unknown: nobody on a DT campaign moves today
+                tests, tests_error = None, v2_api.describe(exc)
+                pinned = {int(i): int(x["id"]) for x in camps if x["role"] == "dt" for i in x["attached"]}
+            used = only_tracked(boxes, tracked)
+            p = plan(used, camps, drop_others=tracked is not None, retest=pulled, pinned=pinned)
             names = {x["id"]: x["name"] for x in camps}
             res = {"would_add": {names.get(k, k): len(v) for k, v in p["adds"].items()},
                    "would_remove": {names.get(k, k): len(v) for k, v in p["removes"].items()},
@@ -563,6 +721,20 @@ def main() -> int:
                    "would_create": [x["name"] for x in p["create"]], "problems": p["problems"],
                    "would_retest": {names.get(k, k): len(v) for k, v in p["retest"].items()},
                    "no_room": {cl: len(v) for cl, v in p["no_room"].items()}}
+            ok = {int(a["id"]) for a in listed if a.get("is_smtp_success") and a.get("is_imap_success")}
+            members = {str(b["email"]).strip().lower(): b["client"] for b in used + pulled
+                       if b["client"] in CURRENT_CLIENTS and int(b["id"]) in ok and b.get("email")
+                       and str(b["email"]).lower().split("@")[-1] not in (cancelled or set())}
+            if tests is None or cancelled is None:
+                res["coverage"] = None
+                res["coverage_error"] = tests_error or "asset tracker unreadable, so cancelled orders are unknown"
+            else:
+                at = {int(i): x["name"] for x in camps if x["role"] == "dt" for i in x["attached"]}
+                by_email = {str(b["email"]).strip().lower(): int(b["id"]) for b in boxes if b.get("email")}
+                res["coverage"] = coverage(members, tests)
+                res["twins"] = twins(tests)
+                for cv in res["coverage"].values():
+                    cv["on"] = {e: at.get(by_email.get(e)) for e in cv["none"]}
             if tracked is not None:
                 unt: dict = {}
                 for b in boxes:
@@ -595,7 +767,7 @@ def main() -> int:
                 dts = [{"id": x["id"], "name": x["name"], "emails": {emails[i] for i in x["attached"] if i in emails}}
                        for x in camps_now if x["role"] == "dt"]
                 dt_ids = {i for x in camps_now if x["role"] == "dt" for i in x["attached"]}
-                res["gaps"] = test_gaps(dts, await _scheduled_tests(acc.api_key))
+                res["gaps"] = test_gaps(dts, tests or [])
                 res["new_on_dt"] = sorted(emails[i] for i in res.get("new_ids") or [] if i in dt_ids and i in emails)
             return res
 
