@@ -25,8 +25,8 @@ BASE = "https://sl-sd-api.smartlead.ai/api/v1/smart-delivery"
 MAX_PAGES = 200             # a listing that keeps handing out cursors stops here (PL: 32 tests on 2 pages)
 TIMEOUT = 20.0              # seconds a call may take (15 Nov: all of PL read in a few seconds)
 MAX_ERRORS = 3              # an account whose calls keep failing is left for the next hourly run
-RATE_WAIT = 15.0             # seconds to wait after HTTP 429, doubled on the next try (the account allows
-                            # 200 calls a minute, shared with other tools; the first live read hit it)
+RATE_WAIT = 60.0             # seconds to wait after HTTP 429, doubled on the next try (Smartlead support, 16 Nov
+                            # 2026: wait a minute after a 429; v2 has its own limit, apart from the 200 a minute)
 RATE_RETRIES = 2            # tries after a 429 before the call counts as failed
 RATE_BUDGET = 300.0         # seconds one run may spend waiting out 429s; then a 429 fails at once (the task stops
                             # after 45 min, and MAX_ERRORS counts only failed calls)
