@@ -252,3 +252,16 @@ def test_with_the_digest_on_the_day_goes_to_the_digest_with_steps_not_to_slack(m
     assert detail[0].startswith("⚠️ Inboxes, 11 Nov: 2 things need you")
     monkeypatch.setattr(dg, "report", lambda *a, **k: False)              # Mongo down: the old post goes out
     assert st.run(rows, T, True, post=True, db=FakeDb())["posted"] and len(sent) == 1
+
+
+def test_a_passed_inbox_with_high_bounce_is_info_never_an_ask_2026_11_16():
+    """Manveen, 16 Nov 2026: high bounce alone does not mean do not use. The list marks such an inbox FREE with the
+    note "bounces come from the lead list" (smartlead/usable.py); the daily post names it, the digest asks nothing."""
+    rows = [_row("idle@x.com", availability="FREE", busy_reason="", v2_status="PASS", v2_date="2026-11-09",
+                 use_notes="bounces come from the lead list"),
+            _row("live@x.com", "Camp A", "ACTIVE", availability="FREE", busy_reason="", v2_status="PASS",
+                 v2_date="2026-11-09", use_notes="bounces come from the lead list")]
+    recs = st.states(rows, T)
+    assert {r["email"]: r["state"] for r in recs} == {"idle@x.com": "free", "live@x.com": "sending"}
+    for require_pass in (True, False):
+        assert st.digest_asks(st.needs_you(recs, T, require_pass=require_pass)) == []
