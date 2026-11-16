@@ -9,7 +9,11 @@ What it posts to the infra channel (on by default since the 7 Nov rule; REPLY_MO
   * any day: a domain that newly reached ALERT, and "Not checked today: <client>" for an account it
     could not read;
   * Mondays: the weekly summary, every client, every judged domain counted.
-Everything is printed to the log as well. Report only: it never pauses or changes anything."""
+Everything is printed to the log as well. Report only: it never pauses or changes anything.
+
+Since 16 Nov 2026 this goes to the daily digest instead (smartlead/digest.py, ``digest_items``): every domain on
+ALERT is one ask, an account not read is a broken check, the Monday summary is in the digest's thread only.
+DIGEST_MODE=off, or Mongo down: the posts above."""
 from __future__ import annotations
 
 import asyncio
@@ -308,6 +312,41 @@ def run(today: date, fleet: dict[str, dict], unread: dict[str, str], history: li
     return verdicts, posts
 
 
+ALERT_STEP = ("Look each domain in the thread up in this week's v2 test results; if it failed there too, take its "
+              "inboxes out of their campaigns. Nothing was paused.")
+RETRY_STEP = "It runs again tomorrow at 13:00; if it fails twice, check that account's Smartlead API key."
+
+
+def digest_items(verdicts: dict[str, dict], unread: dict[str, str], history_missing: bool,
+                 posts: list[tuple[list[str], list[str]]]) -> tuple[list, list[str]]:
+    """(asks, detail) for the daily digest (16 Nov 2026, Manveen: "One daily digest"). Every domain on ALERT today
+    (new or not) is one ask, so it drops out once its replies recover; an account not read, or no history to judge
+    against, is a broken check; the Monday summary and the rest go in the digest's thread only."""
+    from smartlead import digest as dg
+    asks = []
+    alerts = sorted(d for d, v in verdicts.items() if v["verdict"] == rs.ALERT)
+    if alerts:
+        n = len(alerts)
+        asks.append(dg.Ask(f"{_n(n, 'sending domain gets', 'sending domains get')} far fewer replies than expected "
+                           f"over {rs.WINDOW_DAYS} days.", ALERT_STEP, key="reply-monitor:alert"))
+    if unread:
+        asks.append(dg.Ask(f"The reply check could not read Smartlead for "
+                           + "; ".join(f"{clients_of(a)} ({why})" for a, why in sorted(unread.items())) + ".",
+                           RETRY_STEP, key="reply-monitor:unread", kind="broken"))
+    if history_missing:
+        asks.append(dg.Ask("The reply check judged nothing today: its stored history (Mongo) could not be read.",
+                           "It runs again tomorrow at 13:00; if it fails twice, check MONGO_URI on Render.",
+                           key="reply-monitor:no-history", kind="broken"))
+    detail = []
+    for head, thread in posts:
+        detail.append("\n".join(head))
+        detail += list(thread)
+    if alerts and not posts:
+        detail.append("Reply-rate alerts still open\n" + "\n".join(
+            _alert_line(d, verdicts[d]["client"], verdict_text(verdicts[d])) for d in alerts))
+    return asks, detail
+
+
 def _save(col, today: date, fleet: dict[str, dict], verdicts: dict[str, dict]) -> None:
     if col is None or not fleet:
         return
@@ -339,6 +378,13 @@ async def main() -> int:
     if unread:
         print(f"[ReplyMon] {unread_line(unread)}")
     _save(col, today, fleet, verdicts)
+    from smartlead import digest as dg
+    if dg.on():                 # the daily digest; DIGEST_MODE=off or Mongo down: the posts below, as before
+        asks, detail = digest_items(verdicts, unread, history is None, posts)
+        if dg.report("reply-monitor", asks, [], detail):
+            for head, thread in posts:
+                print("[ReplyMon] to the daily digest (no post):\n" + "\n".join(head))
+            return 0
     failed = False
     for head, thread in posts:
         print("[ReplyMon] post:\n" + "\n".join(head) + "\n---\n" + "\n---\n".join(thread))

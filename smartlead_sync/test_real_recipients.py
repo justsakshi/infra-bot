@@ -203,3 +203,70 @@ def test_a_partial_read_shows_the_decision_but_does_not_save_it(monkeypatch):
     monkeypatch.delenv("V2_UNTRUSTED_TYPES", raising=False)
     changes, lines, _ = cli.trust(T, [], {}, write=False, not_saved_why="1 of 3 Smartlead accounts not read")
     assert db["v2_trust"].written == [] and lines[-1].endswith("not saved: 1 of 3 Smartlead accounts not read.")
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+UNTRUST = ("Smartlead's test for Google inboxes is now NOT trusted: a failed test no longer takes them out of "
+           "campaigns; the weekly job only reports it.")
+RETRUST = "Smartlead's test for Google inboxes is now trusted: the weekly job takes failing ones out of campaigns again."
+
+
+def test_a_saved_trust_change_is_a_done_line_once_and_an_unsaved_one_is_not():
+    import real_recipients as cli
+    asks, done = cli.digest_items(T, [UNTRUST], True, 3, True, "", "")
+    assert asks == [] and [(d.key, d.text) for d in done] == [(
+        "real-recipients:trust:google:2026-11-15",
+        "Real replies disagree with the v2 test for Google inboxes, so the weekly job now only reports failing ones "
+        "and leaves them in their campaigns.")]
+    _, done = cli.digest_items(T, [RETRUST], True, 3, True, "", "")
+    assert done[0].text.startswith("Real replies now agree with the v2 test for Google inboxes, so the weekly job takes")
+    assert cli.digest_items(T, [UNTRUST + " (not saved: x)"], False, 3, True, "", "") == ([], [])
+    assert cli.digest_items(T, [], True, 3, True, "", "") == ([], [])                   # no change: silent
+
+
+def test_a_failed_or_partial_run_is_a_broken_check():
+    import real_recipients as cli
+    asks, _ = cli.digest_items(T, [], False, 0, False, "1 of 1 Smartlead accounts not read", "")
+    assert [(a.key, a.kind) for a in asks] == [("real-recipients:failed", "broken")]
+    asks, _ = cli.digest_items(T, [], False, 2, False, "1 of 3 Smartlead accounts not read", "ServerSelectionTimeoutError")
+    assert [a.key for a in asks] == ["real-recipients:partial", "real-recipients:trust"]
+    assert "(1 of 3 Smartlead accounts not read)" in asks[0].text
+
+
+def _cli_wired(monkeypatch, sent, read=1):
+    import real_recipients as cli
+    import smartlead.notify as notify
+    monkeypatch.setattr(cli, "gather", lambda today, days, kinds=None: _done(
+        ([cell("Melior", "Gmail", 10, {"Google": 5}, {"Google": 1})], {}, read, 1, 6)))
+    monkeypatch.setattr(cli, "trust", lambda today, cells, kinds, write, not_saved_why="": ([UNTRUST], ["line"], ""))
+    monkeypatch.setattr(cli, "save", lambda *a: "")
+    monkeypatch.setattr(notify, "post_with_thread", lambda token, ch, head, parts: sent.append(head) or "ts")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.delenv("V2_TRUST_AUTO", raising=False)
+    monkeypatch.setattr("sys.argv", ["real_recipients.py", "--post", "--save", "--today", "2026-11-15"])
+    return cli
+
+
+def test_with_the_digest_on_the_report_is_silent_and_the_change_is_done(monkeypatch):
+    from smartlead import digest as dg
+    sent, got = [], []
+    cli = _cli_wired(monkeypatch, sent)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks, done, detail)) or True)
+    assert cli.main() == 0 and sent == []
+    (src, asks, done, detail), = got
+    assert src == "real-recipients" and asks == [] and [d.key for d in done] == ["real-recipients:trust:google:2026-11-15"]
+    assert "Real replies" in detail[0]
+
+
+def test_the_old_post_goes_out_when_the_digest_is_not_written_or_off(monkeypatch):
+    from smartlead import digest as dg
+    sent = []
+    cli = _cli_wired(monkeypatch, sent)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)
+    assert cli.main() == 0 and len(sent) == 1
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    assert cli.main() == 0 and len(sent) == 2

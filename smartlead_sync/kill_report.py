@@ -231,6 +231,44 @@ def format_report(res: dict, errors: list[str], today: date,
     return head, parts
 
 
+def digest_asks(res: dict, errors: list[str]) -> list:
+    """The daily digest's asks (16 Nov 2026, Manveen: "One daily digest"): one per kind of thing to kill, the
+    inboxes and domains in the thread; nothing to kill asks nothing; a failed or partial run is a broken check.
+    Retests of an inbox that failed once stay in the thread (nothing to kill yet)."""
+    from smartlead import digest as dg
+    if "error" in res:
+        return [dg.Ask(f"The weekly kill check failed ({res['error'][:120]}), so no inbox was judged.",
+                       "Look at the kill-report log on Render; it runs again next Tuesday at 13:30.",
+                       key="kill-report:failed", kind="broken")]
+    kills = [r for d in res["by_client"].values() for r in d.get(kr.KILL, [])]
+    sending = [r for r in kills if r.get("sending")]
+    idle = [r for r in kills if not r.get("sending") and _idle(r)]
+    doms = {r["email"].split("@")[1] for r in kills}
+    asks = []
+    if sending:
+        k = len(sending)
+        asks.append(dg.Ask(f"{_n(k, 'inbox', 'inboxes')} on the kill list {'is' if k == 1 else 'are'} still sending.",
+                           "Take each out of its campaigns today (Smartlead, the campaign, Email Accounts tab); the "
+                           "list is in the thread.", key="kill-report:sending"))
+    if idle:
+        k = len(idle)
+        asks.append(dg.Ask(f"{_n(k, 'inbox', 'inboxes')} on the kill list {'sits' if k == 1 else 'sit'} in switched-on "
+                           "campaigns that are not sending.",
+                           "Pause those campaigns or take the inboxes out, so they can't start sending again; the list "
+                           "is in the thread.", key="kill-report:idle"))
+    if doms:
+        k = len(doms)
+        asks.append(dg.Ask(f"{_n(k, 'domain', 'domains')} {'is' if k == 1 else 'are'} landing in spam on the classic "
+                           "tests and should not be used.",
+                           "Don't add their inboxes to campaigns; retire or replace each domain at its next bill "
+                           "(dates in the thread).", key="kill-report:domains"))
+    if errors:
+        asks.append(dg.Ask(f"The kill check could not read {'; '.join(errors)}, so inboxes there are missing from it.",
+                           "Look at the kill-report log on Render; it runs again next Tuesday at 13:30.",
+                           key="kill-report:partial", kind="broken"))
+    return asks
+
+
 def _blocklists(facts: dict[str, dict], today: date) -> dict[str, dict]:
     """{client: classic_blocklist.summarise(...)} over each current client's domains."""
     from smartlead import classic_blocklist as cb
@@ -280,7 +318,11 @@ def main() -> int:
                 "No inboxes were judged; rerun it or check the bot's log."]
         thread = []
     text = render_text(head, thread)
-    if args.post:
+    from smartlead import digest as dg
+    # The daily digest (16 Nov 2026); DIGEST_MODE=off or Mongo down: the old post.
+    if args.post and dg.on() and dg.report("kill-report", digest_asks(res, errors), [], ["\n".join(head)] + thread):
+        res["digest"] = True
+    elif args.post:
         from smartlead.notify import post_with_thread
         token = os.getenv("SLACK_BOT_TOKEN", "")
         channel = os.getenv("KILL_REPORT_CHANNEL") or os.getenv("PLACEMENT_REPORT_CHANNEL") or DEFAULT_CHANNEL
