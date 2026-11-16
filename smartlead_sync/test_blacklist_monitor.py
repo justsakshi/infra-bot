@@ -605,3 +605,34 @@ def test_post_goes_to_infra_channel_unless_overridden(monkeypatch):
     assert bm._post(["h"], []) is True and sent[-1] == "C123"
     monkeypatch.delenv("SLACK_BOT_TOKEN")
     assert bm._post(["h"], []) is False
+
+
+def test_a_partly_read_surbl_does_not_make_domains_unknown():
+    # 16 Nov 2026: SURBL's own server did not answer (Google DNS, listings only); DBL and URIBL answered for all.
+    results = [_result("a.com", inconclusive=["SURBL"]), _result("b.com", ["SURBL (ABUSE)"]),
+               _result("c.com", inconclusive=["SURBL", "URIBL"])]
+    found = bm.analyse(results, {}, {}, TODAY, modes={"SURBL": "hits_only", "Spamhaus DBL": "auth", "URIBL": "auth"})
+    assert found["counts"]["unknown"] == 1 and found["counts"]["checked"] == 2 and found["counts"]["surbl_partial"] == 1
+    head, thread = bm.summary(found, TODAY, accounts=2)
+    assert "checked 2 of 3 domains" in head[0] and "(partly read)" in head[0] and head[0].endswith("unknown 1")
+    assert any(t.startswith("SURBL partly read (1 domain): its own name server could not be used") for t in thread)
+    assert bm.serious_gaps(results[0]) == [] and bm.serious_gaps(results[2]) == ["URIBL"]
+
+
+def test_with_the_digest_on_the_weekly_check_posts_nothing_and_hands_over_only_a_broken_read(monkeypatch):
+    from smartlead import digest as dg
+    got = []
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks)) or True)
+    run = _Run(monkeypatch, inboxes={PL: [_inbox("a@m1.com")], BD: []}, results={"m1.com": _result("m1.com", ["Spamhaus DBL (127.0.1.2)"])})
+    asyncio.run(bm.main([]))
+    assert run.posts == [] and got == [("blacklist", [])]               # listed: no ask (16 Nov 2026)
+    got.clear()
+    run = _Run(monkeypatch, inboxes={PL: [_inbox("a@m1.com")], BD: []}, results={"m1.com": _result("m1.com", errors=["URIBL"])})
+    asyncio.run(bm.main([]))
+    (src, asks), = got
+    assert run.posts == [] and asks[0].kind == "broken" and asks[0].key == "blacklist:unread"
+    monkeypatch.setattr(dg, "report", lambda *a: False)                 # Mongo down: the old post
+    run = _Run(monkeypatch, inboxes={PL: [_inbox("a@m1.com")], BD: []}, results={})
+    asyncio.run(bm.main([]))
+    assert len(run.posts) == 1

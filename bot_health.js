@@ -26,6 +26,8 @@ const PC_TASK = 'InfraBot v2 weekly';  // the Windows scheduled task that runs v
 
 // title: what the post calls it. when(env): false means the job does not run (switched off), so it is
 // not expected. ok: exit codes that are not a failure (default [0]). codes: what an exit code means.
+const digestOff = env => String((env || {}).DIGEST_MODE || 'on').trim().toLowerCase() === 'off';
+
 const JOBS = [
   { job: 'dt-senders', cron: '0 6 * * *', title: 'DT senders' },
   { job: 'copy-sync', cron: '30 18 * * 5', title: 'Test-copy sync' },   // before a v2 test that starts on Saturday
@@ -49,7 +51,9 @@ const JOBS = [
   { job: 'smartlead-sync', cron: '0 10 * * *', title: 'Smartlead sync',
     codes: { 0: 'all tabs written', 2: 'one or more sheet tabs NOT written, see the Last Sync tab' } },
   { job: 'noon-summary', cron: '0 10 * * 1-5', title: 'Daily Renewal Check' },
-  { job: 'bot-health', cron: '5 10 * * 1-5', title: 'Bot health post' },
+  // With the daily digest on (DIGEST_MODE not off, 16 Nov 2026), bot health, the 4 PM reminder and the v2 check do
+  // not post: their findings are in the 11:00 digest. when() false = not expected, so not reported as missed.
+  { job: 'bot-health', cron: '5 10 * * 1-5', title: 'Bot health post', when: env => digestOff(env) },
   // Hours written out. The scheduler (node-cron 3) reads a stepped range like 9-21/2 as "the even hours in
   // 9-21", not "every 2 hours from 9", so the old '5 9-21/2' ran at 10:05, 12:05 ... 20:05 while this file
   // expected 9:05, 11:05 ... and reported three runs a day as missed (10 Nov 2026).
@@ -74,9 +78,13 @@ const JOBS = [
   { job: 'reply-monitor', cron: '0 13 * * *', title: 'Reply monitor' },
   { job: 'kill-report', cron: '30 13 * * 2', title: 'Kill warnings' },
   { job: 'volume-review', cron: '45 13 * * 2', title: 'Volume review', when: env => env.VOLUME_REVIEW_ENABLED === 'true' },
-  { job: 'v2-watch', cron: '0 14 * * 2', title: 'v2 results check' },
-  { job: 'v2-watch', cron: '0 10 * * 3', title: 'v2 results check' },
-  { job: 'reminder', cron: '0 16 * * 1-5', title: '4 PM renewal reminder' },
+  { job: 'v2-watch', cron: '0 14 * * 2', title: 'v2 results check', when: env => digestOff(env) },
+  { job: 'v2-watch', cron: '0 10 * * 3', title: 'v2 results check', when: env => digestOff(env) },
+  { job: 'reminder', cron: '0 16 * * 1-5', title: '4 PM renewal reminder', when: env => digestOff(env) },
+  // One post a morning instead of a post per job (Manveen, 16 Nov 2026: "One daily digest"). After the 10:00-10:30
+  // jobs; it waits for a sync that is still running (digest_post.py).
+  { job: 'digest', cron: '0 11 * * *', title: 'Daily digest', when: env => !digestOff(env),
+    codes: { 1: 'Mongo not reachable, or Slack refused the digest' } },
   { job: 'inbox-intake', cron: '15 */2 * * *', title: 'Inbox intake', when: env => env.INBOX_INTAKE_ENABLED === 'true' },
   { job: 'inbox-ready', cron: '15 */2 * * *', title: 'Inbox readiness',
     when: env => env.INBOX_INTAKE_ENABLED !== 'true' && env.INBOX_READY_ENABLED === 'true' && !!env.SCALEDMAIL_API_KEY }
@@ -419,6 +427,45 @@ function healthPost({ kind = 'daily', now, since, capped = false, fromFirst = fa
   return { text: parts.join('\n\n'), thread, summary: s, red: v2.red || dep.red };
 }
 
+// Jobs that hand their own failure to the digest (smartlead/digest.py): their run is not listed again here.
+const SELF_REPORTED = { 'campaign-metrics': [2], 'smartlead-sync': [2] };
+
+/**
+ * The digest's "checks that broke" from the run records (16 Nov 2026): one line per job that did not run,
+ * failed, or never finished in the window, each with what to do. [] when every run was fine.
+ */
+function healthAsks({ since, now, runs = [], env = {}, jobs = JOBS }) {
+  const s = summarize({ runs, since, now, env, jobs });
+  const title = j => jobInfo(j, jobs).title;
+  const asks = [];
+  const byJob = new Map();
+  for (const m of s.missed) byJob.set(m.job, [...(byJob.get(m.job) || []), m.slot]);
+  for (const [j, slots] of byJob) {
+    asks.push({ kind: 'broken', key: `bot-health:missed:${j}`, text: `${title(j)} did not run (${slotList(slots, 4)}).`,
+      step: 'Usually the bot restarted at that time; it runs again at its next time. If it repeats, look at the Render log.' });
+  }
+  const failed = new Map();
+  for (const r of s.failed) {
+    if ((SELF_REPORTED[r.job] || []).includes(r.exit_code)) continue;
+    failed.set(r.job, [...(failed.get(r.job) || []), r]);
+  }
+  for (const [j, rs] of failed) {
+    const r = rs[rs.length - 1];
+    const when = fmtIst(new Date(r.slot && !isNaN(new Date(r.slot)) ? r.slot : r.started));
+    asks.push({ kind: 'broken', key: `bot-health:failed:${j}`,
+      text: `${title(j)} failed${rs.length > 1 ? ` ${rs.length} times` : ''}, last ${when} (${exitNote(j, r.exit_code, r, jobs)}).`,
+      step: `The error is in the Render log (search [${j}]).` });
+  }
+  const unf = new Map();
+  for (const r of s.unfinished) unf.set(r.job, r);
+  for (const [j, r] of unf) {
+    asks.push({ kind: 'broken', key: `bot-health:unfinished:${j}`,
+      text: `${title(j)} started ${fmtIst(new Date(r.started))} and never finished.`,
+      step: 'The bot most likely restarted mid-run; it runs again at its next time.' });
+  }
+  return asks;
+}
+
 /** The Tue 14:00 / Wed 10:00 v2 post, or null when Monday's results are in and the PC job is running. */
 function v2WatchPost(hb, now) {
   const lines = v2WatchProblems(hb, now);
@@ -453,5 +500,5 @@ module.exports = {
   istParts, istDay, slotKey, fmtIst, fmtNight, fmtAge, lastMonday, weekStart,
   parseCron, cronMatches, expectedSlots, exitOk, exitNote, exitLine,
   windowStart, summarize, liveWriteFlags, flagsLine, heartbeatLine, v2WatchProblems,
-  slotList, healthPost, v2WatchPost, dueDailySlot, REPO, deployLine, behindFromFeed
+  slotList, healthPost, v2WatchPost, dueDailySlot, REPO, deployLine, behindFromFeed, healthAsks, digestOff
 };

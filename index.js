@@ -1183,6 +1183,41 @@ async function postBotHealth(kind) {
   return postHealthMessage('bot-health', msg);
 }
 
+/* -------------------- Daily digest (smartlead_sync/digest_post.py) -------------------- */
+// 16 Nov 2026 (Manveen: "One daily digest"): one 11:00 IST post instead of a post per job. The jobs hand their asks
+// to Mongo digest_asks (smartlead/digest.py); here the bot adds its own run records (what did not run or failed
+// since the last digest), then digest_post.py posts. DIGEST_MODE=off: every job posts as before.
+const digestOn = () => !health.digestOff(process.env);
+
+/** Replace one source's asks in digest_asks, keeping each ask's 'since' (the Python report() does the same). */
+async function writeDigestAsks(source, asks, detail = []) {
+  const col = healthCol('digest_asks');
+  const now = new Date().toISOString().slice(0, 19) + '+00:00';
+  const prev = (await col.findOne({ _id: source })) || {};
+  const since = new Map((prev.asks || []).map(a => [a.key, a.since]));
+  const merged = asks.map(a => ({ urgent: false, step: '', ...a, since: since.get(a.key) || now }));
+  await col.replaceOne({ _id: source }, { _id: source, asks: merged, detail, at: now }, { upsert: true });
+  return merged.length;
+}
+
+async function runDigest(slot) {
+  try {
+    const now = new Date();
+    const last = await healthCol('digest_meta').findOne({ _id: 'last' });
+    const lastAt = last && last.at ? new Date(last.at) : new Date(+now - 24 * 3600 * 1000);
+    const { since } = health.windowStart({ lastPost: lastAt, now });
+    const runs = await healthCol('cron_runs').find({ $or: [
+      { started: { $gt: new Date(+since - 3 * 3600 * 1000 - 5 * 60 * 1000) } }, { ended: { $gt: since } }
+    ] }).toArray();
+    const asks = health.healthAsks({ since, now, runs, env: process.env });
+    await writeDigestAsks('bot-health', asks);
+    console.log(`[digest] bot health: ${asks.length} broken line(s) since ${health.fmtIst(since)}`);
+  } catch (err) {
+    console.error(`[digest] bot health not handed over: ${err.message}`);
+  }
+  return runJob('digest', ['digest_post.py', '--post'], { slot });
+}
+
 /** Tue 14:00 / Wed 10:00: a red post only if Monday's v2 results are missing or the PC job stopped. */
 async function runV2Watch() {
   const heartbeat = await healthCol('v2_heartbeat').findOne({ _id: 'pc' });
@@ -1521,6 +1556,7 @@ async function start() {
 
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     at('reminder', ({ slot }) => {
+      if (digestOn()) return console.log('[reminder] the daily digest is on: no 4 PM reminder');
       console.log(`[CRON] Simple reminder firing at ${new Date().toISOString()}`);
       return track('reminder', runSimpleReminder, { slot });
     });
@@ -1528,6 +1564,7 @@ async function start() {
     // Bot health, weekdays 10:05 IST (bot_health.js): runs that did not happen or failed since the
     // last health post, the PC v2 job's heartbeat, and the live-write flags that are on.
     at('bot-health', async ({ slot }) => {
+      if (digestOn()) return console.log('[bot-health] the daily digest is on: its findings go in the 11:00 digest');
       if (await onceToday('bot-health')) {
         return track('bot-health', () => postBotHealth('daily'), { slot, extra: { kind: 'daily' } });
       }
@@ -1535,7 +1572,12 @@ async function start() {
     // Tue 14:00 and Wed 10:00 IST: a red post if Monday's v2 results are not in Mongo or the
     // hourly PC job has not run for 3 hours. Quiet otherwise.
     at('v2-watch', async ({ slot }) => {
+      if (digestOn()) return console.log('[v2-watch] the daily digest is on: it checks the PC job every morning');
       if (await onceToday('v2-watch')) return track('v2-watch', runV2Watch, { slot });
+    });
+    // 11:00 IST every day: the one daily digest (bot_health.JOBS 'digest').
+    at('digest', async ({ slot }) => {
+      if (digestOn() && (await onceToday('digest'))) return runDigest(slot);
     });
 
     // Started late (restart, deploy, Render waking up)? Catch up the runs still worth doing
@@ -1562,6 +1604,7 @@ async function start() {
     // day's post. At most one restart post an hour, so a crash loop cannot flood the channel.
     setTimeout(async () => {
       try {
+        if (digestOn()) return console.log('[bot-health] restarted; the daily digest is on, so no restart post');
         const now = new Date();
         const daily = health.dueDailySlot(now);
         if (daily && (await onceToday('bot-health'))) {

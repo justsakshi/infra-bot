@@ -505,12 +505,14 @@ def analyse(results: list[dict], inventory: dict, history: dict | None, today: s
     every DBL/URIBL listing, and SURBL only when new since the last check (all SURBL
     when surbl_all, for a check by hand). history None = Mongo unreadable.
     modes = {list label: lookup mode} from _check_all, to say why a list is unknown."""
-    hits, surbl, unknown = [], [], []
+    hits, surbl, unknown, surbl_partial = [], [], [], []
     counts = {"total": len(results), "dbl": 0, "dbl_new": 0, "uribl": 0, "surbl": 0, "surbl_new": 0}
     for r in results:
         e = inventory.get(r["domain"]) or _entry()
-        if r.get("lookup_errors") or r.get("inconclusive_zones"):
+        if serious_gaps(r):
             unknown.append(r)
+        elif r.get("lookup_errors") or r.get("inconclusive_zones"):
+            surbl_partial.append(r)
         ages = {}
         for label in (DBL, URIBL, SURBL):
             if _on(r, label):
@@ -534,8 +536,16 @@ def analyse(results: list[dict], inventory: dict, history: dict | None, today: s
             surbl.append({**base, "lists": [s for s in r["listed_on"] if s.startswith(SURBL)], "age": ages[SURBL]})
     counts["unknown"] = len(unknown)
     counts["checked"] = counts["total"] - counts["unknown"]
+    counts["surbl_partial"] = len(surbl_partial)
     return {"counts": counts, "hits": hits, "surbl": surbl, "unknown": unknown, "history_ok": history is not None,
-            "modes": dict(modes or {})}
+            "modes": dict(modes or {}), "surbl_partial": surbl_partial}
+
+
+def serious_gaps(r: dict) -> list[str]:
+    """The lists that judge the sending domain (DBL, URIBL) that could not be read for it. Only these make a domain
+    unknown (16 Nov 2026: SURBL's own server did not answer, and 40 of 72 domains read 'unknown' although DBL and
+    URIBL had answered for all of them; SURBL judges the links in an email and is info only)."""
+    return [z for z in list(r.get("lookup_errors") or []) + list(r.get("inconclusive_zones") or []) if z in SERIOUS]
 
 
 def _combine(ages: list[dict | None]) -> dict | None:
@@ -649,6 +659,8 @@ def summary(found: dict, today: str, *, skipped: list[dict] = (), accounts: int 
     dbl_new = f"{c['dbl_new']} new" if hist else "new unknown"
     surbl_part = (f"SURBL {c['surbl']}" + (f" ({c['surbl_new']} new)" if hist else "")) if adhoc else \
         (f"SURBL new {c['surbl_new']}" if hist else "SURBL new unknown")
+    if c.get("surbl_partial"):
+        surbl_part += " (partly read)"
     live = [h for h in hits if h.get("status") == "sending"]
     alarm = any(h.get("status") == "sending" or (h.get("age") or {}).get("new") for h in hits)
     worry = hits or surbl or c["unknown"] or skipped or not hist or not c["total"]
@@ -688,6 +700,11 @@ def summary(found: dict, today: str, *, skipped: list[dict] = (), accounts: int 
             lines.append(f"… and {len(errs) - 30} more")
         thread.append(f"Unknown ({c['unknown']}): a list could not be read fully for these, so they don't count as clean:\n"
                       + "\n".join(lines))
+    if found.get("surbl_partial"):
+        n = len(found["surbl_partial"])
+        why = _ZONE_WHY.get(found.get("modes", {}).get(SURBL), _ZONE_WHY["broken"])
+        thread.append(f"SURBL partly read ({_plural(n, 'domain')}): {why}. SURBL judges the links in an email, not the "
+                      f"sender, so these still count as checked on Spamhaus DBL and URIBL.")
     if skipped:
         thread.append("Could not read from Smartlead:\n" + "\n".join(_skip_line(s) for s in skipped)
                       + "\n\nRe-run once the account reads again.")
@@ -797,13 +814,24 @@ async def main(argv: list[str] | None = None) -> int:
                 records.append({**r, "date": today, "clients": sorted(e["accounts"]),
                                 "client_names": sorted(e["clients"]),
                                 "inboxes": None if e["stale"] or not e["emails"] else len(e["emails"]),
-                                "unknown": bool(r.get("lookup_errors") or r.get("inconclusive_zones")),
+                                "unknown": bool(serious_gaps(r)),
                                 "read_from": sorted(set(e["emails"].values())),
                                 "run": "adhoc" if adhoc else "weekly",
                                 "source": "last list" if e["stale"] else ("by hand" if adhoc else "smartlead")})
             ok = store.save(records, adhoc=adhoc) and ok
     if post:
-        ok = _post(head, thread) and ok
+        from smartlead import digest as dg
+        # 16 Nov 2026: no weekly post. Manveen: Spamhaus said a listing does not change deliverability and delisting is
+        # under way, so a listed domain is no ask; only a list that could not be read is a broken check.
+        asks = []
+        if found["counts"]["unknown"] or skipped:
+            asks.append(dg.Ask(f"Blocklist check could not read Spamhaus DBL or URIBL for {found['counts']['unknown']} of "
+                               f"{found['counts']['total']} domains" + (f" and skipped {len(skipped)} Smartlead account(s)"
+                                                                       if skipped else "") + ".",
+                               "Nothing to do unless it repeats next Monday; the thread says which list.",
+                               key="blacklist:unread", kind="broken"))
+        if not (dg.on() and not adhoc and dg.report("blacklist", asks, [], ["\n".join(head)] + thread)):
+            ok = _post(head, thread) and ok
     partial = bool(skipped) or found["counts"]["unknown"] > 0 or not results
     if partial:
         print("[Blacklist] ⚠ partial coverage: see the summary above. Exit 1.")
