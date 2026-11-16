@@ -363,3 +363,91 @@ def test_digest_items_for_errors_moves_and_new_campaigns():
     assert asks[0].text.startswith("2 current-client domains are in Smartlead") and "tab Melior, Precise Leads" in asks[0].step
     assert asks[1].kind == "broken" and asks[1].text == "The test-campaign job could not finish: BETTRDATA."
     assert ts.digest_items(res, None, [], False, date(2026, 11, 16))[0] == []     # sheet unread: no domain ask
+
+
+# --- pulled inboxes stay in a weekly test (Manveen, 16 Nov 2026: "go ahead") ----------------------------------
+# An inbox the v2 job took out after a failed v2 test (tag "DO NOT USE - failed v2 (auto)") stays on a DT campaign,
+# so the weekly test keeps checking it, until it is back in use (tag off) or cancelled (gone, or disconnected).
+
+def test_a_pulled_inbox_outside_the_sheet_stays_on_its_dt_campaign():
+    camps = dts("Melior", "DT Melior", [3])                       # 1000, 1001, 1002 attached; 1002 not in the sheet
+    p = ts.plan(boxes([1000, 1001], "Melior"), camps, drop_others=True, retest=[box(1002, "Melior")])
+    assert p["drops"] == {} and p["adds"] == {} and p["retest"] == {} and p["no_room"] == {}
+
+
+def test_a_pulled_inbox_on_no_dt_campaign_goes_on_the_first_with_room_and_not_on_the_main_campaign():
+    camps = [camp(1, "Melior - Deliverability Test Campaign", "Melior", "main", attached=range(1000, 1053))]
+    camps += dts("Melior", "DT Melior", [50, 3])
+    p = ts.plan(boxes(range(1000, 1053), "Melior"), camps, drop_others=True, retest=[box(5000, "Melior")])
+    assert p["adds"] == {102: [5000]} and p["retest"] == {102: [5000]} and p["drops"] == {} and p["create"] == []
+
+
+def test_pulled_inboxes_never_overfill_a_dt_campaign_and_the_rest_have_no_room():
+    camps = dts("Melior", "DT Melior", [50, 49])
+    p = ts.plan(boxes(range(1000, 1099), "Melior"), camps, drop_others=True,
+                retest=[box(5001, "Melior"), box(5000, "Melior")])
+    assert p["adds"] == {102: [5000]} and p["retest"] == {102: [5000]}
+    assert p["no_room"] == {"Melior": [5001]} and p["create"] == []            # never a new campaign for them
+    # one already on a DT campaign keeps its place before one that is on none
+    camps = dts("Melior", "DT Melior", [50, 50])                               # 1099 (pulled, untracked) on #2
+    p = ts.plan(boxes(range(1000, 1099), "Melior"), camps, drop_others=True,
+                retest=[box(1099, "Melior"), box(900, "Melior")])
+    assert p["adds"] == {} and p["drops"] == {} and p["no_room"] == {"Melior": [900]}
+
+
+def test_with_the_sheet_unreadable_a_pulled_inbox_only_takes_free_room():
+    camps = dts("Melior", "DT Melior", [49])
+    p = ts.plan(boxes([1000], "Melior"), camps, retest=[box(5000, "Melior"), box(5001, "Melior")])
+    assert p["adds"] == {101: [5000]} and p["no_room"] == {"Melior": [5001]} and p["create"] == []
+
+
+def test_a_pulled_inbox_of_a_past_client_is_not_retested():
+    p = ts.plan([], dts("Melior", "DT Melior", [3]), drop_others=True, retest=[box(5000, "OSC")])
+    assert p["retest"] == {} and p["no_room"] == {}
+
+
+class FakeRetest(FakeClient):
+    """t.com is in the sheet. b@u.com (on DT PL #1) and c@v.com (on none) were pulled by the v2 job; d@w.com was
+    pulled too but Smartlead can no longer log in to it."""
+    async def list_email_accounts(self):
+        tag = [{"tag_name": "DO NOT USE - failed v2 (auto)"}]
+        ok = {"is_smtp_success": True, "is_imap_success": True}
+        return [{"id": 1, "from_email": "a@t.com", "client_id": None, "tags": [], **ok},
+                {"id": 2, "from_email": "b@u.com", "client_id": None, "tags": tag, **ok},
+                {"id": 3, "from_email": "c@v.com", "client_id": None, "tags": tag, **ok},
+                {"id": 4, "from_email": "d@w.com", "client_id": None, "tags": tag, "is_smtp_success": False,
+                 "is_imap_success": True}]
+
+
+def test_the_daily_run_keeps_pulled_inboxes_on_a_dt_campaign_with_a_done_line(monkeypatch, capsys):
+    import smartlead.api
+    state, dms, posts, reports = _daily(monkeypatch)
+    monkeypatch.setattr(smartlead.api, "SmartleadClient", FakeRetest)
+    FakeRetest.attached = {101: {2, 4}}
+    monkeypatch.setattr(ts, "_dm", lambda text: dms.append(text) or True)
+    assert ts.main() == 0
+    assert FakeRetest.attached == {101: {1, 2, 3}}                 # d@w.com (disconnected) left the retest
+    (src, asks, done, detail), = reports
+    t = date.today().isoformat()
+    assert [(d.key, d.text) for d in done] == [
+        (f"dt-senders:{t}:DT PL #1:added", "Put 1 inbox on DT PL #1 for the weekly placement test."),
+        (f"dt-senders:{t}:DT PL #1:retest", "Put 1 inbox taken out after a failed v2 test on DT PL #1, so the weekly "
+                                            "test keeps checking it until it is back in use."),
+        (f"dt-senders:{t}:DT PL #1:off", "Took 1 inbox off DT PL #1: their domain is not in the deliverability sheet.")]
+    assert state.docs["untracked"]["domains"] == ["w.com"]        # a retested inbox is not "kept off the tests"
+    capsys.readouterr()
+
+
+def test_pulled_inboxes_with_no_room_are_an_ask():
+    res = {"PRECISE_LEADS": {"no_room": {"Melior": 3}, "retest_to": {"DT PL #2": 2}}}
+    asks, done = ts.digest_items(res, set(), [], False, date(2026, 11, 17))
+    assert [(d.key, d.text) for d in done] == [
+        ("dt-senders:2026-11-17:DT PL #2:retest", "Put 2 inboxes taken out after a failed v2 test on DT PL #2, so the "
+                                                  "weekly test keeps checking them until they are back in use.")]
+    (a,) = asks
+    assert a.key == "dt-senders:no-room:Melior" and a.kind == "ask"
+    assert a.text == ("3 Melior inboxes taken out after a failed v2 test are on no DT campaign: every DT campaign "
+                      "of the client holds 50, so the weekly test does not check them.")
+    assert a.step.startswith("Make room on a DT campaign")
+    head, thread, _ = ts.infra_report(res, set(), [], False, date(2026, 11, 17))
+    assert head[0].endswith(": 3 pulled inboxes with no room on a DT campaign")

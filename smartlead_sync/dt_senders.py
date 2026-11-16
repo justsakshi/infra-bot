@@ -26,6 +26,11 @@ Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, the infra-c
 "done" lines (inboxes put on, moved, taken off, campaigns created, per campaign), an ask for domains outside the
 deliverability sheet (each domain once, as before) and "broken" asks for errors or a DM that did not go out.
 The DM itself is unchanged. If the digest can't be written, the old post goes out.
+
+Pulled inboxes stay in a weekly test (Manveen, 16 Nov 2026): an inbox the v2 job took out after a failed v2 test
+(tag "DO NOT USE - failed v2 (auto)") stays on, or is put on, one of its client's DT campaigns even when its domain is
+not in the sheet, until the tag is off (back in use) or the inbox is gone or disconnected (cancelled). Only room the
+other inboxes leave: never over 50, never a new campaign; with no room, a digest ask (plan(retest=...)).
 """
 from __future__ import annotations
 
@@ -54,6 +59,7 @@ DT_CAP = 50          # inboxes per DT campaign: one scheduled test each (Manveen
 PENDING_DM = "pending_dm"    # Mongo dt_senders: the DM's inboxes and campaigns until Slack accepts it
 UNTRACKED = "untracked"      # Mongo dt_senders: domains outside the sheet already reported
 SOURCE = "dt-senders"        # its name in the daily digest
+PULL_TAG = "do not use - failed v2 (auto)"   # v2_weekly.TAG, lower case: the v2 job pulled the inbox
 
 
 def _dt_number(name: str) -> int:
@@ -97,7 +103,17 @@ def _fill_first(dts: list[dict], members: set[int], cap: int) -> dict:
     return {"adds": adds, "removes": {k: sorted(v) for k, v in removes.items()}, "create": create}
 
 
-def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_others: bool = False) -> dict:
+def is_pulled(account: dict) -> bool:
+    """The v2 job took this inbox out after a failed v2 test (its tag, any case) and Smartlead can still log in to
+    it (a failed login = cancelled or dead: it leaves the retest). From a Smartlead email-account row."""
+    tags = {str((t.get("tag_name") or t.get("name") or "") if isinstance(t, dict) else t).strip().lower()
+            for t in account.get("tags") or []}
+    dead = account.get("is_smtp_success") is False or account.get("is_imap_success") is False
+    return PULL_TAG in tags and not dead
+
+
+def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_others: bool = False,
+         retest: list[dict] | None = None) -> dict:
     """inboxes = [{id, email, client}]; campaigns = [{id, name, client, role: main|dt,
     status, attached: set of inbox ids}]. Every current-client inbox goes on its
     client's main test campaign, and on exactly one of its DT campaigns, filled
@@ -105,13 +121,25 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
     prioritize filling the 50 first"). Returns {"adds": {campaign id or new name:
     [inbox ids]}, "removes": {campaign id: [inbox ids]} (moves), "drops": {campaign id:
     [inbox ids]} (inboxes we do not use, only when ``drop_others``: the sheet was
-    read), "create": [{name, client, clone_of}], "problems": [...]}. Pure."""
+    read), "create": [{name, client, clone_of}], "problems": [...]}. Pure.
+
+    ``retest`` = [{id, email, client}]: inboxes the v2 job pulled (is_pulled). They stay on, or go on, one of their
+    client's DT campaigns even when their domain is not in the sheet, so the weekly test keeps checking them until
+    they are back in use (Manveen 16 Nov 2026). They only take room the other inboxes leave in the DT campaigns the
+    client needs anyway: never a new campaign, never more than ``cap``. Also returns "retest": {campaign: [ids]}
+    (pulled inboxes newly put on, a subset of "adds") and "no_room": {client: [ids]} (pulled inboxes left on none)."""
     from smartlead.inbox_intake import CURRENT_CLIENTS
     adds: dict = {}
     removes: dict = {}
     drops: dict = {}
     create: list = []
     problems: list[str] = []
+    retest_new: dict = {}
+    no_room: dict = {}
+    pulled_by_client: dict = {}
+    for b in retest or []:
+        if b["client"] in CURRENT_CLIENTS:
+            pulled_by_client.setdefault(b["client"], set()).add(int(b["id"]))
     usable = []
     for c in campaigns:
         if str(c.get("status") or "").upper() in SAFE_STATUSES:
@@ -133,19 +161,32 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
                 if missing:
                     adds[int(c["id"])] = missing
         dts = [c for c in mine if c["role"] == "dt"]
-        if dts and drop_others:
+        if not dts:
+            continue
+        on_dt = {i for c in dts for i in c["attached"]}
+        base = ids if drop_others else ids | on_dt
+        # pulled inboxes outside ``base``: those already on a DT campaign keep their place first, then by id
+        extra = sorted(pulled_by_client.get(client, set()) - base, key=lambda i: (i not in on_dt, i))
+        room = (max(len(dts), -(-len(base) // cap)) if base else len(dts)) * cap - len(base)
+        fit, left = set(extra[:room]), sorted(extra[room:])
+        if left:
+            no_room[client] = left
+        if drop_others:
             for c in dts:
-                gone = sorted(c["attached"] - ids)
+                gone = sorted(c["attached"] - ids - fit)
                 if gone:
                     drops[int(c["id"])] = gone
-                    c["attached"] = c["attached"] & ids
-        if dts:
-            members = ids if drop_others else ids | {i for c in dts for i in c["attached"]}
-            lay = _fill_first(dts, members, cap)
-            adds.update(lay["adds"])
-            removes.update(lay["removes"])
-            create += lay["create"]
-    return {"adds": adds, "removes": removes, "drops": drops, "create": create, "problems": problems}
+                    c["attached"] = c["attached"] - set(gone)
+        lay = _fill_first(dts, base | fit, cap)
+        adds.update(lay["adds"])
+        removes.update(lay["removes"])
+        create += lay["create"]
+        for key, add in lay["adds"].items():
+            new = [i for i in add if i in fit and i not in on_dt]
+            if new:
+                retest_new[key] = new
+    return {"adds": adds, "removes": removes, "drops": drops, "create": create, "problems": problems,
+            "retest": retest_new, "no_room": no_room}
 
 
 async def _clone(sl, src: int, name: str) -> int:
@@ -296,6 +337,15 @@ def deliver_dm(gaps: list[dict], added: set[str], created: list[str], pending: d
     return False, {"added": sorted(added_all), "created": created_all}
 
 
+def _no_room(results: dict) -> dict[str, int]:
+    """{client: pulled inboxes on no DT campaign for lack of room}, over every account read."""
+    out: dict[str, int] = {}
+    for r in results.values():
+        for client, k in ((r.get("no_room") or {}) if isinstance(r, dict) else {}).items():
+            out[client] = out.get(client, 0) + int(k)
+    return out
+
+
 def infra_report(results: dict, known: set[str] | None, errors: list[str], dm_failed: bool,
                  today: date) -> tuple[list[str], list[str], set[str] | None]:
     """(headline, thread, every domain outside the sheet now) for the infra channel. ``results`` = per
@@ -319,6 +369,13 @@ def infra_report(results: dict, known: set[str] | None, errors: list[str], dm_fa
         thread.append("In Smartlead for a current client but not in the deliverability sheet, so kept off the DT "
                       "test campaigns. Add the domain to the sheet if we use it (each domain is told once):\n"
                       + "\n".join(f"• {d} ({untracked[d]['client']}, {_n(untracked[d]['inboxes'])})" for d in new))
+    room = _no_room(results)
+    if room:
+        parts.append(f"{sum(room.values())} pulled inbox{'es' if sum(room.values()) != 1 else ''} with no room on a "
+                     "DT campaign")
+        thread.append("Taken out after a failed v2 test, but every DT campaign of the client holds "
+                      f"{DT_CAP}, so the weekly test does not check them. Make room, or create the next DT campaign and "
+                      "its weekly test:\n" + "\n".join(f"• {cl}: {_n(k)}" for cl, k in sorted(room.items())))
     head = []
     if parts or errors or dm_failed:
         head.append(f"🧪 Test campaigns, {today.day} {today:%b}: " + (", ".join(parts) if parts else "could not finish"))
@@ -353,6 +410,10 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
                                 key=f"{SOURCE}:{t}:{name}:created"))
         for camp, k in sorted((r.get("added_to") or {}).items()):
             done.append(dg.Done(f"Put {_n(k)} on {camp} for the weekly placement test.", key=f"{SOURCE}:{t}:{camp}:added"))
+        for camp, k in sorted((r.get("retest_to") or {}).items()):
+            them = "them until they are" if k != 1 else "it until it is"
+            done.append(dg.Done(f"Put {_n(k)} taken out after a failed v2 test on {camp}, so the weekly test keeps "
+                                f"checking {them} back in use.", key=f"{SOURCE}:{t}:{camp}:retest"))
         for camp, k in sorted((r.get("moved_off") or {}).items()):
             done.append(dg.Done(f"Moved {_n(k)} off {camp} to fill an earlier DT campaign first.",
                                 key=f"{SOURCE}:{t}:{camp}:moved"))
@@ -378,6 +439,14 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
                 f"For each domain in the thread we use, add it to the deliverability sheet (tab {', '.join(tabs)}), "
                 "column A; the next run puts its inboxes on the test campaigns.")
         asks.append(dg.Ask(text, step, key=f"{SOURCE}:untracked"))
+    for client, k in sorted(_no_room(results).items()):
+        asks.append(dg.Ask(
+            f"{k} {client} inbox{'es' if k != 1 else ''} taken out after a failed v2 test {'are' if k != 1 else 'is'} on "
+            f"no DT campaign: every DT campaign of the client holds {DT_CAP}, so the weekly test does not check "
+            f"{'them' if k != 1 else 'it'}.",
+            f"Make room on a DT campaign of {client}, or create the next DT campaign and its weekly test; the next run "
+            f"(06:00 IST) puts {'them' if k != 1 else 'it'} on.",
+            key=f"{SOURCE}:no-room:{client}"))
     if errors:
         names = sorted({e.split(":", 1)[0] for e in errors})
         asks.append(dg.Ask(f"The test-campaign job could not finish: {', '.join(names)}.",
@@ -484,16 +553,22 @@ def main() -> int:
                      for a in listed
                      if not is_excluded_inbox({"email": a.get("from_email") or "", "tags": a.get("tags", [])})]
             camps = await _campaigns(c, acc.name)
-            p = plan(only_tracked(boxes, tracked), camps, drop_others=tracked is not None)
+            pulled_ids = {int(a["id"]) for a in listed if is_pulled(a)}
+            pulled = [b for b in boxes if int(b["id"]) in pulled_ids]
+            p = plan(only_tracked(boxes, tracked), camps, drop_others=tracked is not None, retest=pulled)
             names = {x["id"]: x["name"] for x in camps}
             res = {"would_add": {names.get(k, k): len(v) for k, v in p["adds"].items()},
                    "would_remove": {names.get(k, k): len(v) for k, v in p["removes"].items()},
                    "would_drop": {names.get(k, k): len(v) for k, v in p["drops"].items()},
-                   "would_create": [x["name"] for x in p["create"]], "problems": p["problems"]}
+                   "would_create": [x["name"] for x in p["create"]], "problems": p["problems"],
+                   "would_retest": {names.get(k, k): len(v) for k, v in p["retest"].items()},
+                   "no_room": {cl: len(v) for cl, v in p["no_room"].items()}}
             if tracked is not None:
                 unt: dict = {}
                 for b in boxes:
                     d = str(b.get("email") or "").lower().split("@")[-1]
+                    if int(b["id"]) in pulled_ids:       # kept on the tests by the retest rule, not "kept off"
+                        continue
                     if b["client"] in CURRENT_CLIENTS and d and d not in tracked:
                         u = unt.setdefault(d, {"client": b["client"], "inboxes": 0})
                         u["inboxes"] += 1
@@ -505,6 +580,15 @@ def main() -> int:
                                   for cid, ids in (res.get("dropped_ids") or {}).items() for i in ids]
                 res["added_to"] = {str(names.get(k, k)): n for k, n in res.pop("added_by", {}).items()}
                 res["moved_off"] = {str(names.get(k, k)): n for k, n in res.pop("removed_by", {}).items()}
+                landed = set(res.get("new_ids") or [])
+                res["retest_to"] = {}
+                for k, ids in p["retest"].items():     # confirmed on; told as their own line, not as "added"
+                    n, name = sum(i in landed for i in ids), str(names.get(k, k))
+                    if n:
+                        res["retest_to"][name] = n
+                        res["added_to"][name] -= n
+                        if res["added_to"][name] <= 0:
+                            res["added_to"].pop(name)
             if args.apply or args.gaps:
                 emails = {int(a["id"]): str(a.get("from_email") or "").lower() for a in await c.list_email_accounts()}
                 camps_now = await _campaigns(c, acc.name)
