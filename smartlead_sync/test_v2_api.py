@@ -165,3 +165,9 @@ def test_waiting_out_429s_stops_at_the_run_budget():
         with pytest.raises(v2_api.V2ApiError, match="429"):
             c.tests()
     assert sum(waits) <= v2_api.RATE_BUDGET and len(waits) < 40      # later calls fail at once
+
+
+def test_a_429_waits_at_least_a_minute():
+    # Smartlead support, 16 Nov 2026: wait a minute after a 429 before retrying
+    assert v2_api.RATE_WAIT >= 60
+    assert v2_api.RATE_WAIT * (2 ** v2_api.RATE_RETRIES - 1) <= v2_api.RATE_BUDGET   # one call's waits fit the budget

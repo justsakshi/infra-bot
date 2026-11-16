@@ -1288,25 +1288,27 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         needs.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test, and Smartlead can't log in to {it} "
                      f"({_per_dom(off)}). Reconnect {it}, or delete {it} in Smartlead if {'they were' if n != 1 else 'it was'} "
                      f"cancelled.")
-    if ok:          # 16 Nov 2026: connected inboxes "did not send" when the plan's allowance ran out
+    if ok:          # 16 Nov 2026: connected inboxes "did not send" in runs that came back short (not the plan:
+                    # Smartlead support, 16 Nov, says the plan counts runs and never shrinks one; cause open with them)
         n = sum(ok.values())
         info.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test although Smartlead shows "
-                    f"{'them' if n != 1 else 'it'} connected ({', '.join(sorted(ok))}): most likely the test ran short "
-                    f"(the plan's allowance). If {'they' if n != 1 else 'it'} miss{'' if n != 1 else 'es'} next week's "
+                    f"{'them' if n != 1 else 'it'} connected ({', '.join(sorted(ok))}): the run came back short, which "
+                    f"Smartlead is looking into. If {'they' if n != 1 else 'it'} miss{'' if n != 1 else 'es'} next week's "
                     f"test too, look at {'them' if n != 1 else 'it'}.")
     thin = sorted((f["name"], f["per_provider"], f.get("by_provider") or {}) for f in state["files"].values()
                   if f.get("night") in got["nights"] and f.get("status") == "ingested"
                   and 0 < int(f.get("per_provider") or v2.PASS_SEEDS) < v2.PASS_SEEDS)
     if thin:
-        # One line for all of them. A test does not keep its emails per provider: each run gets the plan's allowance
-        # when it starts (Smartlead support, 15 Nov 2026), so "set the test to 4" was advice no one could follow.
+        # One line for all of them. Smartlead support, 16 Nov 2026: the plan (Growth) counts test runs, not emails, and
+        # running out pauses a test rather than shrinking it; why runs come back with fewer than 4 is open with them.
+        # The test's own seedsPerSenderPerProvider and GET /limits both read 4, so "set the test to 4" helps no one.
         runs = ", ".join(f"{name} ({', '.join(f'{c} {p.title()}' for p, c in sorted(by.items()))})"
                          if len(set(by.values())) > 1 else f"{name} ({n} per provider)" for name, n, by in thin)
         k = len(thin)
         needs.append(f"{k} test run{'s' if k != 1 else ''} sent fewer than 4 emails per provider, so the job can't "
-                     f"judge {'their' if k != 1 else 'its'} inboxes (it needs 4 of 4): {runs}. Each run gets what the "
-                     f"Smart Delivery plan allows when it starts, and runs started close together use it up: start "
-                     f"the tests apart, or ask Smartlead what the plan allows.")
+                     f"judge {'their' if k != 1 else 'its'} inboxes (it needs 4 of 4): {runs}. Smartlead is looking into why "
+                     f"runs come back short. Run {'them' if k != 1 else 'it'} again a few minutes apart, and check the "
+                     f"test emails total in the New test window before you start.")
     current = {x.get("file") for rs in state["results"].values() for x in rs}
     partial = sorted((f["name"], f["pending_seeds"]) for sha, f in state["files"].items()
                      if f.get("night") in got["nights"] and f.get("status") == "ingested" and f.get("pending_seeds")
@@ -1387,7 +1389,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                             f"hours after sending.")
             elif why == "nothing_sent":
                 needs.append(f"No result this week from {nm}: {'their runs' if they else 'its run'} sent no test "
-                             f"emails (the plan's allowance had run out, or the inboxes were disconnected). Run "
+                             f"emails (the account had no test runs left, or the inboxes were disconnected). Run "
                              f"{'them' if they else 'it'} again in Smart Delivery.")
             else:
                 needs.append(f"No result this week from {nm}: no finished v2 run found. Check "
@@ -2008,7 +2010,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         if got["nothing_sent"] and can_post:
             _post_noted(state, ctx, [f"v2 run that sent no emails: {', '.join(sorted(set(got['nothing_sent'])))}",
                                      "\nSmart Delivery sent none of its test emails, so there is nothing to read. "
-                                     "Usually the plan's allowance had run out or the inboxes were disconnected when "
+                                     "Usually the account had no test runs left or the inboxes were disconnected when "
                                      "it started; look at the run in Smart Delivery."], [])
         stuck = stuck_pending(state, now)
         if stuck and can_post and _post_noted(state, ctx, [

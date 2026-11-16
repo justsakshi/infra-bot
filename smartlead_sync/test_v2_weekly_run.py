@@ -1034,8 +1034,8 @@ def test_a_dt_test_whose_run_sent_nothing_says_so(job):
     assert job.run() == 0
     head, parts = job.posts[-1]
     assert not any("DT PL #2" in x and "no finished v2 run found" in x for x in "\n".join(parts).split("\n"))
-    assert ("• No result this week from DT PL #2 (1 inbox): its run sent no test emails (the plan's allowance had run "
-            "out, or the inboxes were disconnected). Run it again in Smart Delivery.") in parts[0]
+    assert ("• No result this week from DT PL #2 (1 inbox): its run sent no test emails (the account had no test "
+            "runs left, or the inboxes were disconnected). Run it again in Smart Delivery.") in parts[0]
 
 
 def test_the_watch_week_line_is_gone_after_its_date(job):

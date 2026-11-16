@@ -485,8 +485,9 @@ def test_an_inbox_smartlead_shows_connected_is_not_called_disconnected(tmp_path)
     assert "connected in Smartlead." not in text
     assert ("1 inbox did not send in the test, and Smartlead can't log in to it (x.com 1). Reconnect it, or delete it "
             "in Smartlead if it was cancelled.") in text
-    assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): most likely the test "
-            "ran short (the plan's allowance). If it misses next week's test too, look at it.") in text
+    assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): the run came back "
+            "short, which Smartlead is looking into. If it misses next week's test too, look at it.") in text
+    assert "allowance" not in text
     assert "• not sent · x.com · ok@x.com → did not send in the test; connected in Smartlead" in text
 
 
@@ -521,7 +522,7 @@ def test_a_download_ask_is_dropped_48_hours_after_sending(tmp_path):
     assert "seed results had not come in" not in "\n".join(parts)
 
 
-def test_a_short_test_is_blamed_on_the_plan_allowance_in_one_line(tmp_path):
+def test_a_short_test_is_reported_in_one_line_without_blaming_the_plan(tmp_path):
     st = fresh_state(tmp_path)
     st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4)]
     st["files"]["a" * 64] = {"name": "pl-weekly-run-1.csv", "night": "2026-11-09", "status": "ingested",
@@ -535,7 +536,10 @@ def test_a_short_test_is_blamed_on_the_plan_allowance_in_one_line(tmp_path):
     assert line.startswith("• 2 test runs sent fewer than 4 emails per provider, so the job can't judge their inboxes "
                            "(it needs 4 of 4): pl-two-run-1.csv (1 per provider), "
                            "pl-weekly-run-1.csv (1 Google, 4 Microsoft).")
-    assert "Each run gets what the Smart Delivery plan allows when it starts" in line
+    # 16 Nov 2026, Smartlead support: the plan counts test runs, not emails; it never shrinks a run
+    assert "allowance" not in line and "plan allows" not in line
+    assert line.endswith("Smartlead is looking into why runs come back short. Run them again a few minutes apart, "
+                         "and check the test emails total in the New test window before you start.")
 
 
 def test_inboxes_whose_dt_csv_is_missing_are_not_called_untested(tmp_path):
@@ -617,7 +621,7 @@ def test_a_one_email_test_is_reported_not_judged(tmp_path):
 
 
 def test_a_test_thin_at_one_provider_asks_for_a_person(tmp_path):
-    """1 Google and 4 Microsoft emails per inbox: not judged, and the post names both counts and the cause."""
+    """1 Google and 4 Microsoft emails per inbox: not judged, and the post names both counts and what to do."""
     lines = [HEAD] + [f"{mb},{p},Inbox,2026-11-09T14:31:00.000Z,SENT\n"
                       for mb in ("a@x.com", "b@x.com", "c@x.com")
                       for p in ["GOOGLE_WORKSPACE"] + ["MICROSOFT_365"] * 4]
@@ -632,7 +636,8 @@ def test_a_test_thin_at_one_provider_asks_for_a_person(tmp_path):
     f = fleet()
     f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
     head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
-    assert "(it needs 4 of 4): bd-run-1.csv (1 Google, 4 Microsoft). Each run gets what the Smart Delivery" in parts[0]
+    assert "(it needs 4 of 4): bd-run-1.csv (1 Google, 4 Microsoft). Smartlead is looking into why" in parts[0]
+    assert "Run it again a few minutes apart" in parts[0]
 
 
 def test_a_midweek_test_skips_the_weekly_checks(tmp_path):
