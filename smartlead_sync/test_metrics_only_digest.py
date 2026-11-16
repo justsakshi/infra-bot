@@ -1,0 +1,65 @@
+"""metrics_only.py and the daily digest (16 Nov 2026): a failed campaign-stats run is one "broken" ask (what was
+not read, where the log is, the env var names when a key is missing), a clean run clears it, and the old post goes
+out when the digest can't be written or is off. No network."""
+import pytest
+
+import metrics_only as mo
+from smartlead import digest as dg
+
+FAILED = ["Expandi BETTRDATA (no EXPANDEE_API_KEY + EXPANDEE_SECRET on this server)", "HeyReach MELIOR"]
+
+
+@pytest.fixture
+def run(monkeypatch):
+    def go(code, failed, report_ok=True, dry=False):
+        alerts, reports = [], []
+        monkeypatch.setattr(mo, "_alert", lambda text: alerts.append(text))
+        monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None:
+                            reports.append((src, asks, done, detail)) or report_ok)
+        mo.hand_over(code, failed, dry)
+        return alerts, reports
+    return go
+
+
+def test_with_the_digest_on_a_failed_run_is_one_broken_ask_naming_the_missing_keys(run, monkeypatch):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    alerts, reports = run(2, FAILED)
+    assert alerts == []
+    (src, (a,), done, detail), = reports
+    assert src == "campaign-metrics" and done == [] and a.kind == "broken" and a.key == "campaign-metrics:failed"
+    assert a.text == "The 9:00 campaign stats job did not finish cleanly; not read: Expandi BETTRDATA; HeyReach MELIOR."
+    assert a.step == ("Set EXPANDEE_API_KEY and EXPANDEE_SECRET on Render (Environment); the log is on Render, "
+                      "search for [campaign-metrics].")
+    assert "Being fixed" not in a.step and detail[0].startswith("⚠️ Campaign stats run failed")
+
+
+def test_a_failure_with_no_missing_key_says_where_the_log_is(run, monkeypatch):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    _, reports = run(1, [])
+    a = reports[0][1][0]
+    assert a.text == "The 9:00 campaign stats job did not finish cleanly (exit 1)."
+    assert a.step == ("Read why in the log on Render (search for [campaign-metrics]); the job runs again tomorrow "
+                      "at 9:00 IST.")
+
+
+def test_a_clean_run_clears_the_ask_and_posts_nothing(run, monkeypatch):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    alerts, reports = run(0, [])
+    assert reports == [("campaign-metrics", [], [], [])] and alerts == []
+
+
+def test_when_the_digest_cannot_be_written_or_is_off_the_old_post_goes_out(run, monkeypatch):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    alerts, reports = run(2, FAILED, report_ok=False)
+    assert reports and alerts == [mo.failure_text(2, FAILED)]
+    assert alerts[0].endswith("Not read: " + "; ".join(FAILED))
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    alerts, reports = run(2, FAILED)
+    assert reports == [] and alerts == [mo.failure_text(2, FAILED)]
+    alerts, reports = run(0, [])
+    assert reports == [] and alerts == []
+
+
+def test_a_dry_run_says_nothing(run, monkeypatch):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    assert run(2, FAILED, dry=True) == ([], [])

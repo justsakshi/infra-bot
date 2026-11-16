@@ -396,3 +396,90 @@ def test_untested_is_one_line_per_bill_with_domains():
         "• `r@m.com` (bill 6 Nov): warmup reputation 55%; no v2 result in the last 8 days"]
     assert b["counts"] == {"KEEP": 0, "CHECK": 1, "RETIRE": 0, "UNTESTED": 6}
     assert b["cost_per_passing"] is None
+
+
+# ---- the daily digest (16 Nov 2026) ----
+
+def test_each_bill_with_inboxes_to_drop_or_check_is_one_ask_and_keep_only_bills_are_silent():
+    import renewal_review as cli
+    asks = cli.digest_asks({"reviews": _reviews(), "errors": [], "days": 7})
+    assert [a.key for a in asks] == ["renewal-review:Zapmail:sub_1:2026-10-15",
+                                     "renewal-review:ScaledMail:rec3:2026-10-17"]
+    z, s = asks
+    assert z.text == ("Zapmail bill on 15 Oct, 5 Outlook inboxes, $15.00 (Bettrdata): of 5 inboxes, 3 to drop, "
+                      "1 to check, 1 to keep.")
+    assert z.step == ("Before 15 Oct: retire the 3 inboxes marked drop in the thread in Zapmail (/domains, Before "
+                      "the bill); decide keep or cancel for the 1 inbox marked check or untested in the thread.")
+    assert s.text.endswith("of 6 inboxes, 2 to drop, 1 to check (1 untested), 3 to keep.")
+    assert "ScaledMail's billing page" in s.step and not any(a.urgent for a in asks)
+    assert not any(EMAIL.search(a.text + a.step) for a in asks)          # addresses stay in the thread
+    only_check = cli.digest_asks({"reviews": [dict(_reviews()[0], counts={"KEEP": 3, "CHECK": 2, "RETIRE": 0,
+                                                                         "UNTESTED": 0})], "errors": []})
+    assert only_check[0].step == ("Before 15 Oct: decide keep or cancel for the 2 inboxes marked check or untested "
+                                  "in the thread, and cancel in Zapmail (/domains, Before the bill).")
+
+
+def test_unread_sources_are_one_broken_ask():
+    import renewal_review as cli
+    (a,) = cli.digest_asks({"reviews": [], "errors": ["Zapmail PRECISE_LEADS/GOOGLE: 500"], "days": 7})
+    assert a.kind == "broken" and a.key == "renewal-review:read"
+    assert a.text == "Renewal review: could not read Zapmail, so a bill in the next 7 days may be missing."
+
+
+def _digest_on(monkeypatch, ok=True):
+    from smartlead import digest as dg
+    got = []
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None: got.append((src, asks, detail)) or ok)
+    return got
+
+
+def test_with_the_digest_on_the_review_goes_to_the_digest_not_slack(monkeypatch):
+    import renewal_review as cli
+    due, bills = _bills()
+    bills[0]["order_id"] = "rec1"
+    _fake_run(monkeypatch, cli, bills, {"a@x.com": _facts(), "b@x.com": _facts(tags=["do not use"])})
+    sent = _capture_posts(monkeypatch, cli, "--post")
+    got = _digest_on(monkeypatch)
+    assert cli.main() == 0 and sent == []
+    (src, asks, detail), = got
+    assert src == "renewal-review" and [a.key for a in asks] == [f"renewal-review:ScaledMail:rec1:{due.isoformat()}"]
+    assert detail[0].startswith("⚠️ Bills in the next 3 days: 1 bill, $7.00")
+    _fake_run(monkeypatch, cli, [], {})                       # nothing due: an empty list clears the ask
+    assert cli.main() == 0 and got[-1] == ("renewal-review", [], []) and sent == []
+
+
+def test_when_the_digest_cannot_be_written_the_review_posts_as_before(monkeypatch):
+    import renewal_review as cli
+    due, bills = _bills()
+    _fake_run(monkeypatch, cli, bills, {"a@x.com": _facts(), "b@x.com": _facts(tags=["do not use"])})
+    sent = _capture_posts(monkeypatch, cli, "--post")
+    got = _digest_on(monkeypatch, ok=False)
+    assert cli.main() == 0 and got and len(sent) == 1 and sent[0][2][0].startswith("⚠️ Bills in the next 3 days")
+
+
+def test_a_crash_with_the_digest_on_is_a_broken_ask(monkeypatch):
+    import renewal_review as cli
+
+    def boom(days):
+        raise RuntimeError("Mongo went away")
+    monkeypatch.setattr(cli, "run", boom)
+    sent = _capture_posts(monkeypatch, cli, "--post")
+    got = _digest_on(monkeypatch)
+    assert cli.main() == 1 and sent == []
+    (src, (a,), detail), = got
+    assert a.kind == "broken" and a.key == "renewal-review:crash" and "RuntimeError" in a.text
+    assert "Mongo went away" in detail[0]
+    got = _digest_on(monkeypatch, ok=False)                     # Mongo down: the old crash post
+    assert cli.main() == 1 and sent[0][2] == ["🚨 Renewal review crashed, so no bill was checked today"]
+
+
+def test_with_the_digest_off_nothing_is_reported(monkeypatch):
+    import pytest
+    import renewal_review as cli
+    from smartlead import digest as dg
+    due, bills = _bills()
+    _fake_run(monkeypatch, cli, bills, {"a@x.com": _facts(), "b@x.com": _facts()})
+    sent = _capture_posts(monkeypatch, cli, "--post")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: pytest.fail("the digest is off"))
+    assert cli.main() == 0 and len(sent) == 1

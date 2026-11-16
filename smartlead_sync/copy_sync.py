@@ -24,6 +24,9 @@ Three kinds of test campaign:
 
 Posts "Message sequence refreshed" to Slack (plus a line per test campaign it
 could not refresh). Live campaigns are only read, never written.
+Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, a refresh is
+one "done" line instead of the post, and problems are asks (a campaign to rename
+or give a step) or "broken" asks; if the digest can't be written, the post goes out.
 
     python3 copy_sync.py               # dry run: says what it would write
     python3 copy_sync.py --apply       # write
@@ -229,6 +232,8 @@ async def main(argv=None) -> int:
     store = PlacementStore()
     problems: list[str] = []
     written = attempted = 0
+    refreshed: set = set()       # (account, source client id): a client whose live copy reached its test campaigns
+    neutral = 0                  # inbox test campaigns given the neutral note
     by_name = {a.name.upper(): a for a in discover_accounts()}
     failed = 0
     skip = {int(x) for x in str(args.skip).split(",") if x.strip().isdigit()}
@@ -304,6 +309,10 @@ async def main(argv=None) -> int:
                   f"{r['source']} - {r['reason']}")
             attempted += 1
             written += bool(r["written"])
+            if r["written"] and is_inbox_test(names.get(int(test_id), "")):
+                neutral += 1
+            elif r["written"]:
+                refreshed.add((name, client_id))
         # Copy-check campaigns: keep their senders on the client's inboxes that pass the plain note now.
         checks = [(int(t), copy_check_prefix(names.get(int(t), ""))) for t in plan
                   if int(t) not in skip and copy_check_prefix(names.get(int(t), ""))]
@@ -340,9 +349,58 @@ async def main(argv=None) -> int:
         print(f"[CopySync] no '{one} {COPY_CHECK}' campaign in the account(s) read "
               f"(create it: copy_sync.py --create-copy-check \"{one}\" --apply)")
         return 1
-    if args.apply and (attempted or problems) and not one:
-        _post_summary(written, problems)
+    if args.apply and not one:
+        # The digest gets every applied run (a fixed problem clears); otherwise the post, as before.
+        if not _to_digest(written, problems, len(refreshed), neutral) and (attempted or problems):
+            _post_summary(written, problems)
     return 1 if failed else 0
+
+
+SOURCE = "copy-sync"         # its name in the daily digest
+# Problems a person fixes in Smartlead: (words in the problem line, ask key, what is wrong, the step).
+FIXABLE = (("has no known client prefix", "no-prefix", "no known client prefix, so it was not refreshed",
+            "In Smartlead, rename each test campaign named in the thread to start with DT PL, DT Melior or "
+            "DT BettrData, or archive it."),
+           ("has no step to write into", "no-step", "no email step, so it was not refreshed",
+            "In Smartlead, add one email step to each test campaign named in the thread (copy it from that "
+            "client's DT #1 campaign)."))
+
+
+def digest_items(written: int, problems: list[str], clients: int, neutral: int, today: date) -> tuple[list, list]:
+    """(asks, done): one done line when something was written, an ask per kind of problem a person fixes in
+    Smartlead, and one "broken" ask for the rest. Pure."""
+    from smartlead import digest as dg
+    done = []
+    if clients:
+        extra = f" (and the neutral note on {neutral} inbox test campaign{'s' if neutral != 1 else ''})" if neutral else ""
+        done.append(dg.Done(f"Test copy refreshed for {clients} client{'s' if clients != 1 else ''} from their live "
+                            f"campaigns{extra}.", key=f"{SOURCE}:{today.isoformat()}"))
+    elif written:
+        done.append(dg.Done(f"Neutral note rewritten on {neutral} inbox test campaign{'s' if neutral != 1 else ''}.",
+                            key=f"{SOURCE}:{today.isoformat()}"))
+    asks, rest = [], list(problems)
+    for words, key, what, step in FIXABLE:
+        hits = [p for p in rest if words in p]
+        rest = [p for p in rest if words not in p]
+        if hits:
+            k = len(hits)
+            asks.append(dg.Ask(f"{k} test campaign{'s have' if k != 1 else ' has'} {what}.", step, key=f"{SOURCE}:{key}"))
+    if rest:
+        k = len(rest)
+        asks.append(dg.Ask(f"The weekly test copy refresh had {k} problem{'s' if k != 1 else ''}, so some test campaigns "
+                           "kept their old copy or senders.", "The problems are in the thread; the refresh runs "
+                           "again next week.", key=f"{SOURCE}:problems", kind="broken"))
+    return asks, done
+
+
+def _to_digest(written: int, problems: list[str], clients: int, neutral: int) -> bool:
+    """Hand the digest this run's done line and asks. False = post the old way."""
+    from smartlead import digest as dg
+    if not dg.on():
+        return False
+    asks, done = digest_items(written, problems, clients, neutral, _today())
+    head, thread = _summary_parts(written, problems)
+    return dg.report(SOURCE, asks, done, ["\n".join(head + thread)] if problems else [])
 
 
 def _summary_parts(written: int, problems: list[str]) -> tuple[list[str], list[str]]:

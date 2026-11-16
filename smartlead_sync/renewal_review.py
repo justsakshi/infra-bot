@@ -12,6 +12,10 @@ Rules: smartlead/renewal_review.py. Retiring is a separate, approver-only
 button (Zapmail) — this script never changes a provider or Smartlead. With
 --post it also posts when a source could not be read or the run crashed, even
 when no bill is due.
+
+Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, --post hands the digest one ask per bill
+with inboxes to drop or check (a keep-only bill says nothing), a "broken" ask for unread sources or a crash,
+and the full review for the digest's thread. If the digest can't be written, the old post goes out.
 """
 from __future__ import annotations
 
@@ -38,6 +42,7 @@ except Exception:
 import httpx
 
 from smartlead.api import raise_for_status
+from smartlead import digest as dg
 from smartlead import renewal_review as rr
 from smartlead.accounts import discover_accounts
 from smartlead.config import BLACKLIST_COLLECTION, SMARTDELIVERY_BASE_URL
@@ -50,6 +55,7 @@ TESTS_PER_ACCOUNT = 10            # newest one-off classic tests read per accoun
 WEEKLY_TESTS_PER_ACCOUNT = 20     # scheduled (weekly) classic tests read per account, each at its latest run
 V2_COLLECTION = "v2_verdicts"     # written by v2_weekly.py on Manveen's PC (shared contract, 7 Nov 2026)
 V2_LOOKBACK_DAYS = 120            # enough history for "two weekly fails with no pass since"
+SOURCE = "renewal-review"         # its name in the daily digest
 
 
 def _get(url, key, **params):
@@ -487,8 +493,13 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         err = f"{type(exc).__name__}: {str(exc)[:300]}"
         if args.post:      # a crash is posted too: a silent day looks like "nothing to renew"
-            _post(["🚨 Renewal review crashed, so no bill was checked today"],
-                  [f"Error: {err}", "The tracker's renewal flags were not changed."])
+            head = ["🚨 Renewal review crashed, so no bill was checked today"]
+            thread = [f"Error: {err}", "The tracker's renewal flags were not changed."]
+            crash = dg.Ask(f"The renewal review crashed ({type(exc).__name__}), so no bill was checked today.",
+                           "Check the error in the thread (Render log: renewal_review); the tracker's renewal flags "
+                           "were not changed.", key=f"{SOURCE}:crash", kind="broken")
+            if not (dg.on() and dg.report(SOURCE, [crash], [], [_text(head, thread)])):
+                _post(head, thread)
         print(json.dumps({"error": err}) if args.json else f"ERROR: {err}")
         return 0 if args.json else 1
     if args.flag_tracker:
@@ -501,10 +512,58 @@ def main() -> int:
                    else res["flagged"]["skipped"])
             res["thread"].insert(len(res["thread"]) - 1, f"_Tracker renewal flags were not updated this run ({why})._")
             res["text"] = _text(res["headline"], res["thread"])
-    if args.post and (res["reviews"] or res["errors"]):     # read errors post even when no bill is due
-        res["posted"] = _post(res["headline"], res["thread"])
+    if args.post:
+        news = bool(res["reviews"] or res["errors"])
+        detail = [_text(res["headline"], res["thread"])] if news else []
+        if dg.on() and dg.report(SOURCE, digest_asks(res), [], detail):     # every run: a fixed bill clears
+            res["digest"] = True
+        elif news:     # read errors post even when no bill is due
+            res["posted"] = _post(res["headline"], res["thread"])
     print(json.dumps(res, default=str) if args.json else res["text"])
     return 0
+
+
+def _bill_step(r: dict, drop: int, check: int) -> str:
+    """Where to act on one bill, before its date."""
+    day = rr._day(r["bills_on"])
+    zap = r["provider"] == "Zapmail"
+    where = "in Zapmail (/domains, Before the bill)" if zap else "on ScaledMail's billing page (single domains)"
+    bits = []
+    if drop:
+        bits.append(f"retire the {drop} {rr._ib(drop)} marked drop in the thread {where}")
+    if check:
+        bits.append(f"decide keep or cancel for the {check} {rr._ib(check)} marked check or untested in the thread"
+                    + ("" if drop else f", and cancel {where}"))
+    return f"Before {day}: " + "; ".join(bits) + "."
+
+
+def digest_asks(res: dict) -> list:
+    """One ask per bill with inboxes to drop or check (keep-only bills say nothing), and a "broken" ask when a
+    source could not be read. Pure."""
+    asks = []
+    for r in res.get("reviews") or []:
+        c = r.get("counts") or {}
+        drop, untested = c.get("RETIRE", 0), c.get(rr.UNTESTED, 0)
+        check = c.get("CHECK", 0) + untested
+        if not (drop or check):
+            continue
+        price = rr.price_of(r)
+        who = f" ({', '.join(r['clients'])})" if r.get("clients") else ""
+        bill = r.get("subscription_id") or r.get("order_id") or r.get("label")
+        n = len(r.get("rows") or [])
+        text = (f"{r['provider']} bill on {rr._day(r['bills_on'])}, {r['label']}, "
+                f"{rr._money(price) if price is not None else 'price not known'}{who}: of {n} {rr._ib(n)}, "
+                f"{drop} to drop, {check} to check" + (f" ({untested} untested)" if untested else "")
+                + f", {c.get('KEEP', 0)} to keep.")
+        asks.append(dg.Ask(text, _bill_step(r, drop, check), key=f"{SOURCE}:{r['provider']}:{bill}:{r['bills_on']}"))
+    if res.get("errors"):
+        warn = rr.read_warning(res["errors"], res.get("days", 3), bool(res.get("reviews")))
+        warn = warn.replace("⚠️ ", "").replace(":warning: ", "").replace(" (details in the thread)", "")
+        if not warn.startswith("Renewal review"):
+            warn = "Renewal review: " + warn[0].lower() + warn[1:]
+        asks.append(dg.Ask(warn + ".", "It runs again tomorrow; the errors are in the thread.",
+                           key=f"{SOURCE}:read", kind="broken"))
+    return asks
 
 
 def _post(headline: list[str], thread: list[str]) -> bool:
