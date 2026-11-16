@@ -185,3 +185,63 @@ def test_the_digest_never_applies_readiness_itself(monkeypatch):
     assert cli.digest_ready_lines(enabled=True) == [] and calls == []
     assert cli.digest_ready_lines(enabled=False) == ["x"] and calls == [False]
 
+
+# --- the daily digest (16 Nov 2026): inboxes made ready are done lines, not a post ---------------------------------
+
+MISMATCH = ("✅ Ready: 10 ScaledMail-Microsoft inboxes (2 domains, plan p3) - signature/client on 10, tags ML."
+            "  ⚠️ sender not on the order: a@x.com (Jane Roe)  (no Smartlead tag for client Melior)")
+
+
+def test_each_order_made_ready_is_one_done_line_and_a_failed_check_is_broken():
+    import scaledmail_cli as cli
+    out = {"lines": [READY[0], MISMATCH, READY[1]], "ready": ["p1", "p3"]}
+    asks, done, detail = cli.ready_digest_items(out, {"p1": {"client": "Precise Leads"}})
+    assert asks == []
+    assert [(d.key, d.text) for d in done] == [
+        ("inbox-ready:p1", "Made 20 new SMTP inboxes ready in Smartlead for Precise Leads (ScaledMail order p1, "
+                           "5 domains): signature, client and tags set."),
+        ("inbox-ready:p3", "Made 10 new Outlook inboxes ready in Smartlead (ScaledMail order p3, 2 domains): "
+                           "signature, client and tags set. The sender name differs from the order on a@x.com "
+                           "(Jane Roe); check it in Smartlead.")]
+    assert detail[0].startswith("✅ 30 inboxes ready in Smartlead") and "plan p2" in detail[1]
+    assert cli.ready_digest_items({"lines": [READY[1]], "ready": []}) == ([], [], [])     # only waiting: thread-less
+    (a,), done, _ = cli.ready_digest_items({"lines": ["Inbox readiness not checked: boom"], "ready": []})
+    assert done == [] and a.key == "inbox-ready:failed" and a.kind == "broken" and "(boom)" in a.text
+
+
+def _ready_run(monkeypatch, posts):
+    import argparse
+    import scaledmail_cli as cli
+
+    class SM:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(cli, "ScaledMailClient", SM)
+    monkeypatch.setattr(cli, "ready_lines", lambda apply: {"lines": [READY[0]], "ready": ["p1"]})
+    monkeypatch.setattr(cli, "_plans_by_id", lambda: {"p1": {"client": "Precise Leads"}})
+    monkeypatch.setattr(cli, "post_lines", lambda title, lines: posts.append(lines) or True)
+    return cli, argparse.Namespace(cmd="ready", apply=True, post=True)
+
+
+def test_with_the_digest_on_the_ready_post_is_a_done_line(monkeypatch):
+    from smartlead import digest as dg
+    posts, got = [], []
+    cli, args = _ready_run(monkeypatch, posts)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks, done)) or True)
+    assert cli.run(args)["digest"] and posts == []
+    (src, asks, done), = got
+    assert src == "inbox-ready" and asks == [] and [d.key for d in done] == ["inbox-ready:p1"]
+
+
+def test_the_ready_post_goes_out_when_the_digest_is_not_written_or_off(monkeypatch):
+    from smartlead import digest as dg
+    posts = []
+    cli, args = _ready_run(monkeypatch, posts)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)
+    assert cli.run(args)["posted"] is True and len(posts) == 1
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    assert cli.run(args)["posted"] is True and len(posts) == 2
+

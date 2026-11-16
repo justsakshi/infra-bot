@@ -15,6 +15,9 @@ It also decides whether Smartlead's v2 test is trusted per inbox type (rr.trust_
 in Mongo v2_trust, which the list, the daily inbox post, the gate self-test and the v2 job read (usable.refresh_trust).
 V2_TRUST_AUTO=off: the decision is shown but not saved. V2_UNTRUSTED_TYPES on any reader overrides it.
 Exits 1 when no account could be read or the post was refused.
+
+With --post, since 16 Nov 2026 the report goes to the daily digest's thread instead (smartlead/digest.py): a saved
+trust change is a done line, a failed or partial run a broken check. DIGEST_MODE=off, or Mongo down: the post.
 """
 from __future__ import annotations
 
@@ -194,6 +197,40 @@ def save(today: date, days: int, cells: list[dict], errors: dict) -> str:
         return type(exc).__name__
 
 
+_CHANGE = __import__("re").compile(r"for (\w+) inboxes is now (NOT trusted|trusted)")
+RETRY = "Look at the real-recipients log on Render; it runs again next Sunday at 07:00."
+
+
+def digest_items(today: date, changes: list[str], saved: bool, read: int, complete: bool, why_not: str,
+                 trust_error: str) -> tuple[list, list]:
+    """(asks, done) for the daily digest (16 Nov 2026, Manveen: "One daily digest"). The weekly report itself goes in
+    the digest's thread only. A saved change to which inbox types the v2 test is trusted for is a done line, listed
+    once; a run that read nothing, read only part, or could not keep the trust setting is a broken check."""
+    from smartlead import digest as dg
+    done = []
+    for c in changes if saved else []:
+        m = _CHANGE.search(c)
+        if not m:
+            continue
+        name, now = m.group(1), m.group(2)
+        text = (f"Real replies disagree with the v2 test for {name} inboxes, so the weekly job now only reports "
+                "failing ones and leaves them in their campaigns." if now == "NOT trusted" else
+                f"Real replies now agree with the v2 test for {name} inboxes, so the weekly job takes failing ones "
+                "out of campaigns again.")
+        done.append(dg.Done(text, key=f"real-recipients:trust:{name.lower()}:{today.isoformat()}"))
+    asks = []
+    if not read:
+        asks.append(dg.Ask("The weekly real-recipient check could not read any Smartlead account.", RETRY,
+                           key="real-recipients:failed", kind="broken"))
+    elif not complete:
+        asks.append(dg.Ask(f"The weekly real-recipient check read only part of the data ({why_not}), so its v2 trust "
+                           "decision was not saved.", RETRY, key="real-recipients:partial", kind="broken"))
+    if trust_error:
+        asks.append(dg.Ask(f"The real-recipient check could not read or save the v2 trust setting ({trust_error}), so "
+                           "it was not changed.", RETRY, key="real-recipients:trust", kind="broken"))
+    return asks, done
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Real-recipient replies by sending inbox type and recipient provider")
     where = ap.add_mutually_exclusive_group()
@@ -228,6 +265,14 @@ def main() -> int:
         errors = {**errors, f"v2 trust ({terr}), so it was not changed": 1}
     head, parts = rr.format_post(cells, today, args.days, errors, trust=(changes, lines))
     print("\n".join(head) + "\n\n" + "\n\n".join(parts))
+    from smartlead import digest as dg
+    if args.post and dg.on():         # the daily digest; DIGEST_MODE=off or Mongo down: the post below, as before
+        saved = bool(args.save and complete) and not terr and \
+            os.getenv("V2_TRUST_AUTO", "").strip().lower() != "off"
+        asks, done = digest_items(today, changes, saved, read, complete, why_not, terr)
+        if dg.report("real-recipients", asks, done, ["\n".join(head)] + list(parts)):
+            print("[real-recipients] to the daily digest (no post)")
+            return 0 if read else 1
     if not read:
         print("[real-recipients] no Smartlead account could be read")
         return 1

@@ -483,3 +483,118 @@ def test_a_ready_domain_says_what_v2_already_found_and_a_failed_one_is_not_calle
             + "\n\nThey stay out of campaigns until they pass v2.") in text
     assert ii.v2_note(boxes[:1], None) == ("", False) and ii.v2_note(boxes[:1], {}) == ("", False)
     assert ii.v2_note(boxes[:1], {"a0@failed.com": {"verdict": "INCOMPLETE", "night": "x"}}) == ("", False)
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def _res(**over):
+    r = {"set_up": [], "would": [], "waiting": [], "problems": [], "complete": [], "ready": [], "ask": []}
+    r.update(over)
+    return r
+
+
+ROW = {"email": "a1@x.com", "client": "Precise Leads", "kind": "google", "vendor": "scaledmail", "domain": "x.com",
+       "ready_on": date(2026, 10, 27)}
+
+
+def test_set_up_inboxes_and_finished_warm_ups_are_done_and_problems_that_need_a_person_are_asks():
+    from inbox_intake_cli import digest_items
+    results = {"PRECISE_LEADS": _res(
+        set_up=[ROW, {**ROW, "email": "a2@x.com"}],
+        problems=["`s@x.com`: stuck after 3 tries, set it up by hand in Smartlead",
+                  "`t@x.com`: Smartlead error: 500 (will retry)",                   # retries by itself: thread only
+                  "Changed since setup on 2 inboxes (y.com): limit 30 (standard 15)",
+                  "Changed since setup on 1 inbox (z@z.com): warm-up off",
+                  "Smartlead has no tag `Melior` in PRECISE_LEADS: create it so new inboxes get it"]),
+        "BETTRDATA": _res(problems=["BETTRDATA: could not read Smartlead (HTTP 401)"])}
+    ann = [{"key": "ready:r.com", "domain": "r.com", "state": "ready", "line": "• r.com · 3 Google inboxes · Melior"},
+           {"key": "failed_v2:f.com", "domain": "f.com", "state": "failed_v2", "line": "• f.com · 2 Google inboxes"}]
+    asks, done, detail = digest_items(results, TODAY, ann, ["✅ Set up 2 new inboxes"], ["*Set up*"])
+    assert [(a.key, a.kind) for a in asks] == [("inbox-intake:stuck", "ask"), ("inbox-intake:drift", "ask"),
+                                               ("inbox-intake:missing-tag", "ask"), ("inbox-intake:read", "broken")]
+    assert asks[0].text == "1 new inbox could not be set up after 3 tries."
+    assert asks[1].text == "3 inboxes set up by the bot no longer match the standard settings."
+    assert asks[3].text == "Inbox intake could not read BETTRDATA in Smartlead, so new inboxes there were not set up."
+    assert all(a.step for a in asks)
+    assert [(d.key, d.text) for d in done] == [
+        ("inbox-intake:setup:x.com:2026-10-13",
+         "Set up 2 new inboxes on x.com for Precise Leads (daily limit, warm-up, signature, tags); ready to use from "
+         "27 Oct; Smartlead has no Melior tag, so add it to these by hand once it exists."),
+        ("inbox-intake:ready:r.com", "Warm-up finished: r.com · 3 Google inboxes · Melior. Add it to this week's Smart "
+                                     "Delivery v2 test; it goes into campaigns after a pass."),
+        ("inbox-intake:failed_v2:f.com", "Warm-up finished but it already failed Smart Delivery v2: f.com · 2 Google "
+                                         "inboxes. It stays out of campaigns until it passes.")]
+    assert detail[0] == "✅ Set up 2 new inboxes" and detail[-1].startswith("✅ *Warm-up finished")
+    assert digest_items({"A": _res()}, TODAY, [], ["✅ Set up 0 new inboxes"], []) == ([], [], [])   # quiet run
+
+
+def _intake_main(monkeypatch, results, ann=(), sent=None, dms=None):
+    import sys
+    import inbox_intake_cli as cli
+    import smartlead.accounts as accounts
+    import smartlead.inbox_jobs as jobs_mod
+    import smartlead.notify as notify
+    import smartlead.scaledmail_orders as orders
+    import smartlead.zapmail_asset_sync as zas
+    from smartlead.config import AccountConfig
+    store = ii.IntakeStore(FakeCol())
+
+    def boom():
+        raise RuntimeError("no Mongo in tests")
+
+    class SL:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+    async def run_account(sl, name, **k):
+        return copy.deepcopy({**results[name], "ready": list(ann) if name == "PRECISE_LEADS" else []})
+    monkeypatch.setattr(orders, "PlanStore", boom)
+    monkeypatch.setattr(jobs_mod, "JobStore", boom)
+    monkeypatch.setattr(zas, "read_tracker", lambda: {})
+    monkeypatch.setattr(cli, "scaledmail_tracker", lambda tracker, problems: tracker)
+    monkeypatch.setattr(accounts, "discover_accounts", lambda: [AccountConfig(name=n, api_key="k", sheet_id="s")
+                                                                for n in results])
+    import smartlead.api as api
+    monkeypatch.setattr(api, "SmartleadClient", SL)
+    monkeypatch.setattr(ii, "IntakeStore", lambda: store)
+    monkeypatch.setattr(ii, "run_account", run_account)
+    monkeypatch.setattr(notify, "post_with_thread", lambda token, ch, head, parts: sent.append(head) or "ts")
+    monkeypatch.setattr(notify, "_post", lambda token, ch, text, thread_ts=None: sent.append([text]) or "ts")
+    monkeypatch.setattr(cli, "_dm_ask", lambda ask: dms.append(ask["domain"]) or True)
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setattr(sys, "argv", ["inbox_intake_cli.py", "--apply", "--post", "--json"])
+    return cli, store
+
+
+def test_with_the_digest_on_nothing_goes_to_the_channel_but_the_dm_still_does(monkeypatch):
+    from smartlead import digest as dg
+    sent, dms, got = [], [], []
+    results = {"PRECISE_LEADS": _res(set_up=[ROW], ask=[{"domain": "new.com", "account": "PRECISE_LEADS",
+                                                          "kind": "Google", "inboxes": 2}]),
+               "BETTRDATA": _res(problems=["`s@x.com`: stuck after 3 tries, set it up by hand in Smartlead"])}
+    ann = [{"key": "ready:r.com", "domain": "r.com", "state": "ready", "line": "• r.com"}]
+    cli, store = _intake_main(monkeypatch, results, ann, sent, dms)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks, done)) or True)
+    assert cli.main() == 0 and sent == [] and dms == ["new.com"]
+    (src, asks, done), = got
+    assert src == "inbox-intake" and [a.key for a in asks] == ["inbox-intake:stuck"]
+    assert [d.key for d in done] == ["inbox-intake:setup:x.com:" + date.today().isoformat(), "inbox-intake:ready:r.com"]
+    assert store.announced("ready:r.com")                                  # not posted again if the digest is switched off
+    assert store.posted_problems() == ["`s@x.com`: stuck after 3 tries, set it up by hand in Smartlead"]
+
+
+def test_the_old_posts_go_out_when_the_digest_is_not_written_or_off(monkeypatch):
+    from smartlead import digest as dg
+    sent, dms = [], []
+    results = {"PRECISE_LEADS": _res(set_up=[ROW])}
+    ann = [{"key": "ready:r.com", "domain": "r.com", "state": "ready", "line": "• r.com"}]
+    cli, store = _intake_main(monkeypatch, results, ann, sent, dms)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)
+    assert cli.main() == 0 and len(sent) == 2                              # the set-up post and the ready post
+    assert sent[0][0].startswith("✅ Set up 1 new inbox") and sent[1][0].startswith("✅ *Warm-up finished")
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    assert cli.main() == 0 and len(sent) == 4                              # the fake hands the same news again

@@ -389,3 +389,63 @@ def test_saved_snapshot_keeps_bounces_campaigns_and_the_verdict():
     bad = saved["bad.com"]
     assert bad["date"] == "2026-11-10" and bad["verdict"] == rs.ALERT and bad["client"] == "Precise Leads"
     assert {"bounce_count", "sender_bounce_count", "campaigns", "account", "window_sent", "expected", "p"} <= set(bad)
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def test_an_alert_is_an_ask_new_or_not_and_an_unread_account_is_broken():
+    verdicts, posts = rm.run(TUE, _fleet(TUE), {"BETTRDATA": "HTTP 500"}, _history(TUE), weekly=False)
+    asks, detail = rm.digest_items(verdicts, {"BETTRDATA": "HTTP 500"}, False, posts)
+    assert [(a.key, a.kind, a.urgent) for a in asks] == [("reply-monitor:alert", "ask", False),
+                                                          ("reply-monitor:unread", "broken", False)]
+    assert asks[0].text == "1 sending domain gets far fewer replies than expected over 14 days."
+    assert asks[0].step == rm.ALERT_STEP
+    assert asks[1].text == "The reply check could not read Smartlead for Bettrdata (HTTP 500)."
+    assert detail[0].startswith("⚠️ Reply-rate alert, 10 Nov") and detail[-1] == rm.HOW
+    # the next day it is still on ALERT (no post): still an ask, and the domain is in the thread
+    verdicts, posts = rm.run(TUE, _fleet(TUE), {}, _history(TUE, verdict=rs.ALERT), weekly=False)
+    asks, detail = rm.digest_items(verdicts, {}, False, posts)
+    assert [a.key for a in asks] == ["reply-monitor:alert"] and "• *bad.com* (Precise Leads)" in detail[0]
+    # recovered: nothing to ask
+    verdicts, posts = rm.run(TUE, _fleet(TUE, bad_every=44), {}, _history(TUE, bad_every=44), weekly=False)
+    assert rm.digest_items(verdicts, {}, False, posts) == ([], [])
+
+
+def test_the_monday_summary_is_detail_only_and_no_history_is_broken():
+    verdicts, posts = rm.run(MON, _fleet(MON, bad_every=44), {}, _history(MON, bad_every=44), weekly=True)
+    asks, detail = rm.digest_items(verdicts, {}, False, posts)
+    assert asks == [] and detail[0].startswith("Reply check, 14 days to 9 Nov")
+    _, posts = rm.run(TUE, {}, {}, None, weekly=False)
+    asks, _ = rm.digest_items({}, {}, True, posts)
+    assert [(a.key, a.kind) for a in asks] == [("reply-monitor:no-history", "broken")]
+
+
+def _main_wired(monkeypatch, sent, unread=None):
+    monkeypatch.setattr(rm, "_col", lambda: FakeCol(_history(TUE)))
+    monkeypatch.setattr(rm, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: _at(TUE))}))
+    monkeypatch.setattr(rm, "_post", lambda head, thread: sent.append(head) or True)
+
+    async def collect():
+        return _fleet(TUE), dict(unread or {})
+    monkeypatch.setattr(rm, "collect", collect)
+
+
+def test_with_the_digest_on_the_job_posts_nothing_and_falls_back_when_mongo_fails(monkeypatch):
+    from smartlead import digest as dg
+    sent, got = [], []
+    _main_wired(monkeypatch, sent)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks, done)) or True)
+    assert asyncio.run(rm.main()) == 0 and sent == []
+    (src, asks, done), = got
+    assert src == "reply-monitor" and [a.key for a in asks] == ["reply-monitor:alert"] and done == []
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)
+    assert asyncio.run(rm.main()) == 0 and len(sent) == 1 and sent[0][0].startswith("⚠️ Reply-rate alert")
+
+
+def test_with_the_digest_off_the_old_post_goes_out(monkeypatch):
+    from smartlead import digest as dg
+    sent = []
+    _main_wired(monkeypatch, sent)
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    assert asyncio.run(rm.main()) == 0 and len(sent) == 1

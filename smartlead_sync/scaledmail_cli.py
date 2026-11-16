@@ -169,6 +169,38 @@ def ready_message(lines: list[str], plans: dict | None = None) -> tuple[list[str
     return head, parts
 
 
+def ready_digest_items(out: dict, plans: dict | None = None) -> tuple[list, list, list[str]]:
+    """(asks, done, detail) for the daily digest (16 Nov 2026, Manveen: "One daily digest"): each order made ready
+    is a done line (listed once, with any sender name that differs from the order); a readiness check that failed is
+    a broken check; orders still waiting are in the thread only. Pure apart from building the items."""
+    from smartlead import digest as dg
+    plans = plans or {}
+    lines = list(out.get("lines") or [])
+    done, asks = [], []
+    for line in lines:
+        m = _READY_RE.match(line)
+        if m:
+            n, kind, k, pid = int(m.group(1)), m.group(2), int(m.group(3)), m.group(4)
+            kind = kind.replace("ScaledMail-", "").replace("Microsoft", "Outlook")
+            client = (plans.get(pid) or {}).get("client") or ""
+            text = (f"Made {n} new {kind} inboxes ready in Smartlead" + (f" for {client}" if client else "")
+                    + f" (ScaledMail order {pid}, {k} domain{'s' if k != 1 else ''}): signature, client and tags set.")
+            if "⚠️ sender not on the order: " in line:
+                who = line.split("⚠️ sender not on the order: ", 1)[1].split("  (", 1)[0].strip()
+                text += f" The sender name differs from the order on {who}; check it in Smartlead."
+            done.append(dg.Done(text, key=f"inbox-ready:{pid}"))
+        elif line.startswith("Inbox readiness not checked"):
+            asks.append(dg.Ask(f"The inbox-ready check failed ({line.split(': ', 1)[-1][:120]}), so new ScaledMail "
+                               "inboxes were not made ready.",
+                               "It retries every 2 hours; if it keeps failing, look at the inbox-ready log on Render.",
+                               key="inbox-ready:failed", kind="broken"))
+    detail = []
+    if done or asks:
+        head, parts = ready_message(lines, plans)
+        detail = ["\n".join(head)] + parts
+    return asks, done, detail
+
+
 def post_lines(title: str, lines: list[str]) -> bool:
     """Post to SCALEDMAIL_NOTIFY_CHANNEL (else ZAPMAIL_NOTIFY_CHANNEL); False when not set up.
     Headline in the channel, one line per order in its thread (spec 2026-10-13)."""
@@ -254,7 +286,11 @@ def run(args) -> dict:
                                                                    "domain_count": len(snap["domains"])}
         if c == "ready":
             out = ready_lines(bool(args.apply))
-            if args.post and out["ready"]:
+            from smartlead import digest as dg
+            # The daily digest; DIGEST_MODE=off or Mongo down: the channel post, as before.
+            if args.post and dg.on() and dg.report("inbox-ready", *ready_digest_items(out, _plans_by_id())):
+                out["digest"] = True
+            elif args.post and out["ready"]:
                 out["posted"] = post_lines("*Inboxes ready in Smartlead*", out["lines"])
             return out
         if c == "setup":

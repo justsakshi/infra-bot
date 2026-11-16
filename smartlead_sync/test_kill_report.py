@@ -209,3 +209,64 @@ def test_blocklist_read_uses_each_clients_domains(monkeypatch):
     out = kp._blocklists(facts, TODAY)
     assert seen["domains"] == {"x.com", "y.com"}                     # past client left out
     assert out["Melior"]["listed"] == {"x.com": ["URIBL"]} and out["Bettrdata"]["unknown"] == ["y.com"]
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def test_each_kind_of_kill_is_one_ask_and_nothing_to_kill_asks_nothing():
+    asks = kp.digest_asks(_build(), [])
+    assert [(a.key, a.kind, a.urgent) for a in asks] == [("kill-report:sending", "ask", False),
+                                                          ("kill-report:idle", "ask", False),
+                                                          ("kill-report:domains", "ask", False)]
+    assert asks[0].text == "1 inbox on the kill list is still sending."
+    assert asks[1].text == "1 inbox on the kill list sits in switched-on campaigns that are not sending."
+    assert asks[2].text == "6 domains are landing in spam on the classic tests and should not be used."
+    assert all(a.step for a in asks) and not any(EMAIL.search(a.text) for a in asks)    # the inboxes are in the thread
+    clean = kp.build({"a@x.com": {"client": "Melior", "tests": [_t("2026-10-12", 20, 0)]}}, TODAY, {})
+    assert kp.digest_asks(clean, []) == []
+    assert [a.key for a in kp.digest_asks(clean, ["Smartlead BETTRDATA: 402"])] == ["kill-report:partial"]
+    (a,) = kp.digest_asks({"error": "RuntimeError: boom"}, [])
+    assert a.key == "kill-report:failed" and a.kind == "broken" and "boom" in a.text
+
+
+def _main(monkeypatch, sent, facts=None):
+    import sys
+    import renewal_review
+    monkeypatch.setattr(renewal_review, "smartlead_facts", lambda errors: facts if facts is not None else _fixture())
+    monkeypatch.setattr(kp, "_platform_of", lambda: {})
+    monkeypatch.setattr(kp, "_bills", lambda errors: None)
+    monkeypatch.setattr(kp, "_blocklists", lambda facts, today: {})
+
+    class Today(date):
+        @classmethod
+        def today(cls):
+            return TODAY
+    monkeypatch.setattr(kp, "date", Today)
+    import smartlead.notify as notify
+    monkeypatch.setattr(notify, "post_with_thread", lambda token, ch, head, thread: sent.append(head) or "ts")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setattr(sys, "argv", ["kill_report.py", "--post"])
+
+
+def test_with_the_digest_on_the_report_goes_to_the_digest_not_slack(monkeypatch):
+    from smartlead import digest as dg
+    sent, got = [], []
+    _main(monkeypatch, sent)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks, done, detail)) or True)
+    assert kp.main() == 0 and sent == []
+    (src, asks, done, detail), = got
+    assert src == "kill-report" and len(asks) == 3 and done == []
+    assert "Kill warnings" in detail[0] and any("*Stop using these domains*" in p for p in detail[1:])
+
+
+def test_the_old_post_goes_out_when_the_digest_is_not_written_or_off(monkeypatch):
+    from smartlead import digest as dg
+    sent = []
+    _main(monkeypatch, sent)
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)
+    assert kp.main() == 0 and len(sent) == 1 and "Kill warnings" in sent[0][0]
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    assert kp.main() == 0 and len(sent) == 2

@@ -266,18 +266,43 @@ def main() -> int:
         print("Mongo unavailable: cannot tell which tests were already reported")
         if not args.final:
             return 0
+    detail: list[str] = []          # this run's reports, for the daily digest's thread
     if tests:
-        code, reported = _report(args, acc, key, tests, posted)
+        code, reported = _report(args, acc, key, tests, posted, detail)
         covered |= reported
     if args.final:
-        code = _warn_missing(args, acc, covered) or code
+        code = _warn_missing(args, acc, covered, detail) or code
     return code
 
 
-def _warn_missing(args, acc, covered: set[str]) -> int:
+# The daily digest (16 Nov 2026, Manveen: "One daily digest"). The classic seed tests are being retired (the v2 weekly
+# test is the one that acts), so their reports and the "no result today" warning are silent: the full text goes in
+# the digest's thread only, and nothing is asked. Sheet and Mongo writes stay exactly as they were. With
+# DIGEST_MODE=off, or when the digest can't be written, the old posts go out.
+DIGEST_SOURCE = "placement-report"
+
+
+def _to_digest(args, acc, chunks: list[str], detail: list[str] | None) -> bool:
+    """Hand this run's reports to the digest (no asks). ``detail`` collects every report of the run, so the
+    missing-test warning of the final run is added to the reports, not put in their place."""
+    if not args.post or detail is None:
+        return False
+    from smartlead import digest as dg
+    if not dg.on():
+        return False
+    detail.extend(f"{acc.name}: {c}" for c in chunks)
+    return dg.report(DIGEST_SOURCE, [], [], list(detail))
+
+
+def _text(head: list[str], thread: list[str]) -> str:
+    return "\n".join(head) + "".join(f"\n\n{p}" for p in thread)
+
+
+def _warn_missing(args, acc, covered: set[str], detail: list[str] | None = None) -> int:
     """13:00 final run: one warning per expected client with no scheduled test reported
     today (audit REACH-14: a test that did not run was silent)."""
     code = 0
+    warnings = []
     for client, expected in missing_tests(acc.name, args.since, covered):
         head, thread = missing_test_text(client, expected, args.since)
         print("=" * 60)
@@ -285,6 +310,11 @@ def _warn_missing(args, acc, covered: set[str]) -> int:
         for part in thread:
             print("\n--- thread reply ---")
             print(part)
+        warnings.append((head, thread))
+    if warnings and _to_digest(args, acc, [_text(h, t) for h, t in warnings], detail):
+        print("to the daily digest (no post)")
+        return code
+    for head, thread in warnings:
         if args.post:
             from smartlead.notify import post_with_thread
             token = os.getenv("SLACK_BOT_TOKEN", "")
@@ -295,7 +325,7 @@ def _warn_missing(args, acc, covered: set[str]) -> int:
     return code
 
 
-def _report(args, acc, key, tests, posted) -> tuple[int, set[str]]:
+def _report(args, acc, key, tests, posted, detail: list[str] | None = None) -> tuple[int, set[str]]:
     """Read, report and record the given tests. Returns (exit code, clients reported from a
     scheduled test)."""
     senders: dict[str, list] = {}
@@ -366,6 +396,7 @@ def _report(args, acc, key, tests, posted) -> tuple[int, set[str]]:
     names = [str(t["test_name"]) for t in tests]
     gone_all = {e for es in gone_by_client.values() for e in es}
     code, covered = 0, set()
+    pending: list[tuple] = []
     for client in reported:
         group = by_client.get(client, {})
         report = build_report(group, types, seed_provider, attached)
@@ -396,12 +427,18 @@ def _report(args, acc, key, tests, posted) -> tuple[int, set[str]]:
         # the tests this client's senders (in Smartlead or not) were in
         mine_ids = set().union(*(tests_of[e] for e in [*group, *gone_by_client.get(client, [])]))
         mine = [t for t in tests if t["spam_test_id"] in mine_ids]
+        pending.append((client, headline, thread, mine))
+    # Every client's report goes to the digest at once (no post), or each is posted the old way.
+    digest = bool(pending) and _to_digest(args, acc, [_text(h, t) for _, h, t, _ in pending], detail)
+    for client, headline, thread, mine in pending:
         ok = True
         if args.post:
             from smartlead.notify import post_with_thread
             token = os.getenv("SLACK_BOT_TOKEN", "")
             channel = os.getenv("PLACEMENT_REPORT_CHANNEL") or DEFAULT_CHANNEL
-            if not token:
+            if digest:
+                print(f"{client}: to the daily digest (no post)")
+            elif not token:
                 print("SLACK_BOT_TOKEN missing - not posted")
                 ok, code = False, 1
             else:

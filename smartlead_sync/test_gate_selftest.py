@@ -171,3 +171,76 @@ def test_a_google_inbox_that_failed_v2_or_one_a_person_put_back_is_not_held_back
     r = _run(inboxes, campaigns, rows, v2)
     assert r["list_marks_failed_v2"]["ok"] and r["list_marks_failed_v2"]["checked"] == 1      # only o@x.com counts
     assert r["held_back_not_sending"]["bad"] == ["o@x.com"]
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def _cli(monkeypatch, day, rows=None):
+    import gate_selftest as cli
+    sent = []
+
+    async def side(errors):
+        w = _world()
+        return w[0], w[1]
+    monkeypatch.setattr(cli, "smartlead_side", side)
+    monkeypatch.setattr(cli, "list_rows", lambda errors: rows if rows is not None else _world()[2])
+    monkeypatch.setattr(cli, "mongo_side", lambda errors: (_world()[3], {**HB, "last_run": "2026-11-16T05:30:00+00:00"}, None))
+    monkeypatch.setattr(cli, "tracker_names", lambda errors: {"good@x.com"})
+    monkeypatch.setattr(cli.usable, "require_v2_pass", lambda today: False)
+    monkeypatch.setattr(cli.notify, "post_with_thread", lambda token, ch, head, thread: sent.append(head) or "ts")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+
+    class Day(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, day, 11, 30, tzinfo=tz)
+    monkeypatch.setattr(cli, "datetime", Day)
+    monkeypatch.setattr("sys.argv", ["gate_selftest.py", "--post"])
+    return cli, sent
+
+
+def test_with_the_digest_on_all_agree_is_silent_even_on_monday(monkeypatch):
+    from smartlead import digest as dg
+    cli, sent = _cli(monkeypatch, 16)                                   # a Monday
+    got = []
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None: got.append((src, asks, done, detail)) or True)
+    assert cli.main() == 0 and sent == []
+    (src, asks, done, detail), = got
+    assert src == "gate-selftest" and asks == [] and done == []          # an empty list clears yesterday's lines
+    assert detail[0].startswith("✅ Gate self-test 16 Nov: all 6 checks agree")
+
+
+def test_with_the_digest_on_a_disagreeing_check_is_one_broken_line_with_its_step(monkeypatch):
+    from smartlead import digest as dg
+    cli, sent = _cli(monkeypatch, 17, rows=[_row("tag@x.com", "FREE", "")] + _world()[2][1:])
+    got = []
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None: got.append(asks) or True)
+    assert cli.main() == 0 and sent == []
+    (a,), = got
+    assert a.key == "gate-selftest:list_marks_tagged" and a.kind == "broken" and not a.urgent
+    assert a.text == ("Gate self-test: 1 of 2 inboxes tagged DO NOT USE are not marked do_not_use on the list, so "
+                      "Campaign Desk and gtm would not hold them back for the tag.")
+    assert a.step == gs.STEPS["list_marks_tagged"]
+
+
+def test_the_old_post_goes_out_when_the_digest_is_not_written_or_off(monkeypatch):
+    from smartlead import digest as dg
+    cli, sent = _cli(monkeypatch, 17, rows=[_row("tag@x.com", "FREE", "")] + _world()[2][1:])
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)            # Mongo down
+    assert cli.main() == 0 and len(sent) == 1 and sent[0][0].startswith("⚠️ Gate self-test 17 Nov: 1 of 6")
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    assert cli.main() == 0 and len(sent) == 2
+
+
+def test_a_check_that_could_not_run_says_so_and_errors_alone_still_make_a_line():
+    res = list(_run(*_world(), errors=["Smartlead PRECISE_LEADS: HTTP 429"]).values())
+    asks = gs.digest_asks(res, ["Smartlead PRECISE_LEADS: HTTP 429"])
+    assert [a.key for a in asks] == ["gate-selftest:list_marks_tagged", "gate-selftest:held_back_not_sending"]
+    assert all(a.step == gs.NOT_READ_STEP and a.kind == "broken" for a in asks)
+    ok = [{"name": "x", "ok": True, "says": "fine"}]
+    assert [a.key for a in gs.digest_asks(ok, ["the list: boom"])] == ["gate-selftest:read"]
+    assert gs.digest_asks(ok, []) == []
