@@ -12,6 +12,7 @@ A job no longer posts its own report to the inbox channel. It hands the digest t
 
 ``urgent`` items (a declined card, a live campaign losing half its inboxes, a campaign left with only failed
 inboxes) are posted at once, one time per key, and stay in the digest as asks until the job stops reporting them.
+Once it is no longer reported (fixed), its key is forgotten, so the same problem coming back later posts again.
 
 The digest itself is posted by digest_post.py, once a day in the morning (IST), addressed to Manveen.
 
@@ -106,6 +107,9 @@ def report(source: str, asks: list | None = None, done: list | None = None, deta
         merged = merge_asks(source, list(asks or []), prev.get("asks"), now)
         db[ASKS].replace_one({"_id": source}, {"_id": source, "asks": merged, "detail": list(detail or [])[:20],
                                                "at": now.isoformat(timespec="seconds")}, upsert=True)
+        # An urgent ask that is no longer reported was fixed: forget it was posted, so if it comes back it posts again.
+        for key in {a.get("key") for a in prev.get("asks") or [] if a.get("urgent")} - {a["key"] for a in merged}:
+            db[URGENT].delete_one({"_id": key})
         for d in done or []:
             d = d if isinstance(d, Done) else Done(str(d))
             key = d.key or f"{default_key(source, d.text)}:{now.astimezone(IST):%Y-%m-%d}"

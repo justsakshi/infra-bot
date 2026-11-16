@@ -13,8 +13,9 @@ a channel is configured, and a Mongo record so the failure has a timestamp.
 
 Read-only against Smartlead. Safe to run anywhere, anytime; no enable flag.
 
-Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, a dead or unreachable key is an urgent ask
-(posted at once, one time per account) with where to replace the key; all keys valid hands over an empty list,
+Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, a dead key is an urgent ask (posted at once,
+one time per account until fixed) with where to replace the key; an unreachable one is a "broken" line (a network
+blip must not page anyone); all keys valid hands over an empty list,
 which clears them. If the digest can't be written, the old alert goes out.
 """
 from __future__ import annotations
@@ -135,7 +136,7 @@ def digest_asks(dead: list[dict], unreachable: list[dict]) -> list:
         asks.append(dg.Ask(f"Smartlead could not be reached with the {c} key ({why}), so that account may be missing "
                            "from today's checks.",
                            "Nothing to do if the next check passes; if it stays, check Smartlead's status page and "
-                           f"that {env_name(c)} is set on Render.", key=f"{SOURCE}:unreachable:{c}", urgent=True))
+                           f"that {env_name(c)} is set on Render.", key=f"{SOURCE}:unreachable:{c}", kind="broken"))
     return asks
 
 

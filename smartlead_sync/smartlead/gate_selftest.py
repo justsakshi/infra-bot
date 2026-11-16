@@ -176,6 +176,7 @@ STEPS = {
     "tracker_has_every_inbox": "Add the inboxes in the thread to the asset tracker: run the Zapmail or ScaledMail "
                                "tracker sync, or add the rows by hand.",
 }
+PERSON_ACTS = {"held_back_not_sending"}       # a finding a person fixes in Smartlead, not a broken check
 NOT_READ_STEP = ("A source could not be read (thread, 'Could not read'); the check runs again tomorrow, and if it fails "
                  "twice look at the gate-selftest log on Render.")
 
@@ -188,8 +189,9 @@ def digest_asks(results: list[dict], errors: list[str] | None = None) -> list:
         if r["ok"]:
             continue
         blocked = str(r.get("says") or "").startswith("not checked")
+        person = r["name"] in PERSON_ACTS and not blocked     # the check worked; a person must act on what it found
         asks.append(dg.Ask(f"Gate self-test: {r['says']}.", NOT_READ_STEP if blocked else STEPS.get(r["name"], ""),
-                           key=f"gate-selftest:{r['name']}", kind="broken"))
+                           key=f"gate-selftest:{r['name']}", kind="ask" if person else "broken"))
     if errors and not asks:
         asks.append(dg.Ask(f"Gate self-test could not read {'; '.join(errors)}.", NOT_READ_STEP,
                            key="gate-selftest:read", kind="broken"))

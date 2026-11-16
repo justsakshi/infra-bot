@@ -482,6 +482,11 @@ DIGEST_WORDS = {      # kind: (one, many) the rest of the sentence after the cou
 }
 
 
+# Manveen, 16 Nov 2026: Spamhaus told them a listing does not affect deliverability and delisting is under way, so a
+# blocklist listing is never an ask; it stays in the thread with the other open cases.
+NOT_ASKED = {"listed_live"}
+
+
 def digest_items(cases: list[dict], today: date, errors: list[str] | tuple = ()) -> tuple[list, list[str]]:
     """(asks, detail) for the digest from the cases open after today's run. Pure apart from building the asks."""
     from smartlead import digest as dg
@@ -492,7 +497,7 @@ def digest_items(cases: list[dict], today: date, errors: list[str] | tuple = ())
         per_kind[kind].append((action, cs))
     asks = []
     for kind in KINDS:
-        if kind not in per_kind:
+        if kind not in per_kind or kind in NOT_ASKED:
             continue
         cs = [c for _, group in per_kind[kind] for c in group]
         n, scope = len(cs), KINDS[kind][2]

@@ -399,3 +399,12 @@ def test_the_monday_scorecard_goes_to_the_digest_thread_only(monkeypatch, capsys
     got.clear()
     monkeypatch.setattr(__import__("smartlead.digest", fromlist=["report"]), "report", lambda *a, **k: False)
     assert fw.main() == 0 and posts == [["Scorecard"]]            # Mongo down: the old post
+
+
+def test_a_blocklisted_domain_in_live_campaigns_is_never_a_digest_ask():
+    """Manveen 16 Nov: Spamhaus told them a listing does not affect deliverability; it stays in the thread only."""
+    from smartlead import fleet as fl
+    cases = [{"key": "listed_live:d.com", "kind": "listed_live", "target": "d.com", "line": "d.com on DBL",
+              "opened_on": "2026-11-10", "action": fl.KINDS["listed_live"][1]}]
+    asks, detail = fl.digest_items(cases, date(2026, 11, 13))
+    assert asks == [] and any("d.com" in d for d in detail)

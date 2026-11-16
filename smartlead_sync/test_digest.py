@@ -21,6 +21,9 @@ class Col:
     def update_one(self, q, upd):
         self.docs[q["_id"]].update(upd["$set"])
 
+    def delete_one(self, q):
+        self.docs.pop(q["_id"], None)
+
     def find(self, q=None):
         q = q or {}
         return [dict(d) for d in self.docs.values()
@@ -134,3 +137,23 @@ def test_the_digest_waits_for_a_running_morning_job():
     slept = []
     dp.wait_for_jobs(db, now_fn=lambda: T0, sleep=slept.append)
     assert slept == [60, 60]
+
+
+def test_an_urgent_ask_that_was_fixed_and_comes_back_posts_again():
+    """Lead review 16 Nov: an urgent key posted once ever, so a key that died again next month stayed quiet."""
+    db, posted = DB(), []
+    dead = dg.Ask("Smartlead rejects the X API key.", "Set a new key.", key="key-health:dead:X", urgent=True)
+    say = lambda t: posted.append(t) or True  # noqa: E731
+    dg.report("key-health", [dead], db=db, now=T0, post_urgent=say)
+    dg.report("key-health", [dead], db=db, now=T0, post_urgent=say)          # still open: no second post
+    assert len(posted) == 1
+    dg.report("key-health", [], db=db, now=T0, post_urgent=say)              # fixed: the record is cleared
+    assert "key-health:dead:X" not in db[dg.URGENT].docs
+    dg.report("key-health", [dead], db=db, now=T0 + timedelta(days=30), post_urgent=say)
+    assert len(posted) == 2
+
+
+def test_every_source_has_a_plain_label():
+    for src in ("zapmail-digest", "fleet-scorecard", "inbox-intake", "inbox-ready", "smartlead-sync",
+                "kill-report", "real-recipients", "placement-report", "campaign-metrics"):
+        assert src in dp.LABELS

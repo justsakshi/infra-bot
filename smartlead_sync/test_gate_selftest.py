@@ -244,3 +244,11 @@ def test_a_check_that_could_not_run_says_so_and_errors_alone_still_make_a_line()
     ok = [{"name": "x", "ok": True, "says": "fine"}]
     assert [a.key for a in gs.digest_asks(ok, ["the list: boom"])] == ["gate-selftest:read"]
     assert gs.digest_asks(ok, []) == []
+
+
+def test_held_back_inboxes_still_sending_is_an_ask_for_a_person():
+    """Lead review 16 Nov: the check works; a person must take the inboxes out, so it is an ask, not 'broken'."""
+    asks = gs.digest_asks([{"name": "held_back_not_sending", "ok": False, "says": "2 held-back inboxes still in sending campaigns"},
+                           {"name": "list_marks_tagged", "ok": False, "says": "1 tagged inbox not marked"}])
+    assert [(a.key, a.kind) for a in asks] == [("gate-selftest:held_back_not_sending", "ask"),
+                                               ("gate-selftest:list_marks_tagged", "broken")]

@@ -1,4 +1,4 @@
-"""key_health_monitor.py and the daily digest (16 Nov 2026): a dead or unreachable Smartlead key is an urgent ask
+"""key_health_monitor.py and the daily digest (16 Nov 2026): a dead Smartlead key is an urgent ask (an unreachable one a broken line)
 with where to replace it, all keys valid clears it, and the old alert goes out when the digest can't be written
 or is off. No network."""
 import asyncio
@@ -41,7 +41,7 @@ def test_with_the_digest_on_a_dead_key_is_an_urgent_ask_per_account_and_no_alert
     (src, asks, done, detail), = reports
     assert src == "key-health" and done == []
     assert [(a.key, a.urgent) for a in asks] == [("key-health:dead:BETTRDATA", True),
-                                                 ("key-health:unreachable:MELIOR", True)]
+                                                 ("key-health:unreachable:MELIOR", False)]
     assert asks[0].text == "Smartlead rejects the BETTRDATA API key, so every job is blind for that account."
     assert "SMARTLEAD_API_KEY_BETTRDATA on Render" in asks[0].step and "plan is paid" in asks[0].step
     assert "(ConnectTimeout)" in asks[1].text
@@ -68,3 +68,11 @@ def test_with_the_digest_off_the_alert_goes_out_and_nothing_is_reported(run):
 
 def test_the_default_account_names_its_own_env_var():
     assert khm.env_name("Belardi Wong") == "SMARTLEAD_API_KEY" and khm.env_name("MELIOR") == "SMARTLEAD_API_KEY_MELIOR"
+
+
+def test_an_unreachable_key_is_a_broken_line_not_an_urgent_post():
+    """Lead review 16 Nov: a network blip must not page Manveen; a rejected key still does."""
+    import key_health_monitor as khm
+    asks = khm.digest_asks([{"client": "A"}], [{"client": "B", "state": "UNREACHABLE", "detail": "ConnectTimeout: x"}])
+    assert [(a.key, a.urgent, a.kind) for a in asks] == [("key-health:dead:A", True, "ask"),
+                                                         ("key-health:unreachable:B", False, "broken")]

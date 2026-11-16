@@ -32,7 +32,10 @@ LABELS = {"v2-weekly": "v2 weekly test (PC job)", "inbox-status": "Inboxes", "bi
           "blacklist": "Blocklists", "campaign-metrics": "Campaign stats job", "copy-sync": "Test copy",
           "dt-senders": "Test campaigns", "gate-selftest": "Gate self-test", "reply-monitor": "Reply check",
           "kill-report": "Kill warnings", "bot-health": "Bot health", "digest": "Digest checks",
-          "real-recipients": "Real-recipient check", "placement-report": "Classic seed test"}
+          "real-recipients": "Real-recipient check", "placement-report": "Classic seed test",
+          "zapmail-digest": "Domains and inboxes (Zapmail, ScaledMail)", "fleet-scorecard": "Fleet scorecard",
+          "inbox-intake": "New inboxes set up", "inbox-ready": "ScaledMail inboxes made ready",
+          "smartlead-sync": "Daily sheet sync"}
 
 
 def _day(dt: datetime) -> str:
