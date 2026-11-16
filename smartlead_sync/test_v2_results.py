@@ -1,5 +1,5 @@
 """smartlead/v2_results.py: reading Smart Delivery v2 CSVs and deciding pull / return. No network."""
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from smartlead import v2_results as v2
 
@@ -104,6 +104,35 @@ def test_a_file_with_many_results_still_pending_is_not_ready():
     pending = csv_text(seeds("a@x.com", 4, 4)[:4] + [("a@x.com", M, "Pending")] * 4)
     assert v2.file_ready(v2.parse(pending)) is False
     assert v2.file_ready(v2.parse(csv_text(seeds("a@x.com", 4, 4)))) is True
+
+
+
+# --- seeds that never arrive (16 Nov 2026) ------------------------------------------
+
+def test_a_seed_still_missing_48_hours_after_sending_is_final():
+    sent = "2026-11-13T19:22:00.000Z"
+    rows = v2.parse(csv_text([("a@x.com", G, "Inbox", sent)] * 4 + [("a@x.com", M, "Inbox", sent)]
+                             + [("a@x.com", M, "Never arrived", sent)] * 3))
+    at = datetime(2026, 11, 13, 19, 22, tzinfo=timezone.utc)
+    assert v2.pending_seeds(rows) == 3 and not v2.file_ready(rows)                  # no clock: as before
+    early = at + timedelta(hours=47, minutes=59)
+    assert v2.pending_seeds(rows, early) == 3 and not v2.file_ready(rows, early)
+    late = (at + timedelta(hours=48)).astimezone(v2.IST)
+    assert v2.pending_seeds(rows, late) == 0 and v2.file_ready(rows, late)
+    res = v2.summarise(rows)["a@x.com"]
+    assert res["microsoft"]["verdict"] == v2.INCOMPLETE and res["verdict"] == v2.INCOMPLETE   # never judged on it
+
+
+def test_only_a_never_arrived_seed_becomes_final_with_time():
+    sent = "2026-11-13T19:22:00.000Z"
+    late = datetime(2026, 11, 20, tzinfo=timezone.utc)
+    other = v2.parse(csv_text([("a@x.com", G, "Inbox", sent)] * 4 + [("a@x.com", M, "UNREADABLE", sent)] * 4))
+    assert v2.pending_seeds(other, late) == 4 and not v2.file_ready(other, late)
+    fresh = v2.parse(csv_text([("a@x.com", G, "Inbox", sent)] * 4
+                              + [("a@x.com", M, "Never arrived", "2026-11-19T12:00:00.000Z")] * 4))
+    assert v2.pending_seeds(fresh, late) == 4                                     # sent 12 h before: not yet
+    spam = v2.provider_verdict(["Spam"] * 3 + ["Never arrived"])
+    assert spam["verdict"] == v2.FAIL                                             # 3 of 4 in spam fails anyway
 
 
 # --- test-side problems ------------------------------------------------------------
@@ -482,3 +511,10 @@ def test_the_client_of_a_file_is_the_client_of_most_of_its_mailboxes():
     clients = {"a@x.com": "Melior", "b@x.com": "Melior", "c@y.com": "Precise Leads"}
     assert v2.majority_client(["a@x.com", "b@x.com", "c@y.com", "new@z.com"], clients) == "Melior"
     assert v2.majority_client(["new@z.com"], clients) == "Unknown" and v2.majority_client([], {}) == "Unknown"
+
+
+
+def test_a_send_time_without_a_zone_is_read_as_utc():
+    rows = v2.parse(csv_text([("a@x.com", G, "Inbox", "2026-11-13 19:22:00")] * 4
+                             + [("a@x.com", M, "Never arrived", "2026-11-13 19:22:00")] * 4))
+    assert v2.pending_seeds(rows, datetime(2026, 11, 16, tzinfo=timezone.utc)) == 0
