@@ -182,6 +182,9 @@ def job(tmp_path, monkeypatch):
     monkeypatch.delenv("MONGO_URI", raising=False)
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     monkeypatch.setattr(wk, "now_ist", lambda: h.clock)
+    # Most tests here were written with Melior in the report-only stage and test that mechanism; the real
+    # default (no client in it since 16 Nov 2026) is set back by the tests at "Melior acts" below.
+    monkeypatch.setattr(wk, "REPORT_ONLY_CLIENTS", {"Melior"})
 
     def fake_post(head, parts):
         h.posts.append((head, parts))
@@ -292,6 +295,44 @@ def test_melior_is_acted_on_only_when_named_in_act_clients(job):
     assert ("remove", 1, [20]) in job.sl.calls and ("remove", 2, [30]) in job.sl.calls
     assert set(job.state()["pulled"]) == {"pl-bad@x.com", "mel-bad@y.com"}
     assert "report-only" not in "\n".join(job.posts[-1][1])
+
+
+def test_no_client_is_report_only_by_default():
+    # 16 Nov 2026, Manveen: "Yes, Outlook only". Melior acts like PL and BettrData; Google stays report-only.
+    assert "Melior" not in wk.REPORT_ONLY_CLIENTS
+    assert "GMAIL" in wk.REPORT_ONLY_TYPES
+
+
+def _melior_acts(monkeypatch):
+    monkeypatch.setattr(wk, "REPORT_ONLY_CLIENTS", set())
+
+
+def test_melior_outlook_is_taken_out_by_default(job, monkeypatch):
+    _melior_acts(monkeypatch)
+    monkeypatch.setitem(TYPES, "mel-bad@y.com", "OUTLOOK")
+    download_monday(job)
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert ("remove", 2, [30]) in job.sl.calls and 30 in job.sl.tagged
+    assert set(job.state()["pulled"]) == {"pl-bad@x.com", "mel-bad@y.com"}
+    text = "\n".join(job.posts[-1][1])
+    assert "mel-bad@y.com · Google 4/4, Microsoft 0/4 → taken out of Melior | B; tagged DO NOT USE" in text
+    assert "report-only until the job is proven" not in text
+
+
+def test_melior_google_stays_report_only_by_default(job, monkeypatch):
+    _melior_acts(monkeypatch)
+    monkeypatch.setitem(TYPES, "mel-bad@y.com", "GMAIL")
+    write_csv(job.downloads, "dt-pl-1.csv", DT_PL_1)
+    write_csv(job.downloads, "dt-melior-1.csv", {**DT_MELIOR_1, "mel-bad@y.com": (0, 4)})
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert not any("/campaigns/2/" in str(c) for c in job.sl.calls) and 30 not in job.sl.tagged
+    assert ("remove", 2, [30]) not in job.sl.calls and "mel-bad@y.com" not in job.state()["pulled"]
+    text = "\n".join(job.posts[-1][1])
+    assert "(Google inboxes: report-only until real replies agree with the seed test)" in text
 
 
 def test_report_only_melior_is_reported_by_what_would_happen_and_never_touched(job, monkeypatch):
