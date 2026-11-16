@@ -22,6 +22,11 @@ BUSY when the switch is on, a note until then:
   (on by date as well: AVAILABILITY_REQUIRE_V2_PASS_FROM, 13 Nov 2026 unless set to "off")
 The notes go in the Notes column, so the warning is on the sheet before it blocks anything.
 
+High bounce (``high_bounce``, set by processing.py) is set aside by a v2 pass in the last 10 days: the inbox is FREE
+as far as bounces go, with the note BOUNCE_NOTE. Manveen, 16 Nov 2026: high bounce on its own does not mean do not
+use, "so just say so" (Outlook inboxes that passed v2 again with warm-up 91-100% were BUSY only for bounces from past
+campaigns' lead lists). It is a note in the sheet, never a digest ask.
+
 ``gate`` is pure. ``load_gate_data`` reads Mongo and never raises: without it the tag rule still holds
 (tags come from Smartlead) and every row gets a note saying the rest was not read.
 """
@@ -36,6 +41,7 @@ V2_FRESH_DAYS = 10                   # a weekly test plus three days: results ar
 JUDGED = ("PASS", "WATCH", "FAIL")   # INCOMPLETE and anything else is not a verdict
 SENDER_LISTS = ("spamhaus", "uribl")  # lists that judge the sending domain (SURBL lists links in the copy)
 NOT_READ = "v2 results and blocklists not read today"
+BOUNCE_NOTE = "bounces come from the lead list"
 # Inbox types whose v2 FAIL does not hold them back (12 Nov 2026): in the same campaigns, Gmail recipients answered
 # Google-sent mail 1.5-2.5 times as often as Outlook-sent mail while v2 failed nearly every Google inbox. One rule for
 # every reader: the v2 job (REPORT_ONLY_TYPES), the list, the daily fleet post and the gate self-test.
@@ -122,6 +128,26 @@ def require_v2_pass(today: date) -> bool:
         return False
 
 
+def fresh_pass(v2: dict | None, today: date) -> bool:
+    """Is this newest judged verdict a v2 PASS from the last V2_FRESH_DAYS days? Pure."""
+    if str((v2 or {}).get("verdict") or "").upper() != "PASS":
+        return False
+    try:
+        return (today - date.fromisoformat(str((v2 or {}).get("night") or "")[:10])).days <= V2_FRESH_DAYS
+    except ValueError:
+        return False
+
+
+def set_aside_bounce(item: dict, reasons: list[str], today: date) -> list[str]:
+    """``reasons`` without ``high_bounce`` when the inbox passed v2 lately (``item`` already filled by ``apply``), the
+    note BOUNCE_NOTE added to the row instead. Otherwise unchanged. See the module note, 16 Nov 2026."""
+    if "high_bounce" not in reasons or not fresh_pass({"verdict": item.get("v2_status"), "night": item.get("v2_date")},
+                                                       today):
+        return reasons
+    item["use_notes"] = "; ".join(x for x in (item.get("use_notes"), BOUNCE_NOTE) if x)
+    return [r for r in reasons if r != "high_bounce"]
+
+
 def tag_names(account: dict) -> list[str]:
     """Tag names of a Smartlead email account (dicts with tag_name / name; plain strings kept)."""
     out = []
@@ -180,13 +206,7 @@ def gate(tags, v2: dict | None, listed: bool | None, today: date, *, checked: bo
     if verdict == "FAIL" and not aside:
         reasons.append("failed_v2")
     else:
-        fresh = False
-        if verdict == "PASS":
-            try:
-                fresh = (today - date.fromisoformat(night[:10])).days <= V2_FRESH_DAYS
-            except ValueError:
-                fresh = False
-        if not fresh:
+        if not fresh_pass(v2, today):
             why = (f"failed v2 on {_day(night)}, not counted: {aside}" if aside
                    else f"v2 watch on {_day(night)}" if verdict == "WATCH"
                    else f"last v2 pass {_day(night)}, older than {V2_FRESH_DAYS} days" if verdict == "PASS"

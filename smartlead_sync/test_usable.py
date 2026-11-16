@@ -254,3 +254,34 @@ def test_refresh_changes_the_shared_dict_every_reader_holds(monkeypatch):
         assert usable.refresh_trust(Broken()) == "unread" and "GMAIL" in v2_weekly.REPORT_ONLY_TYPES   # down: default
     finally:
         usable.V2_NOT_TRUSTED.clear(); usable.V2_NOT_TRUSTED.update(usable.DEFAULT_NOT_TRUSTED)
+
+
+def test_high_bounce_alone_on_an_inbox_that_passed_v2_is_a_note_not_busy_2026_11_16():
+    """Manveen, 16 Nov 2026: high bounce on its own does not mean do not use ("so just say so"). Outlook inboxes that
+    passed v2 again, with warm-up 91-100%, were BUSY only for bounces from past campaigns' lead lists."""
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()      # the day process_inbox_availability uses
+    recent, old = (today - timedelta(days=2)).isoformat(), (today - timedelta(days=20)).isoformat()
+    data = {"checked": True, "error": "", "listed": set(),
+            "v2": {"passed@a.com": {"verdict": "PASS", "night": recent},
+                   "old@a.com": {"verdict": "PASS", "night": old},
+                   "failed@a.com": {"verdict": "FAIL", "night": recent}}}
+    rows = [_row(e, bounce_rate=6.5, provider="Outlook", type="OUTLOOK")
+            for e in ("passed@a.com", "old@a.com", "failed@a.com", "none@a.com")]
+    rows.append(_row("full@a.com", bounce_rate=6.5, provider="Outlook", type="OUTLOOK", connection_ok=False))
+    data["v2"]["full@a.com"] = {"verdict": "PASS", "night": recent}
+    got = _run(rows, data)
+    assert got["passed@a.com"] == ("FREE", "", usable.BOUNCE_NOTE)
+    assert got["old@a.com"][:2] == ("BUSY", "high_bounce")             # a pass older than 10 days does not clear it
+    assert got["failed@a.com"][:2] == ("BUSY", "high_bounce,failed_v2")
+    assert got["none@a.com"][:2] == ("BUSY", "high_bounce")
+    assert got["full@a.com"][1] == "disconnected" and usable.BOUNCE_NOTE in got["full@a.com"][2]   # other reasons stay
+    assert usable.BOUNCE_NOTE == "bounces come from the lead list"
+
+
+def test_a_tagged_inbox_stays_busy_even_when_its_bounce_is_set_aside():
+    from datetime import datetime, timedelta, timezone
+    recent = (datetime.now(timezone(timedelta(hours=5, minutes=30))).date() - timedelta(days=2)).isoformat()
+    data = {"checked": True, "error": "", "listed": set(), "v2": {"t@a.com": {"verdict": "PASS", "night": recent}}}
+    got = _run([_row("t@a.com", bounce_rate=6.5, tags=["DO NOT USE"])], data)
+    assert got["t@a.com"][:2] == ("BUSY", "do_not_use")

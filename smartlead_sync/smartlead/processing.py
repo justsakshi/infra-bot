@@ -559,6 +559,8 @@ def process_inbox_availability(
         # The evidence gate: never hand out an inbox a person or the v2 job pulled, or one that failed v2.
         reasons.extend(usable.apply(item, gate_data, today, block_listed=AVAILABILITY_BLOCK_LISTED,
                                     require_v2_pass=need_v2_pass))
+        # High bounce alone is not a reason to hold back an inbox that passed v2 lately: a note instead (16 Nov 2026).
+        reasons = usable.set_aside_bounce(item, reasons, today)
 
         item["availability"] = "FREE" if not reasons else "BUSY"
         item["busy_reason"] = "" if not reasons else ",".join(reasons)
