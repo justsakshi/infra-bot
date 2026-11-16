@@ -65,7 +65,8 @@ def test_free_needs_a_fresh_pass_only_once_the_rule_is_on():
     assert off["ok"] and off["says"] == "a v2 pass is not required for FREE yet (0 of 1 FREE inboxes have one)"
 
 
-def test_a_held_back_inbox_in_a_sending_campaign_is_caught_and_report_only_clients_are_a_note():
+def test_a_held_back_inbox_in_a_sending_campaign_is_caught_and_report_only_clients_are_a_note(monkeypatch):
+    monkeypatch.setattr(gs, "REPORT_ONLY", {"melior": "Melior"})     # the stage itself; none is report-only now
     inboxes, campaigns, rows, v2 = _world()
     campaigns = [{"client": "Precise Leads", "campaign": "PL | A", "emails": ["good@x.com", "fail@x.com", "tag@x.com"]},
                  {"client": "Melior", "campaign": "Melior | Legal", "emails": ["auto@x.com"]}]

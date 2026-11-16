@@ -1568,7 +1568,51 @@ def _channel() -> str:
     return (os.getenv("V2_WEEKLY_CHANNEL") or "").strip() or INFRA_CHANNEL
 
 
+def _needs(parts: list[str]) -> list[str]:
+    """The bullet lines of a post's 'Needs you' part."""
+    for p in parts:
+        if isinstance(p, str) and p.startswith("*Needs you*"):
+            return [l[2:].strip() for l in p.split("\n") if l.startswith("• ")]
+    return []
+
+
+STUCK_WORDS = "is live with only failed inboxes left"     # a live campaign with no good sender: posted at once
+
+
+def digest_items(head: list[str], parts: list[str]) -> list[tuple[str, list, list, list[str]]]:
+    """What a post becomes in the daily digest (Manveen, 16 Nov 2026: one digest, not a post per run):
+    [(source, asks, done, detail)]. The weekly report's Needs-you lines are its asks (a stuck live campaign is
+    urgent); what it changed in Smartlead is a done line; the whole report goes in the digest's thread."""
+    from smartlead import digest as dg
+    title = (head[0] if head else "").strip()
+    detail = ["\n".join(h for h in head if h is not None).strip()] + [p for p in parts if isinstance(p, str)]
+    words = lambda xs: " ".join(x.strip() for x in xs if x and x.strip())   # noqa: E731
+    if title.startswith("v2 placement results"):
+        asks = [dg.Ask(x, urgent=STUCK_WORDS in x) for x in _needs(parts)]
+        done = []
+        changed = head[2] if len(head) > 2 else ""
+        if changed.startswith("Took") and any(int(n) for n in re.findall(r"\d+", changed)):
+            done.append(dg.Done(f"v2 weekly test ({title.split(', ', 1)[-1]}): {changed[0].lower()}{changed[1:]}. "
+                                f"Which inboxes: thread.", key=f"v2-weekly:{title}:{changed}"))
+        return [("v2-weekly", asks, done, detail), ("v2-reminder", [], [], [])]
+    if title.startswith("v2 copy check"):
+        return [("v2-copy-check", [dg.Ask(x) for x in _needs(parts)], [], detail)]
+    if title == "v2 weekly job failed":
+        return [("v2-weekly-crash", [dg.Ask(f"The PC's v2 weekly job failed: {words(head[1:2])}", kind="broken",
+                                            step="It retries every hour; the log path is in the thread.",
+                                            key="v2-weekly-crash")], [], detail)]
+    if title.startswith("v2 results for"):
+        return [("v2-reminder", [dg.Ask(words(head), key="v2-reminder")], [], [])]
+    slug = re.sub(r"[^a-z]+", "-", title.lower()).strip("-")[:40] or "note"
+    return [(f"v2-note-{slug}", [dg.Ask(words(head), key=f"v2-note-{slug}")], [], detail)]
+
+
 def post(head: list[str], parts: list[str]) -> bool:
+    from smartlead import digest as dg
+    if dg.on() and os.getenv("MONGO_URI"):
+        items = digest_items(head, parts)
+        if all(dg.report(src, asks, done, detail) for src, asks, done, detail in items):
+            return True
     from smartlead.notify import post_with_thread
     token = os.getenv("SLACK_BOT_TOKEN", "")
     if not token:
@@ -1740,6 +1784,10 @@ def record(state_dir: Path, ctx: dict) -> None:
             db[HEARTBEAT_COLLECTION].replace_one({"_id": "pc"}, heartbeat(state, now, ctx, errors), upsert=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[v2-weekly] v2_heartbeat not written: {_short(exc)}")
+        from smartlead import digest as dg
+        if dg.on() and state.get("failed_on"):      # a saved run after a crash: the digest's crash line goes
+            if dg.report("v2-weekly-crash", [], db=db):
+                state["failed_on"] = None
         save_state(state_dir, state)
     except Exception as exc:  # noqa: BLE001
         print(f"[v2-weekly] Mongo record failed: {_short(exc)}")

@@ -44,7 +44,12 @@ def test_every_inbox_gets_exactly_one_state_first_match_wins():
     assert len(got) == 12                                       # two rows of one inbox are one record
 
 
-def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well():
+def test_no_client_is_report_only_since_16_nov():
+    assert st.REPORT_ONLY == {}
+
+
+def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well(monkeypatch):
+    monkeypatch.setattr(st, "REPORT_ONLY", {"melior": "Melior"})     # the stage itself, as it worked to 16 Nov
     good = [_row(f"g{i}@x.com", "Camp A", "ACTIVE", v2_status="PASS", v2_date="2026-11-09") for i in range(4)]
     assert st.needs_you(st.states(good, T), T, require_pass=True) == []
     rows = good + [
@@ -80,8 +85,8 @@ def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well():
     head, parts = st.format_post(st.states(rows, T), [], items, T)
     assert ("*Not connected and in no sending campaign (the renewal review asks about these at their bill)*\n"
             "• Bettrdata: 1 inbox on b.co") in parts
-    assert items[4]["text"] == ("1 inbox is sending with no weekly test result in the last 10 days. Download this "
-                                "week's test result files")
+    assert items[4]["text"] == ("1 inbox is sending with no weekly test result in the last 10 days. Check each is in "
+                                "a DT test campaign and that its weekly test ran in Smart Delivery")
     # before the v2 pass is required, sending without one is not a job for a person
     assert "sending_unproven" not in [i["key"] for i in st.needs_you(st.states(rows, T), T, require_pass=False)]
 
@@ -223,3 +228,27 @@ def test_a_fail_a_person_overrode_is_set_aside_but_an_outlook_fail_still_holds()
     items = st.needs_you(list(recs.values()), T, require_pass=True)
     assert [i["key"] for i in items] == ["held_but_sending"] and "bad@x.com" in items[0]["detail"][0]
     assert "back@x.com" not in items[0]["detail"][0]
+
+
+def test_with_the_digest_on_the_day_goes_to_the_digest_with_steps_not_to_slack(monkeypatch):
+    from smartlead import digest as dg
+    from smartlead import notify
+    sent, got = [], []
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(notify, "post_with_thread", lambda *a: sent.append(a) or "ts")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None: got.append((src, asks, detail)) or True)
+    rows = [_row(f"g{i}@x.com", "Camp A", "ACTIVE", v2_status="PASS", v2_date="2026-11-09") for i in range(2)]
+    rows += [_row("off@x.com", "Camp A", "ACTIVE", connection_ok=False),
+             _row("off2@x.com", "Camp A", "ACTIVE", connection_ok=False)]
+    res = st.run(rows, T, True, post=True, db=FakeDb())
+    assert res["digest"] and sent == []
+    (src, asks, detail), = got
+    assert src == "inbox-status"
+    assert [(a.key, a.urgent) for a in asks] == [("inbox-status:campaign_short", True), ("inbox-status:disconnected", False)]
+    assert asks[0].text == "1 live campaign has lost half or more of its inboxes."
+    assert asks[1].text == "2 inboxes in live campaigns are disconnected in Smartlead."
+    assert asks[1].step.startswith("Smartlead, Email Accounts, filter Disconnected, Reconnect")
+    assert detail[0].startswith("⚠️ Inboxes, 11 Nov: 2 things need you")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)              # Mongo down: the old post goes out
+    assert st.run(rows, T, True, post=True, db=FakeDb())["posted"] and len(sent) == 1
