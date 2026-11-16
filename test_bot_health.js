@@ -32,6 +32,7 @@ const BEFORE = {
   'bot-health': ['5 10 * * 1-5'], 'v2-watch': ['0 14 * * 2', '0 10 * * 3'],
   'gate-selftest': ['30 11 * * *'],    // 11 Nov 2026: daily, after the sync has written the inbox list
   'real-recipients': ['0 7 * * 0'],    // 13 Nov 2026: weekly real-recipient reply check, Sunday morning
+  'inbox-evidence': ['0 9 * * 0'],     // 17 Nov 2026: weekly per-inbox evidence from real sends (t17)
   digest: ['0 11 * * *']               // 16 Nov 2026: the one daily digest
 };
 const jobNames = [...new Set(h.JOBS.map(j => j.job))].sort();

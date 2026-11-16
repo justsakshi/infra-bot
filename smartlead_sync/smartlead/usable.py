@@ -254,6 +254,34 @@ def _db():
     return MongoClient(uri, serverSelectionTimeoutMS=8000)[HEALTH_HISTORY_DB]
 
 
+def load_evidence(db) -> dict:
+    """The newest weekly real-send evidence (inbox_evidence.py, Mongo inbox_evidence): {"evidence": {email: {evidence,
+    label}}, "evidence_week": day}, or {} when there is none or it can't be read. Report only: it never makes an
+    inbox BUSY or FREE (docs/INBOX_EVIDENCE.md)."""
+    try:
+        doc = next(iter(db["inbox_evidence"].find({}, {"_id": 1, "inboxes": 1}).sort("_id", -1).limit(1)), None)
+    except Exception:  # noqa: BLE001 - the columns stay blank; nothing else depends on them
+        return {}
+    if not doc:
+        return {}
+    return {"evidence": {str(k).lower(): {"evidence": v.get("evidence", ""), "label": v.get("label", "")}
+                         for k, v in (doc.get("inboxes") or {}).items()}, "evidence_week": str(doc["_id"])}
+
+
+def _evidence(item: dict, data: dict | None) -> None:
+    ev = (data or {}).get("evidence")
+    if ev is None:
+        item["evidence"] = item["evidence_label"] = ""
+        return
+    row = ev.get(str(item.get("email") or "").lower())
+    if not row:
+        item["evidence"], item["evidence_label"] = "", "no real sends in the window"
+        return
+    d = date.fromisoformat(str(data.get("evidence_week"))[:10])
+    item["evidence"] = row["evidence"]
+    item["evidence_label"] = f"{row['label']} (week of {d.day} {d:%b})"
+
+
 def load_gate_data() -> dict:
     """{"v2": {email: verdict row}, "listed": {domain}, "checked": bool, "error": str}. Never raises."""
     from smartlead.config import BLACKLIST_COLLECTION
@@ -262,7 +290,7 @@ def load_gate_data() -> dict:
         refresh_trust(db)
         v2 = newest_judged(db["v2_verdicts"].find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1, "overridden": 1}))
         listed = listed_domains(db[BLACKLIST_COLLECTION].find({}, {"_id": 0, "domain": 1, "date": 1, "listed_on": 1}))
-        return {"v2": v2, "listed": listed, "checked": True, "error": ""}
+        return {"v2": v2, "listed": listed, "checked": True, "error": "", **load_evidence(db)}
     except Exception as exc:  # noqa: BLE001 - the tag rule still holds; the sheet says the rest was not read
         print(f"  [Usable] v2 verdicts and blocklists not read: {str(exc)[:150]}")
         return {"v2": {}, "listed": set(), "checked": False, "error": str(exc)[:150]}
@@ -284,4 +312,5 @@ def apply(item: dict, data: dict | None, today: date, *, block_listed: bool, req
     item["v2_set_aside"] = fail_set_aside(v2, item.get("type") or item.get("provider") or "") if checked else ""
     item["v2_date"] = (v2 or {}).get("night", "")
     item["use_notes"] = "; ".join(notes)
+    _evidence(item, data)
     return reasons

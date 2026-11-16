@@ -443,6 +443,8 @@ _HEADER_LABELS = {
         "v2_status": "v2 Status",
         "v2_date": "v2 Date",
         "use_notes": "Notes",
+        "evidence": "Real sends (28d)",
+        "evidence_label": "Real-send evidence",
     },
     "Deliverability Queue": {
         "priority": "Priority",
@@ -725,6 +727,7 @@ class SheetsWriter:
         "warmup_state", "warmup_rep_pct", "warmup_max_count",
         "last_active_date", "test_sheet_status", "test_date",
         "v2_status", "v2_date", "use_notes",       # new columns go last: readers find columns by name
+        "evidence", "evidence_label",              # t17, 17 Nov 2026: weekly real-send evidence, report only
     ]
 
     DELIVERABILITY_QUEUE_COLUMNS = [
