@@ -38,7 +38,9 @@ AUTO_TAG = "do not use - failed v2 (auto)"      # v2_weekly.TAG, lower case
 SENDING_STATUSES = {"ACTIVE", "IN_PROGRESS"}
 # v2_weekly.REPORT_ONLY_CLIENTS: the job only reports for these. A safety stage until the job is proven, the same
 # rules as every client (Manveen, 11 Nov 2026); never framed as the client's or anyone's call.
-REPORT_ONLY = {"melior": "Melior"}
+# 16 Nov 2026 (Manveen, "Yes, Outlook only"): no client is report-only; Melior acts like the others (Google inboxes
+# stay report-only through usable.V2_NOT_TRUSTED for every client). Lower-case name: display name.
+REPORT_ONLY: dict[str, str] = {}
 STATUS_COLLECTION = "inbox_status"
 HISTORY_COLLECTION = "inbox_status_history"
 META_COLLECTION = "inbox_status_meta"           # {_id: "post", date}: the post goes out once a day
@@ -199,7 +201,8 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
             by_client[r["client"]].append(r["email"])
         items.append({"key": "sending_unproven",
                       "text": f"{_n(len(unproven))} {'is' if len(unproven) == 1 else 'are'} sending with no weekly test "
-                              f"result in the last {usable.V2_FRESH_DAYS} days. Download this week's test result files",
+                              f"result in the last {usable.V2_FRESH_DAYS} days. Check each is in a DT test campaign and "
+                              f"that its weekly test ran in Smart Delivery",
                       "detail": [f"• {c}: {len(es)} ({_names(sorted(es), 4)})" for c, es in sorted(by_client.items())]})
     return items
 
@@ -310,6 +313,31 @@ def _mark_posted(db, today: date) -> None:
         print(f"  [Status] post marker not saved: {str(exc)[:120]}")
 
 
+# The digest's version of each item (16 Nov 2026): what is wrong, and the exact step. A live campaign losing half
+# its inboxes is posted at once as well.
+DIGEST_STEPS = {
+    "held_but_sending": "In Smartlead, open each campaign in the thread and remove those inboxes (Email Accounts tab). "
+                        "The weekly job also takes out the failed ones once the week's results are in.",
+    "held_but_sending_report_only": "In Smartlead, open each campaign in the thread and remove those inboxes.",
+    "campaign_short": "Add inboxes that passed the weekly test to each campaign in the thread, or lower its daily "
+                      "sending (Smartlead, campaign, Settings).",
+    "disconnected": "Smartlead, Email Accounts, filter Disconnected, Reconnect each inbox in the thread (or delete it "
+                    "if it was cancelled).",
+    "sending_unproven": "The thread lists them by client. Add any that is in no DT campaign to the deliverability "
+                        "sheet; dt_senders puts it in the next weekly test.",
+}
+
+
+def digest_asks(items: list[dict]) -> list:
+    from smartlead import digest as dg
+    asks = []
+    for it in items:
+        text = it["text"].split(". ")[0] + "." if it["key"] in DIGEST_STEPS else it["text"] + "."
+        asks.append(dg.Ask(text, DIGEST_STEPS.get(it["key"], ""), key=f"inbox-status:{it['key']}",
+                           urgent=it["key"] == "campaign_short"))
+    return asks
+
+
 def run(rows: list[dict], today: date, complete: bool, post: bool, db=None) -> dict:
     """The daily step (run.py): states, history, and the post when ``post`` and FLEET_STATUS_POST is not off.
     The post goes out once a day, so a second sync the same day (the /sync button) does not repeat it."""
@@ -328,6 +356,10 @@ def run(rows: list[dict], today: date, complete: bool, post: bool, db=None) -> d
     out = {"inboxes": len(records), "changes": len(res["changes"]), "needs_you": [i["key"] for i in items],
            "headline": head, "thread": parts, "posted": False}
     if post and records and os.getenv("FLEET_STATUS_POST", "on").strip().lower() != "off":
+        from smartlead import digest as dg
+        if dg.on() and db is not None and dg.report("inbox-status", digest_asks(items), [], ["\n".join(head)] + parts, db=db):
+            out["digest"] = True
+            return out
         token = os.getenv("SLACK_BOT_TOKEN", "").strip()
         if token and not (db is not None and _posted_today(db, today)):
             out["posted"] = bool(notify.post_with_thread(token, notify.infra_channel("FLEET_STATUS_CHANNEL"), head, parts))

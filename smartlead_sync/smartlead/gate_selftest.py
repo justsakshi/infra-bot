@@ -159,3 +159,40 @@ def format_post(results: list[dict], today: date, errors: list[str] | None = Non
     if errors:
         thread.append("*Could not read*\n" + "\n".join(f"• {e}" for e in errors))
     return head, thread
+
+
+# The daily digest (16 Nov 2026, Manveen: "One daily digest"): a self-test that agrees says nothing (the Monday
+# "all agree" post too); each check that disagrees or could not run is one "broken" line with what to do.
+STEPS = {
+    "list_marks_tagged": "Look again after tomorrow's 10:00 sync; if the inboxes in the thread are still not marked "
+                         "do_not_use on the All Inboxes tab, the sync is not reading their Smartlead tags and needs a fix.",
+    "list_marks_failed_v2": "It is often a day behind: look again after tomorrow's 10:00 sync, and if the inboxes in the "
+                            "thread are still not marked failed_v2, the sync is not reading the v2 verdicts.",
+    "free_means_v2_pass": "Make sure the FREE inboxes in the thread are in a DT test campaign (deliverability sheet), so "
+                          "the next weekly v2 test covers them.",
+    "held_back_not_sending": "In Smartlead, open each campaign named and remove those inboxes (Email Accounts tab).",
+    "v2_job_alive": "Check the PC is on and the task 'InfraBot v2 weekly' is enabled (Task Scheduler) and runs in act "
+                    "mode.",
+    "tracker_has_every_inbox": "Add the inboxes in the thread to the asset tracker: run the Zapmail or ScaledMail "
+                               "tracker sync, or add the rows by hand.",
+}
+PERSON_ACTS = {"held_back_not_sending"}       # a finding a person fixes in Smartlead, not a broken check
+NOT_READ_STEP = ("A source could not be read (thread, 'Could not read'); the check runs again tomorrow, and if it fails "
+                 "twice look at the gate-selftest log on Render.")
+
+
+def digest_asks(results: list[dict], errors: list[str] | None = None) -> list:
+    """One "broken" ask per check that disagrees or could not run, keyed by the check; none when all agree."""
+    from smartlead import digest as dg
+    asks = []
+    for r in results:
+        if r["ok"]:
+            continue
+        blocked = str(r.get("says") or "").startswith("not checked")
+        person = r["name"] in PERSON_ACTS and not blocked     # the check worked; a person must act on what it found
+        asks.append(dg.Ask(f"Gate self-test: {r['says']}.", NOT_READ_STEP if blocked else STEPS.get(r["name"], ""),
+                           key=f"gate-selftest:{r['name']}", kind="ask" if person else "broken"))
+    if errors and not asks:
+        asks.append(dg.Ask(f"Gate self-test could not read {'; '.join(errors)}.", NOT_READ_STEP,
+                           key="gate-selftest:read", kind="broken"))
+    return asks

@@ -271,7 +271,10 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                           f"{'; '.join(pending[:5])}"
                           f"{' …' if len(pending) > 5 else ''}")
         except Exception as exc:  # noqa: BLE001
-            print(f"[!] Expandi workspace {ws.name} failed: {exc}")
+            from smartlead.daily_stats import _why    # type + HTTP status only, never the text
+            print(f"[!] Expandi workspace {ws.name} failed: {_why(exc)}")
             if failed is not None:
-                failed.append(f"Expandi {ws.name}")
+                # 16 Nov 2026: this failed every day 11-16 Nov on Render while the PC read the workspace fine;
+                # the reason was only in Render's log. Name it, so the digest line says why.
+                failed.append(f"Expandi {ws.name} ({_why(exc)})")
     return rows

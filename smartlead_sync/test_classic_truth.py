@@ -389,3 +389,48 @@ def test_an_empty_inbox_list_still_marks_the_test_reported(monkeypatch):
     assert [d["test_id"] for d in cols["placement_reports_posted"].docs] == [900001]   # not re-posted next hour
     assert status_calls[0][1]["account_emails"] == set()                                 # nothing pruned
     assert status_calls[0][1]["gone"] == set()
+
+
+# --- the daily digest (16 Nov 2026): classic reports are silent, their text goes in the digest's thread -----------
+
+def _final_cols():
+    return {"placement_reports_posted": _Col(),
+            "classic_scheduled_tests": _Col([{"_id": "PRECISE_LEADS|900001", "account": "PRECISE_LEADS",
+                                              "test_id": 900001, "created_at": "2026-09-08T13:50:44.154Z",
+                                              "status": "ACTIVE"}])}
+
+
+def test_with_the_digest_on_the_report_and_the_missing_warning_are_silent_and_still_recorded(monkeypatch):
+    from smartlead import digest as dg
+    cols, posts, status_calls, got = _final_cols(), [], [], []
+    _wire(monkeypatch, cols, posts, status_calls, "2026-11-10")
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks, done, detail)) or True)
+    assert pr.main() == 0 and posts == []
+    (s1, a1, d1, det1), (s2, a2, d2, det2) = got                 # the report, then the report plus the warning
+    assert s1 == s2 == "placement-report" and a1 == a2 == [] and d1 == d2 == []
+    assert len(det1) == 1 and det1[0].startswith(f"PRECISE_LEADS: ⚠️ {LABEL}, Melior, 10 Nov")
+    assert det2[0] == det1[0] and det2[1].startswith(f"PRECISE_LEADS: ⚠️ {LABEL}, Precise Leads, 10 Nov: no result today")
+    [rec] = cols["placement_reports_posted"].docs                 # recorded as reported, so the next hour skips it
+    assert (rec["test_id"], rec["clients"]) == (900001, ["Melior"])
+    assert len(status_calls) == 1                                 # the Inbox Status tab is written as before
+
+
+def test_the_old_posts_go_out_when_the_digest_is_not_written(monkeypatch):
+    from smartlead import digest as dg
+    cols, posts, status_calls = _final_cols(), [], []
+    _wire(monkeypatch, cols, posts, status_calls, "2026-11-10")
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: False)
+    assert pr.main() == 0
+    assert [h[0] for h, _ in posts] == [f"⚠️ {LABEL}, Melior, 10 Nov: no mailbox flagged (2 tested)",
+                                       f"⚠️ {LABEL}, Precise Leads, 10 Nov: no result today"]
+    assert [d["test_id"] for d in cols["placement_reports_posted"].docs] == [900001]
+
+
+def test_with_the_digest_off_nothing_is_handed_to_it(monkeypatch):
+    from smartlead import digest as dg
+    cols, posts, status_calls = _final_cols(), [], []
+    _wire(monkeypatch, cols, posts, status_calls, "2026-11-10")
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    assert pr.main() == 0 and len(posts) == 2

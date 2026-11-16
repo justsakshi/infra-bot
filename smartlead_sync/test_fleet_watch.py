@@ -308,3 +308,103 @@ def test_a_post_that_goes_out_says_what_could_not_be_read():
     out = day(s, [rec(warmup_on=False)], date(2026, 11, 13), p, errors=["blocklist history (Mongo)"])
     assert out["failed"] is True and len(p.calls) == 1
     assert "Could not read today, so some problems may be missing: blocklist history (Mongo)" in p.calls[0][0]
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def _digest(monkeypatch, result=True):
+    from smartlead import digest as dg
+    got = []
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append((src, asks, done, detail)) or result)
+    return got
+
+
+def test_with_the_digest_on_every_open_case_is_one_ask_per_kind_and_nothing_is_posted(monkeypatch):
+    got = _digest(monkeypatch)
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    p = Poster()
+    recs = [rec(warmup_on=False), rec("b@d.com", warmup_on=False), rec("c@d.com", connected=False)]
+    out = day(s, recs, date(2026, 11, 13), p)
+    assert out["digest"] and p.calls == []
+    (src, asks, done, detail), = got
+    assert src == "fleet-watch" and done == []
+    assert [(a.key, a.text, a.urgent, a.kind) for a in asks] == [
+        ("fleet-watch:warmup_off", "2 inboxes have warm-up switched off.", False, "ask")]   # disconnected: not a daily kind
+    assert asks[0].step == "Turn warmup back on. The list is in the thread."
+    assert detail[0] == "Fleet watch, 13 Nov: 2 open problems (suggestions only, the bot changed nothing)"
+    assert "• a@d.com, open since 13 Nov" in detail[1] and "• b@d.com" in detail[1]
+    assert all(c["announced"] for c in s.cases.docs)              # told: a later switch-off does not post them again
+    # the next day the case is still open (not new): it stays in the digest; once fixed it drops out
+    day(s, [rec(warmup_on=False), rec("b@d.com")], date(2026, 11, 14), p)
+    assert [a.text for a in got[-1][1]] == ["1 inbox has warm-up switched off."]
+    day(s, [rec(), rec("b@d.com")], date(2026, 11, 15), p)
+    assert got[-1][1] == [] and got[-1][3] == [] and p.calls == []
+
+
+def test_a_read_error_is_a_broken_line_and_the_run_still_exits_failed(monkeypatch):
+    got = _digest(monkeypatch)
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    out = day(s, [rec()], date(2026, 11, 13), Poster(), errors=["blocklist history (Mongo)"])
+    (_, asks, _, detail), = got
+    assert [(a.key, a.kind) for a in asks] == [("fleet-watch:read", "broken")]
+    assert asks[0].text == "Fleet watch could not read blocklist history (Mongo), so some problems may be missing today."
+    assert detail == ["Could not read today: blocklist history (Mongo)"] and out["failed"] is True
+
+
+def test_a_domain_case_counts_domains_and_baseline_cases_stay_out(monkeypatch):
+    from smartlead import fleet as fl
+    cases = [{"key": "bounce_high:d.com", "kind": "bounce_high", "target": "d.com", "line": "d.com 5%",
+              "opened_on": "2026-11-10", "action": fl.KINDS["bounce_high"][1]},
+             {"key": "kill:z@e.com", "kind": "kill", "target": "z@e.com", "line": "z@e.com", "opened_on": "2026-11-01",
+              "baseline": True}]
+    asks, _ = fl.digest_items(cases, date(2026, 11, 13))
+    assert [a.text for a in asks] == ["1 domain bounces 4% or more."]
+
+
+def test_the_old_post_goes_out_when_the_digest_is_not_written(monkeypatch):
+    got = _digest(monkeypatch, result=False)
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    p = Poster()
+    out = day(s, [rec(warmup_on=False)], date(2026, 11, 13), p)
+    assert len(got) == 1 and out["posted"] is True and len(p.calls) == 1 and "digest" not in out
+
+
+def test_with_the_digest_off_the_old_post_goes_out_and_nothing_is_handed_over(monkeypatch):
+    from smartlead import digest as dg
+    monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
+    s = fw.FleetStore(FakeCol(), FakeCol())
+    p = Poster()
+    assert day(s, [rec(warmup_on=False)], date(2026, 11, 13), p)["posted"] is True and len(p.calls) == 1
+
+
+def test_the_monday_scorecard_goes_to_the_digest_thread_only(monkeypatch, capsys):
+    import sys
+    from smartlead import fleet as fl
+    from smartlead import inbox_intake
+    got = _digest(monkeypatch)
+    posts = []
+
+    class Ledger:
+        def pilot_domains(self): return set()
+        def control_domains(self): return set()
+    monkeypatch.setattr(inbox_intake, "IntakeStore", Ledger)
+    store = fw.FleetStore(FakeCol(), FakeCol())
+    monkeypatch.setattr(fw, "FleetStore", lambda: store)
+    monkeypatch.setattr(fl, "scorecard_post", lambda cases, today, pilot, control: (["Scorecard"], ["body"]))
+    monkeypatch.setattr(fw, "_post", lambda head, thread=(): posts.append(head) or True)
+    monkeypatch.setattr(sys, "argv", ["fleet_watch.py", "--scorecard", "--post"])
+    assert fw.main() == 0 and posts == []
+    assert got == [("fleet-scorecard", [], [], ["Scorecard\n\nbody"])]
+    got.clear()
+    monkeypatch.setattr(__import__("smartlead.digest", fromlist=["report"]), "report", lambda *a, **k: False)
+    assert fw.main() == 0 and posts == [["Scorecard"]]            # Mongo down: the old post
+
+
+def test_a_blocklisted_domain_in_live_campaigns_is_never_a_digest_ask():
+    """Manveen 16 Nov: Spamhaus told them a listing does not affect deliverability; it stays in the thread only."""
+    from smartlead import fleet as fl
+    cases = [{"key": "listed_live:d.com", "kind": "listed_live", "target": "d.com", "line": "d.com on DBL",
+              "opened_on": "2026-11-10", "action": fl.KINDS["listed_live"][1]}]
+    asks, detail = fl.digest_items(cases, date(2026, 11, 13))
+    assert asks == [] and any("d.com" in d for d in detail)

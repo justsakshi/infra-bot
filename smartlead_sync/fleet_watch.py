@@ -19,6 +19,9 @@ Daily 10:30 IST; scorecard Mondays 10:50 IST. The daily post names only fl.DAILY
 one of those is new; the other kinds are recorded quietly for the scorecard. A source that could not be read is
 not posted on its own: the run exits 1, and the bot-health post lists it as a failed run. Exits 1 when a post
 was refused or a source was not read.
+
+Since 16 Nov 2026 both go to the daily digest instead (smartlead/digest.py): every still-open case of a daily kind,
+one ask per kind, and the scorecard in the digest's thread only. DIGEST_MODE=off, or Mongo down: the posts above.
 """
 from __future__ import annotations
 
@@ -349,6 +352,16 @@ def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: 
         print("[fleet-watch] could not read: " + "; ".join(errors))
     if post and quiet and store:
         store.mark_announced(quiet, today)          # recorded for the scorecard; not a daily post
+    # The daily digest (16 Nov 2026): every OPEN case of a daily kind, one ask per kind, so a fixed one clears.
+    # Cases count as told once the digest has them. DIGEST_MODE=off or Mongo down: the old posts below.
+    from smartlead import digest as dg
+    if post and store and dg.on():
+        asks, detail = fl.digest_items(open_now, today, errors)
+        if dg.report("fleet-watch", asks, [], detail):
+            if to_post or backlog:
+                store.mark_announced(to_post + backlog, today)
+            out["digest"] = True
+            return out
     if post and to_post:
         out["posted"] = bool(poster(head, thread))
         if out["posted"] and store:
@@ -381,6 +394,11 @@ def main() -> int:
         head, thread = fl.scorecard_post(FleetStore().all_cases(), today, pilot=ledger.pilot_domains(),
                                          control=ledger.control_domains())
         text = fl.as_text(head, thread)
+        from smartlead import digest as dg
+        # The Monday scorecard is silent in the daily digest (16 Nov 2026): its text goes in the thread only.
+        if args.post and dg.on() and dg.report("fleet-scorecard", [], [], [text]):
+            print(json.dumps({"text": text, "posted": None, "digest": True}) if args.json else text)
+            return 0
         posted = _post(head, thread) if args.post else None
         print(json.dumps({"text": text, "posted": posted}) if args.json else text)
         return 1 if posted is False else 0

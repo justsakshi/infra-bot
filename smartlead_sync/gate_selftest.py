@@ -25,8 +25,9 @@ Checks (smartlead/gate_selftest.checks):
      inventory that bills and expiry reminders are read from is complete
 
     python gate_selftest.py                  # print the result
-    python gate_selftest.py --save --post    # daily on Render: record it; post when a check disagrees,
-                                             # and always on Monday (the weekly "all agree" line)
+    python gate_selftest.py --save --post    # daily on Render: record it; hand the daily digest one line per
+                                             # check that disagrees (nothing when all agree). DIGEST_MODE=off or
+                                             # Mongo down: post when a check disagrees, and always on Monday
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from smartlead import digest as dg  # noqa: E402
 from smartlead import gate_selftest as gs  # noqa: E402
 from smartlead import notify, usable  # noqa: E402
 from smartlead.accounts import PAST_CLIENT_ACCOUNTS, discover_accounts  # noqa: E402
@@ -142,7 +144,12 @@ def main() -> int:
                                        upsert=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[gate-selftest] result not saved: {str(exc)[:120]}", file=sys.stderr)
-    if args.always_post or (args.post and (bad or errors or now.weekday() == 0)):
+    # The daily digest (16 Nov 2026): silent when all agree, one broken line per check that does not. The old post
+    # goes out when DIGEST_MODE=off or the digest could not be written.
+    if args.post and not args.always_post and dg.on() and \
+            dg.report("gate-selftest", gs.digest_asks(results, errors), [], ["\n".join(head)] + thread, db=db):
+        out["digest"] = True
+    elif args.always_post or (args.post and (bad or errors or now.weekday() == 0)):
         token = os.getenv("SLACK_BOT_TOKEN", "").strip()
         if token:
             out["posted"] = bool(notify.post_with_thread(token, notify.infra_channel("GATE_SELFTEST_CHANNEL"), head, thread))

@@ -12,6 +12,11 @@ and makes the answer impossible to miss: non-zero exit code, a Slack alert when
 a channel is configured, and a Mongo record so the failure has a timestamp.
 
 Read-only against Smartlead. Safe to run anywhere, anytime; no enable flag.
+
+Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, a dead key is an urgent ask (posted at once,
+one time per account until fixed) with where to replace the key; an unreachable one is a "broken" line (a network
+blip must not page anyone); all keys valid hands over an empty list,
+which clears them. If the digest can't be written, the old alert goes out.
 """
 from __future__ import annotations
 
@@ -29,8 +34,11 @@ if sys.platform == "win32":
 
 import httpx
 
+from smartlead import digest as dg
 from smartlead.accounts import discover_accounts
 from smartlead.config import BASE_URL, HEALTH_HISTORY_DB, KEY_HEALTH_COLLECTION
+
+SOURCE = "key-health"
 
 try:
     from pymongo import MongoClient
@@ -108,6 +116,38 @@ def _alert(dead: list[dict], unreachable: list[dict]) -> None:
     post_with_thread(token, HEALTH_NOTIFY_CHANNEL, head, thread)
 
 
+def env_name(client: str) -> str:
+    """The env var that holds an account's key (smartlead.accounts.discover_accounts)."""
+    return "SMARTLEAD_API_KEY" if client == "Belardi Wong" else f"SMARTLEAD_API_KEY_{client}"
+
+
+def digest_asks(dead: list[dict], unreachable: list[dict]) -> list:
+    """One urgent ask per account whose key is rejected or could not be tried. Never any part of a key. Pure."""
+    asks = []
+    for r in dead:
+        c = r["client"]
+        asks.append(dg.Ask(f"Smartlead rejects the {c} API key, so every job is blind for that account.",
+                           f"First check the {c} Smartlead plan is paid (an expired plan rejects the key too); if it "
+                           f"is, copy a new key from Smartlead, Settings, API and set {env_name(c)} on Render "
+                           "(Environment) and in .env.", key=f"{SOURCE}:dead:{c}", urgent=True))
+    for r in unreachable:
+        c = r["client"]
+        why = str(r.get("detail") or "").split(":", 1)[0] or r.get("state", "")
+        asks.append(dg.Ask(f"Smartlead could not be reached with the {c} key ({why}), so that account may be missing "
+                           "from today's checks.",
+                           "Nothing to do if the next check passes; if it stays, check Smartlead's status page and "
+                           f"that {env_name(c)} is set on Render.", key=f"{SOURCE}:unreachable:{c}", kind="broken"))
+    return asks
+
+
+def _to_digest(dead: list[dict], unreachable: list[dict]) -> bool:
+    """Hand the digest this run's list (empty when every key is valid: that clears it). False = post the old way."""
+    if not dg.on():
+        return False
+    head, thread = _alert_parts(dead, unreachable) if (dead or unreachable) else ([], [])
+    return dg.report(SOURCE, digest_asks(dead, unreachable), [], ["\n".join(head + thread)] if head else [])
+
+
 async def main() -> None:
     accounts = discover_accounts()
     if not accounts:
@@ -140,7 +180,8 @@ async def main() -> None:
     if not dead and not unreachable:
         print(f"\n[KeyHealth] ✅ all {len(results)} key(s) valid.")
 
-    _alert(dead, unreachable)
+    if not _to_digest(dead, unreachable):
+        _alert(dead, unreachable)
     # Non-zero exit so a cron/CI wrapper can escalate without parsing logs.
     sys.exit(2 if dead else (1 if unreachable else 0))
 

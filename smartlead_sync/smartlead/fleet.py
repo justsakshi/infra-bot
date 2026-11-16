@@ -465,6 +465,66 @@ def backlog_post(cases: list[dict], today: date) -> tuple[list[str], list[str]]:
     return head, thread
 
 
+# The daily digest (16 Nov 2026, Manveen: "One daily digest"): one ask per kind of problem that is still OPEN (not
+# only new ones), so a fixed problem drops out of the digest when its case closes. Only the kinds the daily post
+# named (DAILY_KINDS); baseline cases were never posted and are left out here too. Never urgent: a live campaign
+# that lost half its inboxes is already posted at once from the daily inbox list.
+DIGEST_WORDS = {      # kind: (one, many) the rest of the sentence after the count
+    "listed_live": ("is on Spamhaus DBL or URIBL and still in live campaigns",
+                    "are on Spamhaus DBL or URIBL and still in live campaigns"),
+    "warmup_off": ("has warm-up switched off", "have warm-up switched off"),
+    "bounce_high": ("bounces 4% or more", "bounce 4% or more"),
+    "kill": ("is on the kill list", "are on the kill list"),
+    "smtp_ip": ("has SMTP reputation under 50%", "have SMTP reputation under 50%"),
+    "early_campaign": ("is in a campaign before its ready date", "are in a campaign before their ready date"),
+    "over_limit": ("sends above the highest daily limit for its type", "send above the highest daily limit for their type"),
+    "hand_limit": ("had its daily limit changed by hand", "had their daily limit changed by hand"),
+}
+
+
+# Manveen, 16 Nov 2026: Spamhaus told them a listing does not affect deliverability and delisting is under way, so a
+# blocklist listing is never an ask; it stays in the thread with the other open cases.
+NOT_ASKED = {"listed_live"}
+
+
+def digest_items(cases: list[dict], today: date, errors: list[str] | tuple = ()) -> tuple[list, list[str]]:
+    """(asks, detail) for the digest from the cases open after today's run. Pure apart from building the asks."""
+    from smartlead import digest as dg
+    live = [c for c in cases if not c.get("baseline") and c["kind"] in DAILY_KINDS]
+    groups = _groups(live)
+    per_kind: dict[str, list[tuple[str, list[dict]]]] = defaultdict(list)
+    for (kind, action), cs in groups:
+        per_kind[kind].append((action, cs))
+    asks = []
+    for kind in KINDS:
+        if kind not in per_kind or kind in NOT_ASKED:
+            continue
+        cs = [c for _, group in per_kind[kind] for c in group]
+        n, scope = len(cs), KINDS[kind][2]
+        what = (f"{n} {'domain' if scope == 'domain' else 'inbox'}" + ("" if n == 1 else "s" if scope == "domain" else "es"))
+        one, many = DIGEST_WORDS.get(kind, (f"is {KINDS[kind][0]}", f"are {KINDS[kind][0]}"))
+        actions = [a for a, _ in per_kind[kind]]
+        step = (actions[0] if len(actions) == 1 else KINDS[kind][1] + " (each one's exact number is in the thread)")
+        asks.append(dg.Ask(f"{what} {one if n == 1 else many}.", f"{step}. The list is in the thread.",
+                           key=f"fleet-watch:{kind}"))
+    if errors:
+        asks.append(dg.Ask(f"Fleet watch could not read {'; '.join(errors)}, so some problems may be missing today.",
+                           "It runs again tomorrow at 10:30; if it fails twice, look at the fleet-watch log on Render.",
+                           key="fleet-watch:read", kind="broken"))
+    n = len(live)
+    detail = []
+    if live:
+        detail.append(f"Fleet watch, {_day(today)}: {n} open problem{'s' if n != 1 else ''} (suggestions only, the bot "
+                      "changed nothing)")
+        detail += [_group_part(kind, action, cs,
+                               lambda c: f", open since {_day(c['opened_on'])}"
+                                         + (", could not be checked today" if c.get("unknown") else ""))
+                   for (kind, action), cs in groups]
+    if errors:
+        detail.append("Could not read today: " + "; ".join(errors))
+    return asks, detail
+
+
 def _cleared(c: dict) -> bool:
     """Closed because the problem went away (older cases have no closed_why: they closed that way)."""
     return bool(c.get("closed_on")) and c.get("closed_why", "cleared") == "cleared"

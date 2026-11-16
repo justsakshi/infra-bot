@@ -288,3 +288,78 @@ def test_the_daily_run_keeps_a_failed_dm_and_tells_the_infra_channel(monkeypatch
     assert "a@t.com" in dms[-1] and "pending_dm" not in state.docs
     assert len(posts) == 1                                                       # nothing new for the channel
     capsys.readouterr()
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def _daily(monkeypatch, report_ok=True):
+    """The daily --apply run of the test above, with the digest on and dg.report faked."""
+    import sys
+    from types import SimpleNamespace
+
+    import smartlead.accounts
+    import smartlead.api
+    import smartlead.tracked
+    from smartlead import digest as dg
+    FakeClient.attached = {101: {2}}
+    state, dms, posts, reports = FakeState(), [], [], []
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(smartlead.accounts, "discover_accounts",
+                        lambda: [SimpleNamespace(name="PRECISE_LEADS", api_key="k")])
+    monkeypatch.setattr(smartlead.api, "SmartleadClient", FakeClient)
+    monkeypatch.setattr(smartlead.tracked, "tracked_domains", lambda: {"t.com"})
+
+    async def no_tests(key):
+        return [{"id": 9, "name": "PL spam test 1", "campaign_id": 101, "senders": set()}]
+    monkeypatch.setattr(ts, "_scheduled_tests", no_tests)
+    monkeypatch.setattr(ts, "_state_col", lambda: state)
+    monkeypatch.setattr(ts, "_post_infra", lambda head, thread: posts.append((head, thread)) or True)
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None:
+                        reports.append((src, asks, done, detail)) or report_ok)
+    monkeypatch.setattr(sys, "argv", ["dt_senders.py", "--apply"])
+    return state, dms, posts, reports
+
+
+def test_with_the_digest_on_changes_are_done_lines_and_a_domain_outside_the_sheet_is_an_ask(monkeypatch, capsys):
+    state, dms, posts, reports = _daily(monkeypatch)
+    monkeypatch.setattr(ts, "_dm", lambda text: dms.append(text) and False)        # Slack refuses the DM
+    assert ts.main() == 1                                   # the refused DM still fails the run, as before
+    assert posts == [] and len(dms) == 1                    # the DM itself is unchanged
+    (src, asks, done, detail), = reports
+    t = date.today().isoformat()
+    assert src == "dt-senders"
+    assert [(d.key, d.text) for d in done] == [
+        (f"dt-senders:{t}:DT PL #1:added", "Put 1 inbox on DT PL #1 for the weekly placement test."),
+        (f"dt-senders:{t}:DT PL #1:off", "Took 1 inbox off DT PL #1: their domain is not in the deliverability sheet.")]
+    assert [(a.key, a.kind) for a in asks] == [("dt-senders:untracked", "ask"), ("dt-senders:dm", "broken")]
+    assert asks[0].step == ("If we use it, add u.com to the deliverability sheet, tab Precise Leads, column A; the next "
+                            "run puts its inboxes on the test campaigns.")
+    assert "• b@u.com (DT PL #1)" in "\n".join(detail)
+    assert state.docs["untracked"]["domains"] == ["u.com"]               # told once, as before
+    monkeypatch.setattr(ts, "_dm", lambda text: dms.append(text) or True)          # next day: nothing new
+    assert ts.main() == 0
+    assert reports[-1][1] == [] and reports[-1][2] == [] and posts == []
+    capsys.readouterr()
+
+
+def test_when_the_digest_cannot_be_written_the_infra_post_goes_out(monkeypatch, capsys):
+    state, dms, posts, reports = _daily(monkeypatch, report_ok=False)
+    monkeypatch.setattr(ts, "_dm", lambda text: dms.append(text) or True)
+    assert ts.main() == 0
+    assert reports and len(posts) == 1 and posts[0][0][0].endswith(": 1 inbox taken off, 1 domain not in the "
+                                                                   "deliverability sheet")
+    assert state.docs["untracked"]["domains"] == ["u.com"]
+    capsys.readouterr()
+
+
+def test_digest_items_for_errors_moves_and_new_campaigns():
+    res = {"PRECISE_LEADS": {"created": ["DT PL #3"], "added_to": {"DT PL #3": 2}, "moved_off": {"DT PL #2": 2},
+                             "untracked": {"x.com": {"client": "Melior", "inboxes": 2},
+                                           "y.com": {"client": "Precise Leads", "inboxes": 1}}},
+           "BETTRDATA": {"error": "402 plan expired"}}
+    asks, done = ts.digest_items(res, set(), ["BETTRDATA: 402 plan expired"], False, date(2026, 11, 16))
+    assert [d.key for d in done] == ["dt-senders:2026-11-16:DT PL #3:created", "dt-senders:2026-11-16:DT PL #3:added",
+                                     "dt-senders:2026-11-16:DT PL #2:moved"]
+    assert asks[0].text.startswith("2 current-client domains are in Smartlead") and "tab Melior, Precise Leads" in asks[0].step
+    assert asks[1].kind == "broken" and asks[1].text == "The test-campaign job could not finish: BETTRDATA."
+    assert ts.digest_items(res, None, [], False, date(2026, 11, 16))[0] == []     # sheet unread: no domain ask

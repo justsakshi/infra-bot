@@ -565,3 +565,53 @@ def test_create_copy_check_clones_number_one_and_says_so_when_there_is_nothing_t
     assert "by cloning 'DT Melior #1' (4)" in capsys.readouterr().out            # #1, not the first one listed
     assert sync.run("--create-copy-check", "DT BettrData", "--apply") == 1
     assert "no 'DT BettrData #n' campaign to clone" in capsys.readouterr().out
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def _digest(monkeypatch, ok=True):
+    from smartlead import digest as dg
+    got = []
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None: got.append((src, asks, done, detail)) or ok)
+    return got
+
+
+def test_with_the_digest_on_a_refresh_is_one_done_line_and_nothing_is_posted(sync, monkeypatch, capsys):
+    got = _digest(monkeypatch)
+    assert sync.run("--apply", "--only", "PRECISE_LEADS") == 0
+    assert sync.posts == []
+    (src, asks, done, detail), = got
+    assert src == "copy-sync" and asks == [] and detail == []
+    assert [(d.text, d.key) for d in done] == [
+        ("Test copy refreshed for 2 clients from their live campaigns (and the neutral note on 3 inbox test campaigns).",
+         "copy-sync:2026-11-11")]
+    capsys.readouterr()
+
+
+def test_problems_become_asks_or_broken_asks(sync, monkeypatch, capsys):
+    got = _digest(monkeypatch)
+    sync.pl.campaigns.append({"id": 5, "name": "DT Nobody #1", "status": "PAUSED"})
+    sync.verdict_error = RuntimeError("no Mongo")
+    assert sync.run("--apply", "--only", "PRECISE_LEADS") == 1
+    (src, asks, done, detail), = got
+    assert [(a.key, a.kind) for a in asks] == [("copy-sync:no-prefix", "ask"), ("copy-sync:problems", "broken")]
+    assert asks[0].text == "1 test campaign has no known client prefix, so it was not refreshed."
+    assert asks[0].step.startswith("In Smartlead, rename each test campaign named in the thread")
+    assert "'DT Nobody #1' has no known client prefix" in detail[0] and sync.posts == [] and done
+    capsys.readouterr()
+
+
+def test_when_the_digest_cannot_be_written_the_summary_posts_as_before(sync, monkeypatch, capsys):
+    got = _digest(monkeypatch, ok=False)
+    assert sync.run("--apply", "--only", "PRECISE_LEADS") == 0
+    assert got and sync.posts == [(6, [])]
+    capsys.readouterr()
+
+
+def test_one_copy_check_runs_and_dry_runs_never_report(sync, monkeypatch, capsys):
+    got = _digest(monkeypatch)
+    assert sync.run("--only", "PRECISE_LEADS") == 0
+    assert sync.run("--apply", "--only-copy-check", "DT Melior") == 0
+    assert got == [] and sync.posts == []
+    capsys.readouterr()

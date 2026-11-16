@@ -9,6 +9,8 @@ let n = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); n++; };
 const eq = (a, b, msg) => { assert.deepStrictEqual(a, b, msg); n++; };
 const ist = s => new Date(`${s}+05:30`);
+// The schedule as it was before the daily digest (16 Nov 2026); most checks below are of that mode.
+const OFF = { DIGEST_MODE: 'off' };
 
 /* ---------- the schedule is unchanged and index.js schedules exactly JOBS ---------- */
 
@@ -29,7 +31,8 @@ const BEFORE = {
   reminder: ['0 16 * * 1-5'],
   'bot-health': ['5 10 * * 1-5'], 'v2-watch': ['0 14 * * 2', '0 10 * * 3'],
   'gate-selftest': ['30 11 * * *'],    // 11 Nov 2026: daily, after the sync has written the inbox list
-  'real-recipients': ['0 7 * * 0']     // 13 Nov 2026: weekly real-recipient reply check, Sunday morning
+  'real-recipients': ['0 7 * * 0'],    // 13 Nov 2026: weekly real-recipient reply check, Sunday morning
+  digest: ['0 11 * * *']               // 16 Nov 2026: the one daily digest
 };
 const jobNames = [...new Set(h.JOBS.map(j => j.job))].sort();
 eq(jobNames, Object.keys(BEFORE).sort(), 'JOBS has exactly the scheduled jobs');
@@ -43,7 +46,7 @@ for (const m of src.matchAll(/runJob\((?:final \? )?'([a-z0-9-]+)'/g)) ok(jobNam
 eq([...src.matchAll(/cron\.schedule\('([^']+)'/g)].map(m => m[1]), ['*/10 * * * *'], 'only the 10-minute inbox-jobs tick is scheduled outside JOBS');
 ok(!/runBilling/.test(src), 'runBilling is gone (runJob records every run)');
 for (const f of ['warmup_executor', 'rotation_executor', 'eg_test_executor', 'nc_test_executor']) ok(!src.includes(`${f}.py`), `${f} not in index.js`);
-for (const job of ['fleet-watch', 'fleet-scorecard', 'dt-senders', 'kill-report', 'copy-sync', 'placement-report-final', 'bot-health', 'v2-watch']) {
+for (const job of ['fleet-watch', 'fleet-scorecard', 'dt-senders', 'kill-report', 'copy-sync', 'placement-report-final', 'bot-health', 'v2-watch', 'digest']) {
   ok(src.includes(`onceToday('${job}')`), `${job} runs once a day (lock)`);
 }
 ok(/for \(const account of \['PRECISE_LEADS', 'BETTRDATA'\]\)[\s\S]{0,600}await runJob\(/.test(src), 'placement-report accounts run one after the other');
@@ -78,7 +81,7 @@ assert.throws(() => h.parseCron('0 25 * * *')); n++;
 assert.throws(() => h.parseCron('0 10 * *')); n++;
 
 // Fri 10:05 -> Mon 10:02 IST: the weekend.
-const wk = h.expectedSlots(ist('2026-11-06T10:05:00'), ist('2026-11-09T10:02:00'), {});
+const wk = h.expectedSlots(ist('2026-11-06T10:05:00'), ist('2026-11-09T10:02:00'), OFF);
 const slotsOf = (list, job) => list.filter(s => s.job === job).map(s => s.slot);
 eq(slotsOf(wk, 'copy-sync'), ['2026-11-06T18:30+05:30', '2026-11-07T18:30+05:30', '2026-11-08T18:30+05:30', '2026-11-09T05:00+05:30'], 'Friday, Saturday and Sunday evening, Monday morning');
 eq(slotsOf(wk, 'blacklist'), ['2026-11-09T09:00+05:30']);
@@ -88,7 +91,7 @@ eq(slotsOf(wk, 'kill-report'), []);
 eq(slotsOf(wk, 'inbox-intake'), [], 'switched off: not expected');
 eq(slotsOf(wk, 'scaledmail-sync'), [], 'no ScaledMail key: not expected');
 eq(slotsOf(wk, 'provider-watch'), [], '10:40 Monday is after the window');
-const tue = h.expectedSlots(ist('2026-11-10T12:59:00'), ist('2026-11-10T14:05:00'), { VOLUME_REVIEW_ENABLED: 'true' });
+const tue = h.expectedSlots(ist('2026-11-10T12:59:00'), ist('2026-11-10T14:05:00'), { ...OFF, VOLUME_REVIEW_ENABLED: 'true' });
 eq(tue.map(s => s.job), ['placement-report-final', 'reply-monitor', 'kill-report', 'volume-review', 'v2-watch', 'billing-watch'], 'Tue afternoon in order');
 // The schedule here must mean the same to the scheduler that runs it. node-cron reads a stepped range such as
 // 9-21/2 as "the even hours in 9-21"; this file read it as 9, 11, 13 ... and called three real runs a day
@@ -104,12 +107,12 @@ if (cronLib) {
     eq(list(new Set([...mine.dow].map(d => d % 7))), lib[5], `${j.job} "${j.cron}": weekdays`);
   }
 }
-eq(slotsOf(h.expectedSlots(ist('2026-11-10T09:00:00'), ist('2026-11-10T21:30:00'), {}), 'billing-watch').map(s => s.slice(11, 16)),
+eq(slotsOf(h.expectedSlots(ist('2026-11-10T09:00:00'), ist('2026-11-10T21:30:00'), OFF), 'billing-watch').map(s => s.slice(11, 16)),
   ['10:05', '12:05', '14:05', '16:05', '18:05', '20:05'], 'billing watch: the hours it really runs');
-eq(slotsOf(h.expectedSlots(ist('2026-11-10T13:00:00'), ist('2026-11-10T14:00:00'), {}), 'volume-review'), [], 'volume review off unless VOLUME_REVIEW_ENABLED=true');
-const ready = h.expectedSlots(ist('2026-11-10T00:00:00'), ist('2026-11-10T03:00:00'), { INBOX_READY_ENABLED: 'true', SCALEDMAIL_API_KEY: 'k' });
+eq(slotsOf(h.expectedSlots(ist('2026-11-10T13:00:00'), ist('2026-11-10T14:00:00'), OFF), 'volume-review'), [], 'volume review off unless VOLUME_REVIEW_ENABLED=true');
+const ready = h.expectedSlots(ist('2026-11-10T00:00:00'), ist('2026-11-10T03:00:00'), { ...OFF, INBOX_READY_ENABLED: 'true', SCALEDMAIL_API_KEY: 'k' });
 eq(ready.map(s => s.job), ['inbox-ready', 'inbox-ready'], 'readiness runs when intake is off');
-const both = h.expectedSlots(ist('2026-11-10T00:00:00'), ist('2026-11-10T03:00:00'), { INBOX_INTAKE_ENABLED: 'true', INBOX_READY_ENABLED: 'true', SCALEDMAIL_API_KEY: 'k' });
+const both = h.expectedSlots(ist('2026-11-10T00:00:00'), ist('2026-11-10T03:00:00'), { ...OFF, INBOX_INTAKE_ENABLED: 'true', INBOX_READY_ENABLED: 'true', SCALEDMAIL_API_KEY: 'k' });
 eq(both.map(s => s.job), ['inbox-intake', 'inbox-intake'], 'intake replaces readiness');
 
 /* ---------- exit codes ---------- */
@@ -143,14 +146,14 @@ eq([+old.since, old.capped], [+now - 4 * 86400000, true], 'capped at 4 days');
 const run = (job, slot, extra = {}) => ({ job, slot: `${slot}+05:30`, started: ist(`${slot}:01`), ended: ist(`${slot}:40`), exit_code: 0, ...extra });
 const since = ist('2026-11-09T10:05:00');
 const at = ist('2026-11-10T10:05:00');
-const due = h.expectedSlots(new Date(+since - 3 * 60000), new Date(+at - 3 * 60000), {});
+const due = h.expectedSlots(new Date(+since - 3 * 60000), new Date(+at - 3 * 60000), OFF);
 const allRan = due.map(d => run(d.job, d.slot.slice(0, 16)));
-let s = h.summarize({ runs: allRan, since, now: at });
+let s = h.summarize({ runs: allRan, since, now: at, env: OFF });
 eq([s.due, s.missed.length, s.failed.length, s.unfinished.length], [due.length, 0, 0, 0], 'every slot has a run');
 ok(due.some(d => d.slot === '2026-11-10T10:00+05:30') && !due.some(d => d.slot === '2026-11-10T10:05+05:30'), 'own slot is not checked yet');
 ok(due.some(d => d.job === 'bot-health' && d.slot === '2026-11-09T10:05+05:30'), 'the last post slot is checked once, by the next post');
 const less = allRan.filter(r => !(r.job === 'fleet-watch' || (r.job === 'billing-watch' && r.slot.startsWith('2026-11-09T14'))));
-s = h.summarize({ runs: less, since, now: at });
+s = h.summarize({ runs: less, since, now: at, env: OFF });
 eq(s.missed.map(m => `${m.job} ${m.slot}`), ['fleet-watch 2026-11-09T10:30+05:30', 'billing-watch 2026-11-09T14:05+05:30']);
 const withFails = [...allRan,
   run('kill-report', '2026-11-09T13:30', { exit_code: 1 }),
@@ -161,7 +164,7 @@ const withFails = [...allRan,
   { job: 'retest', slot: '2026-11-10T09:00+05:30', started: ist('2026-11-10T09:00:01') },          // still running
   run('fleet-watch', '2026-11-08T10:30', { exit_code: 1 })                                         // reported last time
 ];
-s = h.summarize({ runs: withFails, since, now: at });
+s = h.summarize({ runs: withFails, since, now: at, env: OFF });
 eq(s.failed.map(r => r.job), ['kill-report', 'dt-senders'], 'not ok codes and start errors; exit 2 of the summary and skipped runs are not failures');
 eq(s.unfinished.map(r => r.slot), ['2026-11-09T11:00+05:30'], 'an unfinished run older than 3 hours, once');
 
@@ -215,7 +218,7 @@ eq(h.v2WatchProblems(hbAt(ist('2026-11-11T10:00:00'), 0.2, '2026-11-09'), ist('2
 eq(h.slotList(['2026-11-06T13:05+05:30', '2026-11-06T15:05+05:30', '2026-11-07T09:05+05:30']), 'Fri 6 Nov 13:05, 15:05; Sat 7 Nov 09:05');
 eq(h.slotList(['2026-11-06T09:05+05:30', '2026-11-06T11:05+05:30', '2026-11-06T13:05+05:30'], 2), 'Fri 6 Nov 09:05, 11:05 and 1 more');
 
-const quietEnv = { COPY_SYNC_DISABLED: 'true', PROVIDER_WATCH_POST: 'off' };
+const quietEnv = { ...OFF, COPY_SYNC_DISABLED: 'true', PROVIDER_WATCH_POST: 'off' };
 const dueQuiet = h.expectedSlots(new Date(+since - 3 * 60000), new Date(+at - 3 * 60000), quietEnv).length;
 eq(dueQuiet, due.length - 1, 'PROVIDER_WATCH_POST=off: Monday 10:40 is not expected');
 let post = h.healthPost({ kind: 'daily', now: at, since, runs: allRan, heartbeat: hb(2), env: { ...quietEnv, RETEST_ENABLED: 'true' } });
@@ -285,4 +288,29 @@ eq(h.dueDailySlot(ist('2026-11-10T11:00:00')), '2026-11-10T10:05+05:30');
 eq(h.dueDailySlot(ist('2026-11-10T10:04:00')), null, 'before 10:05 the cron will post');
 eq(h.dueDailySlot(ist('2026-11-08T11:00:00')), null, 'Sunday: no daily post');
 
+
+/* ---------- the daily digest (16 Nov 2026) ---------- */
+{
+  const day = h.expectedSlots(ist('2026-11-17T00:00:00'), ist('2026-11-17T23:59:00'), {});
+  const jobs = new Set(day.map(d => d.job));
+  ok(jobs.has('digest') && !jobs.has('bot-health') && !jobs.has('reminder'), 'digest on: the 11:00 digest is due, bot health and the 4 PM reminder are not');
+  ok(!h.expectedSlots(ist('2026-11-17T13:00:00'), ist('2026-11-17T15:00:00'), {}).some(d => d.job === 'v2-watch'), 'digest on: no v2 check post');
+  ok(!h.expectedSlots(ist('2026-11-17T00:00:00'), ist('2026-11-17T23:59:00'), OFF).some(d => d.job === 'digest'), 'digest off: no digest');
+  ok(h.digestOff({ DIGEST_MODE: 'OFF ' }) && !h.digestOff({}) && !h.digestOff({ DIGEST_MODE: 'on' }), 'DIGEST_MODE=off is the only off');
+  const since = ist('2026-11-16T11:00:00');
+  const now = ist('2026-11-17T11:00:00');
+  const runs = h.expectedSlots(new Date(+since - 3 * 60000), new Date(+now - 3 * 60000), {})
+    .map(d => ({ job: d.job, slot: d.slot, started: new Date(d.slot), ended: new Date(+new Date(d.slot) + 60000), exit_code: 0 }));
+  eq(h.healthAsks({ since, now, runs }), [], 'every run fine: no broken line');
+  const bad = runs.map(r => (r.job === 'key-health' ? { ...r, exit_code: 2 } : r.job === 'campaign-metrics' ? { ...r, exit_code: 2 } : r))
+    .filter(r => r.job !== 'renewal-review');
+  const asks = h.healthAsks({ since, now, runs: bad });
+  eq(asks.map(a => a.key), ['bot-health:missed:renewal-review', 'bot-health:failed:key-health'],
+    'a missed and a failed run; campaign metrics reports its own exit 2');
+  ok(asks.every(a => a.kind === 'broken' && a.step), 'each has a step');
+  eq(asks[1].text, 'API-key check failed, last Tue 17 Nov 09:45 (exit code 2 (a Smartlead API key is dead)).');
+  const idx = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  ok(/at\('digest'[\s\S]{0,120}runDigest\(slot\)/.test(idx), 'index.js runs the digest at its slot');
+  ok(/if \(digestOn\(\)\) return console\.log\('\[bot-health\] restarted/.test(idx), 'no restart post with the digest on');
+}
 console.log(`bot health: ${n} passed`);

@@ -13,6 +13,12 @@ changes nothing, so it is safe to run on a cron.
 
     python zapmail_digest.py            # print (and post if channel set)
     python zapmail_digest.py --json     # machine-readable
+
+Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, nothing is posted here. Each to-do (low
+wallet, client domains expiring, batches due or to reconcile, ScaledMail orders late / live / stuck, domains
+with no client) is an ask with its step; an account or report that could not be read is a "broken" ask; the
+status lines are silent and the full digest goes in the digest's thread. Failed payments are left to the
+billing watch, which asks about them already. If the digest can't be written, the old post goes out.
 """
 from __future__ import annotations
 
@@ -32,6 +38,7 @@ if sys.platform == "win32":
         pass
 
 BLOCKED_STATUSES = ("unknown", "in_progress", "partial")
+SOURCE = "zapmail-digest"
 
 
 def _money(v) -> str:
@@ -216,6 +223,110 @@ def format_digest(
     return head, parts, actions
 
 
+def _ids(xs: list[str], k: int = 3) -> str:
+    return ", ".join(xs[:k]) + (f" and {len(xs) - k} more" if len(xs) > k else "")
+
+
+def digest_asks(
+    status: dict,
+    renewals: list[dict],
+    batches: list[dict],
+    *,
+    today: date,
+    ledger_ok: bool,
+    renewal_errors: list[str] | tuple = (),
+    wallet_min: float = 30.0,
+    expiry_days: int = 14,
+    zap_billing: list[dict] | tuple = (),
+    scaledmail: dict | None = None,
+    errors: list[str] | tuple = (),
+) -> list:
+    """What format_digest's "Needs a look" asks of a person, as digest asks (same inputs). Lists stay in the
+    thread. Bills coming up are status (the renewal review asks about them); failed payments are the billing
+    watch's. Pure."""
+    from smartlead import digest as dg
+    asks = []
+    for name, s in sorted(status.items()):
+        if not s.get("ok"):
+            asks.append(dg.Ask(f"Zapmail account {name} could not be read, so its wallet and domains were not checked.",
+                               "It is read again tomorrow; if it stays, check that account's Zapmail key on Render "
+                               "(ZAPMAIL_API_KEY, or ZAPMAIL_API_KEY_<account> for the others).",
+                               key=f"{SOURCE}:unreachable:{name}", kind="broken"))
+            continue
+        try:
+            low = not s.get("auto_recharge") and float(s.get("wallet_balance") or 0) < wallet_min
+        except (TypeError, ValueError):
+            low = False
+        if low:
+            asks.append(dg.Ask(f"{name}'s Zapmail wallet is at {_money(s.get('wallet_balance'))} with auto-recharge off, "
+                               "so purchases and renewals will fail.",
+                               f"Zapmail ({name} account), Wallet: add funds or turn auto-recharge on.",
+                               key=f"{SOURCE}:low-wallet:{name}"))
+    if renewal_errors:
+        asks.append(dg.Ask(f"Zapmail domain renewals could not be checked on {_plural(len(renewal_errors), 'account')}.",
+                           "It is checked again tomorrow; the error is in the thread.",
+                           key=f"{SOURCE}:renewals-unread", kind="broken"))
+    cutoff = (today + timedelta(days=expiry_days)).isoformat()
+    soon = sorted((r for r in renewals if r.get("expire_on") and r["expire_on"] <= cutoff
+                   and not ("client" in r and not r["client"])), key=lambda r: r["expire_on"])
+    if soon:
+        asks.append(dg.Ask(f"{_plural(len(soon), 'client domain')} expire{'s' if len(soon) == 1 else ''} within "
+                           f"{expiry_days} days, the first on "
+                           f"{_day(soon[0]['expire_on'])}.",
+                           "In Zapmail, Domains, check each domain in the thread is set to renew; let one lapse only "
+                           "if its client is gone.", key=f"{SOURCE}:domains-expiring"))
+    if not ledger_ok:
+        asks.append(dg.Ask("The domain purchase ledger (Mongo) could not be read, so due purchases are not listed.",
+                           "It is read again tomorrow; if it stays, check MONGO_URI on Render.",
+                           key=f"{SOURCE}:ledger", kind="broken"))
+    today_s = today.isoformat()
+    due = [b for b in batches if b.get("status") in ("planned", "failed") and (b.get("earliest_date") or "") <= today_s]
+    blocked = [b for b in batches if b.get("status") in BLOCKED_STATUSES]
+    if due:
+        cost = sum(float(b.get("estimated_usd") or 0) for b in due)
+        asks.append(dg.Ask(f"{_plural(len(due), 'domain purchase batch', 'domain purchase batches')} "
+                           f"{'is' if len(due) == 1 else 'are'} due to buy (about {_money(cost)}).",
+                           "Decide on each batch in the thread; to buy one, run `zapmail_buy.py --execute <batch_id> "
+                           f"--approve` with ZAPMAIL_ALLOW_SPEND=true ({_ids([b['batch_id'] for b in due])}).",
+                           key=f"{SOURCE}:batches-due"))
+    if blocked:
+        asks.append(dg.Ask(f"{_plural(len(blocked), 'purchase batch', 'purchase batches')} stopped half way and "
+                           f"need{'s' if len(blocked) == 1 else ''} a reconcile.",
+                           "Run `zapmail_buy.py --reconcile <batch_id>` for each: "
+                           f"{_ids([b['batch_id'] for b in blocked])}.", key=f"{SOURCE}:batches-reconcile"))
+    sm = scaledmail or {}
+    if sm.get("late"):
+        asks.append(dg.Ask(f"{_plural(sm['late'], 'ScaledMail order')} {'is' if sm['late'] == 1 else 'are'} late in "
+                           "setup.", "Ask ScaledMail support about the orders marked Late in the thread.",
+                           key=f"{SOURCE}:sm-late"))
+    if sm.get("live"):
+        asks.append(dg.Ask(f"{_plural(sm['live'], 'ScaledMail order')} {'is' if sm['live'] == 1 else 'are'} live and "
+                           "waiting for its inboxes in Smartlead.",
+                           "Send ScaledMail support the message on each LIVE line in the thread so they upload the "
+                           "inboxes to Smartlead.", key=f"{SOURCE}:sm-live"))
+    if sm.get("stuck"):
+        asks.append(dg.Ask(f"{_plural(sm['stuck'], 'ScaledMail domain')} {'is' if sm['stuck'] == 1 else 'are'} stuck in "
+                           "setup.", "Ask ScaledMail support about the domains under Still being set up in the thread.",
+                           key=f"{SOURCE}:sm-stuck"))
+    if sm.get("unassigned"):
+        k = len(sm["unassigned"])
+        asks.append(dg.Ask(f"{_plural(k, 'ScaledMail domain')} {'has' if k == 1 else 'have'} no client.",
+                           f"In ScaledMail, set the client tag on the order of {_ids(list(sm['unassigned']))}.",
+                           key=f"{SOURCE}:sm-no-client"))
+    if errors:
+        asks.append(dg.Ask(f"{_plural(len(errors), 'report')} could not be read for the domains and inboxes digest "
+                           f"({'; '.join(e.split(':', 1)[0] for e in errors)}).",
+                           "It is read again tomorrow; the error is in the thread.",
+                           key=f"{SOURCE}:read", kind="broken"))
+    return asks
+
+
+def to_digest(asks: list, head: list[str], parts: list[str]) -> bool:
+    """Hand the digest this run's asks and the full post for its thread. False = post the old way."""
+    from smartlead import digest as dg
+    return dg.on() and dg.report(SOURCE, asks, [], ["\n".join(head)] + list(parts))
+
+
 async def collect(today: date) -> dict:
     from smartlead.domain_batch import BatchStore
     from smartlead.zapmail_fleet import fleet_status, renewals_asof
@@ -298,18 +409,19 @@ async def main() -> int:
     # One daily message for both providers (2026-10-08): inbox subscriptions
     # billing soon (and failed payments) + ScaledMail's own items.
     extra = await extra_sections(today)
-    head, parts, actions = format_digest(
-        data["status"], data["renewals"], data["batches"], today=today,
-        ledger_ok=data["ledger_ok"], renewal_errors=data["renewal_errors"],
-        wallet_min=float(os.getenv("ZAPMAIL_WALLET_MIN", "30")),
-        expiry_days=int(os.getenv("ZAPMAIL_EXPIRY_ALERT_DAYS", "14")), **extra)
+    inputs = dict(today=today, ledger_ok=data["ledger_ok"], renewal_errors=data["renewal_errors"],
+                  wallet_min=float(os.getenv("ZAPMAIL_WALLET_MIN", "30")),
+                  expiry_days=int(os.getenv("ZAPMAIL_EXPIRY_ALERT_DAYS", "14")), **extra)
+    head, parts, actions = format_digest(data["status"], data["renewals"], data["batches"], **inputs)
     if args.json:
         print(json.dumps({"headline": head, "thread": parts, "text": as_text(head, parts),
                           "actions": actions}, default=str))
     else:
         print(as_text(head, parts))
     if not args.no_post:
-        post_to_slack(head, parts)
+        asks = digest_asks(data["status"], data["renewals"], data["batches"], **inputs)
+        if not to_digest(asks, head, parts):
+            post_to_slack(head, parts)
     return 0
 
 

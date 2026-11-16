@@ -1404,3 +1404,53 @@ def test_seed_counts_that_differ_inside_a_line_read_as_in_the_inbox_and_sent():
     one = {"google": v2.provider_verdict(["Inbox"]), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
     four = {"google": v2.provider_verdict(["Spam"] * 4), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
     assert wk._seeds([("a@x.com", one), ("b@x.com", four)]) == "Google 0-1 in the inbox, 1-4 sent, Microsoft 4/4"
+
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def test_a_weekly_report_becomes_digest_asks_a_done_line_and_its_detail():
+    head = ["v2 placement results, tests of Mon 16 Nov", "230 inboxes · 110 pass · 0 watch · 2 fail",
+            "Took 2 inboxes out of 1 live campaign · tagged 0 in no campaign · returned 0", "\n*Needs you: 2*"]
+    parts = ["*Needs you*\n\n• 1 inbox did not send in the test. Reconnect it.\n"
+             "• PL | A (5) is live with only failed inboxes left (a@x.com). Pause it or add a good sender.",
+             "*Precise Leads*\n\n• fail · x.com · a@x.com → taken out of PL | A"]
+    (src, asks, done, detail), (rem, rasks, _, _) = wk.digest_items(head, parts)
+    assert src == "v2-weekly" and rem == "v2-reminder" and rasks == []
+    assert [a.text for a in asks] == ["1 inbox did not send in the test. Reconnect it.",
+                                      "PL | A (5) is live with only failed inboxes left (a@x.com). Pause it or add a good sender."]
+    assert [a.urgent for a in asks] == [False, True]
+    assert done[0].text == ("v2 weekly test (tests of Mon 16 Nov): took 2 inboxes out of 1 live campaign · tagged 0 in "
+                            "no campaign · returned 0. Which inboxes: thread.")
+    assert detail[0].startswith("v2 placement results") and detail[2].startswith("*Precise Leads*")
+
+
+def test_a_report_that_changed_nothing_has_no_done_line():
+    head = ["v2 placement results, tests of Mon 16 Nov", "x",
+            "Took 0 inboxes out of 0 live campaigns · tagged 0 in no campaign · returned 0", "\nNothing needs you."]
+    (src, asks, done, _), _ = wk.digest_items(head, [])
+    assert asks == [] and done == []
+
+
+def test_other_posts_become_one_ask_each():
+    (src, asks, _, _), = wk.digest_items(["v2 results for the week of Mon 16 Nov are not in yet",
+                                          "\nMissing: DT PL #3 (1 test)."], [])
+    assert src == "v2-reminder" and asks[0].text.startswith("v2 results for the week of Mon 16 Nov are not in yet Missing")
+    (src, asks, _, _), = wk.digest_items(["v2 weekly job failed", "\nboom"], [])
+    assert src == "v2-weekly-crash" and asks[0].kind == "broken" and "boom" in asks[0].text
+
+
+def test_post_goes_to_the_digest_and_falls_back_to_slack_when_mongo_fails(monkeypatch):
+    from smartlead import digest as dg
+    import smartlead.notify as notify
+    got, slack = [], []
+    monkeypatch.setenv("MONGO_URI", "mongodb://x")
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "t")
+    monkeypatch.setattr(notify, "post_with_thread", lambda *a: slack.append(a) or "ts")
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail: got.append(src) or True)
+    assert wk.post(["v2 copy check, test of Sat 14 Nov"], []) and got == ["v2-copy-check"] and slack == []
+    monkeypatch.setattr(dg, "report", lambda *a: False)
+    assert wk.post(["v2 copy check, test of Sat 14 Nov"], []) and len(slack) == 1
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    got.clear()
+    assert wk.post(["v2 copy check, test of Sat 14 Nov"], []) and len(slack) == 2

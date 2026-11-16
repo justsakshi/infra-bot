@@ -201,6 +201,99 @@ def should_post(results: dict[str, dict], previous: list[str]) -> bool:
     return any(r.get("set_up") for r in results.values()) or bool(problems - set(previous))
 
 
+# The daily digest (16 Nov 2026, Manveen: "One daily digest"). What intake set up, and domains whose warm-up
+# finished, are done lines (listed once); a problem a person must fix is an ask, one per kind, rebuilt every run so a
+# fixed one drops out. Problems that retry by themselves (a Smartlead error, a read-back miss before the last try,
+# tags to retry) stay in the thread only. The DM asking whose a new domain is stays as it is.
+PROBLEM_STEPS = {
+    "stuck": "Set them up by hand in Smartlead (signature, client, tags, daily limit, warm-up); the list is in the thread.",
+    "missing-tag": "Create the tags named in the thread in Smartlead (Email Accounts, Tags); the next run uses them.",
+    "drift": "In Smartlead, set the inboxes in the thread back to the standard, or record a changed limit as approved.",
+    "read": "It retries every 2 hours; if it keeps failing, check that account's Smartlead API key.",
+    "scaledmail-read": "It retries every 2 hours; if it keeps failing, check the ScaledMail key on Render.",
+}
+
+
+def problem_kind(p: str) -> str | None:
+    """The kind of a problem line, or None for one that retries by itself. Pure."""
+    if ": could not read Smartlead (" in p:
+        return "read"
+    if p.startswith("ScaledMail could not be read"):
+        return "scaledmail-read"
+    if "stuck after" in p:
+        return "stuck"
+    if p.startswith("Smartlead has no tag"):
+        return "missing-tag"
+    if p.startswith("Changed since setup"):
+        return "drift"
+    return None
+
+
+def _drift_count(p: str) -> int:
+    import re
+    m = re.match(r"Changed since setup on (\d+) inbox", p)
+    return int(m.group(1)) if m else 1
+
+
+def digest_items(results: dict[str, dict], today: date, announcements: list[dict],
+                 head: list[str], parts: list[str]) -> tuple[list, list, list[str]]:
+    """(asks, done, detail) for the digest. Pure apart from building the items."""
+    from smartlead import digest as dg
+    problems = [p for r in results.values() for p in r.get("problems") or []]
+    by_kind: dict[str, list[str]] = {}
+    for p in problems:
+        k = problem_kind(p)
+        if k:
+            by_kind.setdefault(k, []).append(p)
+    asks = []
+    for k, ps in by_kind.items():
+        n = len(ps)
+        if k == "read":
+            accounts = ", ".join(p.split(":", 1)[0] for p in ps)
+            text = f"Inbox intake could not read {accounts} in Smartlead, so new inboxes there were not set up."
+        elif k == "scaledmail-read":
+            text = ("Inbox intake could not read ScaledMail, so inboxes on ScaledMail domains the tracker doesn't know "
+                    "were not set up.")
+        elif k == "stuck":
+            from smartlead.inbox_intake import MAX_TRIES
+            text = f"{_n(n, 'new inbox', 'new inboxes')} could not be set up after {MAX_TRIES} tries."
+        elif k == "missing-tag":
+            text = f"Smartlead is missing {_n(n, 'tag', 'tags')} that new inboxes need."
+        else:
+            m = sum(_drift_count(p) for p in ps)
+            text = f"{_n(m, 'inbox', 'inboxes')} set up by the bot no longer {'matches' if m == 1 else 'match'} the standard settings."
+        asks.append(dg.Ask(text, PROBLEM_STEPS[k], key=f"inbox-intake:{k}",
+                           kind="broken" if k in ("read", "scaledmail-read") else "ask"))
+    done = []
+    import re
+    for res in results.values():
+        # A tag missing at set-up time is said with what was set up: the ask for it is gone by the next run.
+        missing = [m.group(1) for p in res.get("problems") or []
+                   if (m := re.match(r"Smartlead has no tag `([^`]+)` in .*so new inboxes get it", p))]
+        rows: dict[tuple, list[dict]] = {}
+        for r in res.get("set_up") or []:
+            rows.setdefault((r["domain"], r["client"]), []).append(r)
+        for (dom, client), rs in sorted(rows.items()):
+            first = min((r["ready_on"] for r in rs if r.get("ready_on")), default=None)
+            done.append(dg.Done(
+                f"Set up {_n(len(rs), 'new inbox', 'new inboxes')} on {dom} for {client} (daily limit, warm-up, "
+                f"signature, tags)" + (f"; ready to use from {_day(first)}" if first else "")
+                + (f"; Smartlead has no {', '.join(missing)} tag, so add it to these by hand once it exists"
+                   if missing else "") + ".",
+                key=f"inbox-intake:setup:{dom}:{today.isoformat()}"))
+    for a in announcements:
+        what = a["line"].lstrip("• ").strip()
+        text = {"ready": f"Warm-up finished: {what}. Add it to this week's Smart Delivery v2 test; it goes into "
+                         "campaigns after a pass.",
+                "failed_v2": f"Warm-up finished but it already failed Smart Delivery v2: {what}. It stays out of "
+                             "campaigns until it passes."}.get(a["state"], f"Reached its warm-up date but not ready yet: {what}.")
+        done.append(dg.Done(text, key=f"inbox-intake:{a['key']}"))
+    detail = []
+    if done or problems:
+        detail = ["\n".join(head)] + list(parts) + ([ready_message(announcements)] if announcements else [])
+    return asks, done, detail
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Set new Smartlead inboxes up once")
     ap.add_argument("--apply", action="store_true")
@@ -276,7 +369,18 @@ def main() -> int:
 
     head, parts = intake_message(results, today)
     posted = False
-    if args.post and should_post(results, store.posted_problems()):
+    announcements = [a for r in results.values() for a in r.get("ready") or []]
+    # The daily digest (see digest_items); DIGEST_MODE=off or Mongo down: the channel posts below, as before.
+    from smartlead import digest as dg
+    digest = False
+    if args.apply and args.post and dg.on():
+        d_asks, d_done, d_detail = digest_items(results, today, announcements, head, parts)
+        digest = dg.report("inbox-intake", d_asks, d_done, d_detail)
+    if digest:
+        store.save_posted_problems([p for r in results.values() for p in r["problems"]])
+        for a in announcements:
+            store.mark_announced(a["key"])
+    elif args.post and should_post(results, store.posted_problems()):
         from smartlead.notify import post_with_thread
         from smartlead.notify import infra_channel
         channel = infra_channel("SCALEDMAIL_NOTIFY_CHANNEL", "ZAPMAIL_NOTIFY_CHANNEL")
@@ -296,9 +400,10 @@ def main() -> int:
         post_asks(asks, store, _dm_ask)
     elif asks:
         parts.append("*Would ask Manveen whose these are*\n" + "\n".join(f"• {a['domain']} ({a['inboxes']} {a['kind']})" for a in asks))
-    announcements = [a for r in results.values() for a in r.get("ready") or []]
     ready_posted = False
-    if args.apply and args.post:
+    if digest:
+        pass                    # in the digest's done lines, marked announced above
+    elif args.apply and args.post:
         from smartlead.notify import _post
         token = (os.getenv("SLACK_BOT_TOKEN") or "").strip()
         channel = (os.getenv("INBOX_READY_CHANNEL") or READY_CHANNEL).strip()
@@ -306,7 +411,7 @@ def main() -> int:
     elif announcements:
         parts.append("*Would post to the infra channel*\n" + ready_message(announcements))
     out = {"headline": head, "thread": parts, "posted": posted, "ready": announcements, "ready_posted": ready_posted,
-           "counts": {k: sum(len(r[k]) for r in results.values()) for k in ("set_up", "would", "waiting", "problems")}}
+           "digest": digest, "counts": {k: sum(len(r[k]) for r in results.values()) for k in ("set_up", "would", "waiting", "problems")}}
     print(json.dumps(out, default=str) if args.json else "\n".join(head + [""] + parts))
     return 0
 
