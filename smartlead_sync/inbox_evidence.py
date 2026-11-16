@@ -91,7 +91,7 @@ async def read_account(acc, today: date, errors: Counter, cache, counts: Counter
     from smartlead.report_sheet import client_label
     from smartlead.sheets import _is_test_campaign
     start = today - timedelta(days=ie.DAYS)
-    leads, emailed = {}, set()
+    leads = {}
     async with SmartleadClient(acc.api_key, acc.name) as c, httpx.AsyncClient(timeout=60) as http:
         inbox_client = {str(a.get("from_email") or "").strip().lower(): str(client_label(acc.name, a.get("client_id")))
                         for a in await c.list_email_accounts() or []}
@@ -100,6 +100,7 @@ async def read_account(acc, today: date, errors: Counter, cache, counts: Counter
             if status not in LIVE or name.startswith(("DT ", "One-off placement test")) or _is_test_campaign(name):
                 continue
             cid = str(camp["id"])
+            camp_client = str(client_label(acc.name, camp.get("client_id")))
             try:
                 stats = await c.get_campaign_statistics(cid)
             except Exception as exc:  # noqa: BLE001
@@ -109,7 +110,7 @@ async def read_account(acc, today: date, errors: Counter, cache, counts: Counter
             for r in stats or []:
                 e = str(r.get("lead_email") or "").strip().lower()
                 if "@" in e:
-                    by_lead[e].append(r)
+                    by_lead[e].append({**r, "_client": camp_client})
             recent = {e: rows for e, rows in by_lead.items()
                       if any((d := ie._day(r.get("sent_time"))) and start < d <= today for r in rows)}
             if not recent:
@@ -121,7 +122,6 @@ async def read_account(acc, today: date, errors: Counter, cache, counts: Counter
                 errors["campaign leads " + type(exc).__name__] += 1
                 continue
             for e, rows in recent.items():
-                emailed.add(e)
                 lid = ids.get(e)
                 key = f"{acc.name}:{cid}:{lid}"
                 cached = cache.get(key) if cache is not None else None
@@ -223,11 +223,15 @@ def build(today: date, leads: dict, inbox_client: dict, provider_of, logs: dict,
     for (inbox, rp), c in cells.items():
         by_client[inbox_client.get(inbox, "unknown")][(inbox, rp)] = c
     replied: dict[str, str | None] = {}
+    other: dict[str, str] = {}
     for e, lead in leads.items():
         sids, body = ie.sent_by(lead.history)
         for r in lead.rows:
             if ie.kind(r, body) in ("reply", "ooo"):
                 replied[e] = sids.get(str(r.get("stats_id"))) or replied.get(e)
+            elif r.get("reply_time"):
+                other[e] = str(r.get("lead_category") or "bounce notice")
+    known = ie.sender_known(leads, today)
     emailed = set(leads)
     clients, inboxes = {}, {}
     for client, cl_cells in sorted(by_client.items()):
@@ -239,10 +243,17 @@ def build(today: date, leads: dict, inbox_client: dict, provider_of, logs: dict,
              "bounces": sum(c["bounces"] for c in cl_cells.values()),
              "quiet": sum(1 for v in rows.values() if v["label"].startswith("quiet")),
              "not_enough": sum(1 for v in rows.values() if v["label"] == "not enough data"),
-             "known_pct": round(100 * known_sent / (known_sent + unknown), 1) if known_sent + unknown else 100.0}
-        cc = ie.crosscheck(logs[client], replied, emailed, today) if client in logs else None
+             "known_pct": _pct(known.get(client))}
+        cc = ie.crosscheck(logs[client], replied, emailed, today, other=other) if client in logs else None
         clients[client] = {"summary": s, "rates": rates, "crosscheck": cc, "log_not_read": why.get(client, "")}
-    return {"_id": today.isoformat(), "days": ie.DAYS, "clients": clients, "inboxes": inboxes, "unknown_sends": unknown}
+    return {"_id": today.isoformat(), "days": ie.DAYS, "clients": clients, "inboxes": inboxes, "unknown_sends": unknown,
+            "known_sends": known_sent, "sender_known": known, "two_senders": ie.two_senders(leads)}
+
+
+def _pct(k: dict | None) -> float:
+    k = k or {}
+    n = k.get("known", 0) + k.get("unknown", 0)
+    return round(100 * k.get("known", 0) / n, 1) if n else 100.0
 
 
 def digest_parts(rec: dict, errors: dict, read: int, total: int) -> tuple[list, list, list[str]]:
@@ -262,6 +273,8 @@ def digest_parts(rec: dict, errors: dict, read: int, total: int) -> tuple[list, 
                  ", ".join(f"{p} {r:.2%}" for p, r in sorted(v["rates"].items()))]
         if v["log_not_read"]:
             lines.append(f"Team reply log not read: {v['log_not_read']}")
+        if (cc or {}).get("undated"):
+            lines.append(f"Team reply log rows with a date that could not be read: {cc['undated']}")
         for e, why in sorted((cc or {}).get("misses", {}).items()):
             lines.append(f"• in the reply log, not matched: {e}: {why}")
         quiet = [f"• {k}: {r['label']}" for k, r in sorted(rec["inboxes"].items())
@@ -316,6 +329,9 @@ def main() -> int:
     for cl, v in rec["clients"].items():
         print(ie.digest_line(cl, v["summary"], v["crosscheck"]))
     print(f"[inbox-evidence] histories read {counts['read']}, from cache {counts['cached']}, errors {dict(errors)}")
+    print(f"[inbox-evidence] sender known by campaign client {rec['sender_known']}; leads with 2+ senders "
+          f"{rec['two_senders']} of {len(leads)}; reply logs not read {why or 'none'}; undated log rows "
+          f"{ {cl: (v['crosscheck'] or {}).get('undated') for cl, v in rec['clients'].items()} }")
     if args.dump:
         with open(args.dump, "w", encoding="utf-8") as f:
             json.dump(rec, f, indent=1, default=str)

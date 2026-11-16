@@ -103,3 +103,35 @@ def test_the_week_record_splits_by_the_inboxs_client_and_checks_the_log():
                     {"Melior": [{"email": "l@a.com", "date": "2026-11-13"}]}, {})
     m = rec["clients"]["Melior"]
     assert m["summary"]["replies"] == 1 and m["crosscheck"]["matched"] == 1 and rec["inboxes"]["a@x.com"]["client"] == "Melior"
+
+
+def test_reply_log_rows_with_a_date_that_cannot_be_read_are_counted_not_dropped():
+    logged = [{"email": "a@a.com", "date": "2026-11-12"}, {"email": "b@a.com", "date": ""}, {"email": "c@a.com", "date": ""}]
+    cc = ie.crosscheck(logged, {"a@a.com": "x@x.com"}, {"a@a.com"}, TODAY)
+    assert (cc["logged"], cc["matched"], cc["undated"]) == (1, 1, 2)
+
+
+def test_a_logged_reply_smartlead_has_under_another_category_gets_its_own_reason():
+    cc = ie.crosscheck([{"email": "w@a.com", "date": "2026-11-12"}], {}, {"w@a.com"}, TODAY,
+                       other={"w@a.com": "Wrong Person"})
+    assert cc["misses"]["w@a.com"] == ie.MISS_OTHER.format(cat="Wrong Person")
+
+
+def test_sender_known_is_per_campaign_client_and_leads_with_two_senders_are_counted():
+    a = ie.Lead([dict(row("s1", 10), _client="Melior"), dict(row("s2", 12), _client="Melior")],
+                hist(("s1", "a@x.com"), ("s2", "b@x.com")))
+    b = ie.Lead([dict(row("s3", 10, lead="m@a.com"), _client="Precise Leads")], hist())
+    known = ie.sender_known({"l@a.com": a, "m@a.com": b}, TODAY)
+    assert known == {"Melior": {"known": 2, "unknown": 0}, "Precise Leads": {"known": 0, "unknown": 1}}
+    assert ie.two_senders({"l@a.com": a, "m@a.com": b}) == 1
+
+
+def test_the_week_record_gives_each_client_its_own_sender_known_share():
+    import inbox_evidence as job
+    leads = {"l@a.com": ie.Lead([dict(row("s1", 12), _client="Melior")], hist(("s1", "a@x.com"))),
+             "m@a.com": ie.Lead([dict(row("s2", 12, lead="m@a.com"), _client="Precise Leads"),
+                                 dict(row("s3", 13, lead="m@a.com"), _client="Precise Leads")], hist(("s2", "p@x.com")))}
+    rec = job.build(TODAY, leads, {"a@x.com": "Melior", "p@x.com": "Precise Leads"}, lambda d: "google", {}, {})
+    assert rec["clients"]["Melior"]["summary"]["known_pct"] == 100.0
+    assert rec["clients"]["Precise Leads"]["summary"]["known_pct"] == 50.0
+    assert rec["two_senders"] == 0

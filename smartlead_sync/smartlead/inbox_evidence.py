@@ -32,6 +32,7 @@ EXPECT_MIN = 3.0          # replies + OOO expected below this: "not enough data"
 MISS_NO_REPLY = "Smartlead shows no reply from this lead"
 MISS_NOT_READ = "lead not in any campaign read in the window (another account, an older send, or a deleted campaign)"
 MISS_NO_SENDER = "reply found but the sending inbox is unknown"
+MISS_OTHER = "Smartlead has a reply from this lead but files it as {cat}, which is not counted as a reply"
 
 
 @dataclass
@@ -150,25 +151,51 @@ def inbox_rows(cells: dict, rates: dict[str, float]) -> dict[str, dict]:
 
 
 def crosscheck(logged: list[dict], replied: dict[str, str | None], emailed: set[str], today: date,
-               days: int = DAYS) -> dict:
+               days: int = DAYS, other: dict[str, str] | None = None) -> dict:
     """Check the team's trusted reply log against what this run found. ``logged`` = [{email, date}] from the log;
     ``replied`` = {lead email: sending inbox or None} for leads Smartlead shows a reply or OOO from; ``emailed`` =
-    lead emails sent in the window in the campaigns read. Logged replies in the window, one per lead. Pure."""
+    lead emails sent in the window in the campaigns read; ``other`` = {lead email: category} for leads with a reply
+    Smartlead files under a category that is not counted (wrong person ...). Logged replies in the window, one per
+    lead. Log rows with an address but a date that could not be read are counted in ``undated``, never dropped
+    silently. Pure."""
     start = today - timedelta(days=days)
-    want = sorted({str(x.get("email") or "").strip().lower() for x in logged
-                   if "@" in str(x.get("email") or "") and (d := _day(x.get("date"))) and start < d <= today})
+    rows = [x for x in logged if "@" in str(x.get("email") or "")]
+    undated = sum(1 for x in rows if not _day(x.get("date")))
+    want = sorted({str(x.get("email") or "").strip().lower() for x in rows
+                   if (d := _day(x.get("date"))) and start < d <= today})
     misses, matched = {}, 0
     for e in want:
         if e in replied and replied[e]:
             matched += 1
         elif e in replied:
             misses[e] = MISS_NO_SENDER
+        elif other and e in other:
+            misses[e] = MISS_OTHER.format(cat=other[e])
         elif e in emailed:
             misses[e] = MISS_NO_REPLY
         else:
             misses[e] = MISS_NOT_READ
     return {"logged": len(want), "matched": matched, "pct": round(100 * matched / len(want)) if want else None,
-            "misses": misses}
+            "misses": misses, "undated": undated}
+
+
+def sender_known(leads: dict[str, Lead], today: date, days: int = DAYS) -> dict[str, dict]:
+    """{client: {known, unknown}}: sends in the window whose sending inbox the message history names, by the client of
+    the campaign that sent them (row "_client", set by the job). Pure."""
+    out: dict[str, dict] = defaultdict(lambda: {"known": 0, "unknown": 0})
+    start = today - timedelta(days=days)
+    for lead in leads.values():
+        by_sid = sent_by(lead.history)[0]
+        for r in lead.rows:
+            d = _day(r.get("sent_time"))
+            if d and start < d <= today:
+                out[str(r.get("_client") or "unknown")]["known" if by_sid.get(str(r.get("stats_id"))) else "unknown"] += 1
+    return dict(out)
+
+
+def two_senders(leads: dict[str, Lead]) -> int:
+    """Leads whose emails came from two or more inboxes (Smartlead may switch sender between steps). Pure."""
+    return sum(1 for lead in leads.values() if len(set(sent_by(lead.history)[0].values())) > 1)
 
 
 def digest_line(client: str, s: dict, cc: dict | None) -> str:
