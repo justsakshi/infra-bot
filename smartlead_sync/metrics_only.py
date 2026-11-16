@@ -148,7 +148,8 @@ def digest_ask(code: int, failed: list[str]):
     """The failure as one "broken" digest ask: which sources were not read, and where to look. When the cause
     is a key missing on the server, the step names its env vars. Pure."""
     from smartlead import digest as dg
-    sources = list(dict.fromkeys(f.split(" (", 1)[0] for f in failed))
+    # A missing key is said in the step; any other reason (an error type) stays with its source.
+    sources = list(dict.fromkeys(f.split(" (", 1)[0] if _MISSING_KEYS.search(f) else f for f in failed))
     keys = list(dict.fromkeys(n.strip() for f in failed for m in _MISSING_KEYS.finditer(f)
                               for n in m.group(1).split("+") if n.strip()))
     text = ("The 9:00 campaign stats job did not finish cleanly"

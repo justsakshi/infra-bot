@@ -63,3 +63,32 @@ def test_when_the_digest_cannot_be_written_or_is_off_the_old_post_goes_out(run, 
 def test_a_dry_run_says_nothing(run, monkeypatch):
     monkeypatch.setenv("DIGEST_MODE", "on")
     assert run(2, FAILED, dry=True) == ([], [])
+
+
+def test_a_failed_source_says_why_so_nobody_needs_the_render_log():
+    """16 Nov: 'Not read: Expandi BETTRDATA' every day 11-16 Nov; the PC read it fine, the reason was only in
+    Render's log. The failure now carries the error type (never its text) into the digest line."""
+    import metrics_only as mo
+    a = mo.digest_ask(2, ["Expandi BETTRDATA (ReadTimeout)", "HeyReach MELIOR"])
+    assert a.text == ("The 9:00 campaign stats job did not finish cleanly; not read: Expandi BETTRDATA (ReadTimeout); "
+                      "HeyReach MELIOR.")
+
+
+def test_an_expandi_workspace_failure_is_named_with_its_error_type(monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from types import SimpleNamespace
+    from smartlead import expandi_rows as er
+
+    class Boom:
+        def __init__(self, *a): pass
+        async def __aenter__(self): raise TimeoutError("http://x.com/?secret=s")
+        async def __aexit__(self, *a): return False
+    monkeypatch.setattr(er, "discover_expandi_workspaces", lambda: [SimpleNamespace(name="BETTRDATA", api_key="k", api_secret="s")])
+    monkeypatch.setattr(er, "ExpandiClient", Boom)
+    monkeypatch.setattr(er, "ExpandiStore", lambda: SimpleNamespace(available=False))
+    monkeypatch.setattr(er, "ExpandiLeadStore", lambda: SimpleNamespace(available=False))
+    monkeypatch.setattr(er.cm, "row_client_wanted", lambda *a: True)
+    failed = []
+    asyncio.run(er.build_expandi_rows(datetime(2026, 11, 16), datetime(2026, 11, 1), failed=failed))
+    assert failed == ["Expandi BETTRDATA (TimeoutError)"]
