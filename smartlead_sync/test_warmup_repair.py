@@ -77,15 +77,25 @@ def test_recovered_at_the_types_good_reputation_on_the_latest_reading():
     d = wr.update(doc(), reading(rep=90), MON)
     assert (d["status"], d["recovered_on"], d["latest_rep"], d["latest_on"]) == ("recovered", "2026-11-23", 90, "2026-11-23")
     assert wr.update(doc(), reading(rep=89), MON)["status"] == "repairing"
+
+
+def test_one_recovery_cutoff_the_all_inboxes_one_for_every_type():
+    """Parent, 17 Nov: one cutoff, the All Inboxes one (config.MIN_WARMUP_REP_PCT, 90), for every inbox type."""
+    from smartlead import config
+    for kind in ("google", "outlook", "outlook_dense", "smtp", None):
+        assert wr.level(kind) == int(config.MIN_WARMUP_REP_PCT) == 90
     smtp = doc(kind="smtp", type="SMTP", rep_at_start=60)
-    assert wr.update(smtp, reading(rep=70, kind="smtp"), MON)["status"] == "recovered"   # SMTP is good from 70
+    assert wr.update(smtp, reading(rep=70, kind="smtp"), MON)["status"] == "repairing"   # no SMTP 70 any more
+    assert wr.update(smtp, reading(rep=90, kind="smtp"), MON)["status"] == "recovered"
+    new = wr.run([], [reading("s@example.com", rep=80, kind="smtp")], MON, read=set(), roster=None)[1]
+    assert [d["email"] for d in new] == ["s@example.com"]                                 # SMTP 80 is enrolled
 
 
 def test_a_blocked_warm_up_never_counts_as_recovered_until_a_reading_says_it_is_unblocked():
     blocked = doc(kind="smtp", type="SMTP", rep_at_start=88, blocked=True)
-    d = wr.update(blocked, reading(rep=88, kind="smtp"), MON)               # the list says nothing about blocking
+    d = wr.update(blocked, reading(rep=91, kind="smtp"), MON)               # the list says nothing about blocking
     assert d["status"] == "repairing" and d["blocked"] is True
-    d = wr.update(d, reading(rep=88, kind="smtp", warmup_blocked=False), MON)
+    d = wr.update(d, reading(rep=91, kind="smtp", warmup_blocked=False), MON)
     assert d["status"] == "recovered" and d["blocked"] is False
     d = wr.update(doc(), reading(rep=95, warmup_blocked=True), MON)
     assert d["status"] == "repairing" and d["blocked"] is True
@@ -120,7 +130,7 @@ def test_auto_enrol_takes_connected_low_inboxes_of_current_clients_only():
             reading("off@example.com", rep=50, connected=False),
             reading("osc@example.com", rep=50, client="OSC", account="PRECISE_LEADS"),
             reading("none@example.com", rep=None),
-            reading("smtp@example.com", rep=80, kind="smtp"),                 # above SMTP's 70: healthy
+            reading("smtp@example.com", rep=90, kind="smtp"),                 # at the one cutoff: healthy
             reading("smtp2@example.com", rep=60, kind="smtp", client="Precise Leads", account="PRECISE_LEADS"),
             reading("a@example.com", rep=60)]                                 # already in repair
     docs, new = wr.run([doc()], recs, MON, read={"BETTRDATA", "PRECISE_LEADS"}, roster=None)
