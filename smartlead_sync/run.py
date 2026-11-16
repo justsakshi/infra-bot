@@ -276,7 +276,9 @@ async def main() -> None:
     # 2026-09-16 the timestamp was written mid-run and unconditionally: it
     # advanced every morning while account tabs failed silently for weeks.
     # A failed tab now (1) shows on the Last Sync tab with its error, (2) is
-    # printed here with a [SYNC] marker, (3) posts to Slack, and (4) makes the
+    # printed here with a [SYNC] marker, (3) goes to the daily digest as a
+    # "broken" ask (16 Nov 2026; posts to Slack when the digest is off or
+    # can't be written), and (4) makes the
     # process exit 2 so index.js logs it as a failure rather than "finished".
     from smartlead.sheets import sync_ledger_summary
     end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -291,12 +293,42 @@ async def main() -> None:
         print(f"[SYNC] FAILED: {len(failed_tabs)} of {total} tab(s) NOT written:")
         for e in failed_tabs:
             print(f"[SYNC]   {e['tab']}: {e['error']}")
+    report_sync(ok_tabs, failed_tabs)
+    if failed_tabs:
+        sys.exit(2)
+    print(f"[SYNC] OK: all {len(ok_tabs)} tab(s) written")
+
+
+SYNC_SOURCE = "smartlead-sync"       # its name in the daily digest
+
+
+def sync_asks(ok_tabs: list, failed_tabs: list[dict]) -> list:
+    """A tab not written is one "broken" ask; all written is an empty list (which clears it). Pure."""
+    from smartlead import digest as dg
+    if not failed_tabs:
+        return []
+    n, total = len(failed_tabs), len(ok_tabs) + len(failed_tabs)
+    names = [str(e["tab"]) for e in failed_tabs]
+    shown = ", ".join(names[:3]) + (f" and {n - 3} more" if n > 3 else "")
+    return [dg.Ask(f"The daily sheet sync could not write {n} of {total} tab{'s' if total != 1 else ''} ({shown}), "
+                   f"so {'it shows' if n == 1 else 'they show'} old numbers.",
+                   "The errors are on the Last Sync tab and in the thread; the sync runs again tomorrow morning.",
+                   key=f"{SYNC_SOURCE}:tabs-not-written", kind="broken")]
+
+
+def report_sync(ok_tabs: list, failed_tabs: list[dict]) -> None:
+    """The sync's verdict (16 Nov 2026): to the daily digest when it is on, every run so a fixed tab clears;
+    otherwise, or when the digest can't be written, a failure posts as before."""
+    from smartlead import digest as dg
+    total = len(ok_tabs) + len(failed_tabs)
+    detail = [_notify.sync_failure_text(failed_tabs, total)] if failed_tabs else []
+    if dg.on() and dg.report(SYNC_SOURCE, sync_asks(ok_tabs, failed_tabs), [], detail):
+        return
+    if failed_tabs:
         try:
             _notify.post_digest(_notify.sync_failure_text(failed_tabs, total))
         except Exception as exc:
             print(f"[!] Sync-failure Slack alert failed: {exc}")
-        sys.exit(2)
-    print(f"[SYNC] OK: all {len(ok_tabs)} tab(s) written")
 
 
 if __name__ == "__main__":

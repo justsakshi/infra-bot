@@ -9,11 +9,16 @@ spends ~24 minutes repeating it.
 
     python metrics_only.py              write the tabs and today's history
     python metrics_only.py --dry-run    print the rows, write nothing
+
+Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, a failed run is one "broken" ask (which
+sources were not read, where the log is, and the env var names when a key is missing) instead of a post; a clean
+run clears it. If the digest can't be written, the old post goes out.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -127,15 +132,52 @@ def _alert(text: str) -> None:
         _post(token, HEALTH_NOTIFY_CHANNEL, text)
 
 
+SOURCE = "campaign-metrics"          # its name in the daily digest
+_MISSING_KEYS = re.compile(r"\(no ([A-Z0-9_ +]+?) on this server\)")
+
+
+def failure_text(code: int, failed: list[str]) -> str:
+    """The failure post, as it has always read."""
+    return ("⚠️ Campaign stats run failed\n\nThe 9:00 job that fills Campaign History, "
+            "Campaign Metrics and BettrData's tracker did not finish cleanly "
+            f"(exit {code}). Its log is on Render: search for [campaign-metrics]."
+            + ("\n\nNot read: " + "; ".join(failed) if failed else ""))
+
+
+def digest_ask(code: int, failed: list[str]):
+    """The failure as one "broken" digest ask: which sources were not read, and where to look. When the cause
+    is a key missing on the server, the step names its env vars. Pure."""
+    from smartlead import digest as dg
+    sources = list(dict.fromkeys(f.split(" (", 1)[0] for f in failed))
+    keys = list(dict.fromkeys(n.strip() for f in failed for m in _MISSING_KEYS.finditer(f)
+                              for n in m.group(1).split("+") if n.strip()))
+    text = ("The 9:00 campaign stats job did not finish cleanly"
+            + (f"; not read: {'; '.join(sources)}." if sources else f" (exit {code})."))
+    step = (f"Set {' and '.join(keys)} on Render (Environment); the log is on Render, search for [campaign-metrics]."
+            if keys else "Read why in the log on Render (search for [campaign-metrics]); the job runs again tomorrow "
+                         "at 9:00 IST.")
+    return dg.Ask(text, step, key=f"{SOURCE}:failed", kind="broken")
+
+
+def hand_over(code: int, failed: list[str], dry_run: bool) -> None:
+    """After a run: the digest gets the failure (or an empty list on success, which clears it); without the
+    digest, a failure is posted as before."""
+    if dry_run:
+        return
+    from smartlead import digest as dg
+    from smartlead.notify import redact
+    detail = [redact(failure_text(code, failed))] if code else []
+    if dg.on() and dg.report(SOURCE, [digest_ask(code, failed)] if code else [], [], detail):
+        return
+    if code:
+        _alert(failure_text(code, failed))
+
+
 if __name__ == "__main__":
     try:
         code = asyncio.run(main())
     except Exception as exc:  # noqa: BLE001
         code = 1
         print(f"[!] metrics_only crashed: {exc}")
-    if code and "--dry-run" not in sys.argv:
-        _alert("⚠️ Campaign stats run failed\n\nThe 9:00 job that fills Campaign History, "
-               "Campaign Metrics and BettrData's tracker did not finish cleanly "
-               f"(exit {code}). Its log is on Render: search for [campaign-metrics]."
-               + ("\n\nNot read: " + "; ".join(FAILED) if FAILED else ""))
+    hand_over(code, list(FAILED), "--dry-run" in sys.argv)
     sys.exit(code)

@@ -185,3 +185,74 @@ def test_the_digest_never_applies_readiness_itself(monkeypatch):
     assert cli.digest_ready_lines(enabled=True) == [] and calls == []
     assert cli.digest_ready_lines(enabled=False) == ["x"] and calls == [False]
 
+
+# --- the daily digest (16 Nov 2026) ---------------------------------------------------------
+
+def test_each_to_do_is_one_ask_with_a_step_and_status_is_silent():
+    from zapmail_digest import digest_asks
+    asks = digest_asks(STATUS, RENEWALS, BATCHES, today=TODAY, ledger_ok=True, zap_billing=ZAP_BILLING,
+                       scaledmail=SCALEDMAIL)
+    keys = [a.key for a in asks]
+    assert keys == ["zapmail-digest:low-wallet:Belardi Wong", "zapmail-digest:domains-expiring",
+                    "zapmail-digest:batches-due", "zapmail-digest:batches-reconcile", "zapmail-digest:sm-late",
+                    "zapmail-digest:sm-no-client"]
+    a = {a.key: a for a in asks}
+    assert a["zapmail-digest:low-wallet:Belardi Wong"].text == (
+        "Belardi Wong's Zapmail wallet is at $12.00 with auto-recharge off, so purchases and renewals will fail.")
+    assert a["zapmail-digest:low-wallet:Belardi Wong"].step.startswith("Zapmail (Belardi Wong account), Wallet")
+    assert a["zapmail-digest:domains-expiring"].text == "1 client domain expires within 14 days, the first on 20 Oct."
+    assert "--execute <batch_id> --approve" in a["zapmail-digest:batches-due"].step and "due1" in a[
+        "zapmail-digest:batches-due"].step
+    assert a["zapmail-digest:batches-reconcile"].step == "Run `zapmail_buy.py --reconcile <batch_id>` for each: stuck."
+    assert all(x.step and x.kind == "ask" and not x.urgent for x in asks)
+    # a quiet day (bills coming up only) asks nothing; unread things are broken asks
+    quiet = {"PRECISE_LEADS": STATUS["PRECISE_LEADS"]}
+    assert digest_asks(quiet, [], [], today=TODAY, ledger_ok=True, zap_billing=ZAP_BILLING) == []
+    broken = digest_asks({"X": {"ok": False, "error": "401"}}, [], [], today=TODAY, ledger_ok=False,
+                         renewal_errors=["X: 500"], errors=["ScaledMail could not be read: 503"])
+    assert [(b.key, b.kind) for b in broken] == [("zapmail-digest:unreachable:X", "broken"),
+                                                 ("zapmail-digest:renewals-unread", "broken"),
+                                                 ("zapmail-digest:ledger", "broken"), ("zapmail-digest:read", "broken")]
+
+
+def _main(monkeypatch, report_ok=True):
+    import asyncio
+    import sys
+
+    import zapmail_digest as zd
+    from smartlead import digest as dg
+    posts, reports = [], []
+
+    async def collect(today):
+        return {"status": STATUS, "renewals": RENEWALS, "batches": BATCHES, "renewal_errors": [], "ledger_ok": True}
+
+    async def extra(today):
+        return {"zap_billing": ZAP_BILLING, "scaledmail": SCALEDMAIL, "errors": []}
+    monkeypatch.setattr(zd, "collect", collect)
+    monkeypatch.setattr(zd, "extra_sections", extra)
+    monkeypatch.setattr(zd, "post_to_slack", lambda head, parts: posts.append((head, parts)) or True)
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None:
+                        reports.append((src, asks, done, detail)) or report_ok)
+    monkeypatch.setattr(sys, "argv", ["zapmail_digest.py"])
+    assert asyncio.run(zd.main()) == 0
+    return posts, reports
+
+
+def test_with_the_digest_on_nothing_is_posted_and_the_full_digest_goes_in_its_thread(monkeypatch, capsys):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    posts, reports = _main(monkeypatch)
+    (src, asks, done, detail), = reports
+    assert posts == [] and src == "zapmail-digest" and len(asks) == 6 and done == []
+    assert detail[0].startswith("⚠️ Domains & inboxes, ") and detail[1].startswith("*Zapmail*")
+    capsys.readouterr()
+
+
+def test_when_the_digest_cannot_be_written_or_is_off_it_posts_as_before(monkeypatch, capsys):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    posts, reports = _main(monkeypatch, report_ok=False)
+    assert reports and len(posts) == 1 and posts[0][0][0].startswith("⚠️ Domains & inboxes")
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    posts, reports = _main(monkeypatch)
+    assert reports == [] and len(posts) == 1
+    capsys.readouterr()
+

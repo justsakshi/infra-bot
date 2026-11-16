@@ -21,6 +21,11 @@ The DM is kept in Mongo (dt_senders.pending_dm) until Slack accepts it, so a fai
 next run. Inboxes taken off the test campaigns, current-client domains outside the deliverability sheet
 (once each) and errors go to the infra channel (audit 7 Nov 2026: they were only printed). Exits 1 when
 a DM or post was refused.
+
+Daily digest (16 Nov 2026, smartlead/digest.py): with the digest on, the infra-channel post is replaced by
+"done" lines (inboxes put on, moved, taken off, campaigns created, per campaign), an ask for domains outside the
+deliverability sheet (each domain once, as before) and "broken" asks for errors or a DM that did not go out.
+The DM itself is unchanged. If the digest can't be written, the old post goes out.
 """
 from __future__ import annotations
 
@@ -48,6 +53,7 @@ BATCH = 50
 DT_CAP = 50          # inboxes per DT campaign: one scheduled test each (Manveen, 15 Oct)
 PENDING_DM = "pending_dm"    # Mongo dt_senders: the DM's inboxes and campaigns until Slack accepts it
 UNTRACKED = "untracked"      # Mongo dt_senders: domains outside the sheet already reported
+SOURCE = "dt-senders"        # its name in the daily digest
 
 
 def _dt_number(name: str) -> int:
@@ -178,7 +184,8 @@ async def _on(sl, cid) -> set[int]:
 async def apply(sl, p: dict, batch: int = BATCH) -> dict:
     """Create new DT campaigns, add inboxes (read back), then remove each moved
     inbox from its old campaign only once the add is confirmed (read back)."""
-    out = {"created": [], "added": 0, "removed": 0, "dropped": 0, "missing": []}
+    out = {"created": [], "added": 0, "removed": 0, "dropped": 0, "missing": [],
+           "added_by": {}, "removed_by": {}}     # per campaign (id, or a new campaign's name): confirmed counts
     for cid, gone in (p.get("drops") or {}).items():
         for k in range(0, len(gone), batch):
             await sl.remove_campaign_email_accounts(str(cid), gone[k:k + batch])
@@ -199,6 +206,7 @@ async def apply(sl, p: dict, batch: int = BATCH) -> dict:
         for i in add:
             if i in now:
                 out["added"] += 1
+                out["added_by"][key] = out["added_by"].get(key, 0) + 1
                 landed.add(i)
             else:
                 out["missing"].append(f"{i} not on campaign {cid} after the add")
@@ -210,6 +218,8 @@ async def apply(sl, p: dict, batch: int = BATCH) -> dict:
             await sl.remove_campaign_email_accounts(str(cid), go[k:k + batch])
         still = await _on(sl, cid) if go else set()
         out["removed"] += sum(i not in still for i in go)
+        if any(i not in still for i in go):
+            out["removed_by"][cid] = sum(i not in still for i in go)
         out["missing"] += [f"{i} still on campaign {cid} after the move" for i in go if i in still]
     return out
 
@@ -319,6 +329,65 @@ def infra_report(results: dict, known: set[str] | None, errors: list[str], dm_fa
         if dm_failed:
             head.append("The DM about new inboxes did not go out; it is kept and sent again next run.")
     return head, thread, now
+
+
+def _tab(client: str) -> str:
+    """The deliverability sheet's tab for a client (smartlead/tracked.TABS), or a plain hint."""
+    from smartlead.tracked import TABS
+    return next((t for t in TABS if t.lower() == str(client).lower()), "the client's tab")
+
+
+def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_failed: bool,
+                 today: date) -> tuple[list, list]:
+    """(asks, done) for the daily digest, from the same inputs as infra_report. Done: inboxes put on, moved
+    and taken off, and campaigns created, one line per campaign (key: date + campaign). Asks: domains outside
+    the deliverability sheet not told before (each domain once, as the post did), errors and a DM that did not
+    go out (kind "broken"). Pure."""
+    from smartlead import digest as dg
+    rows = [(acc, r) for acc, r in results.items() if isinstance(r, dict)]
+    t = today.isoformat()
+    done = []
+    for acc, r in rows:
+        for name in r.get("created") or []:
+            done.append(dg.Done(f"Created test campaign {name} (a copy of the client's first DT campaign).",
+                                key=f"{SOURCE}:{t}:{name}:created"))
+        for camp, k in sorted((r.get("added_to") or {}).items()):
+            done.append(dg.Done(f"Put {_n(k)} on {camp} for the weekly placement test.", key=f"{SOURCE}:{t}:{camp}:added"))
+        for camp, k in sorted((r.get("moved_off") or {}).items()):
+            done.append(dg.Done(f"Moved {_n(k)} off {camp} to fill an earlier DT campaign first.",
+                                key=f"{SOURCE}:{t}:{camp}:moved"))
+        off: dict[str, int] = {}
+        for d in r.get("dropped") or []:
+            camp = d.rsplit(" (", 1)[-1].rstrip(")") if " (" in d else "a DT campaign"
+            off[camp] = off.get(camp, 0) + 1
+        for camp, k in sorted(off.items()):
+            done.append(dg.Done(f"Took {_n(k)} off {camp}: their domain is not in the deliverability sheet.",
+                                key=f"{SOURCE}:{t}:{camp}:off"))
+    untracked: dict = {}
+    for _, r in rows:
+        untracked.update(r.get("untracked") or {})
+    new = sorted(d for d in untracked if known is not None and d not in known)
+    asks = []
+    if new:
+        k = len(new)
+        tabs = sorted({_tab(untracked[d]["client"]) for d in new})
+        text = (f"{k} current-client domain{'s are' if k != 1 else ' is'} in Smartlead but not in the deliverability "
+                f"sheet, so {'their' if k != 1 else 'its'} inboxes are kept off the weekly placement test.")
+        step = (f"If we use it, add {new[0]} to the deliverability sheet, tab {tabs[0]}, column A; the next run puts "
+                "its inboxes on the test campaigns." if k == 1 else
+                f"For each domain in the thread we use, add it to the deliverability sheet (tab {', '.join(tabs)}), "
+                "column A; the next run puts its inboxes on the test campaigns.")
+        asks.append(dg.Ask(text, step, key=f"{SOURCE}:untracked"))
+    if errors:
+        names = sorted({e.split(":", 1)[0] for e in errors})
+        asks.append(dg.Ask(f"The test-campaign job could not finish: {', '.join(names)}.",
+                           "The errors are in the thread; it runs again tomorrow at 06:00 IST.",
+                           key=f"{SOURCE}:errors", kind="broken"))
+    if dm_failed:
+        asks.append(dg.Ask("The DM about new inboxes for the placement tests did not go out.",
+                           "Nothing to do: it is kept and sent again with the next run.", key=f"{SOURCE}:dm",
+                           kind="broken"))
+    return asks, done
 
 
 def _state_col():
@@ -434,6 +503,8 @@ def main() -> int:
                 every = {int(a["id"]): str(a.get("from_email") or a["id"]) for a in listed}
                 res["dropped"] = [f"{every.get(int(i), i)} ({names.get(int(cid), cid)})"
                                   for cid, ids in (res.get("dropped_ids") or {}).items() for i in ids]
+                res["added_to"] = {str(names.get(k, k)): n for k, n in res.pop("added_by", {}).items()}
+                res["moved_off"] = {str(names.get(k, k)): n for k, n in res.pop("removed_by", {}).items()}
             if args.apply or args.gaps:
                 emails = {int(a["id"]): str(a.get("from_email") or "").lower() for a in await c.list_email_accounts()}
                 camps_now = await _campaigns(c, acc.name)
@@ -479,7 +550,12 @@ def main() -> int:
         known = set((col.find_one({"_id": UNTRACKED}) or {}).get("domains") or []) if col is not None else None
         head, thread, now = infra_report(out, known, errors, sent is False, date.today())
         posted = True
-        if head:
+        in_digest = False
+        from smartlead import digest as dg
+        if dg.on():          # every --apply run: a fixed problem clears
+            asks, done = digest_items(out, known, errors, sent is False, date.today())
+            in_digest = out["digest"] = dg.report(SOURCE, asks, done, ["\n".join(head)] + thread if head else [])
+        if head and not in_digest:
             posted = out["infra_posted"] = _post_infra(head, thread)
             failed |= not posted
         if col is not None and now is not None and posted:
