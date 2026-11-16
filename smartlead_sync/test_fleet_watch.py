@@ -25,7 +25,7 @@ def test_record_holds_the_inbox_state_for_the_day():
                   live={"a@d.com": ["PL 1", "PL 2", "PL 1"]}, warm={"a@d.com": (90, 12)})
     assert r == {"email": "a@d.com", "domain": "d.com", "date": "2026-10-20", "account": "PRECISE_LEADS",
                  "client": "Precise Leads", "kind": "google", "vendor": "ScaledMail", "setup": True, "limit": 15,
-                 "approved_limit": 15, "warmup_on": True, "rep": 98, "connected": True, "campaigns": 1, "sending": True,
+                 "approved_limit": 15, "warmup_on": True, "rep": 98, "warmup_blocked": None, "connected": True, "campaigns": 1, "sending": True,
                  "ready_on": "2026-10-27", "warmup_started": "2026-10-13", "test_date": "2026-10-13", "test_pct": 95.0,
                  "verdict": "GOOD", "sent_14d": 120, "bounced_14d": 1, "warm_sent_7d": 90, "warm_spam_7d": 12,
                  "tags": ["Bot-Setup", "ScaledMail-Google"], "live_campaigns": ["PL 1", "PL 2"]}

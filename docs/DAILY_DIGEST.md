@@ -40,6 +40,7 @@ buttons are the step.
 | Blocklists (`blacklist`) | Mon 09:00 | post | thread only; a check that could not run: broken line. A listing is never an ask |
 | Fleet watch (`fleet-watch`) | 10:30 | post per new case | one ask per open kind; blocklist listings thread only |
 | Fleet scorecard (`fleet-scorecard`) | Mon 10:50 | post | thread only |
+| Warm-up repair (`warmup-repair`, inside fleet watch) | 10:30 | new (17 Nov 2026) | Mondays one done line per client ("Warm-up repair, BettrData: N repairing, N recovered this week, N worse."); inboxes 3 weeks in repair without improving: one ask (cancel candidates, his call); per-inbox lines in the thread. Report-only: changes no warm-up setting. Mongo `warmup_repair`; seed and preview: `warmup_repair_cli.py` |
 | Gate self-test (`gate-selftest`) | 11:30 | Monday post, and on a disagreement | silent when all agree; held-back inboxes still sending: ask; other disagreements: broken line |
 | Reply check (`reply-monitor`) | 13:00 | ALERT posts, Monday summary | ALERT domains: one ask; summary in the thread |
 | Kill warnings (`kill-report`) | Tue 13:30 | post | asks (still sending, idle in live campaigns, domains to stop using) |
