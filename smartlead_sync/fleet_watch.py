@@ -22,6 +22,9 @@ was refused or a source was not read.
 
 Since 16 Nov 2026 both go to the daily digest instead (smartlead/digest.py): every still-open case of a daily kind,
 one ask per kind, and the scorecard in the digest's thread only. DIGEST_MODE=off, or Mongo down: the posts above.
+
+Since 17 Nov 2026 the saved runs also update the warm-up repair tracker (smartlead/warmup_repair.py, Mongo
+warmup_repair; report-only) and hand the digest its own source, warmup-repair.
 """
 from __future__ import annotations
 
@@ -80,6 +83,9 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
             "setup": setup, "limit": st._int(a.get("message_per_day")),
             "approved_limit": approved.get(email, (None, None))[0],
             "warmup_on": str(w.get("status") or "").upper() == "ACTIVE", "rep": st._int(w.get("warmup_reputation")),
+            # the inbox list says blocked_reason (the detail call says is_warmup_blocked); None = not said
+            "warmup_blocked": (bool(w.get("blocked_reason") or w.get("is_warmup_blocked"))
+                               if "blocked_reason" in w or "is_warmup_blocked" in w else None),
             "connected": connected, "campaigns": len(f.get("campaigns") or []), "sending": bool(f.get("sending")),
             "ready_on": ready.isoformat() if ready else None,
             "warmup_started": started.isoformat() if started else None,
@@ -91,16 +97,17 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
 
 
 class FleetStore:
-    """inbox_daily: one document per inbox per day; fleet_cases: one per case."""
+    """inbox_daily: one document per inbox per day; fleet_cases: one per case; warmup_repair: one per inbox in
+    warm-up repair (smartlead/warmup_repair.py). ``repair`` None with collections passed in = no repair tracking."""
 
-    def __init__(self, daily=None, cases=None) -> None:
+    def __init__(self, daily=None, cases=None, repair=None) -> None:
         if daily is None or cases is None:
             from smartlead.zapmail_asset_sync import _db
             db = _db()
             if db is None:
                 raise RuntimeError("Mongo unavailable; nothing saved")
-            daily, cases = db["inbox_daily"], db["fleet_cases"]
-        self.daily, self.cases = daily, cases
+            daily, cases, repair = db["inbox_daily"], db["fleet_cases"], db["warmup_repair"]
+        self.daily, self.cases, self.repair = daily, cases, repair
 
     def save_state(self, records: list[dict]) -> None:
         for r in records:
@@ -305,6 +312,23 @@ def _short_reads(read: set[str], records: list[dict], last: dict[str, int]) -> d
             if last.get(a) and now.get(a, 0) < last[a] * (1 - READ_DROP)}
 
 
+def _repair(store, records: list[dict], read: set[str], roster: dict | None, today: date, errors: list[str]):
+    """Update the warm-up repair docs from today's readings and enrol new low-reputation inboxes (report-only:
+    no warm-up setting is changed). (asks, done, detail) for the digest, or None when not tracked or it failed;
+    a failure is a read error, never a stop."""
+    if getattr(store, "repair", None) is None:
+        return None
+    from smartlead import warmup_repair as wr
+    try:
+        rs = wr.RepairStore(store.repair)
+        docs, _ = wr.run(rs.all(), records, today, read=read, roster=roster)
+        rs.save(docs)
+        return wr.digest_items(docs, today)
+    except Exception as exc:  # noqa: BLE001 - the rest of fleet watch goes on
+        errors.append(f"warm-up repair ({type(exc).__name__})")
+        return None
+
+
 def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: dict | None, today: date,
           errors: list[str], *, post: bool = False, baseline: bool = False, poster=None,
           roster: dict | None = None) -> dict:
@@ -332,6 +356,7 @@ def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: 
                                                blocklist=blocklist, roster=roster)
     if store:
         store.save_cases(open_now + closed)
+    repair = _repair(store, records, read, roster, today, errors) if store else None
     new_keys = {c["key"] for c in opened}
     resend = [c for c in open_now if c.get("announced") is False and not c.get("baseline") and c["key"] not in new_keys]
     backlog = [c for c in open_now if c.get("announced") is None and not c.get("baseline")
@@ -356,6 +381,8 @@ def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: 
     # Cases count as told once the digest has them. DIGEST_MODE=off or Mongo down: the old posts below.
     from smartlead import digest as dg
     if post and store and dg.on():
+        if repair is not None:                      # its own source: its ask and weekly lines live apart
+            dg.report("warmup-repair", *repair)
         asks, detail = fl.digest_items(open_now, today, errors)
         if dg.report("fleet-watch", asks, [], detail):
             if to_post or backlog:
