@@ -483,7 +483,8 @@ def test_an_inbox_smartlead_shows_connected_is_not_called_disconnected(tmp_path)
     head, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
     text = "\n".join(head + parts)
     assert "connected in Smartlead." not in text
-    assert "x.com: 1 inbox did not send in the test, and Smartlead can't log in to it. Reconnect it." in text
+    assert ("1 inbox did not send in the test, and Smartlead can't log in to it (x.com 1). Reconnect it, or delete it "
+            "in Smartlead if it was cancelled.") in text
     assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): most likely the test "
             "ran short (the plan's allowance). If it misses next week's test too, look at it.") in text
     assert "• not sent · x.com · ok@x.com → did not send in the test; connected in Smartlead" in text
@@ -501,7 +502,7 @@ def test_an_inbox_of_unknown_connection_keeps_the_old_advice(tmp_path):
     st["results"]["ok@x.com"] = [_not_sent()]
     st["results"]["bad@x.com"] = [_not_sent()]
     head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
-    assert "x.com: 2 inboxes did not send in the test. Check they are connected in Smartlead." in "\n".join(parts)
+    assert "2 inboxes did not send in the test (x.com 2). Check they are connected in Smartlead." in "\n".join(parts)
 
 
 def test_a_download_ask_is_dropped_48_hours_after_sending(tmp_path):
@@ -721,7 +722,7 @@ def test_report_only_lines_say_what_would_happen_to_each_inbox(tmp_path):
     assert "out of campaigns" not in parts[0] and "2 of 2" not in text
     assert ("• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would leave 1 "
             "inbox in a live campaign where it is the last good sender and tag 1 inbox that is in no campaign. "
-            "List under *Melior* below.") in parts[0]
+            "List under *Melior* above.") in parts[-1] and "is report-only until" not in parts[0].split("Solo")[0]
     assert ("• Melior | Solo (5) is live with only failed inboxes left (last@y.com). Not changed, as Melior is "
             "report-only until the job is proven on the other clients: pause it or add a good sender.") in parts[0]
     melior = next(p for p in parts if p.startswith("*Melior*"))
@@ -1317,3 +1318,80 @@ def test_a_post_shows_one_copy_check_per_client_the_newest(tmp_path):
     head, parts = wk.build_report(st, got, wk.plan(st), fleet(), acted(), True, set())
     assert sum("copy check" in x.lower() for x in head) == 1
     assert sum(x.count("• copy check") for x in parts) == 1
+
+
+def test_an_action_from_an_older_fail_names_it_and_a_short_provider_shows_what_was_sent(tmp_path):
+    # Cold read, 16 Nov 2026: "incomplete ... Google 1/4 -> would be taken out" read as a quarter in the inbox and
+    # as a pull on an incomplete result; the pull comes from the earlier fail this short test can't clear.
+    st = fresh_state(tmp_path)
+    st["results"]["ok@x.com"] = [result(v2.PASS, 4, 4)]
+    short = {"night": "2026-11-09", "verdict": v2.INCOMPLETE, "history": False,
+             "google": v2.provider_verdict(["Inbox"]), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    st["results"]["bad@x.com"] = [result(v2.FAIL, 0, 4, "2026-11-02"), short]
+    d = wk.plan(st)
+    assert d["bad@x.com"]["action"] == v2.PULL
+    _, parts = wk.build_report(st, GOT, d, fleet(), acted(removed={"bad@x.com": [1]}), True, set())
+    assert ("• incomplete · x.com · bad@x.com · Google 1/1 (only 1 sent), Microsoft 4/4 → failed Mon 2 Nov, and this "
+            "test can't clear it: taken out of PL | A; tagged DO NOT USE") in "\n".join(parts)
+
+
+def test_not_sent_inboxes_on_several_domains_make_one_line_each_kind(tmp_path):
+    st = fresh_state(tmp_path)
+    f = fleet()
+    f["PRECISE_LEADS"]["inboxes"]["c@z.com"] = {"id": 12, "client": "Precise Leads", "tags": []}
+    for e in ("ok@x.com", "bad@x.com", "c@z.com"):
+        st["results"][e] = [_not_sent()]
+        f["PRECISE_LEADS"]["inboxes"][e]["connected"] = False
+    _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
+    needs = parts[0]
+    assert ("• 3 inboxes did not send in the test, and Smartlead can't log in to them (x.com 2, z.com 1). Reconnect "
+            "them, or delete them in Smartlead if they were cancelled.") in needs
+    assert needs.count("did not send") == 1
+
+
+def _dt_no_result_report(tmp_path, files):
+    st = fresh_state(tmp_path)
+    st["files"] = files
+    f = fleet()
+    f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT PL #2", "status": "ACTIVE", "senders": {10, 11}}}
+    _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
+    return parts
+
+
+def test_a_re_run_still_coming_in_beats_an_earlier_run_that_sent_nothing(tmp_path):
+    # Review of PR 75: the older empty run was found first and the post kept saying "run it again" after the re-run.
+    parts = _dt_no_result_report(tmp_path, {
+        "a": {"name": "dt-pl-2-run-1.csv", "status": "nothing_sent", "night": None, "seen": "2026-11-09T21:00+05:30",
+              "mailboxes": ["bad@x.com", "ok@x.com"]},
+        "b": {"name": "dt-pl-2-run-2.csv", "status": "pending", "night": "2026-11-09",
+              "mailboxes": ["bad@x.com", "ok@x.com"]}})
+    text = "\n".join(parts)
+    assert "No result yet from DT PL #2 (2 inboxes): its run is in, with results still coming in." in text
+    assert "sent no test emails" not in text
+
+
+def test_one_sender_in_an_unrelated_pending_test_does_not_hide_a_missing_weekly_test(tmp_path):
+    parts = _dt_no_result_report(tmp_path, {
+        "a": {"name": "one-off-run-1.csv", "status": "pending", "night": "2026-11-09", "mailboxes": ["bad@x.com"]}})
+    assert ("No result this week from DT PL #2 (2 inboxes): no finished v2 run found. Check it has a weekly test in "
+            "Smart Delivery.") in parts[0]
+
+
+def test_a_line_names_an_older_fail_only_when_every_inbox_on_it_shares_it(tmp_path):
+    st = fresh_state(tmp_path)
+    short = lambda: {"night": "2026-11-09", "verdict": v2.INCOMPLETE, "history": False,           # noqa: E731
+                     "google": v2.provider_verdict(["Inbox"]), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    st["results"]["bad@x.com"] = [result(v2.FAIL, 0, 4, "2026-11-02"), short()]
+    st["results"]["ok@x.com"] = [result(v2.FAIL, 0, 4, "2026-10-26"), short()]
+    d = wk.plan(st)
+    assert {d[e]["why"] for e in ("bad@x.com", "ok@x.com")} == {"failed 2026-11-02", "failed 2026-10-26"}
+    _, parts = wk.build_report(st, GOT, d, fleet(), acted(removed={"bad@x.com": [1], "ok@x.com": [1]}), True, set())
+    text = "\n".join(parts)
+    assert "• incomplete · x.com · 2 of 2 inboxes · Google 1/1 (only 1 sent), Microsoft 4/4 → taken out of PL | A" in text
+    assert "failed Mon" not in text
+
+
+def test_seed_counts_that_differ_inside_a_line_read_as_in_the_inbox_and_sent():
+    one = {"google": v2.provider_verdict(["Inbox"]), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    four = {"google": v2.provider_verdict(["Spam"] * 4), "microsoft": v2.provider_verdict(["Inbox"] * 4)}
+    assert wk._seeds([("a@x.com", one), ("b@x.com", four)]) == "Google 0-1 in the inbox, 1-4 sent, Microsoft 4/4"
