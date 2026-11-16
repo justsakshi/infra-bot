@@ -171,3 +171,13 @@ def test_a_429_waits_at_least_a_minute():
     # Smartlead support, 16 Nov 2026: wait a minute after a 429 before retrying
     assert v2_api.RATE_WAIT >= 60
     assert v2_api.RATE_WAIT * (2 ** v2_api.RATE_RETRIES - 1) <= v2_api.RATE_BUDGET   # one call's waits fit the budget
+
+
+def test_one_tests_detail_comes_back_with_its_senders_and_campaign():
+    def get(path, params):
+        assert path == "/tests/t1"
+        return 200, {"id": "t1", "campaignId": 7, "senders": [{"email": "A@x.com", "emailAccountId": 5}]}
+    d = v2_api.Client("K", get=get).test("t1")
+    assert d["campaignId"] == 7 and d["senders"][0]["emailAccountId"] == 5
+    with pytest.raises(v2_api.V2ApiError):
+        v2_api.Client("K", get=lambda p, q: (200, ["not", "a", "dict"])).test("t1")
