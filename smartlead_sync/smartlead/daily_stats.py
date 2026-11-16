@@ -5,7 +5,9 @@ maybe a weekly summary on Friday and a monthly summary on the first working
 day. Make sure every number is accurate."
 
 Decided with him the same day:
-  * daily: the last working day only (a Monday post covers Friday);
+  * daily: the last working day only;
+  * Monday covers Friday to Sunday (Manveen, 16 Nov 2026: weekend replies
+    had no daily post at all; "make it that way then");
   * weekly, on Fridays: the 7 full days Friday to Thursday;
   * monthly, on the first working day: the whole previous month;
   * replies are people, not messages; everything in the one post.
@@ -84,9 +86,10 @@ def is_first_working_day(today: date) -> bool:
 
 
 def periods_for(today: date) -> list[Period]:
-    """The day always; the week on Fridays; last month on its first working day."""
+    """The day always (on Monday, Friday to Sunday); the week on Fridays; last
+    month on its first working day."""
     day = previous_working_day(today)
-    out = [Period("day", day, day)]
+    out = [Period("day", day, today - timedelta(days=1))]
     if today.weekday() == 4:
         out.append(Period("week", today - timedelta(days=7), today - timedelta(days=1)))
     if is_first_working_day(today):

@@ -2,7 +2,7 @@
 """Post the campaign stats to Slack: #pl_daily, 10:15 IST, Mon-Fri.
 
 The last working day's email and LinkedIn numbers per client (a Monday post
-covers Friday), plus the week Friday to Thursday on Fridays and last month on
+covers Friday to Sunday), plus the week Friday to Thursday on Fridays and last month on
 the month's first working day; each day's campaigns in the thread. Counted
 from the platforms' dated records at posting time (smartlead.daily_stats),
 not from the 09:00 snapshots. Decided with Manveen, 29 Oct and 2 Nov 2026.

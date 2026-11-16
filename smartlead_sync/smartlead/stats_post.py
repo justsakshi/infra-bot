@@ -2,7 +2,8 @@
 
 Asked for at the 29 Oct 2026 standup: the email and LinkedIn numbers in the
 group before the call, so nobody opens Smartlead or Expandi on the call to
-read them out. Since 2 Nov (Manveen) it reports the last working day only,
+read them out. Since 2 Nov (Manveen) it reports the last working day only
+(Monday: Friday to Sunday, 16 Nov),
 plus the week on Fridays and last month on the month's first working day;
 the numbers come from smartlead.daily_stats.
 
@@ -101,12 +102,21 @@ def _client_rank(client: str):
             client)
 
 
+def day_label(p: Period) -> str:
+    """'Fri 13 Nov', or 'Fri 13 – Sun 15 Nov' for Monday's weekend post."""
+    if p.start == p.end:
+        return weekday_day(p.start)
+    if (p.start.year, p.start.month) == (p.end.year, p.end.month):
+        return f"{p.start:%a} {p.start.day} – {weekday_day(p.end)}"
+    return f"{weekday_day(p.start)} – {weekday_day(p.end)}"
+
+
 def _period_title(p: Period) -> str:
     if p.key == "week":
         return f"This week, {weekday_day(p.start)} – {weekday_day(p.end)}"
     if p.key == "month":
         return month_name(p)
-    return weekday_day(p.start)
+    return day_label(p)
 
 
 def button_label(c: dict, channel: str = "Email") -> str:
@@ -187,8 +197,8 @@ def summary_messages(rows: list[dict], day: Period, clients: list[str] = ()) -> 
                                  f"*{names[r['campaign']]}*\n{_line(channel, r['counts'][day.key], True)}"}})
         if not sections:
             sections = [{"type": "section", "text": {"type": "mrkdwn",
-                                                     "text": "No campaign sent or got a reply this day."}}]
-        heading = f"{client}, {weekday_day(day.start)}"
+                                                     "text": "No campaign sent or got a reply."}}]
+        heading = f"{client}, {day_label(day)}"
         title = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{heading}*"}}
         for i in range(0, len(sections), _MAX_SECTIONS):
             out.append({"client": client, "text": heading,
@@ -202,7 +212,7 @@ def summary_part(day: Period, clients: list[str], no_replies: list[str] = ()) ->
     blocks: list[dict] = []
     if no_replies:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
-                       f"No replies on {weekday_day(day.start)}: {', '.join(no_replies)}."}})
+                       f"No replies on {day_label(day)}: {', '.join(no_replies)}."}})
     blocks.append({"type": "section", "text": {"type": "mrkdwn",
                                                "text": "Each client's numbers, campaign by campaign:"}})
     blocks.append({"type": "actions", "elements": [
@@ -226,9 +236,9 @@ def build_post(rows: list[dict], periods: list[Period], clients: list[str],
     (PL's Waalaxy replies are logged from 30 Oct 2026).
     """
     day = next(p for p in periods if p.key == "day")
-    nxt = day.start + timedelta(days=1)
-    head = [f"📊 Campaign stats for {weekday_day(day.start)}", "",
-            f"{weekday_day(day.start)} = 5:30 AM {day.start:%a} to 5:30 AM {weekday_day(nxt)}, India time. "
+    nxt = day.end + timedelta(days=1)
+    head = [f"📊 Campaign stats for {day_label(day)}", "",
+            f"{day_label(day)} = 5:30 AM {day.start:%a} to 5:30 AM {weekday_day(nxt)}, India time. "
             "Anything before 5:30 AM counts for the day before.",
             "New people reached = first emails; emails sent includes follow-ups.",
             "In the thread: the campaigns that got replies (click to read them), then a "

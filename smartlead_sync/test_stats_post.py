@@ -4,7 +4,7 @@ from datetime import date
 
 from smartlead.daily_stats import Period
 from smartlead.notify import post_with_thread
-from smartlead.stats_post import build_post, part_as_text, weekday_day
+from smartlead.stats_post import build_post, day_label, part_as_text, weekday_day
 
 DAY = Period("day", date(2026, 10, 30), date(2026, 10, 30))
 WEEK = Period("week", date(2026, 10, 30), date(2026, 11, 5))
@@ -213,10 +213,21 @@ def test_each_client_gets_its_own_summary_with_every_campaign_that_moved():
     assert "*Sent only*\n118 new people reached · 225 emails sent\n" in bettr + "\n"   # no "0 replied"
     assert "15 invites · 4 accepted" in bettr and bettr.index("Email") < bettr.index("LinkedIn")
     assert "Quiet" not in part_as_text(msgs[1])
-    assert "No campaign sent or got a reply this day." in part_as_text(msgs[1])
+    assert "No campaign sent or got a reply." in part_as_text(msgs[1])
 
 
 def test_thread_shows_the_campaign_name_and_the_button_only():
     _, thread = _post([_r("BettrData", "Email", "A", day=_email(sent=225, replies=1, positive=1))])
     block = thread[0]["blocks"][1]
     assert block["text"]["text"] == "*A*" and block["accessory"]["text"]["text"] == "1 interested"
+
+
+def test_monday_post_names_friday_to_sunday():
+    # Manveen, 16 Nov 2026: weekend replies had no daily post; "make it that way then".
+    weekend = Period("day", date(2026, 11, 13), date(2026, 11, 15))
+    head, thread = _post([], periods=(weekend,))
+    assert head.split("\n")[0] == "📊 Campaign stats for Fri 13 – Sun 15 Nov"
+    assert ("Fri 13 – Sun 15 Nov = 5:30 AM Fri to 5:30 AM Mon 16 Nov, India time.") in head
+    assert "No replies on Fri 13 – Sun 15 Nov:" in part_as_text(thread[-1])
+    assert day_label(Period("day", date(2027, 1, 30), date(2027, 2, 1))) == "Sat 30 Jan – Mon 1 Feb"
+    assert day_label(Period("day", date(2027, 1, 29), date(2027, 1, 31))) == "Fri 29 – Sun 31 Jan"

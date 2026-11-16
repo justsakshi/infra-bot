@@ -11,9 +11,9 @@ def _p(day, key="day"):
 
 # ── which periods a post covers ────────────────────────────────────────────
 
-def test_monday_covers_friday_only():
+def test_monday_covers_friday_to_sunday():
     (p,) = ds.periods_for(date(2026, 11, 9))
-    assert (p.key, p.start, p.end) == ("day", date(2026, 11, 6), date(2026, 11, 6))
+    assert (p.key, p.start, p.end) == ("day", date(2026, 11, 6), date(2026, 11, 8))   # Fri to Sun
 
 
 def test_midweek_covers_yesterday():
