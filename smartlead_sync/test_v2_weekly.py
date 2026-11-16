@@ -486,7 +486,8 @@ def test_an_inbox_smartlead_shows_connected_is_not_called_disconnected(tmp_path)
     assert ("1 inbox did not send in the test, and Smartlead can't log in to it (x.com 1). Reconnect it, or delete it "
             "in Smartlead if it was cancelled.") in text
     assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): the run came back "
-            "short, which Smartlead is looking into. If it misses next week's test too, look at it.") in text
+            "short (Smartlead's test inboxes run low late in the day). If it misses next week's test too, look at "
+            "it.") in text
     assert "allowance" not in text
     assert "• not sent · x.com · ok@x.com → did not send in the test; connected in Smartlead" in text
 
@@ -538,8 +539,11 @@ def test_a_short_test_is_reported_in_one_line_without_blaming_the_plan(tmp_path)
                            "pl-weekly-run-1.csv (1 Google, 4 Microsoft).")
     # 16 Nov 2026, Smartlead support: the plan counts test runs, not emails; it never shrinks a run
     assert "allowance" not in line and "plan allows" not in line
-    assert line.endswith("Smartlead is looking into why runs come back short. Run them again a few minutes apart, "
-                         "and check the test emails total in the New test window before you start.")
+    # Later on 16 Nov: the seed pool refills daily at 05:30 IST; a few minutes' gap does not refill it
+    assert line.endswith("Smartlead's test inboxes refill once a day at 05:30 IST and run low late in the day, so "
+                         "runs started then come back short, and a few minutes' gap does not help. Run them again "
+                         "after 05:30 IST, spread through the day.")
+    assert "a few minutes apart" not in line
 
 
 def test_inboxes_whose_dt_csv_is_missing_are_not_called_untested(tmp_path):
@@ -636,8 +640,8 @@ def test_a_test_thin_at_one_provider_asks_for_a_person(tmp_path):
     f = fleet()
     f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
     head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
-    assert "(it needs 4 of 4): bd-run-1.csv (1 Google, 4 Microsoft). Smartlead is looking into why" in parts[0]
-    assert "Run it again a few minutes apart" in parts[0]
+    assert "(it needs 4 of 4): bd-run-1.csv (1 Google, 4 Microsoft). Smartlead's test inboxes refill" in parts[0]
+    assert "Run it again after 05:30 IST, spread through the day." in parts[0]
 
 
 def test_a_midweek_test_skips_the_weekly_checks(tmp_path):

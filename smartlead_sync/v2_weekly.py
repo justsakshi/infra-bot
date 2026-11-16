@@ -1288,27 +1288,31 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         needs.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test, and Smartlead can't log in to {it} "
                      f"({_per_dom(off)}). Reconnect {it}, or delete {it} in Smartlead if {'they were' if n != 1 else 'it was'} "
                      f"cancelled.")
-    if ok:          # 16 Nov 2026: connected inboxes "did not send" in runs that came back short (not the plan:
-                    # Smartlead support, 16 Nov, says the plan counts runs and never shrinks one; cause open with them)
+    if ok:          # 16 Nov 2026: connected inboxes "did not send" in runs that came back short. Smartlead support:
+                    # test emails come from a shared pool of seed inboxes that refills daily at 05:30 IST, so runs
+                    # started late in that day (the Saturday 00:00 IST batch) get fewer
         n = sum(ok.values())
         info.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test although Smartlead shows "
-                    f"{'them' if n != 1 else 'it'} connected ({', '.join(sorted(ok))}): the run came back short, which "
-                    f"Smartlead is looking into. If {'they' if n != 1 else 'it'} miss{'' if n != 1 else 'es'} next week's "
-                    f"test too, look at {'them' if n != 1 else 'it'}.")
+                    f"{'them' if n != 1 else 'it'} connected ({', '.join(sorted(ok))}): the run came back short "
+                    f"(Smartlead's test inboxes run low late in the day). If {'they' if n != 1 else 'it'} "
+                    f"miss{'' if n != 1 else 'es'} next week's test too, look at {'them' if n != 1 else 'it'}.")
     thin = sorted((f["name"], f["per_provider"], f.get("by_provider") or {}) for f in state["files"].values()
                   if f.get("night") in got["nights"] and f.get("status") == "ingested"
                   and 0 < int(f.get("per_provider") or v2.PASS_SEEDS) < v2.PASS_SEEDS)
     if thin:
         # One line for all of them. Smartlead support, 16 Nov 2026: the plan (Growth) counts test runs, not emails, and
-        # running out pauses a test rather than shrinking it; why runs come back with fewer than 4 is open with them.
-        # The test's own seedsPerSenderPerProvider and GET /limits both read 4, so "set the test to 4" helps no one.
+        # running out pauses a test rather than shrinking it. Later the same day: test emails come from a shared pool
+        # of seed inboxes that is used up over the day and refills at 05:30 IST, so a run started late in that day
+        # gets fewer, and a gap of a few minutes does not refill it. The test's own seedsPerSenderPerProvider and
+        # GET /limits both read 4, so "set the test to 4" helps no one.
         runs = ", ".join(f"{name} ({', '.join(f'{c} {p.title()}' for p, c in sorted(by.items()))})"
                          if len(set(by.values())) > 1 else f"{name} ({n} per provider)" for name, n, by in thin)
         k = len(thin)
         needs.append(f"{k} test run{'s' if k != 1 else ''} sent fewer than 4 emails per provider, so the job can't "
-                     f"judge {'their' if k != 1 else 'its'} inboxes (it needs 4 of 4): {runs}. Smartlead is looking into why "
-                     f"runs come back short. Run {'them' if k != 1 else 'it'} again a few minutes apart, and check the "
-                     f"test emails total in the New test window before you start.")
+                     f"judge {'their' if k != 1 else 'its'} inboxes (it needs 4 of 4): {runs}. Smartlead's test inboxes "
+                     f"refill once a day at 05:30 IST and run low late in the day, so runs started then come back "
+                     f"short, and a few minutes' gap does not help. Run {'them' if k != 1 else 'it'} again after "
+                     f"05:30 IST, spread through the day.")
     current = {x.get("file") for rs in state["results"].values() for x in rs}
     partial = sorted((f["name"], f["pending_seeds"]) for sha, f in state["files"].items()
                      if f.get("night") in got["nights"] and f.get("status") == "ingested" and f.get("pending_seeds")
