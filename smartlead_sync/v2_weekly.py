@@ -21,8 +21,8 @@ What it does (rules in smartlead/v2_results.py):
     stays in its DT test campaign, so next Monday tests it again;
   * Google inboxes are report-only (REPORT_ONLY_TYPES, 12 Nov 2026: real replies disagree with the seed test; --act-types
     GMAIL to act): a failing one is reported as "would be taken out", nothing in Smartlead changes for it;
-  * Melior is report-only (REPORT_ONLY_CLIENTS, until the job is proven on the other clients; --act-clients Melior to act): its
-    inboxes are listed as "would be taken out" and nothing in Smartlead changes for them;
+  * a client listed in REPORT_ONLY_CLIENTS is only reported on (none since 16 Nov 2026: Melior's Outlook inboxes act like
+    PL's and BettrData's; its Google inboxes stay report-only under the rule above);
   * a campaign left with no good sender is not touched (sending or scheduled: the post asks a person);
   * an inbox the job pulled comes back (same campaigns, tag removed) after two passes 6+ days apart;
   * if nearly every inbox in a night, or in one test file, is below 4/4 at one provider, that provider is
@@ -129,7 +129,9 @@ DEFAULT_STATE = Path(os.getenv("V2_STATE_DIR") or HERE.parents[1] / "v2-weekly")
 # Report-only is a safety stage, not a client rule (Manveen, 11 Nov 2026: "it should not be client dependent
 # right now i am keeping melior out so we should know its safe before using that"). The rules are the same
 # for every client; a client listed here is only reported on until the job is known to be safe.
-REPORT_ONLY_CLIENTS = {"Melior"}
+# 16 Nov 2026 (Manveen, "Yes, Outlook only"): Melior acts like PL and BettrData. Its Google inboxes stay report-only
+# through REPORT_ONLY_TYPES, as every client's do. The stage stays here for a future client.
+REPORT_ONLY_CLIENTS: set[str] = set()
 REPORT_ONLY_WHY = {"Melior": "until the job is proven on the other clients"}
 # Switching a report-only client on (DECISIONS.md D8, Manveen 11 Nov 2026: "i agree with all 4"): the job says when
 # all four hold; the switch itself stays his call.
