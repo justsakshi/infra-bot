@@ -14,7 +14,7 @@ from smartlead import campaign_metrics as cm
 from smartlead.config import (CAMPAIGN_METRICS_CLIENTS, CAMPAIGN_METRICS_EXCLUDE,
                               EXPANDI_LEAD_PAGES_PER_RUN, EXPANDI_LEAD_PAGE_SIZE,
                               EXPANDI_SWEEP_TIME_BUDGET_SEC)
-from smartlead.expandi import ExpandiClient
+from smartlead.expandi import ExpandiClient, ExpandiCredentialsRejected
 from smartlead.expandi_accounts import discover_expandi_workspaces
 from smartlead.expandi_leads import ExpandiLeadStore
 from smartlead.expandi_store import ExpandiStore
@@ -270,6 +270,12 @@ async def build_expandi_rows(today: datetime, start_dt: datetime,
                           f"still backfilling, using snapshot deltas: "
                           f"{'; '.join(pending[:5])}"
                           f"{' …' if len(pending) > 5 else ''}")
+        except ExpandiCredentialsRejected:
+            # The pair on this server is wrong; name its env vars so the digest step says what to set.
+            pair = f"{getattr(ws, 'key_var', 'EXPANDEE_API_KEY')} + {getattr(ws, 'secret_var', 'EXPANDEE_SECRET')}"
+            print(f"[!] Expandi workspace {ws.name} failed: Expandi rejected {pair} (invalid credentials)")
+            if failed is not None:
+                failed.append(f"Expandi {ws.name} (Expandi rejected {pair} on this server)")
         except Exception as exc:  # noqa: BLE001
             from smartlead.daily_stats import _why    # type + HTTP status only, never the text
             print(f"[!] Expandi workspace {ws.name} failed: {_why(exc)}")

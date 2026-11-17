@@ -23,6 +23,9 @@ class ExpandiWorkspace:
     name: str
     api_key: str
     api_secret: str
+    # The env var names this pair came from, so a rejected pair can say what to fix.
+    key_var: str = _KEY_PREFIX
+    secret_var: str = _SECRET_PREFIX
 
 
 def discover_expandi_workspaces() -> list[ExpandiWorkspace]:
@@ -46,5 +49,7 @@ def discover_expandi_workspaces() -> list[ExpandiWorkspace]:
             name=(suffix or "BETTRDATA").upper(),
             api_key=key_val.strip(),
             api_secret=secret,
+            key_var=key_var,
+            secret_var=secret_var,
         ))
     return out

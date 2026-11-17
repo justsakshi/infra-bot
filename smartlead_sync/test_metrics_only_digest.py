@@ -92,3 +92,61 @@ def test_an_expandi_workspace_failure_is_named_with_its_error_type(monkeypatch):
     failed = []
     asyncio.run(er.build_expandi_rows(datetime(2026, 11, 16), datetime(2026, 11, 1), failed=failed))
     assert failed == ["Expandi BETTRDATA (TimeoutError)"]
+
+
+def test_expandi_saying_invalid_credentials_is_its_own_error_and_other_400s_are_not():
+    """17 Nov (t267): Render's run failed 11-17 Nov with HTTPStatusError 400. Expandi answers a wrong key/secret
+    pair with 400 {"error": "invalid credentials"} (a garbage value just hangs), so that 400 means the env pair."""
+    import asyncio
+    import httpx
+    from smartlead import expandi as ex
+
+    def client_for(status, body):
+        c = ex.ExpandiClient("KEYVALUE1", "SECRETVALUE2", "BETTRDATA")
+        c._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(status, json=body)))
+        return c
+    with pytest.raises(ex.ExpandiCredentialsRejected) as e:
+        asyncio.run(client_for(400, {"error": "invalid credentials"}).list_li_accounts())
+    assert not any(v in str(e.value) for v in ("http", "KEYVALUE1", "SECRETVALUE2"))
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(client_for(400, {"error": "page_size too big"}).list_li_accounts())
+
+
+@pytest.mark.parametrize("suffix,key_var,secret_var", [
+    ("", "EXPANDEE_API_KEY", "EXPANDEE_SECRET"),
+    ("_ACME", "EXPANDEE_API_KEY_ACME", "EXPANDEE_SECRET_ACME")])
+def test_a_rejected_pair_is_named_by_its_env_vars(monkeypatch, suffix, key_var, secret_var):
+    import asyncio
+    from datetime import datetime
+    from types import SimpleNamespace
+    from smartlead import expandi_rows as er
+    from smartlead.expandi import ExpandiCredentialsRejected
+    from smartlead.expandi_accounts import discover_expandi_workspaces
+
+    for k in [k for k in __import__("os").environ if k.startswith("EXPANDEE_")]:
+        monkeypatch.delenv(k)
+    monkeypatch.setenv(key_var, "k")
+    monkeypatch.setenv(secret_var, "s")
+    (ws,) = discover_expandi_workspaces()
+    assert (ws.key_var, ws.secret_var) == (key_var, secret_var)
+
+    class Rejected:
+        def __init__(self, *a): pass
+        async def __aenter__(self): raise ExpandiCredentialsRejected()
+        async def __aexit__(self, *a): return False
+    monkeypatch.setattr(er, "discover_expandi_workspaces", lambda: [ws])
+    monkeypatch.setattr(er, "ExpandiClient", Rejected)
+    monkeypatch.setattr(er, "ExpandiStore", lambda: SimpleNamespace(available=False))
+    monkeypatch.setattr(er, "ExpandiLeadStore", lambda: SimpleNamespace(available=False))
+    monkeypatch.setattr(er.cm, "row_client_wanted", lambda *a: True)
+    failed = []
+    asyncio.run(er.build_expandi_rows(datetime(2026, 11, 17), datetime(2026, 11, 1), failed=failed))
+    assert failed == [f"Expandi {ws.name} (Expandi rejected {key_var} + {secret_var} on this server)"]
+
+
+def test_a_rejected_pair_tells_manveen_which_env_vars_to_set(run, monkeypatch):
+    monkeypatch.setenv("DIGEST_MODE", "on")
+    _, reports = run(2, ["Expandi BETTRDATA (Expandi rejected EXPANDEE_API_KEY + EXPANDEE_SECRET on this server)"])
+    a = reports[0][1][0]
+    assert a.text == "The 9:00 campaign stats job did not finish cleanly; not read: Expandi BETTRDATA."
+    assert a.step.startswith("Set EXPANDEE_API_KEY and EXPANDEE_SECRET on Render (Environment)")

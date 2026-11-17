@@ -133,7 +133,8 @@ def _alert(text: str) -> None:
 
 
 SOURCE = "campaign-metrics"          # its name in the daily digest
-_MISSING_KEYS = re.compile(r"\(no ([A-Z0-9_ +]+?) on this server\)")
+# A key missing on the server, or one Expandi rejected (17 Nov, t267): either way the step names the env vars.
+_MISSING_KEYS = re.compile(r"\((?:no|Expandi rejected) ([A-Z0-9_ +]+?) on this server\)")
 
 
 def failure_text(code: int, failed: list[str]) -> str:
