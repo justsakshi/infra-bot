@@ -147,9 +147,9 @@ def _real(email: str, evidence: list[dict], target: date) -> tuple[dict | None, 
         return None, f"no inbox_evidence week in the 7 days up to {_day(target)}"
     w = max(weeks, key=lambda w: str(w["_id"]))
     row = (w.get("inboxes") or {}).get(email)
-    if not row:
-        return {"week": str(w["_id"])[:10], "sent": 0, "replies": 0, "ooo": 0,
-                "label": "no real sends in the evidence window"}, None
+    if not row:      # no real sends seen, or its account was not read that week: unknown, never 0
+        return None, (f"not in the inbox_evidence week of {str(w['_id'])[:10]} (no real sends seen, or its account "
+                      "was not read)")
     provs = (row.get("providers") or {}).values()
     return {"week": str(w["_id"])[:10], "sent": row.get("sent", 0),
             "replies": sum(p.get("replies", 0) for p in provs), "ooo": sum(p.get("ooo", 0) for p in provs),

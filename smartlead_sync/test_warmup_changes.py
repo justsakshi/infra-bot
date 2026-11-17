@@ -287,3 +287,10 @@ def test_fleet_watch_reading_keeps_the_warm_up_status_and_blocked_reason():
         "ACTIVE", "auth failures", True, "Precise Leads", "smtp")
     r = fw.record("PRECISE_LEADS", {**a, "warmup_details": {"status": "PAUSED"}}, {}, {}, {}, {}, {}, date(2026, 11, 17))
     assert (r["warmup_status"], r["blocked_reason"], r["warmup_blocked"]) == ("PAUSED", None, None)
+
+
+def test_an_inbox_missing_from_the_evidence_week_is_unknown_not_zero():
+    """The weekly evidence only holds inboxes of accounts it read that sent in 28 days: absent is not 0 (t17 child)."""
+    ev = [{"_id": "2026-11-22", "inboxes": {"other@example.com": {"sent": 5, "providers": {}}}}]
+    w1 = wc.fill(event(), [state()], [], ev, date(2026, 11, 24))["outcomes"]["week1"]
+    assert w1["real"] is None and "not in the inbox_evidence week of 2026-11-22" in w1["real_why"]
