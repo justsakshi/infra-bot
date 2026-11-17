@@ -99,7 +99,31 @@ def ask_doc(e: dict, row: dict | None, today: date) -> dict:
         step = ("ScaledMail, Billing, check today's card payment went through (it can need 3-D Secure "
                 f"confirmation): {e.get('invoice_url') or SCALEDMAIL_BILLING}")
     return {"key": _ask_key(e, row, today), "event": ev, "row": e["key"], "provider": e["provider"],
-            "text": text, "step": step, "urgent": ev in DIGEST_URGENT, "opened": today.isoformat()}
+            "text": text, "step": step, "urgent": ev in DIGEST_URGENT, "opened": today.isoformat(),
+            "detail": bill_detail(e, row)}
+
+
+def bill_detail(e: dict, row: dict | None) -> list[str]:
+    """What the bill is (17 Nov 2026, Manveen: every domain post gives the complete context): bill date, amount,
+    inboxes, status, and the domains on it. Pure."""
+    r = {**e, **(row or {})}
+    bits = []
+    if r.get("bills_on"):
+        bits.append(f"bill date {bw._plain(r['bills_on'])}")
+    if r.get("price") not in (None, ""):
+        try:
+            bits.append(f"${float(r['price']):,.2f}")
+        except (TypeError, ValueError):
+            pass
+    if r.get("inboxes"):
+        bits.append(f"{r['inboxes']} inbox{'es' if str(r['inboxes']) != '1' else ''}")
+    if r.get("status"):
+        bits.append(f"status {r['status']}")
+    lines = [f"{e['provider']} · {e['label']}{_who(e)}: " + ", ".join(bits)] if bits else []
+    doms = sorted(set(r.get("domains") or []))
+    if doms:
+        lines.append(f"Domains ({len(doms)}): " + ", ".join(doms[:15]) + (f" and {len(doms) - 15} more" if len(doms) > 15 else ""))
+    return lines
 
 
 def still_open(a: dict, row: dict | None, today: date, failed: set[str]) -> bool:
@@ -141,14 +165,20 @@ def _source_of(err: str) -> str:
 
 def digest_asks(open_now: dict, errors: list[str]) -> list:
     """The open alerts (urgent first) and one "broken" ask per source that could not be read. Pure."""
-    asks = [dg.Ask(a["text"], a["step"], key=a["key"], urgent=a["urgent"])
-            for a in sorted(open_now.values(), key=lambda a: (not a["urgent"], a["opened"], a["key"]))]
+    # One bill, one ask: a failed payment already says the bill is not paid, so its "not renewed" ask is not
+    # handed over as well (14-16 Nov 2026 the same 14 Nov Zapmail bill came as two urgent items). Both stay in the
+    # state, so either one clears on its own terms.
+    paid_failed = {a.get("row") for a in open_now.values() if a.get("event") == "payment"}
+    shown = [a for a in open_now.values() if not (a.get("event") == "not_renewed" and a.get("row") in paid_failed)]
+    asks = [dg.Ask(a["text"], a["step"], key=a["key"], urgent=a["urgent"], detail=a.get("detail") or [])
+            for a in sorted(shown, key=lambda a: (not a["urgent"], a["opened"], a["key"]))]
     for src in sorted({_source_of(e) for e in errors}):
         if src == "Mongo":
             text = "Billing watch could not read its saved state (Mongo), so no bill change was checked this run."
         else:
             text = f"Billing watch could not read {src}, so a failed or missed {src} bill may go unnoticed."
-        asks.append(dg.Ask(text, "It tries again at its next check (6 a day); the error is in the thread.",
+        asks.append(dg.Ask(text, "It tries again at its next check (6 a day); the error is in the Render log "
+                                 "(search [billing-watch]).",
                            key=f"{SOURCE}:read:{src}", kind="broken"))
     return asks
 

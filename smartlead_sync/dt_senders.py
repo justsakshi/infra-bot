@@ -456,8 +456,12 @@ def new_inbox_text(gaps: list[dict], added: set[str], created: list[str]) -> str
                          + ", ".join(fresh))
     if not lines:
         return ""
-    return ("🧪 *New inboxes for the placement tests*\n\n" + "\n".join("• " + l for l in lines)
-            + "\n\n_The bot cannot edit scheduled tests in Smart Delivery, so these are for you to add._")
+    # 17 Nov 2026: a v2 test keeps the senders it was created with, so "add to the scheduled test" works only if
+    # Smart Delivery lets you edit it; say what to do when it does not (the digest's coverage ask has the slot).
+    return ("New inboxes for the placement tests\n\n" + "\n".join("• " + l for l in lines)
+            + "\n\nThe bot cannot edit scheduled tests in Smart Delivery, so these are for you to add. If Smart "
+              "Delivery does not let you edit a test's senders, leave it: the daily digest asks for a new weekly test "
+              "for them, with the Saturday slot and a ready Claude in Chrome line.")
 
 
 def deliver_dm(gaps: list[dict], added: set[str], created: list[str], pending: dict, *, complete: bool,
@@ -569,16 +573,16 @@ def free_slots(taken: set[str], today: date, n: int) -> list[str]:
     return out
 
 
-def _chrome(test: str | None, camp: str | None, n: int, slot: str = SATURDAY) -> str:
-    """A ready Claude-in-Chrome line. Smartlead's API cannot edit a v2 test's senders and the help centre only shows
-    picking them when a test is created (17 Nov 2026), so the line edits only if the page allows it."""
-    them = "it" if n == 1 else f"the {n} inboxes"
+def _chrome(test: str | None, camp: str | None, emails: list[str], slot: str = SATURDAY) -> str:
+    """A ready Claude-in-Chrome line, naming the inboxes (17 Nov 2026: a pasted prompt cannot read a Slack thread).
+    Smartlead's API cannot edit a v2 test's senders and the help centre only shows picking them when a test is
+    created (17 Nov 2026), so the line edits only if the page allows it."""
+    them = f"this inbox: {emails[0]}" if len(emails) == 1 else f"these {len(emails)} inboxes: {', '.join(sorted(emails))}"
     new = (f"create a new weekly v2 test (Automatic, campaign {camp or 'a DT campaign of the client'}, Google + "
-           f"Microsoft, text only, weekly, first run {slot}, at most {DT_CAP} senders) with {them} listed in the "
-           "digest thread")
+           f"Microsoft, text only, weekly, first run {slot}, at most {DT_CAP} senders) with {them}")
     if test:
         return (f"Claude in Chrome: \"In Smartlead > Smart Delivery, open the weekly v2 test '{test}'. If it lets you edit "
-                f"its sender accounts, add only {them} listed in the digest thread and save; change nothing else. "
+                f"its sender accounts, add only {them}, and save; change nothing else. "
                 f"If its senders cannot be edited, leave it as it is and {new}. Change nothing else; never click Run now.\"")
     return f"Claude in Chrome: \"In Smartlead > Smart Delivery, {new}. Change nothing else; never click Run now.\""
 
@@ -598,21 +602,31 @@ def _gap_step(client: str, c: dict, dt_tests: dict, untested: list[str], next_sl
         t = dt_tests.get(camp) if camp else None
         if t and t["senders"] + n <= DT_CAP:
             parts.append(f"{n} on {camp}: \"{t['test']}\" on {camp} has room ({t['senders']} of {DT_CAP} senders). "
-                         + _chrome(t["test"], camp, n))
+                         + _chrome(t["test"], camp, groups[camp]))
             continue
         slot = next_slot()
         if camp is None:
             where = spare or "a new DT campaign of the client (a copy of its DT #1)"
             parts.append(f"{n} on no DT campaign: needs a new test at {slot}; put {it} on {where} first, then "
-                         + _chrome(None, where, n, slot))
+                         + _chrome(None, where, groups[camp], slot))
         elif t:
             parts.append(f"{n} on {camp} (its test \"{t['test']}\" is full): needs a new test at {slot}, on "
-                         f"{spare or camp}. " + _chrome(None, spare or camp, n, slot))
+                         f"{spare or camp}. " + _chrome(None, spare or camp, groups[camp], slot))
         else:
             parts.append(f"{n} on {camp}, which has no active weekly test: needs a new test at {slot}, there. "
-                         + _chrome(None, camp, n, slot))
+                         + _chrome(None, camp, groups[camp], slot))
     return (" · ".join(parts) + f" A v2 test keeps the senders it was created with (at most {DT_CAP}), so putting an "
-            "inbox on a campaign is not enough. The list is in the thread.")
+            "inbox on a campaign is not enough.")
+
+
+def _by_domain(emails: list[str], on: dict | None = None) -> list[str]:
+    """'x.com: a@, b@ (on DT PL #2)' per domain and DT campaign: the inboxes an ask is about, short enough to read."""
+    from smartlead import digest as dg
+    groups: dict = {}
+    for e in emails:
+        groups.setdefault((on or {}).get(e), []).append(e)
+    return [line + (f" (on {camp})" if camp else " (on no DT campaign)")
+            for camp in sorted(groups, key=lambda c: (c is None, str(c))) for line in dg.by_domain(groups[camp])]
 
 
 def coverage_asks(results: dict, today: date | None = None) -> list:
@@ -647,17 +661,19 @@ def coverage_asks(results: dict, today: date | None = None) -> list:
                         f"so nothing checks {'its' if len(none) == 1 else 'their'} placement.")
                 step = _gap_step(client, c, r.get("dt_tests") or {}, (r.get("untested_dts") or {}).get(client) or [],
                                  lambda: next(pool, SATURDAY))
+                lines = _by_domain(none, c.get("on") or {})
                 if friday:
-                    asks.append(dg.Ask("Friday reminder: " + text, step, urgent=True,
+                    asks.append(dg.Ask("Friday reminder: " + text, step, urgent=True, detail=lines,
                                        key=f"{SOURCE}:coverage:{client}:{today.isoformat()}"))
                 else:
-                    asks.append(dg.Ask(text, step, key=f"{SOURCE}:coverage:{client}"))
+                    asks.append(dg.Ask(text, step, key=f"{SOURCE}:coverage:{client}", detail=lines))
             if dupes:
                 asks.append(dg.Ask(
                     f"{_n(len(dupes))} of {client} {'is' if len(dupes) == 1 else 'are'} in 2 or more active weekly v2 "
                     "tests, so their seed emails are paid twice.",
-                    "Stop one of the tests named in the thread, or recreate it without them.",
-                    key=f"{SOURCE}:coverage-dupes:{client}"))
+                    "For each inbox listed, stop one of its tests, or recreate one without it.",
+                    key=f"{SOURCE}:coverage-dupes:{client}",
+                    detail=[f"{e}: {', '.join(names)}" for e, names in sorted(dupes.items())]))
     return asks
 
 
@@ -703,9 +719,10 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
                 f"sheet, so {'their' if k != 1 else 'its'} inboxes are kept off the weekly placement test.")
         step = (f"If we use it, add {new[0]} to the deliverability sheet, tab {tabs[0]}, column A; the next run puts "
                 "its inboxes on the test campaigns." if k == 1 else
-                f"For each domain in the thread we use, add it to the deliverability sheet (tab {', '.join(tabs)}), "
+                f"For each domain listed that we use, add it to the deliverability sheet (tab {', '.join(tabs)}), "
                 "column A; the next run puts its inboxes on the test campaigns.")
-        asks.append(dg.Ask(text, step, key=f"{SOURCE}:untracked"))
+        asks.append(dg.Ask(text, step, key=f"{SOURCE}:untracked",
+                           detail=[f"{d} ({untracked[d]['client']}, {_n(untracked[d]['inboxes'])})" for d in new]))
     for client, k in sorted(_no_room(results).items()):
         asks.append(dg.Ask(
             f"{k} {client} inbox{'es' if k != 1 else ''} taken out after a failed v2 test {'are' if k != 1 else 'is'} on "
@@ -718,8 +735,8 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
     if errors:
         names = sorted({e.split(":", 1)[0] for e in errors})
         asks.append(dg.Ask(f"The test-campaign job could not finish: {', '.join(names)}.",
-                           "The errors are in the thread; it runs again tomorrow at 06:00 IST.",
-                           key=f"{SOURCE}:errors", kind="broken"))
+                           "It runs again tomorrow at 06:00 IST; if it fails again, look at the Render log (search "
+                           "[dt-senders]).", detail=[e[:160] for e in errors], key=f"{SOURCE}:errors", kind="broken"))
     if dm_failed:
         asks.append(dg.Ask("The DM about new inboxes for the placement tests did not go out.",
                            "Nothing to do: it is kept and sent again with the next run.", key=f"{SOURCE}:dm",

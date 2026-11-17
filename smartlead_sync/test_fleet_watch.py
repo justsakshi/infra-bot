@@ -332,7 +332,8 @@ def test_with_the_digest_on_every_open_case_is_one_ask_per_kind_and_nothing_is_p
     assert src == "fleet-watch" and done == []
     assert [(a.key, a.text, a.urgent, a.kind) for a in asks] == [
         ("fleet-watch:warmup_off", "2 inboxes have warm-up switched off.", False, "ask")]   # disconnected: not a daily kind
-    assert asks[0].step == "Turn warmup back on. The list is in the thread."
+    assert asks[0].step == "Turn warmup back on for each one listed."
+    assert asks[0].detail == ["a@d.com (open since 13 Nov)", "b@d.com (open since 13 Nov)"]   # 17 Nov: named in the ask
     assert detail[0] == "Fleet watch, 13 Nov: 2 open problems (suggestions only, the bot changed nothing)"
     assert "• a@d.com, open since 13 Nov" in detail[1] and "• b@d.com" in detail[1]
     assert all(c["announced"] for c in s.cases.docs)              # told: a later switch-off does not post them again

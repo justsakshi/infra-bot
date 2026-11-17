@@ -79,9 +79,11 @@ def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well(mon
     assert "Ryan" not in items[1]["text"]                         # a safety stage, nobody's call (11 Nov 2026)
     assert items[2]["text"] == ("1 live campaign has lost half or more of its inboxes. Add inboxes that passed the "
                                 "weekly test, or lower its daily sending")
-    assert items[2]["detail"] == ["• Melior · Melior Legal: 1 of 2 inboxes can send (1 taken out by the weekly job)"]
+    assert items[2]["detail"] == ["• Melior · Melior Legal: 1 of 2 inboxes can send (1 taken out by the weekly job)",
+                                  "• Melior has no free inbox with a weekly-test pass in the last 10 days, so lower "
+                                  "the daily sending"]
     assert items[3]["text"] == "2 inboxes in live campaigns are disconnected in Smartlead. Reconnect them"
-    assert items[3]["detail"] == ["• Bettrdata: off1@b.co, off2@b.co"]                      # bench@b.co is not a job
+    assert items[3]["detail"] == ["• Bettrdata · BD Roundtable: off1@b.co, off2@b.co"]                    # bench@b.co is not a job
     head, parts = st.format_post(st.states(rows, T), [], items, T)
     assert ("*Not connected and in no sending campaign (the renewal review asks about these at their bill)*\n"
             "• Bettrdata: 1 inbox on b.co") in parts
@@ -95,7 +97,8 @@ def test_a_campaign_with_no_usable_inbox_is_named():
     rows = [_row("a@x.com", "Camp Z", "ACTIVE", tags=[AUTO]), _row("b@x.com", "Camp Z", "ACTIVE", connection_ok=False)]
     items = {i["key"]: i for i in st.needs_you(st.states(rows, T), T, require_pass=False)}
     assert items["campaign_short"]["detail"] == [
-        "• Precise Leads · Camp Z: 0 of 2 inboxes can send (1 disconnected, 1 taken out by the weekly job)"]
+        "• Precise Leads · Camp Z: 0 of 2 inboxes can send (1 disconnected, 1 taken out by the weekly job)",
+        "• Precise Leads has no free inbox with a weekly-test pass in the last 10 days, so lower the daily sending"]
 
 
 def test_history_records_each_change_once_and_gone_only_on_a_full_read():
@@ -265,3 +268,34 @@ def test_a_passed_inbox_with_high_bounce_is_info_never_an_ask_2026_11_16():
     assert {r["email"]: r["state"] for r in recs} == {"idle@x.com": "free", "live@x.com": "sending"}
     for require_pass in (True, False):
         assert st.digest_asks(st.needs_you(recs, T, require_pass=require_pass)) == []
+
+
+def test_every_digest_ask_carries_its_list_and_no_step_points_at_a_thread():
+    """17 Nov 2026, Manveen on the 12:29 urgent post: "This does not even tell us which campaign do we need to add
+    inboxes". The ask carries the campaigns, and the step names where the free tested inboxes are."""
+    rows = [_row("a@b.co", "Camp One", "ACTIVE", client="BETTRDATA", sub="Bettrdata", v2_status="PASS",
+                 v2_date="2026-11-09"),
+            _row("b@b.co", "Camp One", "ACTIVE", client="BETTRDATA", sub="Bettrdata", connection_ok=False),
+            _row("c@b.co", "Camp One", "ACTIVE", client="BETTRDATA", sub="Bettrdata", connection_ok=False),
+            _row("f1@b.co", client="BETTRDATA", sub="Bettrdata", availability="FREE", busy_reason="",
+                 v2_status="PASS", v2_date="2026-11-09"),
+            _row("f2@b.co", client="BETTRDATA", sub="Bettrdata", availability="FREE", busy_reason=""),   # untested
+            _row("p1@x.com", "Camp P", "ACTIVE", connection_ok=False),
+            _row("p2@x.com", "Camp P", "ACTIVE", connection_ok=False)]
+    items = st.needs_you(st.states(rows, T), T, require_pass=False)
+    asks = {a.key: a for a in st.digest_asks(items)}
+    short = asks["inbox-status:campaign_short"]
+    assert short.urgent
+    assert "• Bettrdata · Camp One: 1 of 3 inboxes can send (2 disconnected)" in short.detail
+    assert "• Precise Leads · Camp P: 0 of 2 inboxes can send (2 disconnected)" in short.detail
+    assert ("• Bettrdata has 1 free inbox with a weekly-test pass in the last 10 days (All Inboxes tab, "
+            "availability FREE)") in short.detail
+    assert ("• Precise Leads has no free inbox with a weekly-test pass in the last 10 days, so lower the daily "
+            "sending") in short.detail
+    assert asks["inbox-status:disconnected"].detail
+    for a in asks.values():
+        assert a.detail, a.key
+        assert "thread" not in a.step, a.step
+    from smartlead import digest as dg
+    text = dg.urgent_text("inbox-status", short.doc("inbox-status"))
+    assert "Camp One" in text and "Camp P" in text and "thread" not in text

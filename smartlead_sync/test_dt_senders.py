@@ -764,3 +764,22 @@ def test_tests_never_see_the_live_mongo_uri():
     import os
     from smartlead.zapmail_asset_sync import _db
     assert os.getenv("MONGO_URI") == "" and _db() is None
+
+
+def test_every_test_campaign_ask_names_its_inboxes_or_domains_2026_11_17():
+    """Manveen 17 Nov 2026: a post must give the complete context. Each ask carries what it is about, and no step
+    points at a thread (an urgent Friday reminder has none)."""
+    from datetime import date
+    res = {"PRECISE_LEADS": {"untracked": {"x.com": {"client": "Precise Leads", "inboxes": 3}},
+                             "coverage": {"Melior": {"inboxes": 50, "none": ["b@x.com", "c@x.com"], "dupes": {},
+                                                     "on": {"b@x.com": "DT Melior #3"}},
+                                          "Precise Leads": {"inboxes": 9, "none": [], "dupes": {"d@y.com": ["P1", "P2"]}}}}}
+    asks, _ = ts.digest_items(res, set(), ["BETTRDATA: 402 plan expired"], False, date(2026, 11, 20))   # a Friday
+    keys = {a.key.rsplit(":", 1)[0] if a.key.endswith("2026-11-20") else a.key: a for a in asks}
+    assert keys["dt-senders:untracked"].detail == ["x.com (Precise Leads, 3 inboxes)"]
+    gap = keys["dt-senders:coverage:Melior"]
+    assert gap.urgent and gap.detail == ["x.com: b@ (on DT Melior #3)", "x.com: c@ (on no DT campaign)"]
+    assert "with this inbox: b@x.com" in gap.step and "with this inbox: c@x.com" in gap.step   # the Chrome prompt names them
+    assert keys["dt-senders:coverage-dupes:Precise Leads"].detail == ["d@y.com: P1, P2"]
+    assert keys["dt-senders:errors"].detail == ["BETTRDATA: 402 plan expired"]
+    assert not any("thread" in a.step for a in asks)

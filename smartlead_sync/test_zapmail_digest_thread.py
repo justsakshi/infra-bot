@@ -201,9 +201,16 @@ def test_each_to_do_is_one_ask_with_a_step_and_status_is_silent():
         "Belardi Wong's Zapmail wallet is at $12.00 with auto-recharge off, so purchases and renewals will fail.")
     assert a["zapmail-digest:low-wallet:Belardi Wong"].step.startswith("Zapmail (Belardi Wong account), Wallet")
     assert a["zapmail-digest:domains-expiring"].text == "1 client domain expires within 14 days, the first on 20 Oct."
-    assert "--execute <batch_id> --approve" in a["zapmail-digest:batches-due"].step and "due1" in a[
-        "zapmail-digest:batches-due"].step
-    assert a["zapmail-digest:batches-reconcile"].step == "Run `zapmail_buy.py --reconcile <batch_id>` for each: stuck."
+    assert "--execute <batch_id> --approve" in a["zapmail-digest:batches-due"].step
+    assert a["zapmail-digest:batches-reconcile"].step == "Run `zapmail_buy.py --reconcile <batch_id>` for each batch listed."
+    # 17 Nov 2026: each ask names its domains, batches or orders, with dates and money; no step points at a thread
+    exp = a["zapmail-digest:domains-expiring"].detail
+    assert len(exp) == 1 and "expires 20 Oct" in exp[0] and "Zapmail account" in exp[0]
+    assert a["zapmail-digest:batches-due"].detail[0].startswith("due1: ") and "$" in a["zapmail-digest:batches-due"].detail[0]
+    assert a["zapmail-digest:batches-reconcile"].detail[0].startswith("stuck: ")
+    assert a["zapmail-digest:sm-late"].detail and all(x.startswith("Late") for x in a["zapmail-digest:sm-late"].detail)
+    assert a["zapmail-digest:sm-no-client"].detail
+    assert not any("thread" in x.step for x in asks)
     assert all(x.step and x.kind == "ask" and not x.urgent for x in asks)
     # a quiet day (bills coming up only) asks nothing; unread things are broken asks
     quiet = {"PRECISE_LEADS": STATUS["PRECISE_LEADS"]}

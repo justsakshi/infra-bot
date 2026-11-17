@@ -183,7 +183,9 @@ def test_three_weeks_without_improvement_is_the_one_ask():
     asks, _, detail = wr.digest_items(docs, MON + timedelta(days=2))
     (a,) = asks
     assert a.text == ("2 inboxes did not improve in 3 weeks of warm-up repair: cancel candidates, your call.")
-    assert "Say which to cancel" in a.step and a.key == "warmup-repair:cancel-candidates" and a.kind == "ask"
+    assert "Say which of those listed to cancel" in a.step and "thread" not in a.step
+    assert [x.split(" · ")[0] for x in a.detail] == ["• a@example.com", "• b@example.com"]   # 17 Nov: named in the ask
+    assert a.key == "warmup-repair:cancel-candidates" and a.kind == "ask"
     assert not a.urgent and "a@example.com" in "\n".join(detail)
 
 

@@ -307,7 +307,8 @@ def sync_asks(ok_tabs: list, failed_tabs: list[dict]) -> list:
     shown = ", ".join(names[:3]) + (f" and {n - 3} more" if n > 3 else "")
     return [dg.Ask(f"The daily sheet sync could not write {n} of {total} tab{'s' if total != 1 else ''} ({shown}), "
                    f"so {'it shows' if n == 1 else 'they show'} old numbers.",
-                   "The errors are on the Last Sync tab and in the thread; the sync runs again tomorrow morning.",
+                   "The errors are on the Last Sync tab; the sync runs again tomorrow morning.",
+                   detail=[f"{e['tab']}: {str(e.get('error') or '')[:120]}" for e in failed_tabs],
                    key=f"{SYNC_SOURCE}:tabs-not-written", kind="broken")]
 
 

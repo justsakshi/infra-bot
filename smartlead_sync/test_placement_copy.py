@@ -597,7 +597,9 @@ def test_problems_become_asks_or_broken_asks(sync, monkeypatch, capsys):
     (src, asks, done, detail), = got
     assert [(a.key, a.kind) for a in asks] == [("copy-sync:no-prefix", "ask"), ("copy-sync:problems", "broken")]
     assert asks[0].text == "1 test campaign has no known client prefix, so it was not refreshed."
-    assert asks[0].step.startswith("In Smartlead, rename each test campaign named in the thread")
+    assert asks[0].step.startswith("In Smartlead, rename each test campaign listed")
+    assert any("'DT Nobody #1' has no known client prefix" in x for x in asks[0].detail)     # 17 Nov: named in the ask
+    assert asks[1].detail and ":warning:" not in "".join(asks[1].detail)
     assert "'DT Nobody #1' has no known client prefix" in detail[0] and sync.posts == [] and done
     capsys.readouterr()
 

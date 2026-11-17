@@ -205,10 +205,11 @@ def should_post(results: dict[str, dict], previous: list[str]) -> bool:
 # finished, are done lines (listed once); a problem a person must fix is an ask, one per kind, rebuilt every run so a
 # fixed one drops out. Problems that retry by themselves (a Smartlead error, a read-back miss before the last try,
 # tags to retry) stay in the thread only. The DM asking whose a new domain is stays as it is.
-PROBLEM_STEPS = {
-    "stuck": "Set them up by hand in Smartlead (signature, client, tags, daily limit, warm-up); the list is in the thread.",
-    "missing-tag": "Create the tags named in the thread in Smartlead (Email Accounts, Tags); the next run uses them.",
-    "drift": "In Smartlead, set the inboxes in the thread back to the standard, or record a changed limit as approved.",
+PROBLEM_STEPS = {   # each ask carries its problem lines, so a step says "listed", never "in the thread"
+    "stuck": "Set each inbox listed up by hand in Smartlead (signature, client, tags, daily limit, warm-up).",
+    "missing-tag": "Create each tag listed in Smartlead (Email Accounts, Tags); the next run uses them.",
+    "drift": "In Smartlead (Email Accounts), set each setting listed back to the standard on those inboxes, or "
+             "record a changed limit as approved.",
     "read": "It retries every 2 hours; if it keeps failing, check that account's Smartlead API key.",
     "scaledmail-read": "It retries every 2 hours; if it keeps failing, check the ScaledMail key on Render.",
 }
@@ -263,7 +264,7 @@ def digest_items(results: dict[str, dict], today: date, announcements: list[dict
             m = sum(_drift_count(p) for p in ps)
             text = f"{_n(m, 'inbox', 'inboxes')} set up by the bot no longer {'matches' if m == 1 else 'match'} the standard settings."
         asks.append(dg.Ask(text, PROBLEM_STEPS[k], key=f"inbox-intake:{k}",
-                           kind="broken" if k in ("read", "scaledmail-read") else "ask"))
+                           kind="broken" if k in ("read", "scaledmail-read") else "ask", detail=ps))
     done = []
     import re
     for res in results.values():

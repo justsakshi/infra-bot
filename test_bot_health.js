@@ -310,6 +310,13 @@ eq(h.dueDailySlot(ist('2026-11-08T11:00:00')), null, 'Sunday: no daily post');
     'a missed and a failed run; campaign metrics reports its own exit 2');
   ok(asks.every(a => a.kind === 'broken' && a.step), 'each has a step');
   eq(asks[1].text, 'API-key check failed, last Tue 17 Nov 09:45 (exit code 2 (a Smartlead API key is dead)).');
+  // 17 Nov 2026: a missed slot nobody can act on is left out: the digest's own, and a job that has run fine since
+  const noDigest = runs.filter(r => r.job !== 'digest');
+  eq(h.healthAsks({ since, now, runs: noDigest }), [], 'the digest posting shows it runs: no "digest did not run" line');
+  const kr = runs.filter(r => r.job === 'key-health');
+  ok(kr.length, 'fixture has key-health runs');
+  const missedThenRan = runs.filter(r => r !== kr[0]).concat(kr.length > 1 ? [] : [{ ...kr[0], slot: 'x', started: new Date(+now - 60000), ended: new Date(+now - 30000) }]);
+  eq(h.healthAsks({ since, now, runs: missedThenRan }), [], 'missed, then ran fine: nothing to do');
   const idx = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
   ok(/at\('digest'[\s\S]{0,120}runDigest\(slot\)/.test(idx), 'index.js runs the digest at its slot');
   ok(/if \(digestOn\(\)\) return console\.log\('\[bot-health\] restarted/.test(idx), 'no restart post with the digest on');

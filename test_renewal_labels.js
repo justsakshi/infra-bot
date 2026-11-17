@@ -46,20 +46,34 @@ console.log(n + ' passed');
   assert2.strictEqual(out.text, 'Daily Renewal Check, 21 Oct');
   assert2.strictEqual(out.blocks[0].text.text, '⏰ Daily Renewal Check, 21 Oct');
   const s = out.blocks[1];
-  assert2.strictEqual(s.text.text, '🔴 *1 domain* and *1 inbox* expire *today*');
+  assert2.strictEqual(s.text.text, '🔴 *1 domain* and *1 inbox* expire *today*\n• x.com (Melior, Zapmail)\n• r@x.com (Melior, Zapmail)');
   assert2.strictEqual(s.accessory.action_id, 'view_details_noon_0');
   assert2.deepStrictEqual(JSON.parse(s.accessory.value), { key: 'noon_0', channel: 'C1', daysFilter: [0], label: 'Today' });
   assert2.ok(!out.blocks.some(b => b.type === 'divider'), 'no divider lines between one-line groups');
-  assert2.strictEqual(out.blocks.length, 3, 'header, one group, link');
+  assert2.strictEqual(out.blocks.length, 4, 'header, one group, the decision, link');
+  assert2.ok(/Renew each one in its vendor before its date, or let it go on purpose/.test(out.blocks[2].text.text));
   assert2.ok(/Nothing expires/.test(JSON.stringify(renewalCheckBlocks([groups[1]], { channel: 'C1', baseUrl: 'https://h' }).blocks)));
   assert2.strictEqual(expiringDetail('Today', groups[0].assets),
     '*Expiring today*\n1 domain · 1 inbox\n\n*Melior*\n🌐 x.com · Zapmail\n📧 r@x.com · Zapmail');
   assert2.ok(/<https:\/\/h\/\|Open dashboard>/.test(reminderText('https://h')));
   // 13 Nov 2026: the reminder names what expires; with nothing expiring neither post goes out
-  assert2.ok(reminderText('https://h', 3).startsWith('🔔 Reminder: 3 domains or inboxes expire in the next 3 working days. Renew them'));
-  assert2.ok(reminderText('https://h', 1).includes('1 domain or inbox expires in the next 3 working days. Renew it'));
+  assert2.ok(reminderText('https://h', 3).startsWith('🔔 Reminder: 3 domains or inboxes expire in the next 3 working days.\n\nRenew them'));
+  // 17 Nov 2026: the reminder names them
+  assert2.ok(reminderText('https://h', 2, ['a.com', 'b@c.com']).startsWith('🔔 Reminder: 2 domains or inboxes expire in the next 3 working days: a.com, b@c.com.\n\nRenew them'));
+  assert2.ok(reminderText('https://h', 1).includes('1 domain or inbox expires in the next 3 working days.\n\nRenew it'));
   const src = require('fs').readFileSync(require('path').join(__dirname, 'index.js'), 'utf8');
   assert2.ok(/if \(!totalExpiring\) \{[\s\S]{0,200}return 'quiet';/.test(src), 'renewal check: no post when nothing expires');
   assert2.ok(/if \(count === 0\) \{[\s\S]{0,200}return 'quiet';/.test(src), '4 PM reminder: no post when nothing expires');
-  console.log('renewal check layout: 12 passed');
+  // 17 Nov 2026 (Manveen: complete context in the post): each asset is named on the card with client, vendor and
+  // cost, at most 8 per group, and the flag says what to do
+  const { cardLine } = require('./renewal_labels');
+  assert2.strictEqual(cardLine({ type: 'DOMAIN', name: 'y.com', client: 'Melior', provider: 'Zapmail', monthlyCost: 7,
+    renewalFlag: 'DROP', renewalFlagReason: 'failed v2 twice', expiryDate: new Date() }),
+  "• y.com (Melior, Zapmail, $7/mo) ⛔ don't renew: failed v2 twice");
+  const many = Array.from({ length: 11 }, (_, i) => ({ ...a, name: `d${i}.com` }));
+  const big = renewalCheckBlocks([{ ...groups[0], assets: many }], { channel: 'C1', baseUrl: 'https://h', now: dayjs('2026-10-21') });
+  assert2.ok(/d7\.com/.test(big.blocks[1].text.text) && !/d8\.com/.test(big.blocks[1].text.text));
+  assert2.ok(/• and 3 more \(Read more\)/.test(big.blocks[1].text.text));
+  assert2.ok(/names: groups\.flatMap/.test(src) && /reminderText\(baseUrl, count, names\)/.test(src), '4 PM reminder gets the names');
+  console.log('renewal check layout: 18 passed');
 }

@@ -3,7 +3,8 @@ spam that every check 15 minutes or 30 minutes throughout the day nobody will re
 
 A job no longer posts its own report to the inbox channel. It hands the digest three things:
 
-  * asks: what a person must do, each with the exact step. A job's asks REPLACE its previous ones (they are the
+  * asks: what a person must do, each with the exact step and its own list (which campaigns, inboxes, domains or
+    bills it is about: ``detail``). A job's asks REPLACE its previous ones (they are the
     job's current view), so a fixed problem drops out the next time the job runs. ``since`` is kept per ask key,
     so the digest can say how long an ask has been open.
   * done: what the job did by itself (inboxes pulled, tagged, returned, test copy refreshed ...). Each is listed
@@ -13,6 +14,11 @@ A job no longer posts its own report to the inbox channel. It hands the digest t
 ``urgent`` items (a declined card, a live campaign losing half its inboxes, a campaign left with only failed
 inboxes) are posted at once, one time per key, and stay in the digest as asks until the job stops reporting them.
 Once it is no longer reported (fixed), its key is forgotten, so the same problem coming back later posts again.
+
+Every ask carries its list (17 Nov 2026, Manveen, on an urgent post that named no campaign: "what was the point of
+this message if it's not gonna give me the complete info"). The urgent post shows up to URGENT_LINES of it and the
+digest up to DIGEST_LINES under each ask, with "and N more"; so a step says "each campaign listed", never "in the
+thread" (an urgent post has no thread).
 
 The digest itself is posted by digest_post.py, once a day in the morning (IST), addressed to Manveen.
 
@@ -46,10 +52,50 @@ class Ask:
     key: str = ""                # stable id across runs (counts may change, the key does not)
     kind: str = "ask"            # "ask" (a person must act) or "broken" (a check or job that broke)
     urgent: bool = False         # also post at once, one time per key
+    detail: list = field(default_factory=list)   # what it is about, one line each (campaign, inbox, domain, bill)
 
     def doc(self, source: str) -> dict:
         return {"text": self.text, "step": self.step, "key": self.key or default_key(source, self.text),
-                "kind": self.kind if self.kind in ("ask", "broken") else "ask", "urgent": bool(self.urgent)}
+                "kind": self.kind if self.kind in ("ask", "broken") else "ask", "urgent": bool(self.urgent),
+                "detail": bullets(self.detail)[:KEEP_LINES]}
+
+
+KEEP_LINES = 60                  # lines kept per ask in Mongo
+URGENT_LINES = 10                # shown in an urgent post
+DIGEST_LINES = 5                 # shown under an ask in the digest; the job's full report is in its thread
+
+
+def bullets(lines) -> list[str]:
+    """Non-blank lines, each starting with a bullet."""
+    out = []
+    for x in lines or []:
+        x = str(x).strip()
+        if x:
+            out.append(x if x.startswith(("•", "-", "–")) else f"• {x}")
+    return out
+
+
+def by_domain(items, per_line: int = 8) -> list[str]:
+    """Inboxes as one line per domain ('x.com: a@, b@ and 3 more'), so a list of 20 reads in a few lines. Items
+    without an @ are kept as they are."""
+    groups: dict[str, list[str]] = {}
+    other = []
+    for x in sorted({str(i).strip() for i in items or [] if str(i).strip()}):
+        if "@" in x:
+            user, dom = x.rsplit("@", 1)
+            groups.setdefault(dom, []).append(user + "@")
+        else:
+            other.append(x)
+    return [f"{d}: {', '.join(us[:per_line])}" + (f" and {len(us) - per_line} more" if len(us) > per_line else "")
+            for d, us in sorted(groups.items())] + other
+
+
+def detail_lines(a: dict, cap: int, rest: str = "") -> list[str]:
+    """An ask's list, cut to ``cap`` lines plus '• and N more{rest}'."""
+    lines = bullets(a.get("detail"))
+    if len(lines) <= cap:
+        return lines
+    return lines[:cap] + [f"• and {len(lines) - cap} more{rest}"]
 
 
 @dataclass
@@ -128,8 +174,11 @@ def report(source: str, asks: list | None = None, done: list | None = None, deta
 
 
 def urgent_text(source: str, a: dict) -> str:
-    return "\n".join([f"🚨 {a['text']}", "", f"<@{OWNER}> {a['step']}" if a.get("step") else f"<@{OWNER}>",
-                      "", "It stays in the daily digest until it is fixed."])
+    """What is wrong, what it is about (its list), the step, and that it stays in the digest. Each part apart."""
+    lines = detail_lines(a, URGENT_LINES)
+    return "\n".join([f"🚨 {a['text']}", ""] + (lines + [""] if lines else [])
+                     + [f"<@{OWNER}> {a['step']}" if a.get("step") else f"<@{OWNER}>",
+                        "", "It stays in the daily digest until it is fixed."])
 
 
 def _urgent(db, source: str, a: dict, now: datetime, post_urgent=None) -> bool:

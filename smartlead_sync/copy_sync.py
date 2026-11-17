@@ -359,10 +359,10 @@ async def main(argv=None) -> int:
 SOURCE = "copy-sync"         # its name in the daily digest
 # Problems a person fixes in Smartlead: (words in the problem line, ask key, what is wrong, the step).
 FIXABLE = (("has no known client prefix", "no-prefix", "no known client prefix, so it was not refreshed",
-            "In Smartlead, rename each test campaign named in the thread to start with DT PL, DT Melior or "
+            "In Smartlead, rename each test campaign listed to start with DT PL, DT Melior or "
             "DT BettrData, or archive it."),
            ("has no step to write into", "no-step", "no email step, so it was not refreshed",
-            "In Smartlead, add one email step to each test campaign named in the thread (copy it from that "
+            "In Smartlead, add one email step to each test campaign listed (copy it from that "
             "client's DT #1 campaign)."))
 
 
@@ -384,13 +384,19 @@ def digest_items(written: int, problems: list[str], clients: int, neutral: int, 
         rest = [p for p in rest if words not in p]
         if hits:
             k = len(hits)
-            asks.append(dg.Ask(f"{k} test campaign{'s have' if k != 1 else ' has'} {what}.", step, key=f"{SOURCE}:{key}"))
+            asks.append(dg.Ask(f"{k} test campaign{'s have' if k != 1 else ' has'} {what}.", step, key=f"{SOURCE}:{key}",
+                               detail=[_plain_problem(p) for p in hits]))
     if rest:
         k = len(rest)
         asks.append(dg.Ask(f"The weekly test copy refresh had {k} problem{'s' if k != 1 else ''}, so some test campaigns "
-                           "kept their old copy or senders.", "The problems are in the thread; the refresh runs "
-                           "again next week.", key=f"{SOURCE}:problems", kind="broken"))
+                           "kept their old copy or senders.", "The refresh runs again next week.",
+                           detail=[_plain_problem(p) for p in rest], key=f"{SOURCE}:problems", kind="broken"))
     return asks, done
+
+
+def _plain_problem(p: str) -> str:
+    """A problem line without its Slack warning sign (the ask says what is wrong)."""
+    return p.replace(":warning:", "").strip()
 
 
 def _to_digest(written: int, problems: list[str], clients: int, neutral: int) -> bool:

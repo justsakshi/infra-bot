@@ -399,7 +399,8 @@ def test_an_alert_is_an_ask_new_or_not_and_an_unread_account_is_broken():
     assert [(a.key, a.kind, a.urgent) for a in asks] == [("reply-monitor:alert", "ask", False),
                                                           ("reply-monitor:unread", "broken", False)]
     assert asks[0].text == "1 sending domain gets far fewer replies than expected over 14 days."
-    assert asks[0].step == rm.ALERT_STEP
+    assert asks[0].step == rm.ALERT_STEP and "thread" not in rm.ALERT_STEP
+    assert asks[0].detail and all("*" not in x for x in asks[0].detail)       # 17 Nov: the domains travel with the ask
     assert asks[1].text == "The reply check could not read Smartlead for Bettrdata (HTTP 500)."
     assert detail[0].startswith("⚠️ Reply-rate alert, 10 Nov") and detail[-1] == rm.HOW
     # the next day it is still on ALERT (no post): still an ask, and the domain is in the thread

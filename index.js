@@ -1049,7 +1049,8 @@ async function runNoonSummary() {
     console.log(`[runNoonSummary] totalExpiring: ${totalExpiring}`);
     // Nothing expiring: no post (13 Nov 2026, the channel was too noisy). The weekday bot-health post shows the
     // job ran; the 4 PM reminder reads this day's count and stays quiet too.
-    lastExpiringCount = { day: dayjs().format('YYYY-MM-DD'), total: totalExpiring };
+    lastExpiringCount = { day: dayjs().format('YYYY-MM-DD'), total: totalExpiring,
+      names: groups.flatMap(g => g.assets.map(a => a.name)) };
     if (!totalExpiring) {
       console.log('[runNoonSummary] nothing expires in the next 3 working days: no post');
       return 'quiet';
@@ -1087,6 +1088,7 @@ async function runSimpleReminder() {
     // Only when the 10:00 check found something expiring today (a restart since then loses the count: post, as before).
     const today = dayjs().format('YYYY-MM-DD');
     const count = lastExpiringCount && lastExpiringCount.day === today ? lastExpiringCount.total : null;
+    const names = lastExpiringCount && lastExpiringCount.day === today ? (lastExpiringCount.names || []) : [];
     if (count === 0) {
       console.log('[runSimpleReminder] nothing expires in the next 3 working days: no reminder');
       return 'quiet';
@@ -1095,7 +1097,7 @@ async function runSimpleReminder() {
     await app.client.chat.postMessage({
       token: process.env.SLACK_BOT_TOKEN,
       channel: CHANNEL,
-      text: renewalLabels.reminderText(baseUrl, count)
+      text: renewalLabels.reminderText(baseUrl, count, names)
     });
     console.log('✅ Simple reminder sent');
     return true;

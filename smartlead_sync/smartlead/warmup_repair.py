@@ -240,8 +240,8 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> t
     if stuck:
         n = len(stuck)
         asks.append(dg.Ask(f"{_n(n)} did not improve in 3 weeks of warm-up repair: cancel candidates, your call.",
-                           "Say which to cancel (the list is in the thread); the bot never cancels or deletes an inbox.",
-                           key="warmup-repair:cancel-candidates"))
+                           "Say which of those listed to cancel; the bot never cancels or deletes an inbox.",
+                           key="warmup-repair:cancel-candidates", detail=[_detail_line(d, today) for d in stuck]))
     live = [d for d in docs if d.get("status") in IN_REPAIR
             or (d.get("status") == "recovered" and _this_week(d.get("recovered_on"), today))
             or (d.get("status") == "gone" and _this_week(d.get("gone_on"), today))]

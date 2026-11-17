@@ -119,6 +119,10 @@ function summarizeEvent(evt) {
       domain: null, alert: true,
       text: ':x: Zapmail export' + (d.app_name ? ' to *' + d.app_name + '*' : '') + ' failed (export ' + d.export_id + '): '
         + (d.error || 'no reason given') + ((d.mailboxes || []).length ? ' · ' + d.mailboxes.length + ' mailbox(es)' : '')
+        + ((d.mailboxes || []).length ? ': ' + d.mailboxes.slice(0, 10).map(m => (m && (m.email || m.address)) || m).join(', ')
+          + (d.mailboxes.length > 10 ? ' and ' + (d.mailboxes.length - 10) + ' more' : '') : '')
+        + '\n\nIn Zapmail, open the export and run it again; until it works these inboxes are not in '
+        + (d.app_name || 'the app') + '.'
     };
   }
   if (type === 'placement_test.status_changed') {
@@ -135,6 +139,7 @@ function summarizeEvent(evt) {
       domain: null, alert: true,
       text: ':credit_card: Zapmail subscription ' + d.subscription_id + ' billing changed'
         + (p.previous !== undefined ? ': ' + p.previous + ' → ' + p.current : '')
+        + '\n\nCheck in Zapmail, Billing, that the change was meant; if not, ask Zapmail support to undo it.'
     };
   }
   return { domain: null, alert: false, text: 'Zapmail event ' + type };
@@ -202,7 +207,8 @@ function registerZapmailWebhook(expressApp, express, { baseDir, onTrackerChanged
     setImmediate(async () => {
       const s = summarizeEvent(evt);
       console.log('[zapmail-webhook] ' + account + ' ' + evt.type + ': ' + s.text);
-      if (s.alert) await postSlack(s.text);
+      if (postsNow(evt.type, s)) await postSlack(s.text);
+      else if (s.alert) console.log('[zapmail-webhook] not posted: billing watch and the daily digest cover ' + evt.type);
       if (s.domain) refreshTracker(String(s.domain).toLowerCase(), baseDir, onTrackerChanged);
       // A change Zapmail reports can unblock an inbox setup job: move jobs now
       // rather than at the next 10-minute tick (grouped, one run at a time).
@@ -212,4 +218,17 @@ function registerZapmailWebhook(expressApp, express, { baseDir, onTrackerChanged
   });
 }
 
-module.exports = { registerZapmailWebhook, verifySignature, summarizeEvent, secretFor };
+/**
+ * Whether an alert posts at once (17 Nov 2026, Manveen: no repeats, nothing a person can't act on). With the daily
+ * digest on, two kinds stay in the log: a subscription's status or failed payment (billing watch posts it at once as
+ * an urgent item, with the bill date, amount and domains, and keeps it in the digest until paid) and a placement test
+ * finishing (Zapmail's own test is a second opinion; nothing to do).
+ */
+const DIGEST_COVERED = new Set(['subscription.status_changed', 'placement_test.status_changed']);
+function postsNow(type, s, env = process.env) {
+  if (!s.alert) return false;
+  const digestOn = String(env.DIGEST_MODE || 'on').trim().toLowerCase() !== 'off';
+  return !(digestOn && DIGEST_COVERED.has(type));
+}
+
+module.exports = { registerZapmailWebhook, verifySignature, summarizeEvent, secretFor, postsNow };
