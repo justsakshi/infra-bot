@@ -18,7 +18,8 @@ Checks (smartlead/gate_selftest.checks):
   1. every inbox tagged DO NOT USE is BUSY on the list with reason do_not_use
   2. every inbox whose newest v2 verdict is FAIL is BUSY on the list with reason failed_v2 (a fail that is set
      aside, usable.fail_set_aside: a Google inbox or one a person put back, is not held back anywhere)
-  3. once a v2 pass is required: every FREE inbox has a v2 pass in the last 10 days
+  3. once a v2 pass is required: every FREE inbox has a v2 pass in the last 10 days (Google inboxes are judged on
+     real sends and warm-up instead, usable.google_gate, and are not counted)
   4. no tagged or failed inbox is attached to a sending campaign (report-only clients are listed, not failed)
   5. the v2 job on the PC ran in the last 26 hours and is in act mode
   6. every connected inbox of a current client has a row in the asset tracker (Mongo assets), so the

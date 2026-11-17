@@ -213,7 +213,8 @@ def test_a_google_fail_or_an_overridden_fail_is_a_note_not_a_hold_2026_11_13():
     fail = {"verdict": "FAIL", "night": "2026-11-09"}
     assert usable.gate([], fail, None, today, kind="Outlook") == (["failed_v2"], [])
     reasons, notes = usable.gate([], fail, None, today, kind="Gmail", require_v2_pass=True)
-    assert reasons == ["no_v2_pass"] and notes == ["failed v2 on 9 Nov, not counted: the v2 test is not used for Google inboxes"]
+    # since 17 Nov (t268) no v2 pass is asked of a Google inbox either: real sends and warm-up decide
+    assert reasons == [] and notes == ["failed v2 on 9 Nov, not counted: the v2 test is not used for Google inboxes"]
     assert usable.gate([], fail, None, today, kind="GMAIL")[0] == []           # no pass required yet: no hold at all
     back = {**fail, "overridden": True}
     assert usable.fail_set_aside(back, "OUTLOOK") == "a person put it back after this result"
@@ -247,7 +248,10 @@ def test_refresh_changes_the_shared_dict_every_reader_holds(monkeypatch):
     monkeypatch.delenv("V2_UNTRUSTED_TYPES", raising=False)
     try:
         assert usable.refresh_trust({"v2_trust": Col({"untrusted": {}, "decided": "2026-11-15"})}).startswith("real-recipient")
-        assert v2_weekly.REPORT_ONLY_TYPES == {} and not usable.fail_set_aside({"verdict": "FAIL"}, "Gmail")
+        assert v2_weekly.REPORT_ONLY_TYPES == {} and not usable.fail_set_aside({"verdict": "FAIL"}, "Outlook")
+        # Google stays report-only whatever v2_trust says (t268): the readers and the job both
+        assert usable.fail_set_aside({"verdict": "FAIL"}, "Gmail")
+        assert "GMAIL" in v2_weekly.report_only_types(None) and "OUTLOOK" not in v2_weekly.report_only_types(None)
         assert usable.refresh_trust({"v2_trust": Col(None)}) == "default" and "GMAIL" in v2_weekly.REPORT_ONLY_TYPES
         class Broken:
             def __getitem__(self, k): raise RuntimeError("down")
@@ -299,3 +303,123 @@ def test_the_weeks_real_send_evidence_fills_two_columns_and_changes_no_availabil
     other = {"email": "b@x.com", "tags": []}
     usable.apply(other, data, date(2026, 11, 17), block_listed=False, require_v2_pass=False)
     assert other["evidence"] == "" and other["evidence_label"] == "no real sends in the window"
+
+
+# The Google rule (t268, Manveen 17 Nov 2026) --------------------------------------------------------------------
+
+def _g(email, rep, **over):
+    return _row(email, provider="Gmail", **over), {"rep": rep, "warmup_state": "on", "warmup_max_count": 20,
+                                                   "last_active_date": "", "warmup_spam_count": 0}
+
+
+def _ev(**labels):
+    """Week's evidence: {email: own-provider label}; a label "x|Microsoft" puts it at Microsoft instead."""
+    out = {}
+    for email, lab in labels.items():
+        lab, _, rp = lab.partition("|")
+        out[email.replace("_", "@") + ".com"] = {"evidence": "28d: ...", "label": f"{lab} at {rp or 'Gmail'}",
+                                                 "providers": {rp or "Gmail": lab}}
+    return out
+
+
+def _grun(rows_reps, evidence, v2=None, require=True, monkeypatch=None):
+    from smartlead import config
+    rows = [r for r, _ in rows_reps]
+    data = {"checked": True, "error": "", "listed": set(), "v2": v2 or {}, "evidence": evidence,
+            "evidence_week": "2026-11-17"}
+    old = config.AVAILABILITY_REQUIRE_V2_PASS
+    config.AVAILABILITY_REQUIRE_V2_PASS = require
+    try:
+        process_inbox_availability(rows, {r["email"]: rep for r, rep in rows_reps}, {}, gate_data=data)
+    finally:
+        config.AVAILABILITY_REQUIRE_V2_PASS = old
+    return {r["email"]: (r["availability"], r["busy_reason"], r["use_notes"]) for r in rows}
+
+
+def test_google_reached_with_low_reputation_is_usable_and_says_repairing():
+    got = _grun([_g("a@g.com", "60%", test_sheet_status="fail", test_date="2026-11-09")],
+                _ev(a_g="reached the inbox"))
+    assert got["a@g.com"][:2] == ("FREE", "")
+    assert "repairing but usable: warm-up 60%" in got["a@g.com"][2]
+    assert "seed test spam 9 Nov: report only for Google inboxes" in got["a@g.com"][2]
+
+
+def test_google_high_reputation_without_enough_data_is_usable_and_low_reputation_is_not():
+    got = _grun([_g("hi@g.com", "92%"), _g("lo@g.com", "70%")], _ev(hi_g="not enough data", lo_g="not enough data"))
+    assert got["hi@g.com"][:2] == ("FREE", "")
+    assert got["lo@g.com"][:2] == ("BUSY", "low_rep")
+
+
+def test_google_missing_evidence_is_not_enough_data_never_quiet():
+    got = _grun([_g("hi@g.com", "92%"), _g("lo@g.com", "70%")], {})
+    assert got["hi@g.com"][:2] == ("FREE", "") and got["lo@g.com"][:2] == ("BUSY", "low_rep")
+    for evidence in (None, {}):        # evidence not read at all (Mongo down / old callers): reputation decides
+        r, _ = _g("x@g.com", "95%")
+        process_inbox_availability([r], {"x@g.com": REP}, {}, gate_data=None if evidence is None else
+                                   {"checked": False, "error": "down", "listed": set(), "v2": {}})
+        assert r["availability"] == "FREE", r["busy_reason"]
+
+
+def test_google_quiet_is_never_usable():
+    got = _grun([_g("q@g.com", "99%")], _ev(q_g="quiet (0 of ~4.0 expected)"))
+    assert got["q@g.com"][:2] == ("BUSY", "quiet")
+
+
+def test_google_quiet_or_reached_at_another_provider_is_a_signal_only():
+    got = _grun([_g("q@g.com", "99%"), _g("r@g.com", "60%")],
+                _ev(q_g="quiet (0 of ~4.0 expected)|Microsoft", r_g="reached the inbox|Microsoft"))
+    assert got["q@g.com"][:2] == ("FREE", "")
+    assert "quiet (0 of ~4.0 expected) at Microsoft (not its provider: a signal, not a verdict)" in got["q@g.com"][2]
+    assert got["r@g.com"][:2] == ("BUSY", "low_rep")          # reached only at Microsoft does not repair a Google inbox
+
+
+def test_google_do_not_use_tag_wins_whatever_else():
+    got = _grun([_g("t@g.com", "99%", tags=["DO NOT USE - x"])], _ev(t_g="reached the inbox"))
+    assert got["t@g.com"][0] == "BUSY" and got["t@g.com"][1].split(",") == ["do_not_use"]
+
+
+def test_google_disconnected_is_not_usable():
+    got = _grun([_g("d@g.com", "99%", connection_ok=False)], _ev(d_g="reached the inbox"))
+    assert got["d@g.com"][:2] == ("BUSY", "disconnected")
+
+
+def test_google_failed_seed_or_v2_never_blocks():
+    fail = {"verdict": "FAIL", "night": "2026-11-15"}
+    rows = [_g("s@g.com", "95%", test_sheet_status="fail"), _g("st@g.com", "95%", test_sheet_status="stale"),
+            _g("u@g.com", "95%", test_sheet_status="Unknown"), _g("v@g.com", "95%")]
+    got = _grun(rows, {}, v2={"v@g.com": fail}, require=True)
+    assert {e: v[:2] for e, v in got.items()} == {e: ("FREE", "") for e in got}
+    assert "failed v2 on 15 Nov, not counted" in got["v@g.com"][2]
+    # even when v2_trust trusts Google, a v2 fail is a note for a Google inbox
+    saved = dict(usable.V2_NOT_TRUSTED)
+    usable.V2_NOT_TRUSTED.clear()
+    try:
+        got = _grun([_g("v@g.com", "95%")], {}, v2={"v@g.com": fail})
+        assert got["v@g.com"][:2] == ("FREE", "")
+    finally:
+        usable.V2_NOT_TRUSTED.update(saved)
+
+
+def test_outlook_keeps_the_seed_v2_and_reputation_rules():
+    fail = {"verdict": "FAIL", "night": "2026-11-15"}
+    rows = [(_row("f@o.com", provider="Outlook", test_sheet_status="fail"), REP),
+            (_row("l@o.com", provider="Outlook"), {**REP, "rep": "60%"}),
+            (_row("v@o.com", provider="Outlook"), REP),
+            (_row("n@o.com", provider="Outlook"), REP)]
+    got = _grun(rows, _ev(l_o="reached the inbox|Microsoft"), v2={"v@o.com": fail})
+    assert got["f@o.com"][:2] == ("BUSY", "failed_test,no_v2_pass")
+    assert got["l@o.com"][:2] == ("BUSY", "low_rep,no_v2_pass")       # real replies do not repair an Outlook inbox
+    assert got["v@o.com"][:2] == ("BUSY", "failed_v2")
+    assert got["n@o.com"][:2] == ("BUSY", "no_v2_pass")
+
+
+def test_google_gate_is_pure_and_reads_only_its_own_provider():
+    assert usable.google_gate(95, "") == ([], [])
+    assert usable.google_gate(89.9, "not enough data") == (["low_rep"], [])
+    assert usable.google_gate(60, "reached the inbox")[0] == []
+    assert usable.google_gate(99, "quiet (0 of ~3.1 expected)")[0] == ["quiet"]
+    assert usable.google_gate(60, "quiet (0 of ~3.1 expected)")[0] == ["quiet", "low_rep"]
+    assert usable.own_evidence("A@g.com", "GMAIL", {"evidence": {"a@g.com": {"providers": {"Microsoft": "reached the inbox"}}}}) \
+        == ("not enough data", {"Microsoft": "reached the inbox"})
+    assert usable.real_send_rule("Gmail") and usable.real_send_rule("GMAIL") and not usable.real_send_rule("Outlook")
+    assert not usable.real_send_rule("SMTP")

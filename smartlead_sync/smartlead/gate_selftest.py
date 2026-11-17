@@ -75,8 +75,10 @@ def checks(inboxes: list[dict], campaigns: list[dict], rows: list[dict], v2: dic
         "the verdicts)",
         blocked=unread("v2 verdicts", "the list"))
 
-    # 3. FREE means proven, once that rule is on
-    free = sorted(e for e, r in by_email.items() if str(r.get("Availability") or "").upper() == "FREE")
+    # 3. FREE means proven, once that rule is on. A Google inbox is proven by real sends and warm-up instead
+    # (usable.google_gate, t268), so it is not counted here.
+    free = sorted(e for e, r in by_email.items() if str(r.get("Availability") or "").upper() == "FREE"
+                  and not usable.real_send_rule(kinds.get(e) or r.get("Provider") or ""))
     if require_pass:
         bad = [e for e in free if not _fresh_pass(v2.get(e), today)]
         add("free_means_v2_pass", len(free), bad,

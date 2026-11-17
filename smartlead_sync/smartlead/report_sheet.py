@@ -49,11 +49,14 @@ def grid_writes(report: dict, client_by_email: dict[str, str], tested_on: str,
         # has already decided each cell, so pass it as 100 (Inbox) or 0 (spam).
         # The domain's other provider (all its senders Google, or all Outlook) is only a signal: a spam cell there
         # is written labelled (own_provider.SIGNAL_CELL), so no reader takes it for a verdict (17 Nov 2026).
-        own = dom.get("own")
+        # A Google domain's own G suite cell is a signal too (Google seed results are report-only, t269).
+        from smartlead.own_provider import grid_signal
+        own = dom.get("own") or ""
+        sig = {p: grid_signal(p, own) if own else None for p in ("G Suite", "Office365")}
         by_provider = {"G Suite": {"inbox_pct": 100.0 if dom["cells"].get("Google") == "Inbox" else 0.0,
-                                   **({"signal": True} if own == "Outlook" else {})},
+                                   **({"signal": sig["G Suite"]} if sig["G Suite"] else {})},
                        "Office365": {"inbox_pct": 100.0 if dom["cells"].get("Outlook") == "Inbox" else 0.0,
-                                     **({"signal": True} if own == "Google" else {})}}
+                                     **({"signal": sig["Office365"]} if sig["Office365"] else {})}}
         if "Google" not in dom["cells"]:
             del by_provider["G Suite"]
         if "Outlook" not in dom["cells"]:

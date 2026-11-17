@@ -120,12 +120,32 @@ def test_v2_grid_labels_the_other_providers_spam_cell(kind, own, other):
     res = v2_grid.night_results([row])[("Precise Leads", "2026-11-09")]["fake.test"]
     other_col = "Office365" if other == "microsoft" else "G Suite"
     own_col = "G Suite" if own == "google" else "Office365"
-    assert res[other_col].get("signal") is True and not res[own_col].get("signal")
+    assert res[other_col].get("signal") is True
+    # a Google domain's own G suite cell is a signal too (t269); an Outlook domain's Outlook cell is a verdict
+    assert res[own_col].get("signal") == (op.GOOGLE_SIGNAL_CELL if own == "google" else None)
     grid = [["", "9 Nov 2026 v2", ""], ["Domains", "G suite", "Outlook"], ["fake.test", "", ""]]
     plan = pg.plan_writes(grid, "fake.test", res, "9 Nov 2026 v2", 80.0)
     cells = {c: v for _, c, v in plan.writes}
     assert cells[1 if other == "google" else 2] == op.SIGNAL_CELL
     assert cells[1 if own == "google" else 2] == "Inbox"
+
+
+def test_v2_grid_writes_a_google_domains_g_suite_spam_as_a_signal_t269():
+    """t269 (Manveen, 17 Nov 2026): Google seed results are report-only for Google inboxes, so a Google-only domain's
+    G suite spam is written labelled, the reader takes it for no verdict, and the note says where the seeds landed."""
+    row = {"email": "a@fake.test", "domain": "fake.test", "client": "Precise Leads", "night": "2026-11-09",
+           "verdict": "FAIL", "type": "GMAIL", "google": {"inbox": 0, "reported": 4},
+           "microsoft": {"inbox": 4, "reported": 4}}
+    res = v2_grid.night_results([row])[("Precise Leads", "2026-11-09")]["fake.test"]
+    grid = [["", "9 Nov 2026 v2", ""], ["Domains", "G suite", "Outlook"], ["fake.test", "", ""]]
+    cells = {c: v for _, c, v in pg.plan_writes(grid, "fake.test", res, "9 Nov 2026 v2", 80.0).writes}
+    assert cells == {1: op.GOOGLE_SIGNAL_CELL, 2: "Inbox"}
+    assert grid_cell_status(op.GOOGLE_SIGNAL_CELL) == "" and grid_cell_status(op.SIGNAL_CELL) == "fail"
+    status, _, note = own_test_status(entry(op.GOOGLE_SIGNAL_CELL, ""), "GMAIL")
+    assert status == "Unknown" and note == "Google seeds in spam on 2026-11-09 (Google seed result: signal only)"
+    # an Outlook domain's own Outlook spam stays a verdict, and the classic report's cells follow the same rule
+    assert op.grid_signal("Office365", "OUTLOOK") is None and op.grid_signal("G Suite", "OUTLOOK") is True
+    assert op.grid_signal("G Suite", "Google") == op.GOOGLE_SIGNAL_CELL and op.grid_signal("G Suite", "SMTP") is None
 
 
 def test_v2_grid_keeps_plain_spam_for_mixed_or_unknown_types():
@@ -165,7 +185,7 @@ def test_grid_other_column_only_spam_is_untested_not_failed_and_smtp_keeps_both(
 
 
 def test_the_signal_goes_to_the_notes_column_not_the_busy_reasons():
-    item = {"email": "a@fake.test", "tags": [], "type": "GMAIL",
+    item = {"email": "a@fake.test", "tags": [], "type": "GMAIL", "warmup_rep_pct": "95%",
             "test_signal": own_test_status(entry("Inbox", "spam"), "GMAIL")[2]}
     reasons = usable.apply(item, {"checked": False}, date(2026, 11, 17), block_listed=False, require_v2_pass=False)
     assert reasons == [] and "Microsoft seeds in spam" in item["use_notes"]
