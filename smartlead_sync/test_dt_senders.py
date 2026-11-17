@@ -554,6 +554,13 @@ def test_the_copy_check_test_reuses_inboxes_on_purpose_so_it_is_no_duplicate():
     assert ts.coverage(members, tests)["Melior"]["dupes"] == {}
 
 
+def test_an_inbox_whose_only_test_is_the_copy_check_is_in_no_test():
+    members = {"a@x.com": "Melior", "b@x.com": "Melior"}
+    tests = [{"name": "Melior weekly 2", "senders": {"a@x.com"}},
+             {"name": "Melior weekly synced copy", "senders": {"a@x.com", "b@x.com"}}]
+    assert ts.coverage(members, tests) == {"Melior": {"inboxes": 2, "none": ["b@x.com"], "dupes": {}}}
+
+
 def test_two_active_tests_with_one_name_are_an_ask():
     from datetime import date
     tests = [{"id": "1", "name": "B copy"}, {"id": "2", "name": "B copy"}, {"id": "3", "name": "B 2"}]
