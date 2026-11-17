@@ -125,10 +125,11 @@ def _update_row(ws, row: int, fields: dict) -> None:
 
 async def _pl_tests(pl_key: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=30) as c:
-        resp = await c.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report?api_key={pl_key}",
+        resp = await c.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": pl_key},
                             headers={"Content-Type": "application/json"},
                             json={"limit": 300})
-        resp.raise_for_status()
+        if resp.status_code >= 400:     # never raise_for_status: its message carries the URL, and the key is in it
+            raise RuntimeError(f"Smart Delivery test list failed ({resp.status_code})")
         data = resp.json()
         return data if isinstance(data, list) else []
 
