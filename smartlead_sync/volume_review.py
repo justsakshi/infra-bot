@@ -8,8 +8,9 @@ roll out to all). Every other domain is judged and reported, never changed.
 Each run's decisions and inputs are saved, so the rule can be graded.
 
     python volume_review.py                          # dry run: print, change nothing
-    python volume_review.py --post                   # change the pilot domains, save, post
-                                                     #   (VOLUME_REVIEW_CHANNEL, else KILL_REPORT_CHANNEL, else C0AGVSUNEFP)
+    python volume_review.py --post                   # change the pilot domains, save, hand the daily digest its items
+                                                     #   (DIGEST_MODE=off or Mongo down: the old post to
+                                                     #   VOLUME_REVIEW_CHANNEL, else KILL_REPORT_CHANNEL, else C0AGVSUNEFP)
     python volume_review.py --pilot-add a.com,b.com --by U123   # their current limits become the approved start
     python volume_review.py --pilot-remove a.com
     python volume_review.py --pilot-add '*'          # roll out: every judged domain
@@ -58,8 +59,10 @@ def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, da
     approved = {email: (limit, approved on)}; pilot = domains the review may change ("*" = all);
     control = comparison domains, judged and shown but never changed (they win over "*")."""
     from smartlead.report_sheet import client_label
+    from smartlead.usable import DO_NOT_USE
     rows: list[dict] = []
-    waiting: dict = {"warming": 0, "first_ready": None, "no_campaign": 0, "by_hand": [], "skipped": [], "rotate_ip": []}
+    waiting: dict = {"warming": 0, "first_ready": None, "no_campaign": 0, "idle": [], "by_hand": [], "skipped": [],
+                     "rotate_ip": []}
     low_ip: dict[str, int] = {}
     for account, accounts in per_account.items():
         by_dom: dict[str, list[dict]] = defaultdict(list)
@@ -88,6 +91,11 @@ def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, da
                     waiting["first_ready"] = min(filter(None, [waiting["first_ready"], ready]))
                 elif reason.startswith("no campaign"):
                     waiting["no_campaign"] += 1
+                    # named by client and domain in the report (t270): a count alone tells nobody anything
+                    names = [str(t.get("tag_name") or t.get("name") or "").strip().lower() for t in a.get("tags") or []]
+                    waiting["idle"].append({"email": email,
+                                            "client": f.get("client") or client_label(account, a.get("client_id")),
+                                            "do_not_use": any(n.startswith(DO_NOT_USE) for n in names)})
                 elif reason.startswith("changed by hand"):
                     waiting["by_hand"].append(f"{email} {reason}")
                 else:
@@ -219,6 +227,17 @@ def _post(text: str) -> bool:
     return bool(r.get("ok"))
 
 
+def publish(rows: list[dict], waiting: dict, today: date, applied: dict, errors: list[str], text: str) -> dict:
+    """The daily digest (t270, 17 Nov 2026): asks, done lines and the full report for its thread. DIGEST_MODE=off or
+    Mongo not written: the old post, so nothing is lost."""
+    from smartlead import digest as dg
+    if dg.on():
+        asks, done, detail = vr.digest_items(rows, waiting, today, applied=applied, errors=errors)
+        if dg.report(vr.SOURCE, asks, done, detail):
+            return {"digest": True}
+    return {"posted": _post(text)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Weekly volume review, per domain")
     ap.add_argument("--post", action="store_true", help="change the pilot domains, save the run, post it")
@@ -258,7 +277,7 @@ def main() -> int:
     text = vr.review_text(rows, waiting, today, applied=applied)
     out = {"review": today.isoformat(), "domains": len(rows), "applied": applied, "text": text}
     if args.post:
-        out["posted"] = _post(text)
+        out.update(publish(rows, waiting, today, applied, errors, text))
     print(json.dumps(out, default=str) if args.json else text)
     return 0
 

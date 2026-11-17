@@ -86,3 +86,45 @@ def test_comparison_domains_are_marked_and_not_in_the_pilot():
     rows, _ = cli.build_rows({"PRECISE_LEADS": [box(i, e) for i, e in enumerate(THREE)]}, facts(*THREE), {}, {}, {}, {},
                              TODAY, {"*"}, control={"pl.com"})
     assert rows[0]["control"] and not rows[0]["pilot"]
+
+
+def test_idle_inboxes_carry_their_client_and_do_not_use_tag():
+    accts = [box(1, "n@pl.com"), box(2, "d@pl.com", tags=("Bot-Setup", "DO NOT USE - Google spam"))]
+    _, waiting = build(accts, {**facts("n@pl.com", sending=False), **facts("d@pl.com", sending=False)})
+    assert waiting["no_campaign"] == 2
+    assert waiting["idle"] == [{"email": "n@pl.com", "client": "Melior", "do_not_use": False},
+                               {"email": "d@pl.com", "client": "Melior", "do_not_use": True}]
+
+
+# Where the review goes (t270): the daily digest when it is on; the old post when it is off or Mongo is down.
+
+HOLD_ROW = {"domain": "q.com", "client": "Client A", "kind": "google", "action": vr.HOLD, "from": [5], "to": [5],
+            "why": "sends about 3 of 5 a day", "pilot": False, "inboxes": [{"id": 1, "email": "a@q.com"}]}
+
+
+def _wire(monkeypatch, *, on=True, report=True):
+    from smartlead import digest as dg
+    calls = {"report": [], "post": []}
+    monkeypatch.setattr(dg, "on", lambda: on)
+    monkeypatch.setattr(dg, "report", lambda *a, **k: calls["report"].append(a) or report)
+    monkeypatch.setattr(cli, "_post", lambda text: calls["post"].append(text) or True)
+    return calls
+
+
+def test_publish_hands_the_digest_its_items_and_does_not_post(monkeypatch):
+    calls = _wire(monkeypatch)
+    out = cli.publish([HOLD_ROW], {"no_campaign": 0}, TODAY, {}, [], "the text")
+    assert out == {"digest": True}
+    assert calls["post"] == []
+    source, asks, done, detail = calls["report"][0]
+    assert source == "volume-review" and asks == [] and done == []
+    assert "Client A · q.com" in "\n".join(detail)
+
+
+def test_publish_posts_the_old_way_when_the_digest_is_off_or_not_written(monkeypatch):
+    calls = _wire(monkeypatch, on=False)
+    assert cli.publish([HOLD_ROW], {}, TODAY, {}, [], "the text") == {"posted": True}
+    assert calls["post"] == ["the text"] and calls["report"] == []
+    calls = _wire(monkeypatch, report=False)
+    assert cli.publish([HOLD_ROW], {}, TODAY, {}, [], "the text") == {"posted": True}
+    assert calls["post"] == ["the text"]
