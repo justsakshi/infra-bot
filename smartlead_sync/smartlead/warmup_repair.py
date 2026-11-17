@@ -1,11 +1,11 @@
 """Warm-up repair tracker (t16, 17 Nov 2026). Manveen, 16 Nov: "make sure we are of track of improving them and
 change warmup's stuff and trak thye imporve also work on simmilar inboxes in all clients".
 
-Every inbox of PL, Melior or BettrData whose warm-up reputation is under its type's good level (inbox_standard.json
-good_reputation: 90, SMTP 70; the inbox list's low_rep cutoff is config.MIN_WARMUP_REP_PCT) has one document in
-Mongo ``warmup_repair`` until it recovers or leaves. Fleet watch's daily reading (inbox_daily ``rep``) updates it:
+Every inbox of PL, Melior or BettrData whose warm-up reputation is under the All Inboxes cutoff
+(config.MIN_WARMUP_REP_PCT, 90, the inbox list's low_rep cutoff; one cutoff for every inbox type, parent 17 Nov) has one
+document in Mongo ``warmup_repair`` until it recovers or leaves. Fleet watch's daily reading (inbox_daily ``rep``) updates it:
 
-  * recovered: the latest reading is at or above the good level and warm-up is not blocked;
+  * recovered: the latest reading is at or above the cutoff and warm-up is not blocked;
   * worse: the latest reading is 3+ points below the reputation at the start (a flag, not a status);
   * no_improvement: 21+ days in repair and the latest reading not above the start + 3. These are cancel candidates
     in the digest; cancelling is Manveen's call;
@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, timedelta
 
+from smartlead import config
 from smartlead import inbox_standard as st
 
 WORSE_BY = 3
@@ -35,9 +36,10 @@ SETTING_KEYS = ("status", "warmup_min_count", "warmup_max_count", "max_email_per
 IN_REPAIR = ("repairing", "no_improvement")
 
 
-def level(kind: str | None) -> int:
-    """The reputation the inbox type counts as healthy (90; SMTP 70)."""
-    return st.good_reputation(kind or "google")
+def level(kind: str | None = None) -> int:
+    """The reputation counted as recovered: the All Inboxes cutoff (90) for every inbox type. inbox_standard's
+    per-type good_reputation (SMTP 70) is not used here (parent, 17 Nov: one recovery cutoff)."""
+    return int(config.MIN_WARMUP_REP_PCT)
 
 
 def _rep(x) -> int | None:

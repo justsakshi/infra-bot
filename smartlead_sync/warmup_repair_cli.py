@@ -6,6 +6,10 @@ Never changes a warm-up setting and never calls Smartlead.
     python warmup_repair_cli.py seed --changes <t16_warmup_changes.json> --before <t16_warmup_before.json> --dry-run
     python warmup_repair_cli.py seed --changes <...> --before <...>      # writes Mongo warmup_repair (the lead runs it)
     python warmup_repair_cli.py preview                                  # read-only: today's digest lines
+    python warmup_repair_cli.py changes --changes <...> --before <...> --who <...> --why <...> --dry-run
+    python warmup_repair_cli.py changes --changes <...> --before <...> --who <...> --why <...>
+                                         # appends one event per applied change to Mongo warmup_changes
+    python warmup_repair_cli.py outcomes                                 # read-only: outcomes due today + monthly lines
 
 The two files hold inbox addresses: they stay outside the repo and are read at run time. A dry run and preview read
 Mongo (inbox_daily, warmup_repair) and write nothing. Both print the weekly lines whatever the weekday.
@@ -24,6 +28,7 @@ try:
 except Exception:
     pass
 
+from smartlead import warmup_changes as wc
 from smartlead import warmup_repair as wr
 
 READ_DAYS = 8
@@ -58,6 +63,69 @@ def _print(new, asks, done, detail, quiet: bool) -> None:
         print("\n--- thread ---\n" + "\n\n".join(detail))
 
 
+def vendors(db, emails: list[str], today: date) -> dict[str, str]:
+    """{email: vendor}: the newest inbox_daily reading's vendor (last 8 days), else the asset tracker's provider for
+    the domain (Mongo assets). Read-only."""
+    daily = {r["email"]: r["vendor"] for r in latest_readings(db["inbox_daily"], today) if r.get("vendor")}
+    domains = sorted({e.split("@")[-1] for e in emails})
+    try:
+        col = db["assets"]
+    except KeyError:                                       # a test db without the asset tracker
+        col = None
+    assets = list(col.find({"name": {"$in": domains}}, {"name": 1, "provider": 1, "status": 1})) if col is not None else []
+    return wc.vendors_by_email(emails, daily, assets)
+
+
+def changes_cmd(db, args, today: date) -> int:
+    with open(args.changes, encoding="utf-8") as f:
+        changes = json.load(f)
+    with open(args.before, encoding="utf-8") as f:
+        before = json.load(f)
+    events, skipped = wc.events_from_changes(changes, before, who=args.who, why=args.why,
+                                             vendors=vendors(db, [str(k).lower() for k in changes], today))
+    store = wc.ChangeStore(db["warmup_changes"])
+    have = {e["key"] for e in store.all()}
+    new = [e for e in events if e["key"] not in have]
+    print(f"{len(events)} events, {len(new)} new, {len(skipped)} skipped (change did not apply)")
+    by: dict[str, int] = {}
+    for e in events:
+        k = f"{e['client']} · {e['kind']} · {e['vendor'] or 'vendor unknown'}: {wc.label(e['before'])} -> {wc.label(e['after'])}"
+        by[k] = by.get(k, 0) + 1
+    for k, n in sorted(by.items()):
+        client_kind_vendor, settings = k.split(": ", 1)
+        print(f"  {client_kind_vendor}: {n} ({settings})")
+    if args.dry_run:
+        print("(dry run: nothing written)")
+        return 0
+    print(f"written: {store.append(events)}")
+    print(f"read back: {len(store.all())} events in warmup_changes")
+    return 0
+
+
+def outcomes_cmd(db, today: date) -> int:
+    """Read-only: what fleet watch would fill today, and the monthly lines whatever the day."""
+    events = wc.ChangeStore(db["warmup_changes"]).all()
+
+    class _ReadOnly:                                       # fill in memory only
+        def __init__(self, docs): self.docs = docs
+        def find(self, q, proj=None): return [dict(d) for d in self.docs]
+        def update_one(self, *a, **k): pass
+
+    after = wc.daily(_ReadOnly(events), db["inbox_daily"], db["v2_verdicts"], db["inbox_evidence"], today)
+    print(f"events: {len(after)}")
+    for w in wc.WEEKS:
+        k = f"week{w}"
+        filled = sum(1 for e in after if "rep" in (e.get("outcomes") or {}).get(k, {}))
+        missing = sum(1 for e in after if "missing" in (e.get("outcomes") or {}).get(k, {}))
+        print(f"  {k} filled: {filled}, missing: {missing}")
+    print(f"  recovered: {sum(1 for e in after if e.get('recovered_on'))}")
+    done, detail = wc.month_items(after, today, monthly=True)
+    print("Monthly line (first Monday):", done[0].text if done else "none yet (no 3-week outcome)")
+    if detail:
+        print(detail[0])
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Warm-up repair tracker (report-only)")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -68,6 +136,13 @@ def main(argv=None) -> int:
     p = sub.add_parser("preview", help="read-only: what the digest would say today")
     for x in (s, p):
         x.add_argument("--quiet", action="store_true", help="no per-inbox lines")
+    c = sub.add_parser("changes", help="append warm-up settings changes to Mongo warmup_changes")
+    c.add_argument("--changes", required=True, help="{email: {on, type, rep_before, before, after, ok}}")
+    c.add_argument("--before", required=True, help="{inboxes: [{email, account, client, type}]}")
+    c.add_argument("--who", required=True, help="who made the change (and on whose yes)")
+    c.add_argument("--why", required=True, help="why the settings were changed")
+    c.add_argument("--dry-run", action="store_true", help="print what would be written; write nothing")
+    sub.add_parser("outcomes", help="read-only: the outcomes fleet watch would fill today, and the monthly lines")
     args = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -79,6 +154,10 @@ def main(argv=None) -> int:
     if db is None:
         print("Mongo not reachable: nothing read or written")
         return 1
+    if args.cmd == "changes":
+        return changes_cmd(db, args, today)
+    if args.cmd == "outcomes":
+        return outcomes_cmd(db, today)
     store = wr.RepairStore(db["warmup_repair"])
     docs = store.all()
     if args.cmd == "seed":

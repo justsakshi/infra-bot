@@ -39,7 +39,7 @@ except Exception:
 import httpx
 
 from smartlead import infra_audit as ia
-from smartlead.api import raise_for_status
+from smartlead.api import get_json
 from smartlead.accounts import discover_accounts
 from smartlead.report_sheet import client_label
 from smartlead.zapmail_clients import CURRENT_CLIENTS
@@ -51,9 +51,7 @@ IP_ZONES_DOH = ("b.barracudacentral.org", "bl.spamcop.net")
 
 
 def _get(path, key, **params):
-    r = httpx.get(SL + path, params={"api_key": key, **params}, headers=UA, timeout=120)
-    raise_for_status(r)  # no key in the error text
-    return r.json()
+    return get_json(SL + path, key, headers=UA, **params)   # waits out a 429 (17 Nov 2026)
 
 
 def collect_smartlead(only: str | None):

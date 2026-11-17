@@ -11,6 +11,7 @@ def _no_live_tracker(monkeypatch):
     """The coverage rule reads the asset tracker (Mongo) for cancelled ScaledMail orders: never the live one here."""
     import smartlead.zapmail_asset_sync as zas
     monkeypatch.setattr(zas, "read_tracker", lambda: {"live.com": {"provider": "Scaledmail", "status": "Active"}})
+    monkeypatch.setattr(ts, "_coverage_store", lambda: ((lambda: None), (lambda doc: None)))   # never live Mongo
 
 
 def camp(cid, name, client, role, attached=(), status="PAUSED"):
@@ -510,8 +511,8 @@ def test_coverage_gaps_and_duplicates_are_digest_asks_and_full_coverage_is_quiet
     asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 17))
     keys = {a.key: a for a in asks}
     gap = keys["dt-senders:coverage:Melior"]
-    assert gap.text.startswith("1 Melior inbox is in no active weekly v2 test")
-    assert "DT Melior #3" in gap.step and "05:30 IST" in gap.step and "50" in gap.step
+    assert gap.text.startswith("1 Melior inbox is in no weekly test")
+    assert "DT Melior #3" in gap.step and "needs a new test at Sat 21 Nov 06:00 IST" in gap.step and "50" in gap.step
     assert "2 or more" in keys["dt-senders:coverage-dupes:Precise Leads"].text
     assert not any("Bettrdata" in k for k in keys)
 
@@ -554,6 +555,13 @@ def test_the_copy_check_test_reuses_inboxes_on_purpose_so_it_is_no_duplicate():
     assert ts.coverage(members, tests)["Melior"]["dupes"] == {}
 
 
+def test_an_inbox_whose_only_test_is_the_copy_check_is_in_no_test():
+    members = {"a@x.com": "Melior", "b@x.com": "Melior"}
+    tests = [{"name": "Melior weekly 2", "senders": {"a@x.com"}},
+             {"name": "Melior weekly synced copy", "senders": {"a@x.com", "b@x.com"}}]
+    assert ts.coverage(members, tests) == {"Melior": {"inboxes": 2, "none": ["b@x.com"], "dupes": {}}}
+
+
 def test_two_active_tests_with_one_name_are_an_ask():
     from datetime import date
     tests = [{"id": "1", "name": "B copy"}, {"id": "2", "name": "B copy"}, {"id": "3", "name": "B 2"}]
@@ -570,3 +578,189 @@ def test_cancelled_scaledmail_orders_come_from_the_asset_tracker():
                "zap.com": {"provider": "Zapmail", "status": "Inactive", "type": "DOMAIN"},
                "a@gone.com": {"provider": "Scaledmail", "status": "Inactive", "type": "INBOX"}}
     assert ts.cancelled_domains(tracker) == {"gone.com"}
+
+
+# --- t16 (17 Nov 2026): the filler only uses DT campaigns that have an active weekly test -----------------------------
+# Hold comment on PR #82: a pulled inbox stays on a DT campaign that HAS an active weekly test, never over 50; the
+# filler never puts an inbox only on a DT campaign with no active test; coverage counts test senders, not campaigns.
+
+def test_with_tests_known_a_new_inbox_goes_only_to_a_campaign_with_a_test():
+    camps = dts("Precise Leads", "DT PL", [50, 49, 10])                 # #1 and #2 have a test, #3 has none
+    p = ts.plan(boxes(range(1000, 1110), "Precise Leads"), camps, tested={101, 102})
+    assert p["adds"] == {102: [1109]}                                    # the one free seat on a tested campaign
+    assert 103 not in p["adds"] and p["create"] == [] and p["removes"] == {}
+    assert p["unplaced"] == {"Precise Leads": []}                        # 1099..1108 sit on #3 and stay there
+
+
+def test_a_new_inbox_with_no_tested_room_is_left_off_and_no_campaign_is_created():
+    camps = dts("Precise Leads", "DT PL", [50, 50])
+    p = ts.plan(boxes(range(1000, 1101), "Precise Leads"), camps, tested={101, 102})
+    assert p["adds"] == {} and p["create"] == [] and p["unplaced"] == {"Precise Leads": [1100]}
+
+
+def test_a_pulled_inbox_on_an_untested_campaign_moves_to_a_tested_one_with_room():
+    camps = dts("Melior", "DT Melior", [49, 3])                           # #2 (ids 1049-1051) has no test
+    p = ts.plan(boxes(range(1000, 1049), "Melior"), camps, drop_others=True, tested={101},
+                retest=[box(1050, "Melior")])
+    assert p["adds"] == {101: [1050]} and p["removes"] == {102: [1050]}
+    assert p["no_room"] == {}
+
+
+def test_a_pulled_inbox_with_no_tested_room_stays_where_it_is_and_is_an_ask():
+    camps = dts("Melior", "DT Melior", [50, 2])
+    p = ts.plan(boxes(range(1000, 1050), "Melior"), camps, drop_others=True, tested={101},
+                retest=[box(1050, "Melior"), box(7000, "Melior")])
+    assert p["adds"] == {} and p["removes"] == {}
+    assert 1050 not in p["drops"].get(102, [])                          # never taken off its campaign
+    assert p["no_room"] == {"Melior": [1050, 7000]}
+
+
+def test_tests_unread_keeps_the_old_layout():
+    camps = dts("Melior", "DT Melior", [78, 77])
+    p = ts.plan(boxes(range(1000, 1155), "Melior"), camps, tested=None)
+    assert [c["name"] for c in p["create"]] == ["DT Melior #3", "DT Melior #4"]
+
+
+# --- the coverage reminder -------------------------------------------------------------------------------------------
+
+def _cov(none_on, tests=None, untested=None):
+    return {"PRECISE_LEADS": {"coverage": {"Melior": {"inboxes": 60, "none": sorted(none_on), "dupes": {},
+                                                      "on": dict(none_on)}},
+                              "dt_tests": tests or {}, "untested_dts": untested or {}}}
+
+
+def test_the_reminder_names_the_test_with_room_and_a_chrome_line_that_never_runs_now():
+    from datetime import date
+    res = _cov({"a@x.com": "DT Melior #3", "b@x.com": "DT Melior #3"},
+               tests={"DT Melior #3": {"test": "Melior weekly spam test v2 synced 3", "senders": 30}})
+    asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))           # a Wednesday
+    (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
+    assert a.text == "2 Melior inboxes are in no weekly test, so nothing checks their placement."
+    assert a.key == "dt-senders:coverage:Melior" and not a.urgent
+    assert "\"Melior weekly spam test v2 synced 3\" on DT Melior #3 has room (30 of 50 senders)" in a.step
+    assert "Claude in Chrome:" in a.step and "never click Run now" in a.step
+    assert "If its senders cannot be edited" in a.step and "Saturday after 05:30 IST" in a.step
+
+
+def test_a_campaign_without_a_test_with_room_gets_a_new_test_on_saturday():
+    from datetime import date
+    res = _cov({"a@x.com": "DT Melior #5", "b@x.com": None},
+               tests={"DT Melior #5": {"test": "M5", "senders": 50}}, untested={"Melior": ["DT Melior #6"]})
+    asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))
+    (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
+    assert "1 on DT Melior #5 (its test \"M5\" is full)" in a.step
+    assert "1 on no DT campaign: needs a new test at Sat 21 Nov 06:30 IST; put it on DT Melior #6 first" in a.step
+    assert "needs a new test at Sat 21 Nov 06:00 IST, on DT Melior #6" in a.step
+    assert a.step.count("create a new weekly v2 test") == 2 and "first run Sat 21 Nov 06:00 IST" in a.step
+
+
+def test_on_fridays_the_reminder_posts_at_once_once_per_friday():
+    from datetime import date
+    res = _cov({"a@x.com": "DT Melior #3"}, tests={"DT Melior #3": {"test": "M3", "senders": 30}})
+    asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 20))           # Friday
+    (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
+    assert a.urgent and a.key == "dt-senders:coverage:Melior:2026-11-20"
+    assert a.text.startswith("Friday reminder: 1 Melior inbox is in no weekly test")
+
+
+def test_full_coverage_is_silent_even_on_friday():
+    from datetime import date
+    res = _cov({})
+    asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 20))
+    assert asks == []
+
+
+# --- the daily coverage record in Mongo ------------------------------------------------------------------------------
+
+def test_the_coverage_record_keeps_missing_since_and_marks_what_got_covered_as_resolved():
+    from datetime import date
+    res = {"PRECISE_LEADS": {"coverage": {"Melior": {"inboxes": 3, "none": ["b@x.com"], "dupes": {"c@x.com": ["M1", "M2"]}}}},
+           "BETTRDATA": {"coverage": {"Bettrdata": {"inboxes": 2, "none": [], "dupes": {}}}}}
+    prev = {"_id": "2026-11-16", "clients": {"Melior": {"missing": [{"email": "a@x.com", "since": "2026-11-10"},
+                                                                     {"email": "b@x.com", "since": "2026-11-12"}]}}}
+    r = ts.coverage_record(res, prev, date(2026, 11, 17))
+    assert r["_id"] == "2026-11-17" and r["tests_read"] == {"PRECISE_LEADS": True, "BETTRDATA": True}
+    m = r["clients"]["Melior"]
+    assert m["missing"] == [{"email": "b@x.com", "since": "2026-11-12", "resolved": False}]
+    assert m["resolved"] == [{"email": "a@x.com", "since": "2026-11-10", "on": "2026-11-17", "resolved": True}]
+    assert m["dupes"] == {"c@x.com": ["M1", "M2"]} and (m["inboxes"], m["missing_n"], m["dupes_n"]) == (3, 1, 1)
+    assert r["clients"]["Bettrdata"] == {"inboxes": 2, "missing": [], "missing_n": 0, "dupes": {}, "dupes_n": 0,
+                                         "resolved": []}
+    assert r["all_covered"] is False
+    first = ts.coverage_record(res, None, date(2026, 11, 17))
+    assert first["clients"]["Melior"]["missing"] == [{"email": "b@x.com", "since": "2026-11-17", "resolved": False}]
+
+
+def test_an_account_whose_tests_were_not_read_carries_its_last_record_and_resolves_nothing():
+    from datetime import date
+    res = {"PRECISE_LEADS": {"coverage": None, "coverage_error": "tests (HTTP 500)"}}
+    prev = {"_id": "2026-11-16", "accounts": {"PRECISE_LEADS": ["Melior"]},
+            "clients": {"Melior": {"missing": [{"email": "a@x.com", "since": "2026-11-10"}]}}}
+    r = ts.coverage_record(res, prev, date(2026, 11, 17))
+    assert r["tests_read"] == {"PRECISE_LEADS": False}
+    assert r["clients"]["Melior"]["missing"] == [{"email": "a@x.com", "since": "2026-11-10"}]
+    assert r["clients"]["Melior"]["resolved"] == [] and r["clients"]["Melior"]["stale"] is True
+    assert r["all_covered"] is None
+
+
+def test_the_daily_run_saves_the_coverage_record(monkeypatch, capsys):
+    state, dms, posts, reports = _daily(monkeypatch)
+    saved = []
+    monkeypatch.setattr(ts, "_coverage_store", lambda: (lambda: None, lambda doc: saved.append(doc)))
+    monkeypatch.setattr(ts, "_dm", lambda text: dms.append(text) or True)
+    ts.main()
+    capsys.readouterr()
+    (doc,) = saved
+    assert doc["_id"] == date.today().isoformat() and doc["tests_read"] == {"PRECISE_LEADS": True}
+    assert doc["all_covered"] is True                       # the fake's inboxes are not connected: nothing to cover
+
+
+def test_an_inbox_that_left_our_list_is_not_counted_as_resolved():
+    from datetime import date
+    res = {"PRECISE_LEADS": {"coverage": {"Melior": {"inboxes": 1, "none": [], "dupes": {}, "all": ["b@x.com"]}}}}
+    prev = {"clients": {"Melior": {"missing": [{"email": "a@x.com", "since": "2026-11-10"},
+                                               {"email": "b@x.com", "since": "2026-11-12"}]}}}
+    m = ts.coverage_record(res, prev, date(2026, 11, 17))["clients"]["Melior"]
+    assert [x["email"] for x in m["resolved"]] == ["b@x.com"] and m["left"] == ["a@x.com"]
+
+
+def test_pulled_inboxes_of_cancelled_orders_raise_no_no_room_ask():
+    boxes_ = [{"id": 1, "email": "a@gone.com"}, {"id": 2, "email": "b@live.com"}]
+    assert ts.drop_cancelled({"Precise Leads": [1, 2]}, boxes_, {"gone.com"}) == {"Precise Leads": [2]}
+    assert ts.drop_cancelled({"Precise Leads": [1]}, boxes_, {"gone.com"}) == {}
+    assert ts.drop_cancelled({"Precise Leads": [1]}, boxes_, None) == {"Precise Leads": [1]}   # tracker unread
+
+
+# --- t16 follow-ups (parent, 17 Nov): a free Saturday slot, resolved per inbox, Mongo off in tests ---------------------
+
+def test_the_free_slot_is_the_first_half_hour_after_0530_on_the_next_saturday_that_no_test_uses():
+    from datetime import date
+    taken = {"06:00", "06:30", "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00"}
+    assert ts.free_slots(taken, date(2026, 11, 17), 2) == ["Sat 21 Nov 11:30 IST", "Sat 21 Nov 12:00 IST"]
+    assert ts.free_slots(set(), date(2026, 11, 21), 1) == ["Sat 28 Nov 06:00 IST"]        # Saturday: the next one
+
+
+def test_a_group_with_no_test_room_needs_a_new_test_at_a_free_slot():
+    from datetime import date
+    res = _cov({"a@x.com": "DT Melior #5", "b@x.com": "DT Melior #6"},
+               tests={"DT Melior #5": {"test": "M5", "senders": 50}})
+    res["PRECISE_LEADS"]["slots"] = ["06:00", "06:30"]
+    res["BETTRDATA"] = {"slots": ["07:00"]}
+    asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))
+    (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
+    assert "needs a new test at Sat 21 Nov 07:30 IST" in a.step and "needs a new test at Sat 21 Nov 08:00 IST" in a.step
+
+
+def test_each_coverage_entry_says_whether_it_was_resolved():
+    from datetime import date
+    res = {"PRECISE_LEADS": {"coverage": {"Melior": {"inboxes": 2, "none": ["b@x.com"], "dupes": {}}}}}
+    prev = {"clients": {"Melior": {"missing": [{"email": "a@x.com", "since": "2026-11-10", "resolved": False}]}}}
+    m = ts.coverage_record(res, prev, date(2026, 11, 17))["clients"]["Melior"]
+    assert m["missing"] == [{"email": "b@x.com", "since": "2026-11-17", "resolved": False}]
+    assert m["resolved"] == [{"email": "a@x.com", "since": "2026-11-10", "on": "2026-11-17", "resolved": True}]
+
+
+def test_tests_never_see_the_live_mongo_uri():
+    import os
+    from smartlead.zapmail_asset_sync import _db
+    assert os.getenv("MONGO_URI") == "" and _db() is None
