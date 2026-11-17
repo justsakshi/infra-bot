@@ -127,3 +127,71 @@ def test_setup_drift_only_for_set_up_inboxes():
     found = ia.check_mailboxes([done, other], {"a@x.com": "Melior", "b@x.com": "Melior"}, {}, now)
     drift = [f for f in found if f["check"] == "setup_drift"]
     assert [f["subject"] for f in drift] == ["a@x.com"] and "daily limit 20, want 15" in drift[0]["detail"]
+
+
+# 17 Nov 2026: the 10:20 audit exited 1 on one Smartlead 429 ("200 requests in 1 min") while reading a campaign's
+# inboxes; the 10:00 sync was sharing the same account limit. A 429 is waited out, not the end of the run.
+class _Resp:
+    def __init__(self, status, body=None, retry_after=None):
+        self.status_code, self._body, self.text = status, body, "" if status == 200 else "rate limit"
+        self.headers = {"Retry-After": retry_after} if retry_after else {}
+        self.reason_phrase = "x"
+        self.request = __import__("httpx").Request("GET", "https://server.smartlead.ai/api/v1/campaigns?api_key=SECRET")
+
+    def json(self):
+        return self._body
+
+
+def _fake_get(monkeypatch, statuses):
+    import smartlead.api as api
+    seq = list(statuses)
+    calls = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        s = seq.pop(0)
+        return _Resp(s[0], s[1] if len(s) > 1 else None, s[2] if len(s) > 2 else None) if isinstance(s, tuple) else _Resp(s)
+    monkeypatch.setattr(api.httpx, "get", get)
+    return calls
+
+
+def test_get_json_waits_out_429_then_returns(monkeypatch):
+    from smartlead.api import get_json
+    calls = _fake_get(monkeypatch, [429, (429, None, "30"), 502, (200, [{"id": 1}])])
+    waits = []
+    assert get_json("https://x/campaigns", "SECRET", sleep=waits.append) == [{"id": 1}]
+    assert len(calls) == 4 and len(waits) == 3
+    assert 30 <= waits[1] <= 45                   # Retry-After honoured (plus a little jitter)
+    assert all(w > 0 for w in waits)
+
+
+def test_get_json_gives_up_without_the_key_in_the_error(monkeypatch):
+    import httpx
+    import pytest
+    from smartlead.api import get_json
+    _fake_get(monkeypatch, [429] * 10)
+    waits = []
+    with pytest.raises(httpx.HTTPStatusError) as e:
+        get_json("https://x/campaigns", "SECRET", tries=3, sleep=waits.append)
+    assert len(waits) == 2 and "SECRET" not in str(e.value) and "429" in str(e.value)
+
+
+def test_get_json_does_not_retry_a_client_error(monkeypatch):
+    import httpx
+    import pytest
+    from smartlead.api import get_json
+    calls = _fake_get(monkeypatch, [404, 200])
+    with pytest.raises(httpx.HTTPStatusError):
+        get_json("https://x/campaigns", "SECRET", sleep=lambda s: None)
+    assert len(calls) == 1
+
+
+def test_audit_and_attachment_reads_use_the_retrying_get(monkeypatch):
+    import infra_audit
+    import placement_report
+    calls = _fake_get(monkeypatch, [429, (200, [])])
+    monkeypatch.setattr("smartlead.api.time.sleep", lambda s: None)
+    assert infra_audit._get("/campaigns", "SECRET") == []
+    calls.clear()
+    _fake_get(monkeypatch, [429, (200, [])])
+    assert placement_report._get("https://x/campaigns", "SECRET") == []

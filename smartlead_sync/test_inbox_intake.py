@@ -598,3 +598,22 @@ def test_the_old_posts_go_out_when_the_digest_is_not_written_or_off(monkeypatch)
     monkeypatch.setenv("DIGEST_MODE", "off")
     monkeypatch.setattr(dg, "report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("digest is off")))
     assert cli.main() == 0 and len(sent) == 4                              # the fake hands the same news again
+
+
+def test_drift_skips_inboxes_tagged_do_not_use():
+    # 17 Nov 2026: the digest asked to "set back to the standard" 9 set-up inboxes whose warm-up Smartlead had
+    # stopped (their mail service was gone) and which were pulled and tagged DO NOT USE. Pulled inboxes are not drift.
+    done = {"tags": [(9, "Bot-Setup"), (153335, "ScaledMail-Google")]}
+    good = acct(1, "ok@d1.com", **done)
+    good.update({"message_per_day": 15, "minTimeToWaitInMins": 20})
+    good["warmup_details"].update({"max_email_per_day": 25, "reply_rate": 30})
+    pulled = copy.deepcopy(good)
+    pulled.update(id=2, from_email="p@d2.com",
+                  tags=pulled["tags"] + [{"tag_id": 77, "tag_name": "DO NOT USE - failed v2 (auto)"}])
+    pulled["warmup_details"]["status"] = "INACTIVE"
+    off = copy.deepcopy(good)
+    off.update(id=3, from_email="o@d3.com")
+    off["warmup_details"].update(status="INACTIVE", blocked_reason="Error: Mail service not enabled")
+    out, _ = run(FakeSL([good, pulled, off]), plans=())
+    assert out["problems"] == ["Changed since setup on 1 inbox (o@d3.com): "
+                               "warmup off (Smartlead stopped it: Error: Mail service not enabled)"]

@@ -72,9 +72,8 @@ def _posted_collection():
 
 
 def _get(url, key, **params):
-    r = httpx.get(url, params={"api_key": key, **params}, headers=UA, timeout=120)
-    raise_for_status(r)  # no key in the error text
-    return r.json()
+    from smartlead.api import get_json
+    return get_json(url, key, headers=UA, **params)   # waits out a 429 (17 Nov 2026: the infra audit died on one)
 
 
 def accounts_by_email(key):

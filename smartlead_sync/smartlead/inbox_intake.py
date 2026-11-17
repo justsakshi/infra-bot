@@ -335,7 +335,7 @@ def _drift_sweep(accounts: list[dict], per_domain: dict[str, int], approved: dic
     one line per kind of problem. Read-only; posted only when new (CLI)."""
     groups: dict[str, list[str]] = {}
     for a in accounts:
-        if not _has_tag(a, st.SETUP_TAG):
+        if not _has_tag(a, st.SETUP_TAG) or _do_not_use(a):     # pulled inboxes are not drift (17 Nov 2026)
             continue
         email = str(a.get("from_email", "")).lower()
         dom = email.split("@")[-1]
