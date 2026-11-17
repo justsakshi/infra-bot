@@ -423,3 +423,26 @@ def test_google_gate_is_pure_and_reads_only_its_own_provider():
         == ("not enough data", {"Microsoft": "reached the inbox"})
     assert usable.real_send_rule("Gmail") and usable.real_send_rule("GMAIL") and not usable.real_send_rule("Outlook")
     assert not usable.real_send_rule("SMTP")
+
+
+# "recovering", not "pulled" (t273, Manveen 17 Nov 2026) --------------------------------------------------------
+
+def test_a_person_tagged_inbox_under_90_warm_up_is_recovering_everywhere_it_is_described():
+    from datetime import date as d
+    from smartlead import inbox_status as ins
+    hand, auto = ["DO NOT USE - pulled from roundtable"], ["DO NOT USE - failed v2 (auto)"]
+    assert usable.recovering(hand, "71%") and not usable.recovering(hand, "95%") and not usable.recovering(hand, "N/A")
+    assert not usable.recovering(auto, "71%") and not usable.recovering([], "50%")
+    # the sheet: still BUSY for the tag (the tag name is unchanged), with the recovering note first
+    r, rep = _g("r@g.com", "71%", tags=hand)
+    process_inbox_availability([r], {"r@g.com": rep}, {}, gate_data=None)
+    assert r["availability"] == "BUSY" and "do_not_use" in r["busy_reason"]
+    assert r["use_notes"].startswith(usable.RECOVERING_NOTE)
+    # the daily inbox post: its own state and label, still held back from sending
+    t = d(2026, 11, 17)
+    assert ins.state_of(hand, "", "", True, False, False, "", t, rep="71%") == "recovering"
+    assert ins.state_of(hand, "", "", True, False, False, "", t, rep="99%") == "do_not_use"
+    assert ins.state_of(auto, "FAIL", "2026-11-15", True, False, False, "", t, rep="71%") == "pulled"
+    assert "recovering" in ins.HELD and ins.LABEL["recovering"].startswith("recovering")
+    rows = [{"email": "r@g.com", "tags": hand, "warmup_rep_pct": "71%", "connection_ok": True, "provider": "Gmail"}]
+    assert ins.states(rows, t)[0]["state"] == "recovering"

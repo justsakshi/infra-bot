@@ -192,7 +192,7 @@ def week_line(client: str, docs: list[dict], today: date) -> str | None:
     blocked = sum(1 for d in rep if d.get("blocked"))
     if not (rep or stuck or rec or gone):
         return None
-    parts = [f"{len(rep)} repairing" + (f" ({blocked} warm-up blocked)" if blocked else "")]
+    parts = [f"{len(rep)} recovering" + (f" ({blocked} warm-up blocked)" if blocked else "")]
     if stuck:
         parts.append(f"{len(stuck)} not improving after 3 weeks")
     if rec:
@@ -207,7 +207,7 @@ def week_line(client: str, docs: list[dict], today: date) -> str | None:
 def _detail_line(d: dict, today: date) -> str:
     days = (today - date.fromisoformat(str(d["started"])[:10])).days
     rep = d.get("latest_rep")
-    flags = [{"repairing": "repairing", "no_improvement": "no improvement in 3 weeks (cancel candidate)",
+    flags = [{"repairing": "recovering", "no_improvement": "no improvement in 3 weeks (cancel candidate)",
               "recovered": f"recovered {_day(d['recovered_on'])}" if d.get("recovered_on") else "recovered",
               "gone": "gone"}.get(d.get("status"), str(d.get("status")))]
     if d.get("status") in IN_REPAIR and worse(d):
@@ -248,7 +248,7 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> t
     detail = []
     if live and (weekly or asks):
         counts = Counter(d.get("status") for d in live)
-        head = (f"Warm-up repair, {_day(today)}: {counts['repairing'] + counts['no_improvement']} in repair, "
+        head = (f"Warm-up repair, {_day(today)}: {counts['repairing'] + counts['no_improvement']} recovering, "
                 f"{counts['recovered']} recovered this week (report-only: the bot changes no warm-up setting)")
         order = {"no_improvement": 0, "repairing": 1, "recovered": 2, "gone": 3}
         lines = [head]

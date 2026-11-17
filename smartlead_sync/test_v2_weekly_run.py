@@ -709,6 +709,18 @@ def test_a_failing_google_inbox_is_reported_and_never_moved(job, monkeypatch):
             "real replies agree with the seed test); nothing changed in Smartlead") in text
 
 
+def test_a_failing_google_inbox_is_never_moved_even_when_v2_trust_trusts_google_t273(job, monkeypatch):
+    """t268/t273 (Manveen 17 Nov 2026: "make sure this does not bite us"): Google is judged on real sends and
+    warm-up, so a Google v2 fail never tags or pulls, whatever the weekly trust check decides."""
+    monkeypatch.setenv("V2_UNTRUSTED_TYPES", "none")          # the trust check says: every type trusted
+    monkeypatch.setitem(TYPES, "pl-bad@x.com", "GMAIL")
+    download_monday(job)
+    job.run()
+    job.clock = at(10, 10, 31)
+    assert job.run() == 0
+    assert job.sl.calls == [] and job.state()["pulled"] == {} and job.sl.tagged == set()
+
+
 def test_google_inboxes_are_acted_on_only_when_named_in_act_types(job, monkeypatch):
     monkeypatch.setitem(TYPES, "pl-bad@x.com", "GMAIL")
     download_monday(job)

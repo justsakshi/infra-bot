@@ -214,12 +214,31 @@ def test_kill_rule_grades_on_the_own_provider(kind, own, other):
     clean, dirty = (10, 0), (10, 10)
     g, o = (clean, dirty) if own == "google" else (dirty, clean)
     tests = [ctest("2026-10-12", kind, g, o), ctest("2026-10-05", kind, g, o)]
+    if kind == "GMAIL":       # t268/t273: a Google inbox's seed tests never count, so never GOOD/WATCH/KILL either
+        assert kr.grade(tests[0]) is None
+        assert {x["verdict"] for x in kr.judge_all({"a@fake.test": tests}, date(2026, 10, 13)).values()} == {kr.NO_DATA}
+        return
     assert kr.grade(tests[0]) == 100.0
     v = kr.judge_all({"a@fake.test": tests, "b@fake.test": tests}, date(2026, 10, 13))
     assert {x["verdict"] for x in v.values()} == {kr.GOOD}
     assert SIGNAL in v["a@fake.test"]["why"] and "0% inbox" in v["a@fake.test"]["why"]
     dead = [ctest("2026-10-12", kind, dirty if own == "google" else clean, clean if own == "google" else dirty)] * 2
     assert kr.judge_all({"a@fake.test": dead}, date(2026, 10, 13))["a@fake.test"]["verdict"] == kr.KILL
+
+
+def test_a_google_inbox_is_never_on_the_kill_list_or_swapped_out_t273():
+    """Manveen 17 Nov 2026: "make sure this does not bite us". Google seed results (own provider or not, the inbox's
+    or its domain's) never make a Google inbox SHOULD KILL / WATCH, and never make it a rotation victim."""
+    from smartlead.rotation_planner import _is_victim
+    dirty = (10, 10)
+    g_dead = [ctest("2026-10-12", "GMAIL", dirty, dirty), ctest("2026-10-05", "GMAIL", dirty, dirty)]
+    s_dead = [ctest("2026-10-12", "SMTP", dirty, dirty)] * 3
+    v = kr.judge_all({"g@fake.test": g_dead, "s1@fake.test": s_dead, "s2@fake.test": s_dead}, date(2026, 10, 13))
+    assert v["g@fake.test"] == {"email": "g@fake.test", "verdict": kr.NO_DATA, "rule": "", "why": kr.GOOGLE_WHY}
+    assert v["s1@fake.test"]["verdict"] == kr.KILL                    # an SMTP inbox is still judged as before
+    live = {"campaign_status": "ACTIVE", "test_sheet_status": "fail", "busy_reason": "failed_test"}
+    assert not _is_victim({**live, "provider": "Gmail"}) and not _is_victim({**live, "type": "GMAIL"})
+    assert _is_victim({**live, "provider": "Outlook"}) and _is_victim(live)
 
 
 def test_kill_rule_unknown_type_keeps_the_worse_provider():

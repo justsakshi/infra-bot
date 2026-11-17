@@ -42,6 +42,11 @@ def _first_name(row: dict) -> str:
 
 
 def _is_victim(row: dict) -> bool:
+    # A Google inbox is judged on real sends and warm-up, never on its seed test (usable.google_gate, t268/t273):
+    # a Google "fail" never swaps it out of a campaign.
+    from smartlead.usable import real_send_rule
+    if real_send_rule(row.get("type") or row.get("provider") or ""):
+        return False
     status = str(row.get("test_sheet_status", "")).strip().lower()
     reasons = str(row.get("busy_reason", ""))
     in_live = str(row.get("campaign_status", "")).upper() == "ACTIVE"

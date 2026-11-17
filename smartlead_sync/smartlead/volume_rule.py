@@ -226,11 +226,12 @@ def idle_lines(idle: list[dict], cap: int = IDLE_SHOWN) -> list[str]:
     from smartlead import digest as dg
     groups: dict[tuple, list[str]] = {}
     for x in idle or []:
-        groups.setdefault((x.get("client") or "no client", bool(x.get("do_not_use"))), []).append(x["email"])
+        tag = "recovering" if x.get("recovering") else "dnu" if x.get("do_not_use") else ""
+        groups.setdefault((x.get("client") or "no client", tag), []).append(x["email"])
     lines = []
-    for (client, dnu), emails in groups.items():
-        lines += [(dom.split(":", 1)[0], f"• {client} · {dom}" + (" (tagged DO NOT USE)" if dnu else ""))
-                  for dom in dg.by_domain(emails)]
+    said = {"recovering": " (recovering: out of campaigns while warm-up repairs)", "dnu": " (tagged DO NOT USE)", "": ""}
+    for (client, tag), emails in groups.items():
+        lines += [(dom.split(":", 1)[0], f"• {client} · {dom}" + said[tag]) for dom in dg.by_domain(emails)]
     lines = [line for _, line in sorted(lines)]
     return lines[:cap] + ([f"• and {len(lines) - cap} more domains"] if len(lines) > cap else [])
 
@@ -243,10 +244,12 @@ def _notes(waiting: dict) -> list[str]:
         out.append(f"{_plural(waiting['warming'])} {'are' if waiting['warming'] != 1 else 'is'} still warming{first}.")
     if waiting.get("no_campaign"):
         n = waiting["no_campaign"]
-        dnu = sum(bool(x.get("do_not_use")) for x in waiting.get("idle") or [])
+        rec = sum(bool(x.get("recovering")) for x in waiting.get("idle") or [])
+        dnu = sum(bool(x.get("do_not_use")) and not x.get("recovering") for x in waiting.get("idle") or [])
+        said = ", ".join(([f"{rec} recovering"] if rec else []) + ([f"{dnu} tagged DO NOT USE"] if dnu else []))
         out.append("\n".join([
             f"{_plural(n)} past their ready date sent nothing from a campaign in 7 days"
-            + (f" ({dnu} tagged DO NOT USE)" if dnu else "") + ", so the review has nothing to "
+            + (f" ({said})" if said else "") + ", so the review has nothing to "
             "judge them on. Nothing to do here: the daily inbox list says which are free to give to a campaign, and "
             "asks when a live campaign is short of inboxes."] + idle_lines(waiting.get("idle") or [])))
     if waiting.get("rotate_ip"):
