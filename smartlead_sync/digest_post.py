@@ -37,7 +37,7 @@ LABELS = {"v2-weekly": "v2 weekly test (PC job)", "inbox-status": "Inboxes", "bi
           "zapmail-digest": "Domains and inboxes (Zapmail, ScaledMail)", "fleet-scorecard": "Fleet scorecard",
           "inbox-intake": "New inboxes set up", "inbox-ready": "ScaledMail inboxes made ready",
           "smartlead-sync": "Daily sheet sync", "warmup-repair": "Warm-up repair",
-          "inbox-evidence": "Inbox evidence"}
+          "inbox-evidence": "Inbox evidence", "volume-review": "Volume review"}
 
 
 def _day(dt: datetime) -> str:

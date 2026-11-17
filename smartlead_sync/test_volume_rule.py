@@ -145,16 +145,16 @@ def test_review_text_separates_pilot_changes_from_suggestions():
     t = vr.review_text(rows, {"warming": 75, "first_ready": "2026-10-27"}, TODAY, applied={"askmelior.com": True})
     lines = t.splitlines()
     assert lines[0] == "Volume review, 21 Oct (by domain, ScaledMail's weekly steps)"
-    assert "Pilot, changed now: askmelior.com Google 15 -> 17 (3 inboxes)" in t
-    assert "Suggested only (not in the pilot): raise other.com Google 15 -> 17 (3 inboxes)" in t
-    assert "Hold: meliorbase.com (1 of 21 inboxes failed its test)" in t
+    assert "Pilot, changed now: Melior · askmelior.com Google 15 -> 17 (3 inboxes)" in t
+    assert "Suggested only (not in the pilot): raise Melior · other.com Google 15 -> 17 (3 inboxes)" in t
+    assert "• Melior · meliorbase.com: 1 of 21 inboxes failed its test" in t
     assert "75 inboxes are still warming (first ready 27 Oct)" in t
 
 
 def test_review_text_reports_a_pilot_write_that_failed():
     rows = [row("askmelior.com", vr.RAISE, pilot=True)]
     t = vr.review_text(rows, {}, TODAY, applied={"askmelior.com": False})
-    assert "Pilot, NOT changed (see below): askmelior.com" in t
+    assert "Pilot, NOT changed (see below): Melior · askmelior.com" in t
 
 
 def test_ip_rotation_note():
@@ -164,7 +164,7 @@ def test_ip_rotation_note():
 
 def test_dry_run_says_what_the_pilot_would_change():
     t = vr.review_text([row("askmelior.com", vr.RAISE, pilot=True)], {}, TODAY, applied={})
-    assert "Pilot, would change (dry run): askmelior.com Google 15 -> 17 (3 inboxes)" in t
+    assert "Pilot, would change (dry run): Melior · askmelior.com Google 15 -> 17 (3 inboxes)" in t
 
 
 def test_comparison_domains_are_shown_side_by_side_and_never_suggested():
@@ -172,7 +172,7 @@ def test_comparison_domains_are_shown_side_by_side_and_never_suggested():
     ctrl.update(control=True, signals={"placement": ["good", "3 of 3 inboxes passed (100% inbox)"],
                                        "bounces": ["good", "bounced 0% of 300 sent"]})
     t = vr.review_text([ctrl], {}, TODAY, applied={})
-    assert "Comparison, kept flat: solidclients.com Google 15 (3 of 3 inboxes passed (100% inbox); bounced 0% of 300 sent)" in t
+    assert "Comparison, kept flat: Melior · solidclients.com Google 15 (3 of 3 inboxes passed (100% inbox); bounced 0% of 300 sent)" in t
     assert "Suggested only" not in t
 
 
@@ -180,4 +180,85 @@ def test_pilot_or_comparison_domain_without_a_placement_test_is_called_out():
     r = row("askmelior.com", vr.HOLD, pilot=True, frm=(15,), to=(15,), why="only 0 of 3 inboxes tested")
     r["signals"] = {"placement": ["wait", "only 0 of 3 inboxes tested"]}
     t = vr.review_text([r], {}, TODAY, applied={})
-    assert "No placement test yet, add to Monday's test: askmelior.com" in t
+    assert "No placement test yet, so these stay on hold; add them to Monday's test to judge them: Melior · askmelior.com" in t
+
+
+# Digest (t270, 17 Nov 2026): each item names its client and domain, says why, and only what a person can act on is
+# an ask. Manveen: "what was the point of this message if it's not gonna give me the complete info".
+
+IDLE = [{"email": "a@x.com", "client": "Client A", "do_not_use": False},
+        {"email": "b@x.com", "client": "Client A", "do_not_use": False},
+        {"email": "c@y.com", "client": "Client B", "do_not_use": True}]
+
+
+def test_hold_and_idle_inboxes_are_thread_only_and_named():
+    rows = [row("q.com", vr.HOLD, frm=(5,), to=(5,), why="sends about 3 of 5 a day, so more room would not be used",
+                client="Client A")]
+    asks, done, detail = vr.digest_items(rows, {"no_campaign": 3, "idle": IDLE}, TODAY, applied={}, errors=[])
+    assert asks == [] and done == []
+    t = "\n".join(detail)
+    assert "• Client A · q.com: sends about 3 of 5 a day, so more room would not be used" in t
+    assert "3 inboxes past their ready date sent nothing from a campaign in 7 days (1 tagged DO NOT USE)" in t
+    assert "• Client A · x.com: a@, b@" in t
+    assert "• Client B · y.com: c@ (tagged DO NOT USE)" in t
+    assert "Nothing to do here" in t
+
+
+def test_idle_list_is_cut_with_and_n_more():
+    idle = [{"email": f"u@d{i:02}.com", "client": "Client A", "do_not_use": False} for i in range(30)]
+    t = vr.review_text([], {"no_campaign": 30, "idle": idle}, TODAY, applied={})
+    assert "• Client A · d19.com: u@" in t and "d20.com" not in t
+    assert "• and 10 more domains" in t
+
+
+def test_pilot_step_back_written_is_a_done_line():
+    r = row("x.com", vr.STEP_BACK, frm=(17, 17), to=(15, 15), pilot=True, why="bounced 4.2% of 300 sent",
+            client="Client A")
+    asks, done, _ = vr.digest_items([r], {}, TODAY, applied={"x.com": True}, errors=[])
+    assert asks == []
+    assert [d.text for d in done] == ["Volume review stepped Client A · x.com back from 17 to 15 a day "
+                                      "(2 inboxes): bounced 4.2% of 300 sent."]
+
+
+def test_pilot_write_that_failed_is_an_ask_listing_each_inbox():
+    r = row("x.com", vr.STEP_BACK, frm=(17,), to=(15,), pilot=True, client="Client A")
+    asks, done, _ = vr.digest_items([r], {"apply_problems": ["x0@x.com: now 12, not 17"]}, TODAY,
+                                    applied={"x.com": False}, errors=[])
+    assert done == [] and len(asks) == 1
+    a = asks[0]
+    assert a.key == "volume-review:not-changed" and a.kind == "ask"
+    assert "1 pilot domain" in a.text
+    assert a.detail == ["x0@x.com: now 12, not 17"]
+    assert "each inbox listed" in a.step and "thread" not in a.step
+
+
+def test_step_back_outside_the_pilot_is_an_ask_naming_each_domain():
+    rows = [row("x.com", vr.STEP_BACK, frm=(17, 17), to=(15, 15), why="2 of 2 inboxes failed", client="Client A"),
+            row("y.com", vr.HOLD, client="Client B")]
+    asks, _, _ = vr.digest_items(rows, {}, TODAY, applied={}, errors=[])
+    assert len(asks) == 1
+    a = asks[0]
+    assert a.key == "volume-review:suggested"
+    assert a.text.startswith("1 domain outside the pilot")
+    assert a.detail == ["Client A · x.com: 17 -> 15 a day on 2 inboxes (2 of 2 inboxes failed)"]
+    assert "--pilot-add x.com" in a.step and "listed" in a.step
+
+
+def test_a_raise_is_never_asked_for():
+    asks, _, _ = vr.digest_items([row("x.com", vr.RAISE)], {}, TODAY, applied={}, errors=[])
+    assert asks == []
+
+
+def test_an_account_it_could_not_read_is_a_broken_line():
+    asks, _, _ = vr.digest_items([], {}, TODAY, applied={}, errors=["Smartlead BETTRDATA: timeout"])
+    assert [(a.kind, a.key) for a in asks] == [("broken", "volume-review:read")]
+    assert "Smartlead BETTRDATA: timeout" in asks[0].text
+
+
+def test_ip_rotation_and_hand_changes_point_at_fleet_watch_not_asked():
+    asks, _, detail = vr.digest_items([], {"rotate_ip": ["s.com (45%)"], "by_hand": ["h@h.com changed by hand to 12 (set 15)"]},
+                                      TODAY, applied={}, errors=[])
+    assert asks == []
+    t = "\n".join(detail)
+    assert "s.com (45%)" in t and "h@h.com changed by hand to 12" in t
+    assert t.count("fleet watch") == 2

@@ -178,7 +178,7 @@ def test_an_urgent_ask_that_was_fixed_and_comes_back_posts_again():
 
 def test_every_source_has_a_plain_label():
     for src in ("zapmail-digest", "fleet-scorecard", "inbox-intake", "inbox-ready", "smartlead-sync",
-                "kill-report", "real-recipients", "placement-report", "campaign-metrics"):
+                "kill-report", "real-recipients", "placement-report", "campaign-metrics", "volume-review"):
         assert src in dp.LABELS
 
 

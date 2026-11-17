@@ -62,12 +62,13 @@ Bot health leaves out a missed run nobody can act on: the digest's own slot, and
 | Gate self-test (`gate-selftest`) | 11:30 | Monday post, and on a disagreement | silent when all agree; held-back inboxes still sending: ask; other disagreements: broken line |
 | Reply check (`reply-monitor`) | 13:00 | ALERT posts, Monday summary | ALERT domains: one ask; summary in the thread |
 | Kill warnings (`kill-report`) | Tue 13:30 | post | asks (still sending, idle in live campaigns, domains to stop using) |
+| Volume review (`volume-review`) | Tue 13:45 (when `VOLUME_REVIEW_ENABLED=true`) | own post (a count of idle inboxes named nobody) | a pilot domain stepped back: done line; a pilot change that did not write, or a domain outside the pilot that should step back: ask, each domain or inbox listed with its client; an account it could not read: broken line. A domain on hold and the inboxes that sent nothing in 7 days (by client and domain, DO NOT USE ones marked) are thread only: nothing to do. SMTP IP and hand-changed limits point at fleet watch, which asks about them. Never raises a limit |
 | Real-recipient check (`real-recipients`) | Sun 07:00 | post | trust change: done line; report in the thread |
 | Classic seed test (`placement-report`) | Mon/Tue 08:00-13:00 | post per client | thread only (being retired, see below) |
 | New inboxes (`inbox-intake`, `inbox-ready`) | every 2 h | post | done lines; problems a person fixes: ask |
 | Bot health, restart, 4 PM reminder, v2 watch (bot side) | various | posts | silent; a failed run is a broken line |
 
-Jobs that run after 11:00 (gate self-test, reply check, kill warnings, the later billing-watch runs) appear in the
+Jobs that run after 11:00 (gate self-test, reply check, kill warnings, volume review, the later billing-watch runs) appear in the
 next morning's digest, unless urgent.
 
 Not in the digest, on purpose: campaign stats and the Microsoft/Proofpoint watch post to the team's daily channel,

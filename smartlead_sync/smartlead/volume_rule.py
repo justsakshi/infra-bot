@@ -161,66 +161,153 @@ def _label(kind: str) -> str:
     return st.standard_for(kind)["label"]
 
 
+def _name(r: dict) -> str:
+    """'Client · domain', so every line says whose domain it is (t270, 17 Nov 2026)."""
+    return f"{r['client']} · {r['domain']}" if r.get("client") else r["domain"]
+
+
+def _limits(xs) -> str:
+    return "/".join(map(str, sorted(set(xs))))
+
+
 def _move(r: dict) -> str:
-    frm = "/".join(map(str, sorted(set(r["from"]))))
-    to = "/".join(map(str, sorted(set(r["to"]))))
-    return f"{r['domain']} {_label(r['kind'])} {frm} -> {to} ({_plural(len(r['from']))})"
+    return f"{_name(r)} {_label(r['kind'])} {_limits(r['from'])} -> {_limits(r['to'])} ({_plural(len(r['from']))})"
+
+
+HOLD_SHOWN = 15
+IDLE_SHOWN = 20          # domains listed under the idle inboxes, then "and N more domains"
 
 
 def review_text(rows: list[dict], waiting: dict, today: date, *, applied: dict[str, bool]) -> str:
-    """``applied`` = {domain: written and read back} for the pilot domains changed this run."""
-    lines = [f"Volume review, {_day(today)} (by domain, ScaledMail's weekly steps)"]
+    """The whole report, each part apart: the fallback post and the digest's thread. Every line names the client and
+    domain it is about. ``applied`` = {domain: written and read back} for the pilot domains changed this run."""
+    head = [f"Volume review, {_day(today)} (by domain, ScaledMail's weekly steps)"]
     pilot = [r for r in rows if r.get("pilot") and r["action"] in (RAISE, STEP_BACK)]
     done = [r for r in pilot if applied.get(r["domain"])]
     failed = [r for r in pilot if r["domain"] in applied and not applied[r["domain"]]]
     if done:
-        lines.append("Pilot, changed now: " + "; ".join(
+        head.append("Pilot, changed now: " + "; ".join(
             ("" if r["action"] == RAISE else "STEPPED BACK ") + _move(r) + f" ({r['why']})" for r in done))
     if failed:
-        lines.append("Pilot, NOT changed (see below): " + "; ".join(r["domain"] for r in failed))
+        head.append("Pilot, NOT changed (see below): " + "; ".join(_name(r) for r in failed))
     dry = [r for r in pilot if r["domain"] not in applied]
     if dry:
-        lines.append("Pilot, would change (dry run): " + "; ".join(
+        head.append("Pilot, would change (dry run): " + "; ".join(
             ("" if r["action"] == RAISE else "step back ") + _move(r) for r in dry))
     ctrl = [r for r in rows if r.get("control")]
     if ctrl:
-        lines.append("Comparison, kept flat: " + "; ".join(
-            f"{r['domain']} {_label(r['kind'])} {'/'.join(map(str, sorted(set(r['from']))))} ("
+        head.append("Comparison, kept flat: " + "; ".join(
+            f"{_name(r)} {_label(r['kind'])} {_limits(r['from'])} ("
             + "; ".join(why for k, (_, why) in (r.get("signals") or {}).items() if k in ("placement", "bounces") and why)
             + ")" for r in ctrl))
-    untested = [r["domain"] for r in rows if (r.get("pilot") or r.get("control"))
+    untested = [_name(r) for r in rows if (r.get("pilot") or r.get("control"))
                 and ((r.get("signals") or {}).get("placement") or [None])[0] == WAIT]
     if untested:
-        lines.append("No placement test yet, add to Monday's test: " + ", ".join(untested))
+        head.append("No placement test yet, so these stay on hold; add them to Monday's test to judge them: "
+                    + ", ".join(untested))
     suggested = [r for r in rows if not r.get("pilot") and not r.get("control") and r["action"] in (RAISE, STEP_BACK)]
     if suggested:
-        lines.append("Suggested only (not in the pilot): " + "; ".join(f"{r['action']} {_move(r)}" for r in suggested))
-    held = [r for r in rows if r["action"] == HOLD and not r.get("control")]
-    for r in held[:15]:
-        lines.append(f"Hold: {r['domain']} ({r['why']})")
-    if len(held) > 15:
-        lines.append(f"Hold: {len(held) - 15} more domains")
+        head.append("Suggested only (not in the pilot): " + "; ".join(f"{r['action']} {_move(r)}" for r in suggested))
     if not rows:
-        lines.append("No domain to judge this week.")
-    return "\n".join(lines + _notes(waiting))
+        head.append("No domain to judge this week.")
+    parts = ["\n".join(head)]
+    held = [r for r in rows if r["action"] == HOLD and not r.get("control")]
+    if held:
+        lines = [f"• {_name(r)}: {r['why']}" for r in held[:HOLD_SHOWN]]
+        if len(held) > HOLD_SHOWN:
+            lines.append(f"• and {len(held) - HOLD_SHOWN} more domains")
+        parts.append("\n".join([f"Held, nothing to do: {_plural(len(held), 'domain')} keep{'s its' if len(held) == 1 else ' their'} "
+                                "daily limits."] + lines))
+    return "\n\n".join(parts + _notes(waiting))
+
+
+def idle_lines(idle: list[dict], cap: int = IDLE_SHOWN) -> list[str]:
+    """Idle inboxes as '• Client · domain: a@, b@' (DO NOT USE ones apart), at most ``cap`` lines. Pure."""
+    from smartlead import digest as dg
+    groups: dict[tuple, list[str]] = {}
+    for x in idle or []:
+        groups.setdefault((x.get("client") or "no client", bool(x.get("do_not_use"))), []).append(x["email"])
+    lines = []
+    for (client, dnu), emails in groups.items():
+        lines += [(dom.split(":", 1)[0], f"• {client} · {dom}" + (" (tagged DO NOT USE)" if dnu else ""))
+                  for dom in dg.by_domain(emails)]
+    lines = [line for _, line in sorted(lines)]
+    return lines[:cap] + ([f"• and {len(lines) - cap} more domains"] if len(lines) > cap else [])
 
 
 def _notes(waiting: dict) -> list[str]:
+    """The inboxes the review did not judge, and why; each a part of its own."""
     out = []
     if waiting.get("warming"):
         first = f" (first ready {_day(waiting['first_ready'])})" if waiting.get("first_ready") else ""
         out.append(f"{_plural(waiting['warming'])} {'are' if waiting['warming'] != 1 else 'is'} still warming{first}.")
     if waiting.get("no_campaign"):
-        out.append(f"{_plural(waiting['no_campaign'])} past their ready date sent nothing from a campaign in 7 days.")
+        n = waiting["no_campaign"]
+        dnu = sum(bool(x.get("do_not_use")) for x in waiting.get("idle") or [])
+        out.append("\n".join([
+            f"{_plural(n)} past their ready date sent nothing from a campaign in 7 days"
+            + (f" ({dnu} tagged DO NOT USE)" if dnu else "") + ", so the review has nothing to "
+            "judge them on. Nothing to do here: the daily inbox list says which are free to give to a campaign, and "
+            "asks when a live campaign is short of inboxes."] + idle_lines(waiting.get("idle") or [])))
     if waiting.get("rotate_ip"):
-        out.append("SMTP reputation under 50%, ask ScaledMail to rotate the IP: " + ", ".join(waiting["rotate_ip"]))
-    for line in waiting.get("by_hand") or []:
-        out.append(f"Changed by hand, left alone: {line}")
-    for line in waiting.get("skipped") or []:
-        out.append(f"Not reviewed: {line}")
-    for line in waiting.get("apply_problems") or []:
-        out.append(f":warning: {line}")
+        out.append("SMTP reputation under 50% (fleet watch asks about these), ask ScaledMail to rotate the IP: "
+                   + ", ".join(waiting["rotate_ip"]))
+    if waiting.get("by_hand"):
+        out.append("\n".join(["Changed by hand, left alone (fleet watch asks about these):"]
+                             + [f"• {x}" for x in waiting["by_hand"]]))
+    if waiting.get("skipped"):
+        out.append("\n".join(["Not reviewed:"] + [f"• {x}" for x in waiting["skipped"]]))
+    if waiting.get("apply_problems"):
+        out.append("\n".join([":warning: Could not change:"] + [f"• {x}" for x in waiting["apply_problems"]]))
     return out
+
+
+# Digest ---------------------------------------------------------------------------
+# The daily digest (t270, 17 Nov 2026), like every other Render job: only what a person can act on is an ask, each
+# with its list; a domain on hold or an idle inbox is in the thread only. The review runs weekly (Tue 13:45), so its
+# asks are replaced the next Tuesday.
+
+SOURCE = "volume-review"
+AGAIN = "The review runs again next Tuesday at 13:45"
+
+
+def digest_items(rows: list[dict], waiting: dict, today: date, *, applied: dict[str, bool],
+                 errors: list[str]) -> tuple[list, list, list[str]]:
+    """(asks, done, detail) for the digest. Pure apart from building the digest objects."""
+    from smartlead import digest as dg
+    asks, done = [], []
+    for r in rows:
+        if r.get("pilot") and applied.get(r["domain"]) and r["action"] in (RAISE, STEP_BACK):
+            verb = "stepped" if r["action"] == STEP_BACK else "raised"
+            back = " back" if r["action"] == STEP_BACK else ""
+            done.append(dg.Done(f"Volume review {verb} {_name(r)}{back} from {_limits(r['from'])} to {_limits(r['to'])} "
+                                f"a day ({_plural(len(r['from']))}): {r['why']}."))
+    failed = [r for r in rows if r.get("pilot") and r["domain"] in applied and not applied[r["domain"]]]
+    if failed:
+        k = len(failed)
+        asks.append(dg.Ask(f"The volume review could not change the daily limits on {_plural(k, 'pilot domain')} "
+                           f"({', '.join(_name(r) for r in failed)}), so {'it keeps' if k == 1 else 'they keep'} the "
+                           "old limits.",
+                           "In Smartlead (Email Accounts), check the daily limit of each inbox listed; an inbox changed "
+                           f"by hand since the review is left alone. {AGAIN}.",
+                           key=f"{SOURCE}:not-changed",
+                           detail=list(waiting.get("apply_problems") or []) or [_name(r) for r in failed]))
+    suggested = [r for r in rows if not r.get("pilot") and not r.get("control") and r["action"] == STEP_BACK]
+    if suggested:
+        k = len(suggested)
+        doms = ",".join(r["domain"] for r in suggested)
+        asks.append(dg.Ask(f"{_plural(k, 'domain')} outside the pilot should step back to a lower daily limit, but the "
+                           "review changes only pilot domains.",
+                           f"Your call: add the domains listed to the pilot (volume_review.py --pilot-add {doms} --by "
+                           "<you>) and next Tuesday's review steps them back, or leave them as they are.",
+                           key=f"{SOURCE}:suggested",
+                           detail=[f"{_name(r)}: {_limits(r['from'])} -> {_limits(r['to'])} a day on "
+                                   f"{_plural(len(r['from']))} ({r['why']})" for r in suggested]))
+    if errors:
+        asks.append(dg.Ask(f"The volume review could not read {'; '.join(errors)}, so domains there were not judged.",
+                           f"{AGAIN}; the error is in the volume-review log on Render.",
+                           key=f"{SOURCE}:read", kind="broken"))
+    return asks, done, [review_text(rows, waiting, today, applied=applied)]
 
 
 # Apply (pilot domains only) -------------------------------------------------------
