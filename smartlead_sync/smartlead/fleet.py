@@ -504,9 +504,13 @@ def digest_items(cases: list[dict], today: date, errors: list[str] | tuple = ())
         what = (f"{n} {'domain' if scope == 'domain' else 'inbox'}" + ("" if n == 1 else "s" if scope == "domain" else "es"))
         one, many = DIGEST_WORDS.get(kind, (f"is {KINDS[kind][0]}", f"are {KINDS[kind][0]}"))
         actions = [a for a, _ in per_kind[kind]]
-        step = (actions[0] if len(actions) == 1 else KINDS[kind][1] + " (each one's exact number is in the thread)")
-        asks.append(dg.Ask(f"{what} {one if n == 1 else many}.", f"{step}. The list is in the thread.",
-                           key=f"fleet-watch:{kind}"))
+        # The ask names each inbox or domain (17 Nov 2026); with more than one action, each line says its own.
+        step = actions[0] if len(actions) == 1 else KINDS[kind][1] + " (each line says its own step)"
+        lines = [c["line"] + ("" if len(actions) == 1 else f": {a}")
+                 + (f" (open since {_day(c['opened_on'])})" if c.get("opened_on") else "")
+                 for a, group in per_kind[kind] for c in group]
+        asks.append(dg.Ask(f"{what} {one if n == 1 else many}.", f"{step} for each one listed.",
+                           key=f"fleet-watch:{kind}", detail=lines))
     if errors:
         asks.append(dg.Ask(f"Fleet watch could not read {'; '.join(errors)}, so some problems may be missing today.",
                            "It runs again tomorrow at 10:30; if it fails twice, look at the fleet-watch log on Render.",

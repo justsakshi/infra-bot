@@ -252,3 +252,11 @@ def test_held_back_inboxes_still_sending_is_an_ask_for_a_person():
                            {"name": "list_marks_tagged", "ok": False, "says": "1 tagged inbox not marked"}])
     assert [(a.key, a.kind) for a in asks] == [("gate-selftest:held_back_not_sending", "ask"),
                                                ("gate-selftest:list_marks_tagged", "broken")]
+
+
+def test_each_disagreement_names_its_inboxes_by_domain_2026_11_17():
+    """17 Nov 2026: '21 of 98 tagged inboxes are not marked ... the inboxes in the thread' named none in the digest."""
+    asks = gs.digest_asks([{"name": "list_marks_tagged", "ok": False, "says": "3 tagged inboxes not marked",
+                            "bad": ["a@x.com", "b@x.com", "c@y.com"]}])
+    (a,) = asks
+    assert a.detail == ["x.com: a@, b@", "y.com: c@"] and "thread" not in a.step

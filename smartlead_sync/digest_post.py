@@ -77,7 +77,9 @@ def _ask_line(i: int, a: dict, now: datetime) -> str:
     if checked and now - checked > STALE:
         tail.append(f"(last checked {_day(checked)})")
     step = f"\nDo: {a['step']}" if a.get("step") else ""
-    return f"\n{i}. {a['text']}{step}" + (f" {' '.join(tail)}" if tail else "")
+    lines = dg.detail_lines(a, dg.DIGEST_LINES, " in the thread")
+    listed = ("\n" + "\n".join(lines)) if lines else ""
+    return f"\n{i}. {a['text']}{listed}{step}" + (f" {' '.join(tail)}" if tail else "")
 
 
 def build(sources: list[dict], done: list[dict], checks: list[dict], now: datetime
@@ -101,7 +103,9 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
             head.append(f"• and {len(done) - 15} more (thread)")
     if broken:
         head.append("\nChecks that broke (being fixed, or the step says who acts):")
-        head += [f"• {b['text']}" + (f" {b['step']}" if b.get("step") else "") for b in broken]
+        for b in broken:     # its list (an error, the tabs or inboxes) right under it, a few lines at most
+            head.append(f"• {b['text']}" + (f" {b['step']}" if b.get("step") else ""))
+            head += [f"   {x}" for x in dg.detail_lines(b, 3, " in the thread")]
     parts = []
     if n > MAX_SHOWN:
         parts.append("More things that need you\n\n" + "\n\n".join(_ask_line(i, a, now).strip()

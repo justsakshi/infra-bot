@@ -170,40 +170,55 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
                 for s in HELD if any(r["state"] == s for r in rs)) for k, rs in group]
             items.append({"key": "held_but_sending" + ("_report_only" if who else ""), "text": text, "detail": detail})
 
-    short = []
+    short, short_clients = [], set()
     for (client, camp), rs in sorted(by_campaign.items()):
         out_of = Counter(r["state"] for r in rs if r["state"] in HELD or r["state"] == "disconnected")
         usable_n = len(rs) - sum(out_of.values())
         if usable_n == 0 or (len(rs) - usable_n) * 2 >= len(rs):
             why = ", ".join(f"{out_of[s]} {LABEL[s]}" for s in ("disconnected",) + HELD if out_of.get(s))
             short.append(f"• {client} · {camp}: {usable_n} of {len(rs)} inboxes can send ({why})")
+            short_clients.add(client)
     if short:
-        one = len(short) == 1
+        n_short, one = len(short), len(short) == 1
+        # Where the step's "inboxes that passed the weekly test" are: free ones with a fresh pass, per client.
+        for client in sorted(short_clients):
+            ok = sum(1 for r in records if r["client"] == client and r["state"] == "free"
+                     and _fresh_pass(r["v2_status"], r["v2_date"], today))
+            short.append(f"• {client} has {ok} free inbox{'' if ok == 1 else 'es'} with a weekly-test pass in the last "
+                         f"{usable.V2_FRESH_DAYS} days (All Inboxes tab, availability FREE)" if ok else
+                         f"• {client} has no free inbox with a weekly-test pass in the last {usable.V2_FRESH_DAYS} "
+                         f"days, so lower the daily sending")
         items.append({"key": "campaign_short", "detail": short,
-                      "text": f"{_n(len(short), 'live campaign')} {'has' if one else 'have'} lost half or more of "
+                      "text": f"{_n(n_short, 'live campaign')} {'has' if one else 'have'} lost half or more of "
                               f"{'its' if one else 'their'} inboxes. Add inboxes that passed the weekly test, or lower "
                               f"{'its' if one else 'their'} daily sending"})
 
     off = [r for r in records if r["state"] == "disconnected" and r["campaigns"]]
     if off:
-        by_client: dict[str, list[str]] = defaultdict(list)
+        # One line per live campaign, every inbox named: the step is per inbox, so none may hide behind "and N more".
+        by_camp: dict[tuple[str, str], list[str]] = defaultdict(list)
         for r in off:
-            by_client[r["client"]].append(r["email"])
+            for c in r["campaigns"]:
+                by_camp[(r["client"], c)].append(r["email"])
         items.append({"key": "disconnected",
                       "text": f"{_n(len(off))} in live campaigns {'is' if len(off) == 1 else 'are'} disconnected in "
                               f"Smartlead. Reconnect {'it' if len(off) == 1 else 'them'}",
-                      "detail": [f"• {c}: {_names(sorted(es))}" for c, es in sorted(by_client.items())]})
+                      "detail": [f"• {c} · {camp}: {_names(sorted(es), 12)}" for (c, camp), es in sorted(by_camp.items())]})
 
     unproven = [r for r in records if r["state"] == "sending_unproven"]
     if unproven and require_pass:
-        by_client = defaultdict(list)
+        # By client and domain: the deliverability sheet (the step) is kept per domain.
+        by_dom: dict[tuple[str, str], list[dict]] = defaultdict(list)
         for r in unproven:
-            by_client[r["client"]].append(r["email"])
+            by_dom[(r["client"], r["domain"])].append(r)
         items.append({"key": "sending_unproven",
                       "text": f"{_n(len(unproven))} {'is' if len(unproven) == 1 else 'are'} sending with no weekly test "
                               f"result in the last {usable.V2_FRESH_DAYS} days. Check each is in a DT test campaign and "
                               f"that its weekly test ran in Smart Delivery",
-                      "detail": [f"• {c}: {len(es)} ({_names(sorted(es), 4)})" for c, es in sorted(by_client.items())]})
+                      "detail": [f"• {c} · {d}: {_n(len(rs))}, in {', '.join(sorted({x for r in rs for x in r['campaigns']}))}"
+                                 + (f"; last test {max(r['v2_date'] for r in rs)[:10]}"
+                                    if any(r["v2_date"] for r in rs) else "; never tested")
+                                 for (c, d), rs in sorted(by_dom.items())]})
     return items
 
 
@@ -315,16 +330,18 @@ def _mark_posted(db, today: date) -> None:
 
 # The digest's version of each item (16 Nov 2026): what is wrong, and the exact step. A live campaign losing half
 # its inboxes is posted at once as well.
+# Each step works without a thread: the ask carries its list (17 Nov 2026; an urgent post has no thread).
 DIGEST_STEPS = {
-    "held_but_sending": "In Smartlead, open each campaign in the thread and remove those inboxes (Email Accounts tab). "
+    "held_but_sending": "In Smartlead, open each campaign listed and remove those inboxes (Email Accounts tab). "
                         "The weekly job also takes out the failed ones once the week's results are in.",
-    "held_but_sending_report_only": "In Smartlead, open each campaign in the thread and remove those inboxes.",
-    "campaign_short": "Add inboxes that passed the weekly test to each campaign in the thread, or lower its daily "
-                      "sending (Smartlead, campaign, Settings).",
-    "disconnected": "Smartlead, Email Accounts, filter Disconnected, Reconnect each inbox in the thread (or delete it "
+    "held_but_sending_report_only": "In Smartlead, open each campaign listed and remove those inboxes.",
+    "campaign_short": "In Smartlead, open each campaign listed and add free inboxes that passed the weekly test "
+                      "(campaign, Email Accounts), or lower its daily sending (campaign, Settings) until it has "
+                      "enough. If the campaign should not be sending at all, pause it.",
+    "disconnected": "Smartlead, Email Accounts, filter Disconnected, Reconnect each inbox listed (or delete it "
                     "if it was cancelled).",
-    "sending_unproven": "The thread lists them by client. Add any that is in no DT campaign to the deliverability "
-                        "sheet; dt_senders puts it in the next weekly test.",
+    "sending_unproven": "Add any listed inbox that is in no DT campaign to the deliverability sheet; dt_senders puts "
+                        "it in the next weekly test.",
 }
 
 
@@ -334,7 +351,7 @@ def digest_asks(items: list[dict]) -> list:
     for it in items:
         text = it["text"].split(". ")[0] + "." if it["key"] in DIGEST_STEPS else it["text"] + "."
         asks.append(dg.Ask(text, DIGEST_STEPS.get(it["key"], ""), key=f"inbox-status:{it['key']}",
-                           urgent=it["key"] == "campaign_short"))
+                           urgent=it["key"] == "campaign_short", detail=it.get("detail") or []))
     return asks
 
 

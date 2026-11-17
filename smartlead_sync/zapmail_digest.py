@@ -241,8 +241,8 @@ def digest_asks(
     scaledmail: dict | None = None,
     errors: list[str] | tuple = (),
 ) -> list:
-    """What format_digest's "Needs a look" asks of a person, as digest asks (same inputs). Lists stay in the
-    thread. Bills coming up are status (the renewal review asks about them); failed payments are the billing
+    """What format_digest's "Needs a look" asks of a person, as digest asks (same inputs). Each ask carries its
+    domains, batches or orders (17 Nov 2026: a digest line has no thread to point at). Bills coming up are status (the renewal review asks about them); failed payments are the billing
     watch's. Pure."""
     from smartlead import digest as dg
     asks = []
@@ -264,7 +264,7 @@ def digest_asks(
                                key=f"{SOURCE}:low-wallet:{name}"))
     if renewal_errors:
         asks.append(dg.Ask(f"Zapmail domain renewals could not be checked on {_plural(len(renewal_errors), 'account')}.",
-                           "It is checked again tomorrow; the error is in the thread.",
+                           "It is checked again tomorrow.", detail=[e[:160] for e in renewal_errors],
                            key=f"{SOURCE}:renewals-unread", kind="broken"))
     cutoff = (today + timedelta(days=expiry_days)).isoformat()
     soon = sorted((r for r in renewals if r.get("expire_on") and r["expire_on"] <= cutoff
@@ -273,8 +273,12 @@ def digest_asks(
         asks.append(dg.Ask(f"{_plural(len(soon), 'client domain')} expire{'s' if len(soon) == 1 else ''} within "
                            f"{expiry_days} days, the first on "
                            f"{_day(soon[0]['expire_on'])}.",
-                           "In Zapmail, Domains, check each domain in the thread is set to renew; let one lapse only "
-                           "if its client is gone.", key=f"{SOURCE}:domains-expiring"))
+                           "In Zapmail (the account named), Domains, check each domain listed is set to renew before "
+                           "its date; let one lapse only if its client is gone.", key=f"{SOURCE}:domains-expiring",
+                           detail=[f"{r['domain']}: expires {_day(r['expire_on'])}"
+                                   + (f", {r['client']}" if r.get("client") else "")
+                                   + f", Zapmail account {r.get('account')}, {r.get('assigned_mailboxes', 0)} inboxes"
+                                   for r in soon]))
     if not ledger_ok:
         asks.append(dg.Ask("The domain purchase ledger (Mongo) could not be read, so due purchases are not listed.",
                            "It is read again tomorrow; if it stays, check MONGO_URI on Render.",
@@ -286,37 +290,42 @@ def digest_asks(
         cost = sum(float(b.get("estimated_usd") or 0) for b in due)
         asks.append(dg.Ask(f"{_plural(len(due), 'domain purchase batch', 'domain purchase batches')} "
                            f"{'is' if len(due) == 1 else 'are'} due to buy (about {_money(cost)}).",
-                           "Decide on each batch in the thread; to buy one, run `zapmail_buy.py --execute <batch_id> "
-                           f"--approve` with ZAPMAIL_ALLOW_SPEND=true ({_ids([b['batch_id'] for b in due])}).",
-                           key=f"{SOURCE}:batches-due"))
+                           "Decide on each batch listed; to buy one, run `zapmail_buy.py --execute <batch_id> "
+                           "--approve` with ZAPMAIL_ALLOW_SPEND=true.", key=f"{SOURCE}:batches-due",
+                           detail=[f"{b['batch_id']}: {b.get('client') or 'primary'}, {', '.join(b.get('domains', []))}, "
+                                   f"about {_money(b.get('estimated_usd'))}, due {_day(b.get('earliest_date'))}"
+                                   for b in sorted(due, key=lambda x: x.get("earliest_date", ""))]))
     if blocked:
         asks.append(dg.Ask(f"{_plural(len(blocked), 'purchase batch', 'purchase batches')} stopped half way and "
                            f"need{'s' if len(blocked) == 1 else ''} a reconcile.",
-                           "Run `zapmail_buy.py --reconcile <batch_id>` for each: "
-                           f"{_ids([b['batch_id'] for b in blocked])}.", key=f"{SOURCE}:batches-reconcile"))
+                           "Run `zapmail_buy.py --reconcile <batch_id>` for each batch listed.",
+                           key=f"{SOURCE}:batches-reconcile",
+                           detail=[f"{b['batch_id']}: {b.get('status')}, {b.get('client') or 'primary'}, "
+                                   f"{', '.join(b.get('domains', []))}" for b in blocked]))
     sm = scaledmail or {}
+    sm_lines = [str(x) for x in sm.get("lines") or []]
     if sm.get("late"):
         asks.append(dg.Ask(f"{_plural(sm['late'], 'ScaledMail order')} {'is' if sm['late'] == 1 else 'are'} late in "
-                           "setup.", "Ask ScaledMail support about the orders marked Late in the thread.",
-                           key=f"{SOURCE}:sm-late"))
+                           "setup.", "Ask ScaledMail support about each order listed.",
+                           key=f"{SOURCE}:sm-late", detail=[x for x in sm_lines if x.startswith("Late")]))
     if sm.get("live"):
         asks.append(dg.Ask(f"{_plural(sm['live'], 'ScaledMail order')} {'is' if sm['live'] == 1 else 'are'} live and "
                            "waiting for its inboxes in Smartlead.",
-                           "Send ScaledMail support the message on each LIVE line in the thread so they upload the "
-                           "inboxes to Smartlead.", key=f"{SOURCE}:sm-live"))
+                           "Send ScaledMail support the message in each line listed so they upload the inboxes to "
+                           "Smartlead.", key=f"{SOURCE}:sm-live", detail=[x for x in sm_lines if x.startswith("LIVE")]))
     if sm.get("stuck"):
         asks.append(dg.Ask(f"{_plural(sm['stuck'], 'ScaledMail domain')} {'is' if sm['stuck'] == 1 else 'are'} stuck in "
-                           "setup.", "Ask ScaledMail support about the domains under Still being set up in the thread.",
-                           key=f"{SOURCE}:sm-stuck"))
+                           "setup.", "Ask ScaledMail support about each domain listed.",
+                           key=f"{SOURCE}:sm-stuck", detail=[x for x in sm_lines if x.startswith("Still being set up")]))
     if sm.get("unassigned"):
         k = len(sm["unassigned"])
         asks.append(dg.Ask(f"{_plural(k, 'ScaledMail domain')} {'has' if k == 1 else 'have'} no client.",
-                           f"In ScaledMail, set the client tag on the order of {_ids(list(sm['unassigned']))}.",
-                           key=f"{SOURCE}:sm-no-client"))
+                           "In ScaledMail, set the client tag on the order of each domain listed.",
+                           key=f"{SOURCE}:sm-no-client", detail=[", ".join(sm["unassigned"])]))
     if errors:
         asks.append(dg.Ask(f"{_plural(len(errors), 'report')} could not be read for the domains and inboxes digest "
                            f"({'; '.join(e.split(':', 1)[0] for e in errors)}).",
-                           "It is read again tomorrow; the error is in the thread.",
+                           "It is read again tomorrow.", detail=[e[:160] for e in errors],
                            key=f"{SOURCE}:read", kind="broken"))
     return asks
 

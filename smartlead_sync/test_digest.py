@@ -180,3 +180,65 @@ def test_every_source_has_a_plain_label():
     for src in ("zapmail-digest", "fleet-scorecard", "inbox-intake", "inbox-ready", "smartlead-sync",
                 "kill-report", "real-recipients", "placement-report", "campaign-metrics"):
         assert src in dp.LABELS
+
+
+# 17 Nov 2026 (Manveen, on the 12:29 urgent post "2 live campaigns have lost half or more of their inboxes"): "This
+# does not even tell us which campaign ... what was the point of this message if it's not gonna give me the complete
+# info". An ask carries its own list, and the urgent post and the digest show it.
+
+SHORT = ["• Client A · Campaign One: 2 of 6 inboxes can send (4 disconnected)",
+         "• Client A · Campaign Two: 2 of 5 inboxes can send (3 disconnected)"]
+
+
+def test_the_urgent_post_names_every_item_it_is_about():
+    db, posted = DB(), []
+    a = dg.Ask("2 live campaigns have lost half or more of their inboxes.", "Add inboxes to each campaign listed.",
+               key="inbox-status:campaign_short", urgent=True, detail=SHORT)
+    dg.report("inbox-status", [a], db=db, now=T0, post_urgent=lambda t: posted.append(t) or True)
+    assert len(posted) == 1
+    text = posted[0]
+    assert "Campaign One: 2 of 6 inboxes can send (4 disconnected)" in text
+    assert "Campaign Two: 2 of 5 inboxes can send (3 disconnected)" in text
+    assert "in the thread" not in text                    # an urgent post has no thread
+    # what, then the list, then the step, each part apart
+    assert text.index("lost half") < text.index("Campaign One") < text.index("Add inboxes")
+    assert "\n\n" in text.split("Campaign Two")[1]
+
+
+def test_a_long_list_is_capped_with_and_n_more():
+    lines = [f"• inbox{i}@example.com" for i in range(25)]
+    text = dg.urgent_text("x", dg.Ask("25 inboxes are down.", "Fix them.", key="k", detail=lines).doc("x"))
+    assert "inbox9@example.com" in text and "inbox10@example.com" not in text
+    assert "• and 15 more" in text
+
+
+def test_detail_lines_get_a_bullet_and_blank_ones_are_dropped():
+    d = dg.Ask("t", detail=["one", "", "• two", "  "]).doc("x")
+    assert d["detail"] == ["• one", "• two"]
+    assert dg.Ask("t").doc("x")["detail"] == []
+
+
+def test_the_digest_shows_each_asks_list_under_it():
+    sources = [_src("inbox-status", [{"text": "2 live campaigns have lost half or more of their inboxes.",
+                                      "step": "Add inboxes to each campaign listed.", "detail": SHORT}])]
+    head, _ = dp.build(sources, [], [], T0 + timedelta(hours=1))
+    text = "\n".join(head)
+    assert ("\n1. 2 live campaigns have lost half or more of their inboxes.\n" + "\n".join(SHORT)
+            + "\nDo: Add inboxes to each campaign listed.") in text
+
+
+def test_the_digest_caps_each_list_and_says_the_rest_is_in_the_thread():
+    lines = [f"• inbox{i}@example.com" for i in range(9)]
+    head, _ = dp.build([_src("inbox-intake", [{"text": "9 inboxes drifted.", "step": "Fix them.", "detail": lines}])],
+                       [], [], T0)
+    text = "\n".join(head)
+    assert "inbox4@example.com" in text and "inbox5@example.com" not in text
+    assert "• and 4 more in the thread" in text
+
+
+def test_asks_stored_before_the_list_existed_still_render():
+    src = {"_id": "inbox-status", "at": T0.isoformat(),
+           "asks": [{"text": "7 inboxes are disconnected.", "step": "Reconnect them.", "key": "k", "kind": "ask",
+                     "urgent": False, "since": T0.isoformat()}]}
+    head, _ = dp.build([src], [], [], T0)
+    assert "\n1. 7 inboxes are disconnected.\nDo: Reconnect them." in "\n".join(head)

@@ -516,6 +516,11 @@ def test_set_up_inboxes_and_finished_warm_ups_are_done_and_problems_that_need_a_
     assert asks[1].text == "3 inboxes set up by the bot no longer match the standard settings."
     assert asks[3].text == "Inbox intake could not read BETTRDATA in Smartlead, so new inboxes there were not set up."
     assert all(a.step for a in asks)
+    # 17 Nov 2026: each ask names what it is about (an urgent post or the digest line has no thread to point at)
+    assert asks[1].detail == ["Changed since setup on 2 inboxes (y.com): limit 30 (standard 15)",
+                              "Changed since setup on 1 inbox (z@z.com): warm-up off"]
+    assert asks[0].detail == ["`s@x.com`: stuck after 3 tries, set it up by hand in Smartlead"]
+    assert all("thread" not in a.step for a in asks)
     assert [(d.key, d.text) for d in done] == [
         ("inbox-intake:setup:x.com:2026-10-13",
          "Set up 2 new inboxes on x.com for Precise Leads (daily limit, warm-up, signature, tags); ready to use from "

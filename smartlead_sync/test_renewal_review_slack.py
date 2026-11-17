@@ -402,21 +402,34 @@ def test_untested_is_one_line_per_bill_with_domains():
 
 def test_each_bill_with_inboxes_to_drop_or_check_is_one_ask_and_keep_only_bills_are_silent():
     import renewal_review as cli
-    asks = cli.digest_asks({"reviews": _reviews(), "errors": [], "days": 7})
+    asks = cli.digest_asks({"reviews": _reviews(), "errors": [], "days": 7}, today=date(2026, 10, 13))
     assert [a.key for a in asks] == ["renewal-review:Zapmail:sub_1:2026-10-15",
                                      "renewal-review:ScaledMail:rec3:2026-10-17"]
     z, s = asks
     assert z.text == ("Zapmail bill on 15 Oct, 5 Outlook inboxes, $15.00 (Bettrdata): of 5 inboxes, 3 to drop, "
                       "1 to check, 1 to keep.")
-    assert z.step == ("Before 15 Oct: retire the 3 inboxes marked drop in the thread in Zapmail (/domains, Before "
-                      "the bill); decide keep or cancel for the 1 inbox marked check or untested in the thread.")
+    assert z.step == ("Before 15 Oct: retire the 3 inboxes listed as drop in Zapmail (/domains, Before "
+                      "the bill); decide keep or cancel for the 1 inbox listed as check or untested.")
     assert s.text.endswith("of 6 inboxes, 2 to drop, 1 to check (1 untested), 3 to keep.")
     assert "ScaledMail's billing page" in s.step and not any(a.urgent for a in asks)
-    assert not any(EMAIL.search(a.text + a.step) for a in asks)          # addresses stay in the thread
+    assert not any(EMAIL.search(a.text + a.step) for a in asks)
+    # 17 Nov 2026: the ask names the domains and inboxes, and why (a digest line or urgent post has no thread)
+    assert z.detail and all(x.startswith(("Drop", "Check", "Untested")) for x in z.detail)
+    assert any(x.startswith("Drop: ") for x in z.detail) and any(x.startswith("Check") for x in z.detail)
+    assert any(x.startswith("Untested") for x in s.detail)
+    assert not any("thread" in a.step for a in asks)
     only_check = cli.digest_asks({"reviews": [dict(_reviews()[0], counts={"KEEP": 3, "CHECK": 2, "RETIRE": 0,
-                                                                         "UNTESTED": 0})], "errors": []})
-    assert only_check[0].step == ("Before 15 Oct: decide keep or cancel for the 2 inboxes marked check or untested "
-                                  "in the thread, and cancel in Zapmail (/domains, Before the bill).")
+                                                                         "UNTESTED": 0})], "errors": []},
+                                 today=date(2026, 10, 13))
+    assert only_check[0].step == ("Before 15 Oct: decide keep or cancel for the 2 inboxes listed as check or untested"
+                                  ", and cancel in Zapmail (/domains, Before the bill).")
+
+
+def test_a_bill_whose_date_passed_says_so_instead_of_before():
+    """14-16 Nov 2026: the 14 Nov Zapmail bill was asked about with 'Before 14 Nov' on 16 Nov."""
+    import renewal_review as cli
+    (z, _) = cli.digest_asks({"reviews": _reviews(), "errors": [], "days": 7}, today=date(2026, 10, 16))
+    assert z.step.startswith("The 15 Oct bill date has passed and it is not renewed yet, so today: retire")
 
 
 def test_unread_sources_are_one_broken_ask():

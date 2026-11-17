@@ -20,8 +20,25 @@ No asks, nothing done and nothing broken: no post that day.
 cancelled, a Smartlead key rejected, a live campaign losing half its inboxes or left with only failed ones. Each
 posts once; if it is fixed and comes back later, it posts again.
 
-The noon "Daily Renewal Check" card (only when something expires within 3 working days) stays as it is: its
-buttons are the step.
+Every ask carries its own list: which campaigns, inboxes, domains, bills or batches it is about (17 Nov 2026,
+Manveen, on an urgent post that named no campaign: "what was the point of this message if it's not gonna give me
+the complete info"). The digest shows up to 5 lines under each ask ("and N more in the thread"); an urgent post shows
+up to 10 ("and N more"). A step says "each campaign listed", never "in the thread": an urgent post has no thread.
+A broken check shows its error under it. A bill ask names the vendor, bill date, amount, inboxes and domains, and
+one bill is one ask (a failed payment is not asked about again as "not renewed").
+
+An urgent post reads: what is wrong, the list, then `@Manveen` and the step, then "It stays in the daily digest
+until it is fixed.", each part apart.
+
+The noon "Daily Renewal Check" card (only when something expires within 3 working days) names each domain or inbox
+on the card (client, vendor, cost, the renewal review's flag; at most 8 per group, Read more for the rest) and ends
+with the decision: renew each one before its date or let it go on purpose; a ⛔ one should not be renewed.
+
+Zapmail webhooks: with the digest on, a subscription status change or failed payment is not posted by the webhook
+(billing watch posts it at once with the bill's details) and neither is a finished Zapmail placement test (nothing
+to do). An export failure or a billing change still posts at once, with the step.
+
+Bot health leaves out a missed run nobody can act on: the digest's own slot, and a job that has run fine since.
 
 ## Every job, before and now
 

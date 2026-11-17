@@ -312,7 +312,7 @@ def run(today: date, fleet: dict[str, dict], unread: dict[str, str], history: li
     return verdicts, posts
 
 
-ALERT_STEP = ("Look each domain in the thread up in this week's v2 test results; if it failed there too, take its "
+ALERT_STEP = ("Look each domain listed up in this week's v2 test results; if it failed there too, take its "
               "inboxes out of their campaigns. Nothing was paused.")
 RETRY_STEP = "It runs again tomorrow at 13:00; if it fails twice, check that account's Smartlead API key."
 
@@ -328,7 +328,9 @@ def digest_items(verdicts: dict[str, dict], unread: dict[str, str], history_miss
     if alerts:
         n = len(alerts)
         asks.append(dg.Ask(f"{_n(n, 'sending domain gets', 'sending domains get')} far fewer replies than expected "
-                           f"over {rs.WINDOW_DAYS} days.", ALERT_STEP, key="reply-monitor:alert"))
+                           f"over {rs.WINDOW_DAYS} days.", ALERT_STEP, key="reply-monitor:alert",
+                           detail=[_alert_line(d, verdicts[d].get("client", ""), verdict_text(verdicts[d])).replace("*", "")
+                                   for d in alerts]))
     if unread:
         asks.append(dg.Ask(f"The reply check could not read Smartlead for "
                            + "; ".join(f"{clients_of(a)} ({why})" for a, why in sorted(unread.items())) + ".",

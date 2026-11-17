@@ -24,7 +24,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -500,8 +500,8 @@ def main() -> int:
             head = ["🚨 Renewal review crashed, so no bill was checked today"]
             thread = [f"Error: {err}", "The tracker's renewal flags were not changed."]
             crash = dg.Ask(f"The renewal review crashed ({type(exc).__name__}), so no bill was checked today.",
-                           "Check the error in the thread (Render log: renewal_review); the tracker's renewal flags "
-                           "were not changed.", key=f"{SOURCE}:crash", kind="broken")
+                           "Check the error in the Render log (search [renewal-review]); the tracker's renewal flags "
+                           "were not changed.", key=f"{SOURCE}:crash", kind="broken", detail=[err])
             if not (dg.on() and dg.report(SOURCE, [crash], [], [_text(head, thread)])):
                 _post(head, thread)
         print(json.dumps({"error": err}) if args.json else f"ERROR: {err}")
@@ -527,23 +527,51 @@ def main() -> int:
     return 0
 
 
-def _bill_step(r: dict, drop: int, check: int) -> str:
-    """Where to act on one bill, before its date."""
+def _bill_step(r: dict, drop: int, check: int, today: date | None = None) -> str:
+    """Where to act on one bill, before its date (or now, when the date has passed and it is not renewed)."""
     day = rr._day(r["bills_on"])
     zap = r["provider"] == "Zapmail"
     where = "in Zapmail (/domains, Before the bill)" if zap else "on ScaledMail's billing page (single domains)"
     bits = []
     if drop:
-        bits.append(f"retire the {drop} {rr._ib(drop)} marked drop in the thread {where}")
+        bits.append(f"retire the {drop} {rr._ib(drop)} listed as drop {where}")
     if check:
-        bits.append(f"decide keep or cancel for the {check} {rr._ib(check)} marked check or untested in the thread"
+        bits.append(f"decide keep or cancel for the {check} {rr._ib(check)} listed as check or untested"
                     + ("" if drop else f", and cancel {where}"))
-    return f"Before {day}: " + "; ".join(bits) + "."
+    today = today or datetime.now(timezone(timedelta(hours=5, minutes=30))).date()   # IST
+    when = (f"The {day} bill date has passed and it is not renewed yet, so today" if str(r["bills_on"]) < today.isoformat()
+            else f"Before {day}")
+    return f"{when}: " + "; ".join(bits) + "."
 
 
-def digest_asks(res: dict) -> list:
+def bill_lines(r: dict) -> list[str]:
+    """The inboxes behind one bill's ask, by what to do: drop (with why and any live campaign), check (with why),
+    untested, paid for but not in Smartlead. Pure."""
+    rows = r.get("rows") or []
+    k_rows = [x for x in rows if x["verdict"] == "RETIRE"]
+    u_rows = [x for x in rows if x.get("kind") == "unused"]
+    c_rows = [x for x in rows if x["verdict"] == "CHECK" and x.get("kind") != "unused"]
+    t_rows = [x for x in rows if x["verdict"] == rr.UNTESTED]
+    out = []
+    if k_rows:
+        out.append(f"Drop: {rr._doms_why(k_rows)}")
+        out += [f"Drop, still sending: {x['email']} is in {', '.join(x['campaigns'][:2])}" for x in k_rows
+                if x.get("campaigns")]
+    by_why: dict[str, list[dict]] = {}
+    for x in c_rows:
+        by_why.setdefault(x["why"], []).append(x)
+    for why, xs in by_why.items():
+        out.append(f"Check: {xs[0]['email'] if len(xs) == 1 else rr._doms(xs)}: {why}")
+    if u_rows:
+        out.append(f"Check, paid for but not in Smartlead: {rr._doms(u_rows)}")
+    if t_rows:
+        out.append(f"Untested (no v2 result in the last {rr.V2_FRESH_DAYS} days): {rr._doms(t_rows)}")
+    return out
+
+
+def digest_asks(res: dict, today: date | None = None) -> list:
     """One ask per bill with inboxes to drop or check (keep-only bills say nothing), and a "broken" ask when a
-    source could not be read. Pure."""
+    source could not be read. Each bill's ask names the inboxes and domains and why (17 Nov 2026). Pure."""
     asks = []
     for r in res.get("reviews") or []:
         c = r.get("counts") or {}
@@ -559,13 +587,15 @@ def digest_asks(res: dict) -> list:
                 f"{rr._money(price) if price is not None else 'price not known'}{who}: of {n} {rr._ib(n)}, "
                 f"{drop} to drop, {check} to check" + (f" ({untested} untested)" if untested else "")
                 + f", {c.get('KEEP', 0)} to keep.")
-        asks.append(dg.Ask(text, _bill_step(r, drop, check), key=f"{SOURCE}:{r['provider']}:{bill}:{r['bills_on']}"))
+        asks.append(dg.Ask(text, _bill_step(r, drop, check, today), detail=bill_lines(r),
+                           key=f"{SOURCE}:{r['provider']}:{bill}:{r['bills_on']}"))
     if res.get("errors"):
         warn = rr.read_warning(res["errors"], res.get("days", 3), bool(res.get("reviews")))
         warn = warn.replace("⚠️ ", "").replace(":warning: ", "").replace(" (details in the thread)", "")
         if not warn.startswith("Renewal review"):
             warn = "Renewal review: " + warn[0].lower() + warn[1:]
-        asks.append(dg.Ask(warn + ".", "It runs again tomorrow; the errors are in the thread.",
+        asks.append(dg.Ask(warn + ".", "It runs again tomorrow; the errors are in the Render log (search "
+                                       "[renewal-review]).", detail=list(res["errors"])[:5],
                            key=f"{SOURCE}:read", kind="broken"))
     return asks
 

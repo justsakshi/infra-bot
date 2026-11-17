@@ -116,11 +116,16 @@ def test_with_the_digest_on_a_failed_payment_is_an_urgent_ask_until_it_is_paid(d
     assert code == 0 and posts == [] and out["digest"] is True and out["saved"] is True
     (src, asks, done, detail), = reports
     assert src == "billing-watch" and done == [] and "payment failed: card declined" in detail[0]
-    assert [a.key for a in asks] == ["billing-watch:not_renewed:Zapmail:sub_1:2026-11-01",
-                                     "billing-watch:payment:Zapmail:sub_1:2026-11-01"]
-    pay = asks[1]
-    assert pay.urgent and pay.kind == "ask" and asks[0].urgent
+    # one bill, one urgent item: the failed payment (its "not renewed" twin stays in the state, not in the digest)
+    assert [a.key for a in asks] == ["billing-watch:payment:Zapmail:sub_1:2026-11-01"]
+    assert set(state.doc["open"]) == {"billing-watch:not_renewed:Zapmail:sub_1:2026-11-01",
+                                      "billing-watch:payment:Zapmail:sub_1:2026-11-01"}
+    pay = asks[0]
+    assert pay.urgent and pay.kind == "ask"
     assert pay.text == "Payment failed (card declined): Zapmail, 3 Google inboxes (PRECISE_LEADS) for Precise Leads."
+    # 17 Nov 2026: the bill date, amount, inboxes and domains travel with the ask
+    assert pay.detail == ["Zapmail · 3 Google inboxes (PRECISE_LEADS) for Precise Leads: bill date 1 Nov, "
+                          "$10.50, 3 inboxes, status ACTIVE", "Domains (1): x.com"]
     assert pay.step.startswith("Zapmail, Billing, pay the invoice (<https://pay.x.com/inv_9|open the invoice>)")
     # next run: no new event, but the bill is still unpaid, so the same asks are handed over again
     code, posts, reports, _ = digest_run(failing, state)

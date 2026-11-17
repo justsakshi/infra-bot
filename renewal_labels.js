@@ -65,6 +65,31 @@ function expiringDetail(label, assets) {
   return [`*Expiring ${when.charAt(0).toLowerCase() + when.slice(1)}*\n${countLine(assets)}`, ...groups].join('\n\n');
 }
 
+/** What one renewal costs, from the tracker: '$7/mo', '$12/yr', '' when not saved. */
+function costText(a) {
+  const cur = !a.currency || /^usd$/i.test(a.currency) ? '$' : `${a.currency} `;
+  if (a.monthlyCost !== null && a.monthlyCost !== undefined && a.monthlyCost !== '') return `${cur}${a.monthlyCost}/mo`;
+  if (a.yearlyCost !== null && a.yearlyCost !== undefined && a.yearlyCost !== '') return `${cur}${a.yearlyCost}/yr`;
+  return '';
+}
+
+/** One asset on the card itself (17 Nov 2026, Manveen: a post gives the complete context, not a count behind a
+ *  button): name, client, vendor, cost, and the renewal review's flag. */
+function cardLine(a) {
+  const bits = [a.client || 'no client', a.provider || 'vendor not saved', costText(a)].filter(Boolean);
+  let line = `• ${a.name} (${bits.join(', ')})`;
+  if (a.renewalFlag === 'DROP') line += ` ⛔ don't renew: ${a.renewalFlagReason || 'not delivering'}`;
+  else if (a.renewalFlag === 'CHECK') line += ' ❔ check first' + (a.renewalFlagReason ? `: ${a.renewalFlagReason}` : '');
+  if (expirySource(a) === 'estimated') line += ' (date estimated, check it)';
+  return line;
+}
+
+const CARD_LINES = 8;      // assets named per group on the card; *Read more* lists them all
+
+/** The decision the card asks for, said once under the groups. */
+const CARD_STEP = 'Renew each one in its vendor before its date, or let it go on purpose. ⛔ means the renewal '
+  + 'review found it not delivering: don\'t renew it.';
+
 /**
  * The Daily Renewal Check (index.js runNoonSummary, 10:00 IST weekdays).
  * groups: [{ assets, label, icon, key, daysFilter }]. The button value keeps
@@ -84,10 +109,12 @@ function renewalCheckBlocks(groups, { channel, baseUrl, now = dayjs() }) {
     const parts = [];
     if (domains) parts.push(`*${plural(domains, 'domain', 'domains')}*`);
     if (inboxes) parts.push(`*${plural(inboxes, 'inbox', 'inboxes')}*`);
+    const named = assets.slice(0, CARD_LINES).map(cardLine);
+    if (assets.length > CARD_LINES) named.push(`• and ${assets.length - CARD_LINES} more (Read more)`);
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: `${icon} ${parts.join(' and ')} expire${assets.length === 1 ? 's' : ''} *${label.charAt(0).toLowerCase() + label.slice(1)}*`
-        + estimatedNote(assets) },
+        + estimatedNote(assets) + '\n' + named.join('\n') },
       accessory: {
         type: 'button',
         text: { type: 'plain_text', text: 'Read more' },
@@ -98,15 +125,20 @@ function renewalCheckBlocks(groups, { channel, baseUrl, now = dayjs() }) {
       }
     });
   }
+  if (shown.length) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: CARD_STEP } });
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `🔗 <${baseUrl}/|Open dashboard> to renew or manage assets` }] });
   return { text: title, blocks };
 }
 
-/** The 4 PM weekday nudge; ``count`` = what the 10:00 check found expiring (null = not known). */
-function reminderText(baseUrl, count = null) {
+/** The 4 PM weekday nudge; ``count`` = what the 10:00 check found expiring (null = not known); ``names`` = which
+ *  (17 Nov 2026: a reminder that names nothing makes people open the dashboard to find out). */
+function reminderText(baseUrl, count = null, names = []) {
   const what = count ? `${plural(count, 'domain or inbox', 'domains or inboxes')} expire${count === 1 ? 's' : ''} in the next 3 working days`
     : 'some domains or inboxes may expire soon';
-  return `🔔 Reminder: ${what}. Renew ${count === 1 ? 'it' : 'them'} or let ${count === 1 ? 'it' : 'them'} go on purpose. <${baseUrl}/|Open dashboard>`;
+  const list = (names || []).slice(0, 10);
+  const listed = list.length ? `: ${list.join(', ')}${names.length > list.length ? ` and ${names.length - list.length} more` : ''}` : '';
+  return `🔔 Reminder: ${what}${listed}.\n\nRenew ${count === 1 ? 'it' : 'them'} or let ${count === 1 ? 'it' : 'them'} go on purpose (this morning's Daily Renewal Check has each one's vendor and cost). <${baseUrl}/|Open dashboard>`;
 }
 
-module.exports = { expirySource, assetLine, estimatedNote, countLine, expiringDetail, renewalCheckBlocks, reminderText };
+module.exports = { expirySource, assetLine, estimatedNote, countLine, expiringDetail, renewalCheckBlocks, reminderText,
+  cardLine, costText };

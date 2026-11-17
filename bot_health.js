@@ -443,7 +443,15 @@ function healthAsks({ since, now, runs = [], env = {}, jobs = JOBS }) {
   const asks = [];
   const byJob = new Map();
   for (const m of s.missed) byJob.set(m.job, [...(byJob.get(m.job) || []), m.slot]);
+  // A missed slot nobody can act on is left out (17 Nov 2026: "Daily digest did not run (Mon 16 Nov 11:00)" sat in
+  // Tuesday's digest): the digest's own slot (the digest posting shows it runs), and a job that has run fine since.
+  const ranFineAfter = (j, slots) => {
+    const last = Math.max(...slots.map(x => +new Date(x)));
+    return runs.some(r => r.job === j && !r.skipped && r.ended && !r.error && exitOk(j, r.exit_code, jobs)
+      && +new Date(r.started) > last);
+  };
   for (const [j, slots] of byJob) {
+    if (j === 'digest' || ranFineAfter(j, slots)) continue;
     asks.push({ kind: 'broken', key: `bot-health:missed:${j}`, text: `${title(j)} did not run (${slotList(slots, 4)}).`,
       step: 'Usually the bot restarted at that time; it runs again at its next time. If it repeats, look at the Render log.' });
   }

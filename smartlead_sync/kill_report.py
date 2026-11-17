@@ -234,35 +234,42 @@ def format_report(res: dict, errors: list[str], today: date,
 
 def digest_asks(res: dict, errors: list[str]) -> list:
     """The daily digest's asks (16 Nov 2026, Manveen: "One daily digest"): one per kind of thing to kill, the
-    inboxes and domains in the thread; nothing to kill asks nothing; a failed or partial run is a broken check.
+    inboxes and domains listed with each ask (17 Nov 2026); nothing to kill asks nothing; a failed or partial run is a broken check.
     Retests of an inbox that failed once stay in the thread (nothing to kill yet)."""
     from smartlead import digest as dg
     if "error" in res:
         return [dg.Ask(f"The weekly kill check failed ({res['error'][:120]}), so no inbox was judged.",
                        "Look at the kill-report log on Render; it runs again next Tuesday at 13:30.",
                        key="kill-report:failed", kind="broken")]
-    kills = [r for d in res["by_client"].values() for r in d.get(kr.KILL, [])]
-    sending = [r for r in kills if r.get("sending")]
-    idle = [r for r in kills if not r.get("sending") and _idle(r)]
-    doms = {r["email"].split("@")[1] for r in kills}
+    kills = [(cl, r) for cl, d in res["by_client"].items() for r in d.get(kr.KILL, [])]
+    sending = sorted(((cl, r) for cl, r in kills if r.get("sending")), key=lambda x: x[1]["email"])
+    idle = sorted(((cl, r) for cl, r in kills if not r.get("sending") and _idle(r)), key=lambda x: x[1]["email"])
+    doms: dict[tuple, list[dict]] = defaultdict(list)
+    for cl, r in kills:
+        doms[(cl, r["email"].split("@")[1])].append(r)
     asks = []
+    # Each ask names its inboxes or domains (17 Nov 2026): the digest line and an urgent post have no thread.
     if sending:
         k = len(sending)
         asks.append(dg.Ask(f"{_n(k, 'inbox', 'inboxes')} on the kill list {'is' if k == 1 else 'are'} still sending.",
-                           "Take each out of its campaigns today (Smartlead, the campaign, Email Accounts tab); the "
-                           "list is in the thread.", key="kill-report:sending"))
+                           "Take each inbox listed out of the campaigns named (Smartlead, the campaign, Email Accounts "
+                           "tab) today.", key="kill-report:sending",
+                           detail=[f"{r['email']} ({cl}): sending in {', '.join(r['sending'])}" for cl, r in sending]))
     if idle:
         k = len(idle)
         asks.append(dg.Ask(f"{_n(k, 'inbox', 'inboxes')} on the kill list {'sits' if k == 1 else 'sit'} in switched-on "
                            "campaigns that are not sending.",
-                           "Pause those campaigns or take the inboxes out, so they can't start sending again; the list "
-                           "is in the thread.", key="kill-report:idle"))
+                           "Pause the campaigns named, or take the inboxes listed out of them, so they can't start "
+                           "sending again.", key="kill-report:idle",
+                           detail=[f"{r['email']} ({cl}): in {', '.join(_idle(r))}" for cl, r in idle]))
     if doms:
         k = len(doms)
         asks.append(dg.Ask(f"{_n(k, 'domain', 'domains')} {'is' if k == 1 else 'are'} landing in spam on the classic "
                            "tests and should not be used.",
-                           "Don't add their inboxes to campaigns; retire or replace each domain at its next bill "
-                           "(dates in the thread).", key="kill-report:domains"))
+                           "Don't add inboxes on the domains listed to campaigns; retire or replace each domain at its "
+                           "next bill.", key="kill-report:domains",
+                           detail=[f"{cl} · {dom} ({_n(len(rows), 'inbox', 'inboxes')}): {_pct(rows)} reached the inbox"
+                                   for (cl, dom), rows in sorted(doms.items())]))
     if errors:
         asks.append(dg.Ask(f"The kill check could not read {'; '.join(errors)}, so inboxes there are missing from it.",
                            "Look at the kill-report log on Render; it runs again next Tuesday at 13:30.",
