@@ -135,3 +135,9 @@ def test_the_week_record_gives_each_client_its_own_sender_known_share():
     assert rec["clients"]["Melior"]["summary"]["known_pct"] == 100.0
     assert rec["clients"]["Precise Leads"]["summary"]["known_pct"] == 50.0
     assert rec["two_senders"] == 0
+
+
+def test_reply_log_dates_without_a_comma_or_its_space_are_read():
+    import inbox_evidence as job
+    assert job.parse_day("Dec 10,2025") == date(2025, 12, 10) and job.parse_day("Jan 23 2026") == date(2026, 1, 23)
+    assert job.parse_day("Feb 05 2026") == date(2026, 2, 5) and job.parse_day("Apr 9, 2026") == date(2026, 4, 9)

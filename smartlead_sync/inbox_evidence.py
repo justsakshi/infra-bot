@@ -204,10 +204,11 @@ def reply_logs() -> tuple[dict[str, list[dict]], dict[str, str]]:
 
 
 def parse_day(s: str) -> date | None:
-    """A reply-log date: ISO, US m/d/Y (the logs are kept by a US-hours team), or '12 Nov 2026'. Pure."""
+    """A reply-log date: ISO, US m/d/Y (the logs are kept by a US-hours team), '12 Nov 2026', 'Nov 12, 2026',
+    'Nov 12,2026' or 'Nov 12 2026' (all seen in the logs, 17 Nov 2026). Pure."""
     s = str(s or "").strip()
     for part in (s, s.split(" ")[0], s.split("T")[0]):
-        for f in ("%Y-%m-%d", "%m/%d/%Y", "%d %b %Y", "%b %d, %Y", "%d-%b-%Y", "%m/%d/%y"):
+        for f in ("%Y-%m-%d", "%m/%d/%Y", "%d %b %Y", "%b %d, %Y", "%b %d,%Y", "%b %d %Y", "%d-%b-%Y", "%m/%d/%y"):
             try:
                 return datetime.strptime(part, f).date()
             except ValueError:
