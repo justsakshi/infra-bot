@@ -125,6 +125,29 @@ def test_pc_and_render_checks():
     assert "Render runs abc1234, 6 commits behind main" in r[0]["text"] and "Manual Deploy" in r[0]["step"]
 
 
+def test_a_sheet_sync_that_has_not_finished_since_10_is_a_broken_check():
+    """17 Nov 2026: Render's 10:00 IST sync never finished, and the 11:30 digest said nothing; All Inboxes still
+    showed the 16 Nov sync. run.py reports to the digest at its very end, so an older report = an older sheet."""
+    yesterday = {"_id": "smartlead-sync", "asks": [], "at": "2026-11-16T05:06:45+00:00"}   # Mon 16 Nov 10:36 IST
+    late = dp.sync_check([yesterday], T0 + timedelta(minutes=30))                           # 11:30 IST
+    assert len(late) == 1 and late[0]["kind"] == "broken" and late[0]["key"] == "digest:sync-not-finished"
+    assert "All Inboxes" in late[0]["text"] and "Mon 16 Nov 10:36 IST" in late[0]["text"]
+    assert "run.py" in late[0]["step"]
+    today = {**yesterday, "at": "2026-11-17T05:07:00+00:00"}                                # Tue 17 Nov 10:37 IST
+    assert dp.sync_check([today], T0) == []
+    # Before 10:00 IST the last due run is yesterday's, which finished.
+    assert dp.sync_check([yesterday], datetime(2026, 11, 17, 3, 30, tzinfo=timezone.utc)) == []
+    never = dp.sync_check([], T0)
+    assert len(never) == 1 and "no finished sync on record" in never[0]["text"]
+
+
+def test_the_unfinished_sync_line_is_in_the_posted_digest():
+    yesterday = {"_id": "smartlead-sync", "asks": [], "at": "2026-11-16T05:06:45+00:00"}
+    head, _ = dp.build([yesterday], [], dp.sync_check([yesterday], T0), T0)
+    text = "\n".join(head)
+    assert "Checks that broke" in text and "daily sheet sync has not finished" in text
+
+
 def test_the_digest_waits_for_a_running_morning_job():
     class Runs:
         def __init__(self):
