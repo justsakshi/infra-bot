@@ -98,16 +98,20 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
 
 class FleetStore:
     """inbox_daily: one document per inbox per day; fleet_cases: one per case; warmup_repair: one per inbox in
-    warm-up repair (smartlead/warmup_repair.py). ``repair`` None with collections passed in = no repair tracking."""
+    warm-up repair (smartlead/warmup_repair.py); warmup_changes: one per warm-up settings change, its outcomes filled
+    from inbox_daily, v2_verdicts and inbox_evidence (smartlead/warmup_changes.py). ``repair`` / ``changes`` None with
+    collections passed in = not tracked."""
 
-    def __init__(self, daily=None, cases=None, repair=None) -> None:
+    def __init__(self, daily=None, cases=None, repair=None, *, changes=None, verdicts=None, evidence=None) -> None:
         if daily is None or cases is None:
             from smartlead.zapmail_asset_sync import _db
             db = _db()
             if db is None:
                 raise RuntimeError("Mongo unavailable; nothing saved")
             daily, cases, repair = db["inbox_daily"], db["fleet_cases"], db["warmup_repair"]
+            changes, verdicts, evidence = db["warmup_changes"], db["v2_verdicts"], db["inbox_evidence"]
         self.daily, self.cases, self.repair = daily, cases, repair
+        self.changes, self.verdicts, self.evidence = changes, verdicts, evidence
 
     def save_state(self, records: list[dict]) -> None:
         for r in records:
@@ -329,6 +333,20 @@ def _repair(store, records: list[dict], read: set[str], roster: dict | None, tod
         return None
 
 
+def _learning(store, today: date, errors: list[str]):
+    """Fill the 1/2/3-week outcomes of every warm-up settings change and, on the first Monday of the month, the
+    "what worked" line. (done, detail), or None when not tracked or it failed (a read error, never a stop)."""
+    if getattr(store, "changes", None) is None:
+        return None
+    from smartlead import warmup_changes as wc
+    try:
+        events = wc.daily(store.changes, store.daily, store.verdicts, store.evidence, today)
+        return wc.month_items(events, today)
+    except Exception as exc:  # noqa: BLE001 - the rest of fleet watch goes on
+        errors.append(f"warm-up changes ({type(exc).__name__})")
+        return None
+
+
 def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: dict | None, today: date,
           errors: list[str], *, post: bool = False, baseline: bool = False, poster=None,
           roster: dict | None = None) -> dict:
@@ -357,6 +375,10 @@ def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: 
     if store:
         store.save_cases(open_now + closed)
     repair = _repair(store, records, read, roster, today, errors) if store else None
+    learned = _learning(store, today, errors) if store else None
+    if learned is not None:
+        asks_r, done_r, detail_r = repair or ([], [], [])
+        repair = (asks_r, done_r + learned[0], detail_r + learned[1])
     new_keys = {c["key"] for c in opened}
     resend = [c for c in open_now if c.get("announced") is False and not c.get("baseline") and c["key"] not in new_keys]
     backlog = [c for c in open_now if c.get("announced") is None and not c.get("baseline")
