@@ -26,6 +26,18 @@ from smartlead.config import (
 )
 
 
+class ExpandiCredentialsRejected(Exception):
+    """Expandi answered 400 {"error": "invalid credentials"}: the key/secret pair is wrong.
+
+    17 Nov 2026 (t267): Render's 9:00 run failed 11-17 Nov with a bare "HTTPStatusError 400" while the PC's pair
+    read the workspace fine. Probed live: any well-formed wrong pair (swapped, one character off) gets this 400;
+    a malformed value just hangs until the read times out. Carries no URL, key or response text.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Expandi rejected the key/secret pair (invalid credentials)")
+
+
 class ExpandiClient:
     """Thin async wrapper around the Expandi/Liaufa open API (key+secret auth)."""
 
@@ -82,6 +94,8 @@ class ExpandiClient:
                     print(f"  [EX {self.workspace_name}] {resp.status_code} - retry in {delay:.0f}s")
                     await asyncio.sleep(delay)
                     continue
+            if resp.status_code == 400 and "invalid credentials" in resp.text.lower():
+                raise ExpandiCredentialsRejected()
             resp.raise_for_status()
             return resp.json()
         resp.raise_for_status()
