@@ -507,3 +507,45 @@ def reminder_due(now_ist: tuple[date, int], nights_in: set[str], reminded: set[s
     if night < since or night in reminded or (any(n >= first for n in nights_in) and not missing):
         return None
     return night
+
+
+def _first_run(test: dict) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(test.get("startsAt") or test.get("nextRunAt") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def due_test(campaign_id, tests: list[dict], now: datetime) -> dict | None:
+    """The ACTIVE v2 test on that Smartlead campaign that should have run by ``now``, or None. A test that has
+    made no run yet and whose first run is still ahead (made mid-week for next Saturday) is not due."""
+    for t in tests:
+        if str(t.get("campaignId")) != str(campaign_id) or str(t.get("status") or "").upper() != "ACTIVE":
+            continue
+        start = _first_run(t)
+        if not int(t.get("runsCreated") or 0) and start is not None and start > now:
+            continue
+        return t
+    return None
+
+
+def expected_missing(missing: list[str], dt_ids: dict[str, int], tests: list[dict] | None,
+                     now: datetime) -> tuple[list[tuple[str, str]], list[str]]:
+    """Split the DT campaigns with no result this week (``dt_missing``) by what the v2 API's test list says
+    (17 Nov 2026: the reminder named a DT campaign that had no v2 test at all, and asked for a CSV download).
+    ``tests`` None: the list was not read (API off or failing), so every one is kept, as before. Else a campaign
+    with no due ACTIVE test is dropped: no result can come, and whether its inboxes need a test is the coverage
+    check's question (dt_senders). Returns ([(name, why)], dropped names)."""
+    if tests is None:
+        return [(n, "") for n in missing], []
+    kept, dropped = [], []
+    for name in missing:
+        if name not in dt_ids:
+            kept.append((name, "no finished v2 run found"))
+            continue
+        t = due_test(dt_ids[name], tests, now)
+        if t is None:
+            dropped.append(name)
+        else:
+            kept.append((name, f"its test '{t.get('name') or t.get('id')}' has no finished run this week"))
+    return kept, dropped

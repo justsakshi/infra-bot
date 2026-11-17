@@ -101,8 +101,11 @@ class FakeV2:
     def __init__(self):
         self.tests, self.reads, self.fail = [], [], None
 
-    def add(self, name, inboxes, sent=MON9, completed="2026-11-10T03:00:00.000Z", status="ACTIVE", missing=0):
-        """inboxes: {email: (google_inbox_of_4, microsoft_inbox_of_4)}; ``missing``: that many emails never arrived."""
+    def add(self, name, inboxes, sent=MON9, completed="2026-11-10T03:00:00.000Z", status="ACTIVE", missing=0,
+            campaign=None):
+        """inboxes: {email: (google_inbox_of_4, microsoft_inbox_of_4)}; ``missing``: that many emails never arrived;
+        ``campaign``: the Smartlead campaign id the test sends from (the list call's campaignId); ``completed``
+        None: the test has no finished run."""
         emails = []
         for mb, (g, m) in inboxes.items():
             for prov, n in (("GOOGLE_WORKSPACE", g), ("MICROSOFT_365", m)):
@@ -111,8 +114,9 @@ class FakeV2:
         for e in emails[:missing]:
             e["placement"] = "MISSING"
         tid = f"t{len(self.tests) + 1}"
-        self.tests.append({"id": tid, "name": name, "status": status,
-                           "run": {"runId": f"{tid}-run", "runNo": 1, "completedAt": completed}, "emails": emails})
+        self.tests.append({"id": tid, "name": name, "status": status, "campaign": campaign,
+                           "run": {"runId": f"{tid}-run", "runNo": 1, "completedAt": completed} if completed else None,
+                           "emails": emails})
 
     def get(self, path, params):
         self.reads.append(path)
@@ -121,9 +125,11 @@ class FakeV2:
                 return self.fail[1], None
             raise self.fail[1]
         if path == "/tests":
-            items = [{"id": t["id"], "name": t["name"], "status": t["status"], "type": "AUTO"} for t in self.tests]
+            items = [{"id": t["id"], "name": t["name"], "status": t["status"], "type": "AUTO",
+                      **({"campaignId": t["campaign"], "runsCreated": 1} if t["campaign"] is not None else {})}
+                     for t in self.tests]
         elif path.endswith("/history"):
-            items = [t["run"] for t in self.tests if path == f"/tests/{t['id']}/history"]
+            items = [t["run"] for t in self.tests if path == f"/tests/{t['id']}/history" and t["run"]]
         else:
             items = next(t["emails"] for t in self.tests if path == f"/runs/{t['run']['runId']}/emails")
         n = int(params.get("cursor") or 0)
@@ -1086,3 +1092,56 @@ def test_the_watch_week_line_is_gone_after_its_date(job):
     assert job.run(apply=False, warn=True, act_from="2026-11-10") == 0
     (head, _), = job.posts                                       # a plan posted without changing anything
     assert head[2].startswith("Would take") and not any(x.startswith("Watch week") for x in head)
+
+
+# --- the Tuesday reminder when the v2 API is read (17 Nov 2026: "1 DT test not in yet ... Download its CSV" named a
+# DT campaign that had no v2 test at all, and asked for a download the API made unnecessary) ----------------
+
+def test_with_the_api_read_the_reminder_never_asks_for_a_csv_and_skips_a_campaign_with_no_v2_test(job, capsys):
+    know_fleet(job)                                               # DT PL #1 = 9, DT Melior #1 = 8, DT PL #2 = 7
+    api = job.v2api.setdefault("PRECISE_LEADS", FakeV2())
+    api.add("pl weekly", DT_PL_1, campaign=9)
+    api.add("melior weekly", {}, campaign=8, completed=None)      # active on DT Melior #1, no finished run
+    # DT PL #2 (campaign 7) has no v2 test at all, like a real DT campaign on 17 Nov 2026
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.run()                                                     # the weekly report
+    report = "\n".join(job.posts[-1][1])
+    assert "DT PL #2" not in report
+    assert ("No result this week from DT Melior #1 (2 inboxes): no finished v2 run found. Check its test ran in "
+            "Smart Delivery v2.") in report
+    job.clock = at(10, 12)
+    assert job.run() == 0
+    head, _ = job.posts[-1]
+    text = " ".join(head)
+    assert head[0] == "v2 results for the week of Mon 9 Nov: 1 DT test not in yet"
+    assert head[1] == "\nMissing: DT Melior #1 (its test 'melior weekly' has no finished run this week)."
+    assert "DT PL #2" not in text and "CSV" not in text and "Download" not in text
+    assert "Smart Delivery API every hour, so there is nothing to download" in text
+    assert "no active v2 test on DT PL #2" in capsys.readouterr().out
+
+
+def test_with_the_api_read_and_nothing_expected_missing_there_is_no_reminder(job):
+    know_fleet(job)
+    api = job.v2api.setdefault("PRECISE_LEADS", FakeV2())
+    api.add("pl weekly", DT_PL_1, campaign=9)
+    api.add("melior weekly", DT_MELIOR_1, campaign=8)             # DT PL #2 has no v2 test
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.run()
+    job.clock = at(10, 12)
+    assert job.run() == 0
+    assert not [h for h, _ in job.posts if h[0].startswith("v2 results for")]
+
+
+def test_with_the_api_off_the_reminder_still_asks_for_the_csv(job, monkeypatch):
+    know_fleet(job)
+    monkeypatch.setenv("V2_API", "off")
+    download_monday(job)
+    job.run()
+    job.clock = at(10, 10, 31)
+    job.run()
+    job.clock = at(10, 12)
+    assert job.run() == 0
+    head, _ = job.posts[-1]
+    assert head[1] == "\nMissing: DT PL #2." and "Download its CSV from Smart Delivery v2" in head[2]
