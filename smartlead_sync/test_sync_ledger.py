@@ -114,3 +114,21 @@ ok(statuses == {"A - Campaign Summary": "FAILED", "A - Inboxes": "ok",
 
 sheets._SYNC_LEDGER.clear()
 print("\nALL PASSED")
+
+
+# --- India time on the Last Sync tab (17 Nov 2026: Render's clock is UTC, so its sync wrote "05:06" for a run that
+# ended at 10:36 IST, and the PC wrote IST; the same cell read 5.5 hours apart depending on who ran) ---------------
+
+def test_sync_stamp_is_india_time_whatever_the_server_clock():
+    from datetime import datetime, timezone
+    from smartlead import sheets
+    assert sheets.sync_stamp(datetime(2026, 11, 16, 5, 6, 45, tzinfo=timezone.utc)) == "2026-11-16 10:36:45"
+
+
+def test_each_tab_in_the_ledger_is_stamped_in_india_time(monkeypatch):
+    from datetime import datetime, timezone
+    from smartlead import sheets
+    monkeypatch.setattr(sheets, "_now", lambda: datetime(2026, 11, 16, 5, 6, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(sheets, "_SYNC_LEDGER", [])
+    sheets._record_write("All Inboxes", rows=3)
+    assert sheets._SYNC_LEDGER[-1]["at"] == "2026-11-16 10:36:00"

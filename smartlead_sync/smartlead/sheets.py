@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import time
@@ -55,6 +55,19 @@ def _retry_write(fn, *args, **kwargs):
 # error where the team will see it.
 _SYNC_LEDGER: list[dict] = []
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def sync_stamp(now: datetime | None = None) -> str:
+    """A Last Sync time, always in India time, same format as before. Render's clock is UTC and the PC's is IST,
+    so a plain datetime.now() made the same cell read 5.5 hours apart depending on who ran the sync (17 Nov 2026:
+    "05:06" for a Render run that ended 10:36 IST looked like a stale sheet)."""
+    return (now or _now()).astimezone(IST).strftime("%Y-%m-%d %H:%M:%S")
+
 
 def _redact(text: str) -> str:
     from smartlead.notify import redact
@@ -65,7 +78,7 @@ def _record_write(tab: str, rows: int | None = None,
                   error: BaseException | None = None) -> None:
     _SYNC_LEDGER.append({
         "tab": tab,
-        "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "at": sync_stamp(),
         "rows": "" if rows is None else rows,
         "status": "FAILED" if error else "ok",
         # Redacted: the ledger is written to the Last Sync tab, and a provider
@@ -692,7 +705,7 @@ class SheetsWriter:
         self._write_glossary_tab()
 
     def write_sync_timestamp(self, sync_ts: str | None = None) -> None:
-        ts = sync_ts or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = sync_ts or sync_stamp()
         self._write_sync_timestamp(ts)
 
     def write_all(

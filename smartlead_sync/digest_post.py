@@ -5,8 +5,9 @@ job's full report goes in the thread. Jobs hand their part over through smartlea
     python digest_post.py            # dry run: prints the digest, posts nothing, marks nothing
     python digest_post.py --post     # post it (the bot runs this every morning)
 
-Besides what the jobs hand over, the digest checks two things itself: the PC's v2 weekly job ran in the last
-3 hours (Mongo v2_heartbeat), and Render runs the latest code on main (RENDER_GIT_COMMIT against GitHub).
+Besides what the jobs hand over, the digest checks three things itself: the PC's v2 weekly job ran in the last
+3 hours (Mongo v2_heartbeat), Render runs the latest code on main (RENDER_GIT_COMMIT against GitHub), and a sheet
+sync has finished since the last 10:00 IST slot (the sync's own report time in digest_asks).
 """
 from __future__ import annotations
 
@@ -144,6 +145,33 @@ def render_check(running: str | None, compare: dict | None) -> list[dict]:
              "step": "Manveen: Render, infra-bot-1, Manual Deploy, Deploy latest commit."}]
 
 
+SYNC_SOURCE = "smartlead-sync"      # run.py SYNC_SOURCE: it reports to the digest at the very end of every run
+SYNC_HOUR_IST = 10                  # its daily slot (bot_health.js JOBS, '0 10 * * *')
+
+
+def sync_check(sources: list[dict], now: datetime) -> list[dict]:
+    """A broken line when no sheet sync has finished since the last 10:00 IST slot. The sync (Render's, or one run
+    by hand) reports to the digest when it ends, so an older report means All Inboxes still shows an older sync.
+    17 Nov 2026: Render's 10:00 run never finished (429s, then most likely the noon redeploy) and the 11:30 digest
+    said nothing; bot health only calls a run unfinished after 3 hours, so it would have said so the next day."""
+    local = now.astimezone(IST)
+    due = local.replace(hour=SYNC_HOUR_IST, minute=0, second=0, microsecond=0)
+    if local < due:
+        due -= timedelta(days=1)
+    doc = next((s for s in sources if s.get("_id") == SYNC_SOURCE), None)
+    at = _parse((doc or {}).get("at"))
+    if at and at >= due:
+        return []
+    shows = (f"the sync that finished {_day(at)} {at.astimezone(IST):%H:%M} IST" if at
+             else "an older sync (no finished sync on record)")
+    return [{"kind": "broken", "key": "digest:sync-not-finished",
+             "text": f"The daily sheet sync has not finished since {_day(due)} {due:%H:%M} IST, so All Inboxes and "
+                     f"the other sync tabs still show {shows}.",
+             "step": "Look in the Render log (search [smartlead-sync]): a run still going writes the sheet when it "
+                     "ends; a run lost to a restart is not repeated until tomorrow 10:00 IST, so for today's sheet "
+                     "run smartlead_sync/run.py by hand."}]
+
+
 def _compare(running: str) -> dict:
     import requests
     branch = os.getenv("RENDER_GIT_BRANCH") or "main"
@@ -191,6 +219,7 @@ def main(argv=None) -> int:
     running = os.getenv("RENDER_GIT_COMMIT")
     checks = pc_check(db.v2_heartbeat.find_one({"_id": "pc"}), now)
     checks += render_check(running, _compare(running) if running else None)
+    checks += sync_check(sources, now)
     built = build(sources, done, checks, now)
     if not built:
         print("Nothing needs anyone and nothing was done: no digest today")

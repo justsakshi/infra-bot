@@ -518,3 +518,35 @@ def test_a_send_time_without_a_zone_is_read_as_utc():
     rows = v2.parse(csv_text([("a@x.com", G, "Inbox", "2026-11-13 19:22:00")] * 4
                              + [("a@x.com", M, "Never arrived", "2026-11-13 19:22:00")] * 4))
     assert v2.pending_seeds(rows, datetime(2026, 11, 16, tzinfo=timezone.utc)) == 0
+
+
+# --- which missing DT tests the Tuesday reminder names, by what the v2 API says (17 Nov 2026) --------------
+
+NOW17 = datetime(2026, 11, 17, 12, 0, tzinfo=v2.IST)
+
+
+def _t(cid, status="ACTIVE", name="pl weekly", runs=1, starts="2026-11-13T18:30:00.000Z"):
+    return {"id": f"t{cid}", "name": name, "status": status, "campaignId": cid, "runsCreated": runs, "startsAt": starts}
+
+
+def test_without_the_api_test_list_every_missing_dt_test_is_named_as_before():
+    assert v2.expected_missing(["DT PL #1", "DT PL #7"], {"DT PL #1": 1}, None, NOW17) == \
+        ([("DT PL #1", ""), ("DT PL #7", "")], [])
+
+
+def test_a_dt_campaign_with_no_active_v2_test_is_not_expected():
+    tests = [_t(1), _t(3, status="STOPPED", name="old test")]
+    kept, dropped = v2.expected_missing(["DT PL #1", "DT PL #7", "DT PL #8"], {"DT PL #1": 1, "DT PL #7": 3, "DT PL #8": 4},
+                                        tests, NOW17)
+    assert kept == [("DT PL #1", "its test 'pl weekly' has no finished run this week")]
+    assert dropped == ["DT PL #7", "DT PL #8"]
+
+
+def test_a_test_whose_first_run_is_still_ahead_is_not_expected_yet():
+    tests = [_t(1, runs=0, starts="2026-11-20T18:30:00.000Z")]          # made 16 Nov, first run Sat 21 Nov
+    assert v2.expected_missing(["DT PL #1"], {"DT PL #1": 1}, tests, NOW17) == ([], ["DT PL #1"])
+
+
+def test_a_dt_campaign_the_job_has_no_id_for_is_still_named():
+    assert v2.expected_missing(["DT PL #9"], {}, [_t(1)], NOW17) == \
+        ([("DT PL #9", "no finished v2 run found")], [])
