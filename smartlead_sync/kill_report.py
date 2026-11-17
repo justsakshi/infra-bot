@@ -67,7 +67,8 @@ def build(facts: dict[str, dict], today: date, platform: dict[str, str]) -> dict
                        for k in (kr.KILL, kr.WATCH, kr.GOOD, kr.NO_DATA)}}
 
 
-RULE = "Rule: an inbox passes a test when 80%+ of its test emails reach the inbox."
+RULE = ("Rule: an inbox passes a test when 80%+ of its test emails reach the inbox at its own provider (Google "
+        "inboxes at Google, Outlook inboxes at Outlook); the other provider is only a signal.")
 DECIDE = ("2 fails a week apart, or one under 50%, means stop using it; a whole domain when its inboxes "
           "together stay under 80% over 40+ test emails.")
 _ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})")

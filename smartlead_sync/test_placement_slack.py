@@ -60,7 +60,9 @@ def test_spam_headline_counts_and_routes_over_5_percent():
     # spam mailboxes still in live campaigns: act today (same rule as kill warnings)
     assert head[0] == "\U0001f6a8 Classic seed test (early warning, not proof), Bettrdata, 13 Oct: 11 of 71 mailboxes flagged (3 domains in spam)"
     assert head[1] == "3 still in live campaigns"
-    assert head[2] == "Google→Google 16% spam · Outlook→Google 14% (Google = Smartlead's own seeds)"
+    assert head[2] == "Google→Google 16% spam (Google = Smartlead's own seeds)"
+    # Outlook senders' spam at Google: every campaign is ESP-matched, so it is a signal, not the result (17 Nov 2026)
+    assert head[3] == "Other provider, a signal only (campaigns are ESP-matched): Outlook→Google 14% spam"
     assert len(head) <= 4
     assert not any(EMAIL.search(l) for l in head), "no mailbox address in the channel message"
 

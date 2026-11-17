@@ -109,6 +109,7 @@ sys.path.insert(0, str(HERE))
 from smartlead import v2_api  # noqa: E402
 from smartlead import v2_results as v2  # noqa: E402
 from smartlead import usable  # noqa: E402
+from smartlead import own_provider as op  # noqa: E402
 from smartlead.usable import V2_NOT_TRUSTED  # noqa: E402
 
 TAG = "DO NOT USE - failed v2 (auto)"
@@ -619,7 +620,7 @@ def plan(state: dict, nights=None) -> dict[str, dict]:
     (the nights being acted on; by default the newest night that has one) failed at their own provider are
     counted against every inbox the job knows on the domain (state clients: the fleet, tested or not). Half
     or more fails the domain. Every other inbox on it is then pulled with the reason "its domain failed (N
-    of M inboxes in spam)", and none of its inboxes returns while it still fails. The decision carries
+    of M inboxes in spam at their own provider)", and none of its inboxes returns while it still fails. The decision carries
     ``domain`` {name, failed, inboxes}."""
     types, clients = state.get("types") or {}, state.get("clients") or {}
     if nights is None:
@@ -650,7 +651,7 @@ def plan(state: dict, nights=None) -> dict[str, dict]:
             continue                                     # another domain, or it failed itself (decided above)
         n, m = failed[key(mb)]
         dom = {"name": key(mb)[1], "failed": n, "inboxes": m}
-        why = f"its domain failed ({n} of {_inboxes(m)} in spam)"
+        why = f"its domain failed ({n} of {_inboxes(m)} in spam at their own provider)"
         d = out.get(mb) or {"action": None, "why": "no result"}
         if d["action"] == v2.RETURN:
             out[mb] = {"action": None, "why": f"{d['why']}, but {why}", "domain": dom, "waits": True}
@@ -938,20 +939,27 @@ def _range(vals: list[int]) -> str:
     return f"{lo}" if lo == hi else f"{lo}-{hi}"
 
 
-def _seeds(items: list[tuple[str, dict]]) -> str:
+def _seeds(items: list[tuple[str, dict]], kind: str = "") -> str:
     """'Google 3/4, Microsoft 4/4'. A provider that got fewer than 4 emails reads 'Google 1/1 (only 1 sent)':
-    '1/4' read like a quarter in the inbox when only one email went out (cold read, 16 Nov 2026)."""
+    '1/4' read like a quarter in the inbox when only one email went out (cold read, 16 Nov 2026).
+
+    ``kind``: the Smartlead type every inbox of the line shares (own_provider.common_kind). Its own provider comes
+    first and the other one is labelled a signal (17 Nov 2026: the 16 Nov post showed Melior Google inboxes as
+    "Google 1/4, Microsoft 0/4 → would be taken out", which read as Google inboxes in spam at Outlook being pulled;
+    every campaign is ESP-matched, so the other provider's seeds never decide anything)."""
+    own = op.own_provider(kind)
     out = []
-    for prov in ("google", "microsoft"):
+    for prov in ((own, *[p for p in op.BOTH if p != own]) if own else op.BOTH):
         got = [x[prov] for _, x in items if (x.get(prov) or {}).get("reported")]
         if not got:
             continue
         inbox, sent = [int(p.get("inbox", 0)) for p in got], [int(p.get("sent") or v2.PASS_SEEDS) for p in got]
         if len(set(sent)) == 1:
             n = sent[0]
-            out.append(f"{prov.title()} {_range(inbox)}/{n}" + (f" (only {n} sent)" if n < v2.PASS_SEEDS else ""))
+            text = f"{_range(inbox)}/{n}" + (f" (only {n} sent)" if n < v2.PASS_SEEDS else "")
         else:
-            out.append(f"{prov.title()} {_range(inbox)} in the inbox, {_range(sent)} sent")
+            text = f"{_range(inbox)} in the inbox, {_range(sent)} sent"
+        out.append(op.signal(prov, text) if own and prov != own else f"{prov.title()} {text}")
     return ", ".join(out)
 
 
@@ -1466,14 +1474,14 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         by_domain[(client_of.get(e, "Not in Smartlead"), dom["name"])].append(e)
     for (client, name), es in sorted(by_domain.items()):
         dom = dom_pulled[es[0]]
-        by_client[client].append(f"• domain failed · {name} · {dom['failed']} of {_inboxes(dom['inboxes'])} in spam → "
+        by_client[client].append(f"• domain failed · {name} · {dom['failed']} of {_inboxes(dom['inboxes'])} in spam at their own provider → "
                                  + _domain_tail(client, es, acted, names, write))
     waits = defaultdict(list)
     for e, d in decisions.items():
         if d.get("waits"):
             waits[(d["domain"]["name"], d["domain"]["failed"], d["domain"]["inboxes"])].append(e)
     for (name, n, m), es in sorted(waits.items()):
-        info.append(f"{name} still fails ({n} of {_inboxes(m)} in spam), so {_inboxes(len(es))} that passed twice "
+        info.append(f"{name} still fails ({n} of {_inboxes(m)} in spam at their own provider), so {_inboxes(len(es))} that passed twice "
                     f"stay{'s' if len(es) == 1 else ''} out of campaigns until it no longer does.")
     out_before = defaultdict(lambda: [0, set()])
     order = {"pull_failed": -1, "pulled": 0, "report_only_removed": 0.5, "blocked": 1, "report_only_blocked": 1.5,
@@ -1530,7 +1538,8 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             tail = f"failed {_day(why.split()[-1])}, and this test can't clear it: {tail}"
         who = items[0][0] if len(items) == 1 else f"{len(items)} of {per_dom[dom]} inboxes"
         label = verdict.lower().replace("_", " ")
-        by_client[client].append(" · ".join(x for x in (f"• {label}", dom, who, _seeds(items)) if x) + f" → {tail}")
+        kind = op.common_kind(types.get(e) for e, _ in items)
+        by_client[client].append(" · ".join(x for x in (f"• {label}", dom, who, _seeds(items, kind)) if x) + f" → {tail}")
     for client in sorted(set(by_client) | set(out_before) | set(copy_by_client)):
         lines = list(by_client.get(client, []))
         if client in out_before:
@@ -1742,7 +1751,9 @@ def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
     acts on: at the inbox's own provider, held providers set aside (``held`` names them). The readers of
     v2_verdicts (usable list, gate self-test, renewal review, grid) therefore agree with what was pulled.
     ``overridden``: a person removed the job's tag after this night's result, so the job leaves the inbox alone
-    until a newer one; the readers do not hold it back for this fail either (usable.fail_set_aside)."""
+    until a newer one; the readers do not hold it back for this fail either (usable.fail_set_aside).
+    ``type``: the inbox's Smartlead type (GMAIL, OUTLOOK, SMTP; "" unknown), so a reader of the per-provider counts
+    knows which provider is its own and which is only a signal (v2_grid, 17 Nov 2026)."""
     cut = (now.date() - timedelta(days=VERDICT_DAYS)).isoformat()
     skip = set(unsettled(state, now))
     at = now.astimezone(timezone.utc).isoformat(timespec="seconds")
@@ -1756,6 +1767,7 @@ def verdict_docs(state: dict, now: datetime) -> dict[str, dict]:
             held = held_for(state, x)
             doc = {"_id": f"{mb}|{n}", "email": mb, "domain": mb.split("@", 1)[-1], "client": state["clients"].get(mb),
                    "night": n, "verdict": v2.own_verdict(x, (state.get("types") or {}).get(mb), held),
+                   "type": str((state.get("types") or {}).get(mb) or ""),
                    "google": _counts(x.get("google")), "microsoft": _counts(x.get("microsoft")),
                    "history": bool(x.get("history")), "weekly": v2.is_weekly_night(n), "pulled_on": pulled_on,
                    "held": sorted(held), "overridden": n <= str((state.get("overrides") or {}).get(mb) or ""),

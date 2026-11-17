@@ -213,3 +213,46 @@ def summarize_report(d: dict) -> dict:
             "classified": classified, "dispatched": dispatched,
             "coverage": (classified / dispatched) if dispatched else 0.0,
             "has_data": classified > 0}
+
+
+UNJUDGED = "unjudged"       # no result at the senders' own provider: never written as a verdict
+
+
+def own_judgement(report: dict, kinds, threshold: float, sender: dict | None = None) -> dict:
+    """What a classic test says about its sender(s), judged at their OWN provider (smartlead/own_provider.py; every
+    campaign is ESP-matched, so Google senders are judged on the Google seeds and Outlook senders on the Microsoft
+    seeds, 17 Nov 2026). Returns {"status": "inbox" | "fail" | UNJUDGED, "pct": float | None, "note": str}.
+
+    ``report``: summarize_report (test-wide, per provider). ``kinds``: the Smartlead types of the test's senders.
+    ``sender``: one sender's sender_report summary when the test had several (no provider split per sender).
+
+    * Senders of mixed, SMTP or unknown type: the worst provider (or the sender's whole panel), as before.
+    * One sender (or none given): its own provider's inbox %. The other provider below ``threshold`` is a signal in
+      ``note``. No own-provider seeds: UNJUDGED.
+    * Several senders: a sender at or above ``threshold`` over its whole panel passes. Below it, it fails only when
+      the test's own-provider seeds were below ``threshold`` too; otherwise the spam was at the other provider and
+      it is UNJUDGED (the panel has no per-sender split to say more). Pure."""
+    from smartlead import own_provider as op
+    own = op.own_provider(op.common_kind(kinds))
+    provs = report.get("by_provider") or {}
+    if own is None:
+        pct = sender["inbox_pct"] if sender else report.get("worst_provider_inbox_pct", report.get("inbox_pct", 0.0))
+        return {"status": "inbox" if pct >= threshold else "fail", "pct": pct, "note": ""}
+    mine, other = op.split(provs, op.common_kind(kinds))
+    mine = {p: v for p, v in mine.items() if int(v.get("total") or 0)}
+    own_pct = min((float(v["inbox_pct"]) for v in mine.values()), default=None)
+    note = "; ".join(op.signal(p, f"{float(v['inbox_pct']):.0f}% inbox") for p, v in sorted(other.items())
+                     if int(v.get("total") or 0) and float(v["inbox_pct"]) < threshold)
+    name = op.NAMES[own]
+    if sender is not None:
+        if sender["inbox_pct"] >= threshold:
+            return {"status": "inbox", "pct": sender["inbox_pct"], "note": note}
+        if own_pct is not None and own_pct < threshold:
+            return {"status": "fail", "pct": sender["inbox_pct"], "note": note}
+        why = (f"{sender['inbox_pct']:.0f}% over both providers, but the test's {name} seeds were "
+               f"{'not measured' if own_pct is None else f'{own_pct:.0f}% inbox'}: not judged at its own provider")
+        return {"status": UNJUDGED, "pct": None, "note": "; ".join(x for x in (why, note) if x)}
+    if own_pct is None:
+        return {"status": UNJUDGED, "pct": None,
+                "note": "; ".join(x for x in (f"no {name} seeds measured: not judged at its own provider", note) if x)}
+    return {"status": "inbox" if own_pct >= threshold else "fail", "pct": own_pct, "note": note}

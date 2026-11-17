@@ -40,10 +40,11 @@ from smartlead.config import (
     PLACEMENT_MIN_COVERAGE, PLACEMENT_COPY_REFRESH, PLACEMENT_SENDERS_PER_TEST,
 )
 from smartlead.placement_copy import refresh_test_campaign
+from smartlead import own_provider as op
 from smartlead.placement_grid import write_result
 from smartlead.placement_schedule import PlacementSchedule, select_batch
 from smartlead.placement_store import PlacementStore
-from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeliveryError
+from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeliveryError, UNJUDGED, own_judgement
 
 # Domains the team has retired. Testing them spends credits to learn nothing.
 SKIP_STATUSES = ("replaced", "cancel")
@@ -174,30 +175,40 @@ async def collect_results(acc, store: PlacementStore, schedule: PlacementSchedul
                 continue
 
         wrote_any = False
+        kinds = t.get("kinds") or {}
         for email in emails:
             domain = _domain_of(email)
+            # Judged at the sender's OWN provider (smart_delivery.own_judgement, 17 Nov 2026): spam at the other
+            # provider is a signal, never a fail. A sender of unknown type keeps the old rule (worst provider, or
+            # its whole panel in a multi-sender test).
             if per_sender:
                 s = per_sender[email]
                 # The provider split lives only on providerwise, which is
                 # test-wide — so a multi-sender test is judged on its own
-                # panel percentage rather than a worst-provider figure.
-                judged = s["inbox_pct"]
+                # panel percentage, checked against the test's own-provider seeds.
+                verdict = own_judgement(report, [kinds.get(email, "")], RETEST_INBOX_THRESHOLD, sender=s)
                 detail = (f"{s['inbox']}+{s['tab']} inbox / {s['spam']} spam "
                           f"of {s['classified']}")
                 providers = {}
             else:
-                judged = report.get("worst_provider_inbox_pct", report["inbox_pct"])
+                verdict = own_judgement(report, [kinds.get(e, "") for e in emails], RETEST_INBOX_THRESHOLD)
                 providers = report.get("by_provider", {})
                 detail = " ".join(f"{p}={v['inbox']}/{v['total']}"
                                   for p, v in sorted(providers.items()))
-            status = "inbox" if judged >= RETEST_INBOX_THRESHOLD else "fail"
-            print(f"  [Placement] {domain} -> {status} ({judged:.0f}%) {detail}")
+            status = verdict["status"]
+            judged = "-" if verdict["pct"] is None else f"{verdict['pct']:.0f}%"
+            print(f"  [Placement] {domain} -> {status} ({judged}) {detail}"
+                  + (f" · {verdict['note']}" if verdict["note"] else ""))
             if dry_run:
                 continue
-            store.save_result(email, domain, status, date.today().isoformat(), "api")
+            if status != UNJUDGED:
+                store.save_result(email, domain, status, date.today().isoformat(), "api")
             schedule.record_result(acc.name, domain, email, status, providers)
             if providers:
-                plan = write_result(tab, domain, providers,
+                own = op.own_provider(kinds.get(email, ""))
+                cells = {p: ({**v, "signal": True} if own and op.provider_key(p) != own else v)
+                         for p, v in providers.items()}
+                plan = write_result(tab, domain, cells,
                                     threshold=RETEST_INBOX_THRESHOLD)
                 if plan.skipped_reason:
                     print(f"  [Placement] grid: {domain} not written "
@@ -297,6 +308,7 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
     async with SmartleadClient(acc.api_key, acc.name) as c:
         accounts = await c.list_email_accounts()
         id_by_email = {(a.get("from_email") or "").strip(): a.get("id") for a in accounts}
+        kind_by_email = {(a.get("from_email") or "").strip(): str(a.get("type") or "") for a in accounts}
         attached = await c.get_campaign_email_accounts(str(campaign_id))
         already = {(a.get("from_email") or "").strip() for a in attached}
         missing = [int(id_by_email[b["email"]]) for b in batch
@@ -334,7 +346,9 @@ async def fire_batch(acc, store: PlacementStore, schedule: PlacementSchedule,
             store.record_created(tid, acc.name, campaign_id,
                                  [g["email"] for g in group],
                                  extra={"copy_hash": copy["hash"],
-                                        "copy_source": copy["source"]})
+                                        "copy_source": copy["source"],
+                                        "kinds": {g["email"]: kind_by_email.get(g["email"], "")
+                                                  for g in group}})
             created += 1
             print(f"  [Placement] test {tid} created for {len(group)} domain(s): "
                   f"{domains}")
@@ -399,6 +413,8 @@ async def fire_single(acc, store: PlacementStore, email: str, dry_run: bool) -> 
         accounts = await c.list_email_accounts()
         account_id = next((a.get("id") for a in accounts
                            if (a.get("from_email") or "").strip() == email), None)
+        kind = next((str(a.get("type") or "") for a in accounts
+                     if (a.get("from_email") or "").strip() == email), "")
         if not account_id:
             print(f"  [Placement] {email} not found on {acc.name}")
             return
@@ -414,7 +430,7 @@ async def fire_single(acc, store: PlacementStore, email: str, dry_run: bool) -> 
         except (CreditError, SmartDeliveryError) as exc:
             print(f"  [Placement] create failed for {email}: {exc}")
             return
-    store.record_created(tid, acc.name, campaign_id, [email])
+    store.record_created(tid, acc.name, campaign_id, [email], extra={"kinds": {email: kind}})
     print(f"  [Placement] test {tid} created for {email}")
 
 

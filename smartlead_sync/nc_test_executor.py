@@ -48,7 +48,7 @@ from smartlead.config import (
     NC_SUGGEST_CLIENTS, NC_SUGGEST_CAP, NC_SUGGEST_HOUR_UTC,
 )
 from smartlead.retest_targets import select_targets
-from smartlead.smart_delivery import SmartDeliveryClient, SmartDeliveryError
+from smartlead.smart_delivery import SmartDeliveryClient, SmartDeliveryError, UNJUDGED, own_judgement
 from smartlead.placement_store import PlacementStore
 from smartlead.placement_sheet import append_api_result
 
@@ -125,10 +125,11 @@ def _update_row(ws, row: int, fields: dict) -> None:
 
 async def _pl_tests(pl_key: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=30) as c:
-        resp = await c.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report?api_key={pl_key}",
+        resp = await c.post(f"{SMARTDELIVERY_BASE_URL}/spam-test/report", params={"api_key": pl_key},
                             headers={"Content-Type": "application/json"},
                             json={"limit": 300})
-        resp.raise_for_status()
+        if resp.status_code >= 400:     # never raise_for_status: its message carries the URL, and the key is in it
+            raise RuntimeError(f"Smart Delivery test list failed ({resp.status_code})")
         data = resp.json()
         return data if isinstance(data, list) else []
 
@@ -165,9 +166,15 @@ async def _ingest_completed(pl_key: str, store: PlacementStore, ws, r: dict, tes
     tid = int(test.get("spam_test_id") or r["test_id"])
     async with SmartDeliveryClient(pl_key) as sd:
         rep = await sd.get_report(tid)
-    status = "inbox" if rep["inbox_pct"] >= RETEST_INBOX_THRESHOLD else "fail"
+    # At the inbox's own provider (r["type"], its Smartlead type when found; unknown: worst provider, as before):
+    # spam at the other provider is a signal, never a fail (smart_delivery.own_judgement, 17 Nov 2026).
+    verdict = own_judgement(rep, [r.get("type", "")], RETEST_INBOX_THRESHOLD)
+    status = verdict["status"]
+    if verdict["note"]:
+        print(f"  [NC] {r['email']}: {verdict['note']}")
     today = date.today().strftime("%Y-%m-%d")
-    store.save_result(r["email"], _domain(r["email"]), status, today, "nc")
+    if status != UNJUDGED:
+        store.save_result(r["email"], _domain(r["email"]), status, today, "nc")
     append_api_result(r.get("client", "NC"), tid, [r["email"]],
                       rep["inbox_pct"], rep["spam_pct"], status)
     _update_row(ws, r["row"], {"Status": "DONE", "Test ID": tid, "Result": status,
@@ -238,6 +245,7 @@ async def _finish_sent(accounts, pl_key: str, store: PlacementStore, ws, r: dict
     acc, inbox = await _find_inbox(accounts, r["email"])
     if acc:
         r["client"] = acc.name
+    r["type"] = str((inbox or {}).get("type") or "")
     await _ingest_completed(pl_key, store, ws, r, {"spam_test_id": tid})
     # cleanup: restore the inbox's original daily limit, pause the campaign
     if acc and inbox:
@@ -336,8 +344,9 @@ async def main() -> None:
             if not NC_TEST_ENABLED:
                 print(f"  [NC] DRY-RUN would ingest completed test {tid} for {r['email']}")
                 continue
-            acc, _ = await _find_inbox(accounts, r["email"])
+            acc, found = await _find_inbox(accounts, r["email"])
             r["client"] = acc.name if acc else "NC"
+            r["type"] = str((found or {}).get("type") or "")
             await _ingest_completed(pl.api_key, store, ws, r, test)
             continue
         if not r["track_id"] or not r["seeds"]:

@@ -87,9 +87,13 @@ async def run(client: str | None, threshold: float) -> int:
             continue
 
         print(f"\n[Summary] {acc.name}: {len(rows)} mailbox(es) with placement history")
+        # This endpoint blends every seed provider, so a mailbox here is never judged: Google inboxes are judged on
+        # Google seeds and Outlook inboxes on Outlook seeds (smartlead/own_provider.py), and spam at the other
+        # provider is only a signal. "LOW" marks a mailbox to look at, not a fail.
+        print("  (all seed providers together: a signal, not a verdict)")
         failing = [r for r in rows if r["inbox_pct"] < threshold]
         for r in sorted(rows, key=lambda x: x["inbox_pct"]):
-            mark = "FAIL" if r["inbox_pct"] < threshold else "ok  "
+            mark = "LOW " if r["inbox_pct"] < threshold else "ok  "
             auth = ""
             # Authentication failing alongside placement points at DNS, which
             # is a different fix from a content problem — worth calling out.

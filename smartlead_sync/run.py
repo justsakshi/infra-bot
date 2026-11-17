@@ -37,7 +37,7 @@ from smartlead.client_filter import is_excluded_inbox
 from smartlead.config import (
     TEST_TAB_NAME, ACCOUNT_DELIVERABILITY_TABS, MASTER_TAB_NAME,
 )
-from smartlead.sheets import DeliverabilityReader, SheetsWriter
+from smartlead.sheets import DeliverabilityReader, SheetsWriter, merge_grid_entries
 from datetime import date as _date
 from smartlead.health import build_health_rows, health_records_for_store
 from smartlead.health_store import HealthStore
@@ -158,17 +158,11 @@ async def main() -> None:
             for tab_name in tab_names:
                 reader = DeliverabilityReader(tab_name=tab_name)
                 tab_map = await reader.fetch()
-                # Merge across tabs: fail wins; otherwise keep the most-recent test.
-                # Each value is {"status": str, "date": "YYYY-MM-DD"|""}.
+                # Merge across tabs, per provider column: fail wins; otherwise keep the most-recent test.
+                # Each value is {"status", "date", "gsuite", "gsuite_date", "outlook", "outlook_date"};
+                # each inbox is then judged on its own provider's column (sheets.own_test_status).
                 for domain, entry in tab_map.items():
-                    status, date = entry.get("status", ""), entry.get("date", "")
-                    existing = deliverability_map.get(domain)
-                    existing_status = existing.get("status") if existing else None
-                    if status == "fail" or existing_status == "fail":
-                        fail_date = date if status == "fail" else (existing or {}).get("date", "")
-                        deliverability_map[domain] = {"status": "fail", "date": fail_date}
-                    elif status and (not existing or date >= existing.get("date", "")):
-                        deliverability_map[domain] = {"status": status, "date": date}
+                    deliverability_map[domain] = merge_grid_entries(deliverability_map.get(domain), entry)
             # Overlay any newer API placement results (no-op until phase-3 tests run)
             from smartlead.placement_merge import apply_api_results
             deliverability_map = apply_api_results(deliverability_map)

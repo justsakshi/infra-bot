@@ -47,8 +47,13 @@ def grid_writes(report: dict, client_by_email: dict[str, str], tested_on: str,
             continue
         # plan_writes judges inbox_pct against a threshold; the team's majority rule
         # has already decided each cell, so pass it as 100 (Inbox) or 0 (spam).
-        by_provider = {"G Suite": {"inbox_pct": 100.0 if dom["cells"].get("Google") == "Inbox" else 0.0},
-                       "Office365": {"inbox_pct": 100.0 if dom["cells"].get("Outlook") == "Inbox" else 0.0}}
+        # The domain's other provider (all its senders Google, or all Outlook) is only a signal: a spam cell there
+        # is written labelled (own_provider.SIGNAL_CELL), so no reader takes it for a verdict (17 Nov 2026).
+        own = dom.get("own")
+        by_provider = {"G Suite": {"inbox_pct": 100.0 if dom["cells"].get("Google") == "Inbox" else 0.0,
+                                   **({"signal": True} if own == "Outlook" else {})},
+                       "Office365": {"inbox_pct": 100.0 if dom["cells"].get("Outlook") == "Inbox" else 0.0,
+                                     **({"signal": True} if own == "Google" else {})}}
         if "Google" not in dom["cells"]:
             del by_provider["G Suite"]
         if "Outlook" not in dom["cells"]:

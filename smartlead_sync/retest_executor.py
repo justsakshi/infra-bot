@@ -32,7 +32,7 @@ from smartlead.processing import fetch_account_data
 from smartlead.health import build_health_rows
 from smartlead.manager_map import resolve_manager
 from smartlead.retest_targets import select_targets, MIN_DAYS_BETWEEN_TESTS
-from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeliveryError
+from smartlead.smart_delivery import SmartDeliveryClient, CreditError, SmartDeliveryError, UNJUDGED, own_judgement
 from smartlead.placement_store import PlacementStore
 from smartlead.client_filter import is_excluded_inbox
 
@@ -97,17 +97,20 @@ async def _poll_pending(store: PlacementStore, key_by_client: dict[str, str]) ->
             except SmartDeliveryError as exc:
                 print(f"  [Retest] poll/report failed for {t['test_id']}: {exc}")
                 continue
-        # Judge on the WORST provider, not the blend. A domain at 100% Google /
-        # 0% Microsoft averages to 50% and would otherwise be scored the same as
-        # one that is uniformly mediocre — they need opposite responses.
-        judged_pct = rep.get("worst_provider_inbox_pct", rep["inbox_pct"])
-        status = "inbox" if judged_pct >= RETEST_INBOX_THRESHOLD else "fail"
+        # Judge at the senders' OWN provider (Google inbox: Google seeds, Outlook inbox: Microsoft seeds; every
+        # campaign is ESP-matched, 17 Nov 2026), never the blend: spam at the other provider is a signal only.
+        # Senders of unknown type (tests made before their types were recorded) keep the worst provider.
+        kinds = t.get("kinds") or {}
+        verdict = own_judgement(rep, [kinds.get(e, "") for e in t.get("emails", [])], RETEST_INBOX_THRESHOLD)
+        status = verdict["status"]
         if rep.get("by_provider"):
             detail = " · ".join(f"{p}: {v['inbox_pct']:.0f}% inbox"
                                 for p, v in sorted(rep["by_provider"].items()))
             print(f"  [Retest] test {t['test_id']} per-provider -> {detail}")
+        if verdict["note"]:
+            print(f"  [Retest] test {t['test_id']}: {verdict['note']}")
         today = date.today().strftime("%Y-%m-%d")
-        for email in t.get("emails", []):
+        for email in t.get("emails", []) if status != UNJUDGED else []:
             store.save_result(email, _domain(email), status, today, "api")
 
         # RE-ENABLE warmup BEFORE marking the test done (Avi's policy: warmup
@@ -310,7 +313,9 @@ async def main() -> None:
                 store.record_created(tid, t["client"], cid, senders,
                                      warmup_off_ids=disabled_ids,
                                      extra={"source": "retest", "target": t["email"],
-                                            "reason": t["reason"]})
+                                            "reason": t["reason"],
+                                            # the target's type: its result is judged at its own provider
+                                            "kinds": {t["email"]: t.get("provider", "")}})
                 created += 1
                 print(f"  [Retest] created test {tid} for {t['client']} campaign {cid}"
                       f"{' (warmup-off mode)' if RETEST_DISABLE_WARMUP else ''}")

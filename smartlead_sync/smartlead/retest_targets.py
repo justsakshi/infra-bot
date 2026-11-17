@@ -65,5 +65,6 @@ def select_targets(health_rows: list[dict], per_client_cap: int,
                 "email": r.get("email", ""),
                 "campaign_hint": r.get("campaign_name", ""),
                 "reason": r.get("top_problem", ""),
+                "provider": r.get("provider", ""),      # its result is judged at its own provider
             })
     return targets

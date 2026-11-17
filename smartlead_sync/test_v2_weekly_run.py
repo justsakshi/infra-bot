@@ -323,7 +323,7 @@ def test_melior_outlook_is_taken_out_by_default(job, monkeypatch):
     assert ("remove", 2, [30]) in job.sl.calls and 30 in job.sl.tagged
     assert set(job.state()["pulled"]) == {"pl-bad@x.com", "mel-bad@y.com"}
     text = "\n".join(job.posts[-1][1])
-    assert "mel-bad@y.com · Google 4/4, Microsoft 0/4 → taken out of Melior | B; tagged DO NOT USE" in text
+    assert "mel-bad@y.com · Microsoft 0/4, Google 4/4 (not its provider: a signal, not a verdict) → taken out of Melior | B; tagged DO NOT USE" in text
     assert "report-only until the job is proven" not in text
 
 
@@ -670,7 +670,7 @@ def test_a_failed_domain_takes_its_other_inboxes_out_too(job, monkeypatch):
     head, parts = job.posts[-1]
     assert head[2] == "Took 6 inboxes out of 1 live campaign · tagged 0 in no campaign · returned 0"
     text = "\n".join(parts)
-    assert "• domain failed · q.com · 3 of 5 inboxes in spam → 2 more inboxes taken out of PL | A; tagged DO NOT USE" in text
+    assert "• domain failed · q.com · 3 of 5 inboxes in spam at their own provider → 2 more inboxes taken out of PL | A; tagged DO NOT USE" in text
     assert "• pass" not in text and "Pulled earlier" not in text
 
 
@@ -686,7 +686,7 @@ def test_a_failed_domain_of_a_report_only_client_changes_nothing(job, monkeypatc
     assert head[2] == "Took 0 inboxes out of 0 live campaigns · tagged 0 in no campaign · returned 0"
     assert "The job would take 2 inboxes out of campaigns. List under *Melior* above." in parts[-1]
     melior = next(p for p in parts if p.startswith("*Melior*"))
-    assert ("• domain failed · y.com · 1 of 2 inboxes in spam → 1 more inbox would be taken out of Melior | B "
+    assert ("• domain failed · y.com · 1 of 2 inboxes in spam at their own provider → 1 more inbox would be taken out of Melior | B "
             "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
 
 
@@ -705,7 +705,7 @@ def test_a_failing_google_inbox_is_reported_and_never_moved(job, monkeypatch):
     assert ("• Google inboxes are report-only until real replies agree with the seed test, so nothing changed in "
             "Smartlead for them. The job would take 1 inbox out of campaigns. Listed under each client above.") in parts[-1]
     text = "\n".join(parts)
-    assert ("pl-bad@x.com · Google 0/4, Microsoft 4/4 → would be taken out of PL | A (Google inboxes: report-only until "
+    assert ("pl-bad@x.com · Google 0/4, Microsoft 4/4 (not its provider: a signal, not a verdict) → would be taken out of PL | A (Google inboxes: report-only until "
             "real replies agree with the seed test); nothing changed in Smartlead") in text
 
 

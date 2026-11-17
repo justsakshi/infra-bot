@@ -103,7 +103,9 @@ def plan_writes(rows: list[list[str]], domain: str, by_provider: dict,
 
     `by_provider` is `get_report()`'s breakdown. Each provider is judged on its
     own inbox percentage — never a blend, because a domain at 100% Google and
-    0% Microsoft is half-dead, not average.
+    0% Microsoft is half-dead, not average. A provider whose stats carry
+    ``signal: True`` is not the domain's own provider: below the threshold its
+    cell reads own_provider.SIGNAL_CELL instead of "spam".
     """
     header = parse_grid_header(rows)
     if header is None:
@@ -136,6 +138,11 @@ def plan_writes(rows: list[list[str]], domain: str, by_provider: dict,
             filled += 1
             continue
         verdict = "Inbox" if float(stats.get("inbox_pct", 0)) >= threshold else "spam"
+        if verdict == "spam" and stats.get("signal"):
+            # The domain's other provider (every campaign is ESP-matched): where the seeds landed, labelled so no
+            # reader takes it for a verdict (smartlead/own_provider.py, 17 Nov 2026).
+            from smartlead.own_provider import SIGNAL_CELL
+            verdict = SIGNAL_CELL
         plan.writes.append((ri, col_for[which], verdict))
 
     if not plan.writes and filled:

@@ -8,6 +8,9 @@ this copies each test night into the grid, per sending domain:
 
     one new column pair per night, headed "9 Nov 2026 v2", with "G suite" and "Outlook" beneath it;
     a domain's cell is "Inbox" when 80%+ of its v2 seed emails at that provider reached the inbox, else "spam".
+    When every inbox on the domain that night is of one type (v2_verdicts ``type``: GMAIL or OUTLOOK), the other
+    provider's cell is only a signal (every campaign is ESP-matched, smartlead/own_provider.py): below 80% it reads
+    "spam (other provider: signal only)", which no reader takes for a fail (17 Nov 2026).
 
 It keeps the grid writer's two rules (smartlead/placement_grid.py): a cell that already holds a value is never
 overwritten, and a domain is matched exactly on column A. A domain that is not in the tab is reported, never
@@ -31,6 +34,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+from smartlead import own_provider as op
 from smartlead import placement_grid as pg
 from smartlead.report_sheet import grid_tab
 
@@ -52,6 +56,7 @@ def night_results(rows) -> dict[tuple[str, str], dict[str, dict]]:
     Pooled over the domain's inboxes that got a verdict that night. A provider with no reported seed is left
     out (its cell stays empty); INCOMPLETE rows are not judged. Pure."""
     pool: dict = defaultdict(lambda: defaultdict(lambda: {"G Suite": [0, 0], "Office365": [0, 0]}))
+    kinds: dict = defaultdict(set)         # (tab, night, domain) -> the inbox types seen
     for d in rows or []:
         if str(d.get("verdict") or "").upper() not in ("PASS", "WATCH", "FAIL"):
             continue
@@ -59,14 +64,19 @@ def night_results(rows) -> dict[tuple[str, str], dict[str, dict]]:
         night, dom = str(d.get("night") or "")[:10], str(d.get("domain") or "").strip().lower()
         if not tab or not night or not dom:
             continue
+        kinds[(tab, night, dom)].add(str(d.get("type") or ""))
         for key, field in (("G Suite", "google"), ("Office365", "microsoft")):
             x = d.get(field) or {}
             pool[(tab, night)][dom][key][0] += int(x.get("inbox") or 0)
             pool[(tab, night)][dom][key][1] += int(x.get("reported") or 0)
     out: dict = {}
     for key, doms in pool.items():
-        out[key] = {dom: {p: {"inbox_pct": 100.0 * i / n} for p, (i, n) in by.items() if n}
-                    for dom, by in doms.items()}
+        out[key] = {}
+        for dom, by in doms.items():
+            own = op.own_provider(op.common_kind(kinds[(*key, dom)]))
+            out[key][dom] = {p: {"inbox_pct": 100.0 * i / n, **({"signal": True} if own and op.provider_key(p) != own
+                                                                  else {})}
+                             for p, (i, n) in by.items() if n}
         out[key] = {dom: by for dom, by in out[key].items() if by}
     return out
 
@@ -109,7 +119,7 @@ def _verdict_rows(since: str) -> list[dict]:
         raise RuntimeError("MONGO_URI is not set")
     col = MongoClient(uri, serverSelectionTimeoutMS=8000)[HEALTH_HISTORY_DB]["v2_verdicts"]
     return list(col.find({"night": {"$gte": since}}, {"_id": 0, "client": 1, "domain": 1, "night": 1,
-                                                       "verdict": 1, "google": 1, "microsoft": 1}))
+                                                       "verdict": 1, "google": 1, "microsoft": 1, "type": 1}))
 
 
 def sync(apply: bool = False, today: date | None = None, verdict_rows=None, open_tab=None) -> list[dict]:

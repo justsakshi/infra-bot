@@ -9,7 +9,7 @@ import kill_report as kp
 from smartlead import kill_rule as kr
 
 TODAY = date(2026, 10, 13)
-RULE = "Rule: an inbox passes a test when 80%+ of its test emails reach the inbox."
+from kill_report import RULE  # noqa: E402  (the report's own wording)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 

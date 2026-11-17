@@ -65,6 +65,8 @@ def advance(record: dict, email: str, today: str, result: str,
     updated["last_by_provider"] = by_provider
     if result == "inbox":
         updated["consecutive_fails"] = 0
+    elif result == "unjudged":          # no result at its own provider (smart_delivery.own_judgement): not a fail
+        updated["consecutive_fails"] = int(record.get("consecutive_fails", 0))
     else:
         updated["consecutive_fails"] = int(record.get("consecutive_fails", 0)) + 1
     return updated

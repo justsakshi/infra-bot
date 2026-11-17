@@ -662,8 +662,10 @@ def _build_inbox_row(
     entry = deliverability_map.get(email_key) or deliverability_map.get(domain) or {}
     if not isinstance(entry, dict):
         entry = {}
-    raw_status = entry.get("status", "Unknown") or "Unknown"
-    test_date = entry.get("date", "")
+    # Judged at its own provider (Google inbox: the G suite column, Outlook inbox: the Outlook column); spam at the
+    # other provider is a signal in the Notes column, never "fail" (sheets.own_test_status, 17 Nov 2026).
+    from smartlead.sheets import own_test_status
+    raw_status, test_date, test_signal = own_test_status(entry, account.get("type", ""))
     test_status = _apply_staleness(raw_status, test_date)
 
     max_per_day = int(account.get("message_per_day", 0) or 0)
@@ -717,6 +719,7 @@ def _build_inbox_row(
         "warmup_rep_pct": "TBD",
         "test_sheet_status": test_status,
         "test_date": test_date,
+        "test_signal": test_signal,     # spam at the other provider: a note (usable.apply), never a verdict
         "availability": "TBD",
         "busy_reason": "",           # filled in process_inbox_availability
         "account_id": str(account.get("id", "")),
