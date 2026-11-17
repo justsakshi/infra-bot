@@ -29,7 +29,9 @@ What it does (rules in smartlead/v2_results.py):
     held (test problem);
   * it acts on a night only once its files stopped arriving for 90 minutes;
   * state is saved after every change, half-done moves are retried, a crash posts once a day;
-  * from Tuesday 12:00 IST it posts one reminder naming each DT test whose results are not in;
+  * from Tuesday 12:00 IST it posts one reminder naming each DT test whose results are not in. With the API's
+    test list read, only a DT campaign whose ACTIVE v2 test should have run is named (one with no v2 test has no
+    result to wait for; the coverage check asks if its inboxes need a test), and nothing asks for a download;
   * after every saved run it writes a heartbeat and the verdicts to Mongo (v2_heartbeat, v2_verdicts),
     so Render can see the job ran and what v2 said; a Mongo problem never stops the run.
 
@@ -177,7 +179,8 @@ def load_state(d: Path) -> dict:
     s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     for k, empty in (("files", {}), ("results", {}), ("holds", {}), ("pulled", {}), ("returned", []),
                      ("reminded", []), ("log", []), ("overrides", {}), ("repair", []), ("file_holds", {}),
-                     ("clients", {}), ("types", {}), ("dt_tests", {}), ("synced", {}), ("copy_checks", {})):
+                     ("clients", {}), ("types", {}), ("dt_tests", {}), ("dt_ids", {}), ("synced", {}),
+                     ("copy_checks", {})):
         s.setdefault(k, empty)
     s.setdefault("needs_action", False)
     s.setdefault("since", None)
@@ -283,16 +286,26 @@ def _api_client(account: str, key: str):
     return v2_api.Client(key)
 
 
-def api_files(state: dict, now: datetime, errors: list[str]) -> list[tuple[ApiRun, str, str]]:
+def api_files(state: dict, now: datetime, errors: list[str], seen: dict | None = None) -> list[tuple[ApiRun, str, str]]:
     """Completed v2 runs from the API not read yet, as ingest() takes files: [(ApiRun, sha256, csv text)]. Only
     runs that completed on or after the job's first day, API_FROM, and MAX_AGE_DAYS ago. One account failing
-    (logged as its error type only: the key is in the URL) never stops the other account or the CSVs."""
+    (logged as its error type only: the key is in the URL) never stops the other account or the CSVs.
+    ``seen`` gets {accounts, read, tests}: how many accounts there are, how many test lists were read, and every
+    test those lists hold (for api_tests)."""
     floor = max(date.fromisoformat(API_FROM), now.date() - timedelta(days=MAX_AGE_DAYS),
                 date.fromisoformat(state["since"]) if state.get("since") else date.min)
     out = []
-    for account, key in api_accounts():
+    accounts = api_accounts()
+    if seen is not None:
+        seen.update(accounts=len(accounts), read=0, tests=[])
+    for account, key in accounts:
+        listed: list = []
         try:
-            runs, bad = v2_api.completed_runs(_api_client(account, key), floor, lambda r: already_read(state, r))
+            runs, bad = v2_api.completed_runs(_api_client(account, key), floor, lambda r: already_read(state, r),
+                                              tests_seen=listed)
+            if seen is not None:
+                seen["read"] += 1
+                seen["tests"] += listed
         except Exception as exc:  # noqa: BLE001
             runs, bad = [], [v2_api.describe(exc)]
         for b in bad:
@@ -302,6 +315,15 @@ def api_files(state: dict, now: datetime, errors: list[str]) -> list[tuple[ApiRu
             text = v2_api.to_csv(run["rows"])
             out.append((ApiRun(account, run), hashlib.sha256(text.encode("utf-8")).hexdigest(), text))
     return out
+
+
+def api_tests(seen: dict) -> list[dict] | None:
+    """Every account's v2 test list from this run, or None when the job can't trust it to be whole: the API is off,
+    an account's list was not read, or a test names no campaign. None keeps the reminder as it was before."""
+    if not seen.get("accounts") or seen.get("read") != seen["accounts"]:
+        return None
+    tests = seen.get("tests") or []
+    return tests if all(t.get("campaignId") is not None for t in tests) else None
 
 
 def ingest(files, state: dict, state_dir: Path, history: bool, now: datetime, persist: bool) -> dict:
@@ -550,13 +572,15 @@ def remember_fleet(state: dict, fleet: dict) -> None:
     Tuesday reminder)."""
     state["clients"] = {e: i["client"] for f in fleet.values() for e, i in f["inboxes"].items()}
     state["types"] = {e: str(i.get("type") or "") for f in fleet.values() for e, i in f["inboxes"].items()}
-    dt = {}
+    dt, ids = {}, {}
     for f in fleet.values():
         email_of = {i["id"]: e for e, i in f["inboxes"].items()}
-        for c in f.get("dt", {}).values():
+        for cid, c in f.get("dt", {}).items():
             if c["senders"]:
                 dt[c["name"]] = sorted(email_of[i] for i in c["senders"] if i in email_of)
+                ids[c["name"]] = int(cid)
     state["dt_tests"] = dt
+    state["dt_ids"] = ids
 
 
 def report_only_clients(args) -> set[str]:
@@ -1131,10 +1155,12 @@ def copy_check_lines(rec: dict) -> tuple[str, list[str], list[str]]:
 
 def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, acted: dict, write: bool,
                  pulled_before: set, act_from: str | None = None, behind: int | None = None,
-                 report_only_clients: set | None = None, report_only_types: set | None = None
-                 ) -> tuple[list[str], list[str]]:
+                 report_only_clients: set | None = None, report_only_types: set | None = None,
+                 v2_tests: list[dict] | None = None, now: datetime | None = None) -> tuple[list[str], list[str]]:
     """(headline lines, thread parts). ``got["copy_checks"]``: keys of the judged copy checks to report with
-    it. With no night to report (a copy check that arrived on its own) the post is the copy check's alone."""
+    it. With no night to report (a copy check that arrived on its own) the post is the copy check's alone.
+    ``v2_tests``: the API's test list (api_tests); a DT campaign with no due ACTIVE test is then not named as
+    having no result (v2.expected_missing)."""
     nights = sorted(got["nights"])
     copies = [state["copy_checks"][k] for k in got.get("copy_checks") or [] if k in state.get("copy_checks", {})]
     newest = {}                 # one copy check per client in a post: the newest test (two read together contradicted)
@@ -1349,18 +1375,22 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     copy_in = (copy_checked_clients(state, min(v2.week_start(v2.week_of(n)) for n in nights).isoformat())
                if nights else set())
     copy_waiting = set()
+    no_test = set()             # DT campaigns the API shows no due v2 test on: no result to wait for
     for acc, f in fleet.items():
-        for c in f.get("dt", {}).values():
+        for cid, c in f.get("dt", {}).items():
+            untested_dt = v2_tests is not None and v2.due_test(cid, v2_tests, now or now_ist()) is None
             if v2.is_copy_check_campaign(c["name"]):
                 mine = [e for e, i in f["inboxes"].items() if i["id"] in c["senders"]]
                 if c["senders"] and v2.majority_client(mine, client_of) not in copy_in:
-                    no_result.append(c["name"])
+                    (no_test.add(c["name"]) if untested_dt else no_result.append(c["name"]))
                     copy_waiting |= {(acc, i) for i in c["senders"]}
                 continue
             in_dt |= {(acc, i) for i in c["senders"]}
             if c["senders"] and not any(e in tested for e, i in f["inboxes"].items() if i["id"] in c["senders"]):
-                no_result.append(c["name"])
+                (no_test.add(c["name"]) if untested_dt else no_result.append(c["name"]))
                 waiting |= {(acc, i) for i in c["senders"]}
+    if no_test:
+        print(f"[v2-weekly] no active v2 test on {', '.join(sorted(no_test))}: not named as missing a result")
     if no_result and weekly:
         # What the job knows of a run with no result yet: still coming in (pending) or sent nothing (nothing_sent).
         week0 = min(v2.week_start(v2.week_of(n)) for n in nights).isoformat()
@@ -1397,6 +1427,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                 needs.append(f"No result this week from {nm}: {'their runs' if they else 'its run'} sent no test "
                              f"emails (the account had no test runs left, or the inboxes were disconnected). Run "
                              f"{'them' if they else 'it'} again in Smart Delivery.")
+            elif v2_tests is not None:              # the API shows each has a due test
+                needs.append(f"No result this week from {nm}: no finished v2 run found. Check "
+                             f"{'their tests' if they else 'its test'} ran in Smart Delivery v2.")
             else:
                 needs.append(f"No result this week from {nm}: no finished v2 run found. Check "
                              f"{'they have' if they else 'it has'} a weekly test in Smart Delivery.")
@@ -1621,10 +1654,23 @@ def post(head: list[str], parts: list[str]) -> bool:
     return bool(post_with_thread(token, _channel(), head, parts))
 
 
-def reminder_lines(night: str, missing: list[str], some_in: bool) -> list[str]:
-    """The Tuesday reminder: which DT tests have no result for the week of that Monday."""
+API_REMINDER_STEP = ("\nThe job reads v2 results from the Smart Delivery API every hour, so there is nothing to "
+                     "download. Open the test in Smart Delivery v2 and check that it ran; its inboxes get no verdict "
+                     "until it does.")
+
+
+def reminder_lines(night: str, missing: list[str], some_in: bool, why: dict[str, str] | None = None) -> list[str]:
+    """The Tuesday reminder: which DT tests have no result for the week of that Monday. ``why`` (name -> reason, from
+    v2.expected_missing) means the API's test list was read: the reasons are named and nothing asks for a CSV.
+    Without it (API off or failing) the CSV download is the way in, as before."""
     d = date.fromisoformat(night)
     day = f"the week of Mon {d.day} {d:%b}"
+    if why is not None:
+        n = len(missing)
+        named = ", ".join(f"{m} ({why[m]})" if why.get(m) else m for m in missing)
+        head = (f"v2 results for {day}: {n} DT test{'s' if n != 1 else ''} not in yet" if some_in
+                else f"v2 results for {day} are not in yet")
+        return [head] + ([f"\nMissing: {named}."] if missing else []) + [API_REMINDER_STEP]
     if some_in:
         n = len(missing)
         return [f"v2 results for {day}: {n} DT test{'s' if n != 1 else ''} not in yet",
@@ -2014,8 +2060,10 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         save()
     odd: list = []
     got = ingest(scan(Path(args.folder), state, now, odd), state, state_dir, args.history_only, now, persist)
+    api_seen: dict = {}       # what the API's test lists say (api_tests); empty when it is off
     if api_on(args):          # after the CSVs, so a run whose CSV was just read is not fetched again
-        more = ingest(api_files(state, now, ctx["errors"]), state, state_dir, args.history_only, now, persist)
+        more = ingest(api_files(state, now, ctx["errors"], api_seen), state, state_dir, args.history_only, now,
+                      persist)
         for k, v in more.items():
             got[k] = got[k] | v if isinstance(v, set) else got[k] + v
     else:
@@ -2054,8 +2102,18 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
         mon = v2.week_start(v2.last_monday(now.date())).isoformat()      # the week's tests may start Sat or Sun
         tested = {e for e, rs in state["results"].items() if any(x["night"] >= mon for x in rs)}
         missing = v2.dt_missing(state["dt_tests"], tested, copy_checked_clients(state, mon), state["clients"])
+        known = api_tests(api_seen)
+        kept, dropped = v2.expected_missing(missing, state.get("dt_ids") or {}, known, now)
+        if dropped:
+            print(f"[v2-weekly] no active v2 test on {', '.join(dropped)}: not expected this week (the coverage "
+                  f"check asks if their inboxes need a test)")
+        missing = [n for n, _ in kept]
         due = v2.reminder_due((now.date(), now.hour), nights_in, set(state["reminded"]), state["since"], missing)
-        if due and can_post and _post_noted(state, ctx, reminder_lines(due, missing, any(n >= due for n in nights_in)), []):
+        if due and known is not None and not missing:
+            due = None        # the API read: no ACTIVE test is late, so nothing to remind about
+        why = dict(kept) if known is not None else None
+        if due and can_post and _post_noted(state, ctx, reminder_lines(due, missing, any(n >= due for n in nights_in),
+                                                                       why), []):
             state["reminded"].append(due)
         if got["pending"] and can_post:
             _post_noted(state, ctx, [f"v2 CSVs downloaded before the results were in: {', '.join(got['pending'])}",
@@ -2176,7 +2234,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     judge_copy_checks(state, got["copy_checks"])
     watch_till = args.act_from if args.act_from and today < args.act_from else None    # never after its date
     head, parts = build_report(state, got, decisions, fleet, acted, write, pulled_before, watch_till, behind, ro,
-                               report_only_types=ro_t)
+                               report_only_types=ro_t, v2_tests=api_tests(api_seen), now=now)
     text = "\n".join(head) + "\n\n" + "\n\n".join(parts)
     print(text)
     state["log"].append({"at": now.isoformat(timespec="minutes"), "write": write, "nights": sorted(got["nights"]),

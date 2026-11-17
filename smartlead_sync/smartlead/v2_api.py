@@ -188,14 +188,18 @@ def completed_on(run: dict) -> date | None:
         return None
 
 
-def completed_runs(client: Client, since: date, skip=None) -> tuple[list[dict], list[str]]:
+def completed_runs(client: Client, since: date, skip=None, tests_seen: list | None = None) -> tuple[list[dict], list[str]]:
     """Every run of every test that completed on or after ``since`` (India date), with its rows:
     [{test_id, test, status, run_id, run_no, completed_at, name, rows}], and one line per test or run that could
     not be read (``describe``). ``skip(run)`` -> True: the run is not fetched (already read, or its CSV was).
     A failing test or run is left out and the others are still read; a failing test list raises. After
-    MAX_ERRORS failures the account is left for the next run, so a hanging API cannot hold up the hourly job."""
+    MAX_ERRORS failures the account is left for the next run, so a hanging API cannot hold up the hourly job.
+    ``tests_seen``: a list that gets the account's whole test list (id, name, status, campaignId, runsCreated ...)."""
     out, errors = [], []
-    for t in client.tests():
+    tests = client.tests()
+    if tests_seen is not None:
+        tests_seen.extend(tests)
+    for t in tests:
         tid, tname = str(t.get("id") or ""), str(t.get("name") or "")
         if len(errors) >= MAX_ERRORS:
             errors.append(f"stopped after {MAX_ERRORS} errors; the rest is read next run")
