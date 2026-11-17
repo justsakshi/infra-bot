@@ -8,6 +8,8 @@ after), with what happened next:
     v2_verdicts, and real sends/replies/out-of-office from inbox_evidence (the weekly evidence job, PR #84). Until that
     job has a week, ``real`` is None and ``real_why`` says why. A checkpoint with no reading within 3 days is kept as
     {"missing": ...}; a filled checkpoint is never overwritten;
+  * baseline: the reading on or up to 3 days before the change; each checkpoint also carries rep_change (from the
+    reputation at the change) and warm_spam_pct_change (from the baseline's warm-up spam %);
   * recovered_on / days_to_recover: the first reading after the change at the All Inboxes cutoff (90) with warm-up
     not blocked.
 
@@ -156,8 +158,7 @@ def _real(email: str, evidence: list[dict], target: date) -> tuple[dict | None, 
 
 def checkpoint(email: str, reading: dict, verdicts: list[dict], evidence: list[dict], target: date) -> dict:
     sent, spam = reading.get("warm_sent_7d"), reading.get("warm_spam_7d")
-    pct = round(100 * spam / sent, 1) if isinstance(sent, (int, float)) and sent and isinstance(spam, (int, float)) \
-        else None
+    pct = _spam_pct(reading)
     real, why = _real(email, evidence, target)
     out = {"on": str(reading["date"])[:10], "rep": wr._rep(reading.get("rep")), "warm_sent_7d": sent,
            "warm_spam_7d": spam, "warm_spam_pct": pct, "v2": _v2(verdicts, target), "real": real}
@@ -166,17 +167,47 @@ def checkpoint(email: str, reading: dict, verdicts: list[dict], evidence: list[d
     return out
 
 
+def _spam_pct(r: dict) -> float | None:
+    sent, spam = r.get("warm_sent_7d"), r.get("warm_spam_7d")
+    return round(100 * spam / sent, 1) if isinstance(sent, (int, float)) and sent and isinstance(spam, (int, float)) \
+        else None
+
+
+def _baseline(hist: list[dict], start: date, today: date) -> dict | None:
+    """The reading on or up to 3 days before the change (newest first), or {"missing"} once 3 days have passed."""
+    ok = [h for h in hist if h.get("rep") is not None and 0 <= (start - _d(h["date"])).days <= NEAR_DAYS]
+    if ok:
+        h = max(ok, key=lambda h: str(h["date"]))
+        return {"on": str(h["date"])[:10], "rep": wr._rep(h.get("rep")), "warm_sent_7d": h.get("warm_sent_7d"),
+                "warm_spam_7d": h.get("warm_spam_7d"), "warm_spam_pct": _spam_pct(h)}
+    if today > start + timedelta(days=NEAR_DAYS) or any(_d(h["date"]) > start for h in hist):
+        return {"missing": f"no reading within {NEAR_DAYS} days before {_day(start)}"}
+    return None
+
+
 def fill(event: dict, hist: list[dict], verdicts: list[dict], evidence: list[dict], today: date) -> dict:
-    """The event with every checkpoint due by ``today`` filled (never overwriting one) and its recovery date. Pure."""
+    """The event with its baseline (the reading at the change), every checkpoint due by ``today`` filled (never
+    overwriting one, each with the reputation and warm-up spam % change from the change) and its recovery date. Pure."""
     e = {**event, "outcomes": dict(event.get("outcomes") or {})}
     start = _d(e["date"])
+    if not e.get("baseline"):
+        b = _baseline(hist, start, today)
+        if b:
+            e["baseline"] = b
     for w in WEEKS:
         key, target = f"week{w}", start + timedelta(days=7 * w)
         if key in e["outcomes"] or today < target:
             continue
         r = _nearest(hist, target, today)
         if r:
-            e["outcomes"][key] = checkpoint(e["email"], r, verdicts, evidence, target)
+            cp = checkpoint(e["email"], r, verdicts, evidence, target)
+            base = e.get("baseline") or {}
+            rep0 = e.get("rep_before") if e.get("rep_before") is not None else base.get("rep")
+            cp["rep_change"] = cp["rep"] - rep0 if cp["rep"] is not None and rep0 is not None else None
+            p0 = base.get("warm_spam_pct")
+            cp["warm_spam_pct_change"] = round(cp["warm_spam_pct"] - p0, 1) \
+                if cp["warm_spam_pct"] is not None and p0 is not None else None
+            e["outcomes"][key] = cp
         elif today > target + timedelta(days=NEAR_DAYS):
             e["outcomes"][key] = {"missing": f"no reading within {NEAR_DAYS} days of {_day(target)}"}
     if not e.get("recovered_on"):
@@ -189,7 +220,8 @@ def fill(event: dict, hist: list[dict], verdicts: list[dict], evidence: list[dic
 
 
 def due(e: dict) -> bool:
-    return any(f"week{w}" not in (e.get("outcomes") or {}) for w in WEEKS) or not e.get("recovered_on")
+    return any(f"week{w}" not in (e.get("outcomes") or {}) for w in WEEKS) or not e.get("recovered_on") \
+        or not e.get("baseline")
 
 
 # --- what worked ----------------------------------------------------------------------------------------------------
@@ -275,8 +307,8 @@ class ChangeStore:
 
     def save_outcomes(self, events: list[dict]) -> None:
         for e in events:
-            self.col.update_one({"key": e["key"]}, {"$set": {k: e[k] for k in
-                                                            ("outcomes", "recovered_on", "days_to_recover")}})
+            self.col.update_one({"key": e["key"]}, {"$set": {k: e.get(k) for k in
+                                                            ("outcomes", "recovered_on", "days_to_recover", "baseline")}})
 
 
 def daily(changes, daily_col, verdicts_col, evidence_col, today: date) -> list[dict]:
@@ -286,7 +318,7 @@ def daily(changes, daily_col, verdicts_col, evidence_col, today: date) -> list[d
     open_ = [e for e in events if due(e)]
     if open_:
         emails = sorted({e["email"] for e in open_})
-        since = min(e["date"] for e in open_)
+        since = (_d(min(e["date"] for e in open_)) - timedelta(days=NEAR_DAYS)).isoformat()   # the baseline too
         hist: dict[str, list[dict]] = {}
         for d in daily_col.find({"email": {"$in": emails}, "date": {"$gte": since}}, {"_id": 0}):
             if "rep" in d:

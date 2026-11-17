@@ -83,6 +83,8 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
             "setup": setup, "limit": st._int(a.get("message_per_day")),
             "approved_limit": approved.get(email, (None, None))[0],
             "warmup_on": str(w.get("status") or "").upper() == "ACTIVE", "rep": st._int(w.get("warmup_reputation")),
+            "warmup_status": str(w.get("status")).upper() if w.get("status") else None,
+            "blocked_reason": w.get("blocked_reason") or None,
             # the inbox list says blocked_reason (the detail call says is_warmup_blocked); None = not said
             "warmup_blocked": (bool(w.get("blocked_reason") or w.get("is_warmup_blocked"))
                                if "blocked_reason" in w or "is_warmup_blocked" in w else None),

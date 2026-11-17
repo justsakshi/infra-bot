@@ -262,3 +262,28 @@ def test_vendor_comes_from_the_daily_reading_else_the_asset_tracker_by_domain_wi
                             {"e@example.com": "ScaledMail"}, assets)
     assert v == {"a@example.com": "Zapmail", "b@kit.com": "InboxKit", "e@example.com": "ScaledMail"}
     assert wc.vendor_name("Scaledmail") == wc.vendor_name("Scaled Mail") == "ScaledMail"
+
+
+# --- t16 follow-ups: the baseline at the change and the change at each checkpoint ---------------------------------------
+
+def test_each_checkpoint_has_the_reputation_and_spam_change_from_the_baseline_at_the_change():
+    hist = [state(day="2026-11-16", rep=70, warm_sent_7d=100, warm_spam_7d=20),       # baseline: 20% spam
+            state(day="2026-11-24", rep=78, warm_sent_7d=60, warm_spam_7d=3)]         # week 1: 5% spam
+    e = wc.fill(event(), hist, [], [], date(2026, 11, 24))
+    assert e["baseline"] == {"on": "2026-11-16", "rep": 70, "warm_sent_7d": 100, "warm_spam_7d": 20,
+                             "warm_spam_pct": 20.0}
+    w1 = e["outcomes"]["week1"]
+    assert (w1["rep_change"], w1["warm_spam_pct_change"]) == (7, -15.0)              # from rep_before 71
+    e2 = wc.fill(event(), [state(day="2026-11-24", rep=78)], [], [], date(2026, 11, 24))
+    assert e2["baseline"] == {"missing": "no reading within 3 days before 17 Nov"}
+    assert e2["outcomes"]["week1"]["warm_spam_pct_change"] is None and e2["outcomes"]["week1"]["rep_change"] == 7
+
+
+def test_fleet_watch_reading_keeps_the_warm_up_status_and_blocked_reason():
+    a = {"from_email": "a@d.com", "type": "SMTP", "is_smtp_success": True, "is_imap_success": True,
+         "warmup_details": {"status": "ACTIVE", "warmup_reputation": "80%", "blocked_reason": "auth failures"}}
+    r = fw.record("PRECISE_LEADS", a, {}, {}, {}, {}, {}, date(2026, 11, 17))
+    assert (r["warmup_status"], r["blocked_reason"], r["warmup_blocked"], r["client"], r["kind"]) == (
+        "ACTIVE", "auth failures", True, "Precise Leads", "smtp")
+    r = fw.record("PRECISE_LEADS", {**a, "warmup_details": {"status": "PAUSED"}}, {}, {}, {}, {}, {}, date(2026, 11, 17))
+    assert (r["warmup_status"], r["blocked_reason"], r["warmup_blocked"]) == ("PAUSED", None, None)
