@@ -131,7 +131,8 @@ async def main() -> None:
         print("[!] No SMARTLEAD_API_KEY* found in .env -nothing to do.")
         sys.exit(1)
 
-    sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    from smartlead.sheets import sync_stamp
+    sync_time = sync_stamp()                      # India time on Render (UTC clock) and on the PC alike
     print(f"[*] Sync started at {sync_time}")
     print(f"[*] {len(accounts)} account(s) discovered.")
 
@@ -281,7 +282,7 @@ async def main() -> None:
     # can't be written), and (4) makes the
     # process exit 2 so index.js logs it as a failure rather than "finished".
     from smartlead.sheets import sync_ledger_summary
-    end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    end_time = sync_stamp()
     try:
         SheetsWriter(accounts[0].sheet_id).write_sync_timestamp(end_time)
     except Exception as exc:
