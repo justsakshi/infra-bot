@@ -141,3 +141,29 @@ def test_reply_log_dates_without_a_comma_or_its_space_are_read():
     import inbox_evidence as job
     assert job.parse_day("Dec 10,2025") == date(2025, 12, 10) and job.parse_day("Jan 23 2026") == date(2026, 1, 23)
     assert job.parse_day("Feb 05 2026") == date(2026, 2, 5) and job.parse_day("Apr 9, 2026") == date(2026, 4, 9)
+
+
+def test_a_wrong_person_reply_proves_the_email_reached_the_inbox():
+    # Live run: replies in the team's log were missed because Smartlead files them as Wrong Person.
+    # A person answered, so the email reached the inbox: it counts as evidence (provider_watch still leaves it out).
+    lead = ie.Lead([row("s1", 12, lead="w@a.com", reply="2026-11-12T11:00:00Z", cat="Wrong Person")],
+                   hist(("s1", "a@x.com"), reply_body="Not me, try my colleague"))
+    c = ie.tally({"w@a.com": lead}, lambda d: "google", TODAY)[0][("a@x.com", "Gmail")]
+    assert c["replies"] == 1 and ie.label(c, "Gmail", {}) == "reached the inbox"
+    import inbox_evidence as job
+    rec = job.build(TODAY, {"w@a.com": lead}, {"a@x.com": "Precise Leads"}, lambda d: "google",
+                    {"Precise Leads": [{"email": "w@a.com", "date": "2026-11-12"}]}, {})
+    assert rec["clients"]["Precise Leads"]["crosscheck"]["matched"] == 1
+
+
+def test_the_digest_detail_says_how_many_sends_have_no_known_sender_and_why():
+    # Live run: some sends had no sender: their leads were deleted from Smartlead, so no history exists.
+    import inbox_evidence as job
+    leads = {"m@a.com": ie.Lead([dict(row("s2", 12, lead="m@a.com"), _client="Bettrdata")], hist())}
+    rec = job.build(TODAY, leads, {}, lambda d: "google", {}, {})
+    summary = dict.fromkeys(("inboxes", "sent", "replies", "ooo", "bounces", "quiet", "not_enough"), 0)
+    rec["clients"]["Bettrdata"] = {"summary": {**summary, "known_pct": 0.0}, "rates": {}, "crosscheck": None,
+                                   "log_not_read": ""}
+    detail = "\n".join(job.digest_parts(rec, {job.LEAD_GONE: 1}, 1, 1)[2])
+    assert "Bettrdata: 1 sends with no known sender" in detail
+    assert "lead no longer in its campaign" in job.LEAD_GONE

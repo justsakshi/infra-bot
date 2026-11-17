@@ -38,6 +38,9 @@ from smartlead import inbox_evidence as ie
 
 IST = timezone(timedelta(hours=5, minutes=30))
 LIVE = {"ACTIVE", "PAUSED", "COMPLETED", "STOPPED"}
+# A lead removed from Smartlead after it was emailed: its statistics rows stay, but no message history (and so no
+# sender) can be read. Seen in the first live run: lead lookup by email found none of them.
+LEAD_GONE = "lead no longer in its campaign (Smartlead keeps no sender for it)"
 PAUSE = 0.35            # seconds between message-history calls
 RATE_WAIT = 60.0        # after a 429
 TRIES = 4
@@ -137,7 +140,7 @@ async def read_account(acc, today: date, errors: Counter, cache, counts: Counter
                 elif cached:
                     counts["cached"] += 1
                 else:
-                    errors["lead id missing"] += 1
+                    errors[LEAD_GONE] += 1
                 hist = {"history": [{"type": "SENT", "stats_id": s, "from": f} for s, f in (cached or {}).get("sids", {}).items()]
                         + ([{"type": "REPLY", "email_body": cached["body"]}] if (cached or {}).get("body") else [])}
                 prev = leads.get(e)
@@ -272,6 +275,9 @@ def digest_parts(rec: dict, errors: dict, read: int, total: int) -> tuple[list, 
         cc = v["crosscheck"]
         lines = [f"{cl}: base rate (replies + OOO per email) " +
                  ", ".join(f"{p} {r:.2%}" for p, r in sorted(v["rates"].items()))]
+        u = (rec.get("sender_known") or {}).get(cl, {}).get("unknown", 0)
+        if u:
+            lines.append(f"{cl}: {u} sends with no known sender (see Errors for why)")
         if v["log_not_read"]:
             lines.append(f"Team reply log not read: {v['log_not_read']}")
         if (cc or {}).get("undated"):

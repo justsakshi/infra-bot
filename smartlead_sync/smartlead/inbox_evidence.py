@@ -7,7 +7,8 @@ history names the inbox that sent each email (``stats_id`` -> ``from``), so ever
 is counted for the exact inbox that sent that email, per recipient provider (the lead's MX). Rules, written for any
 client: docs/INBOX_EVIDENCE.md.
 
-  * reply: the statistics row has a reply that is not out-of-office, wrong person or a bounce notice;
+  * reply: the statistics row has a reply that is not out-of-office or a bounce notice. Wrong person counts: a
+    person answered, so the email reached the inbox (provider_watch leaves it out of reply rates);
   * out-of-office (OOO): the lead's category says so. It proves the email reached the inbox: Gmail and Exchange send
     none for mail in spam or junk;
   * bounce: the row is marked bounced, or the "reply" is a delivery-failure notice. Kept apart: a bounce says the
@@ -23,7 +24,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from smartlead import provider_watch as pw
 from smartlead import real_recipients as rr
 
 DAYS = 28                 # the window the labels are judged on
@@ -62,7 +62,7 @@ def kind(r: dict, body: str) -> str | None:
     if r.get("reply_time"):
         if rr.is_bounce(body):
             return "bounce"
-        return None if cat in pw.NOT_A_CONVERSATION else "reply"
+        return "reply"     # wrong person too: a person answered, so the email reached the inbox
     return None
 
 

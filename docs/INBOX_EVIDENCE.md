@@ -17,7 +17,8 @@ No single source says whether an inbox's email reaches the inbox. This page list
 
 - **Every lead, no sample.** The job takes every lead emailed in the last 28 days in a live campaign, skipping DT and test campaigns. It reads each lead's message history, which names the inbox that sent each email (`stats_id` → `from`). Each email counts for the inbox that sent it. A reply counts for the inbox that sent the step that was replied to. The share of sends whose inbox is known is printed as "sender known for N%".
 - **Per recipient provider.** The lead's MX decides it: Gmail, Microsoft, Proofpoint or other.
-- **Reply**: a reply that is not out-of-office, wrong person, or a delivery-failure notice.
+- **Reply**: a reply that is not out-of-office or a delivery-failure notice. "Wrong person" counts: a person answered, so the email reached the inbox (provider_watch still leaves it out of reply rates).
+- **No known sender**: a lead removed from Smartlead after it was emailed keeps its statistics rows but has no message history, so its sends have no sender. They are counted per client and named in the digest detail.
 - **Out-of-office (OOO)**: proves the email reached the inbox. Gmail and Exchange send no auto-reply for mail in spam or junk.
 - **Bounce**: the email was marked bounced, or the "reply" is a delivery-failure notice. Bounces are kept apart, because a bounce says the address was bad (the lead list), not where the email landed.
 - **Labels**, per inbox per provider, over 28 days. The base rate is the client's (replies + OOO) per email at that provider, across all its inboxes.
