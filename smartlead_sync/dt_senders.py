@@ -554,12 +554,27 @@ def _tab(client: str) -> str:
 SATURDAY = "Saturday after 05:30 IST"     # the seed pool refills 05:30 IST daily; new weekly tests start on Saturdays
 
 
-def _chrome(test: str | None, camp: str | None, n: int) -> str:
+def free_slots(taken: set[str], today: date, n: int) -> list[str]:
+    """The first ``n`` half-hour start times on the next Saturday (after today) from 06:00 IST that no active weekly
+    test uses ("HH:MM" schedule.timeOfDay, every account: the seed pool is shared). E.g. "Sat 21 Nov 11:30 IST". Pure."""
+    from datetime import timedelta
+    sat = today + timedelta(days=(5 - today.weekday()) % 7 or 7)
+    out = []
+    for m in range(6 * 60, 24 * 60, 30):
+        hm = f"{m // 60:02d}:{m % 60:02d}"
+        if hm not in taken:
+            out.append(f"Sat {sat.day} {sat.strftime('%b')} {hm} IST")
+            if len(out) == n:
+                break
+    return out
+
+
+def _chrome(test: str | None, camp: str | None, n: int, slot: str = SATURDAY) -> str:
     """A ready Claude-in-Chrome line. Smartlead's API cannot edit a v2 test's senders and the help centre only shows
     picking them when a test is created (17 Nov 2026), so the line edits only if the page allows it."""
     them = "it" if n == 1 else f"the {n} inboxes"
     new = (f"create a new weekly v2 test (Automatic, campaign {camp or 'a DT campaign of the client'}, Google + "
-           f"Microsoft, text only, weekly, first run {SATURDAY}, at most {DT_CAP} senders) with {them} listed in the "
+           f"Microsoft, text only, weekly, first run {slot}, at most {DT_CAP} senders) with {them} listed in the "
            "digest thread")
     if test:
         return (f"Claude in Chrome: \"In Smartlead > Smart Delivery, open the weekly v2 test '{test}'. If it lets you edit "
@@ -568,8 +583,9 @@ def _chrome(test: str | None, camp: str | None, n: int) -> str:
     return f"Claude in Chrome: \"In Smartlead > Smart Delivery, {new}. Change nothing else; never click Run now.\""
 
 
-def _gap_step(client: str, c: dict, dt_tests: dict, untested: list[str]) -> str:
-    """Per DT campaign the missing inboxes sit on: the active test there with room, or a new test on Saturday."""
+def _gap_step(client: str, c: dict, dt_tests: dict, untested: list[str], next_slot=lambda: SATURDAY) -> str:
+    """Per DT campaign the missing inboxes sit on: the active test there with room, or "needs a new test at <the next
+    free Saturday slot>" (``next_slot`` hands out one slot per new test)."""
     on = c.get("on") or {}
     groups: dict = {}
     for e in c.get("none") or []:
@@ -580,18 +596,21 @@ def _gap_step(client: str, c: dict, dt_tests: dict, untested: list[str]) -> str:
         n = len(groups[camp])
         it = "it" if n == 1 else "them"
         t = dt_tests.get(camp) if camp else None
-        if camp is None:
-            where = spare or "a new DT campaign of the client (a copy of its DT #1)"
-            parts.append(f"{n} on no DT campaign: put {it} on {where}, then {_chrome(None, where, n)}")
-        elif t and t["senders"] + n <= DT_CAP:
+        if t and t["senders"] + n <= DT_CAP:
             parts.append(f"{n} on {camp}: \"{t['test']}\" on {camp} has room ({t['senders']} of {DT_CAP} senders). "
                          + _chrome(t["test"], camp, n))
+            continue
+        slot = next_slot()
+        if camp is None:
+            where = spare or "a new DT campaign of the client (a copy of its DT #1)"
+            parts.append(f"{n} on no DT campaign: needs a new test at {slot}; put {it} on {where} first, then "
+                         + _chrome(None, where, n, slot))
         elif t:
-            parts.append(f"{n} on {camp} (its test \"{t['test']}\" is full): create a new weekly v2 test with {it} on "
-                         f"{spare or camp}, first run {SATURDAY}. " + _chrome(None, spare or camp, n))
+            parts.append(f"{n} on {camp} (its test \"{t['test']}\" is full): needs a new test at {slot}, on "
+                         f"{spare or camp}. " + _chrome(None, spare or camp, n, slot))
         else:
-            parts.append(f"{n} on {camp}, which has no active weekly test: create a new weekly v2 test there, first run "
-                         f"{SATURDAY}. " + _chrome(None, camp, n))
+            parts.append(f"{n} on {camp}, which has no active weekly test: needs a new test at {slot}, there. "
+                         + _chrome(None, camp, n, slot))
     return (" · ".join(parts) + f" A v2 test keeps the senders it was created with (at most {DT_CAP}), so putting an "
             "inbox on a campaign is not enough. The list is in the thread.")
 
@@ -603,6 +622,8 @@ def coverage_asks(results: dict, today: date | None = None) -> list:
     more, and an account whose tests could not be read (broken). Silent when every inbox is covered. Pure."""
     from smartlead import digest as dg
     friday = bool(today and today.weekday() == 4)
+    taken = {x for r in results.values() if isinstance(r, dict) for x in r.get("slots") or []}
+    pool = iter(free_slots(taken, today or date.today(), 48))
     asks = []
     for acc, r in sorted(results.items()):
         if not isinstance(r, dict) or "coverage" not in r:
@@ -624,7 +645,8 @@ def coverage_asks(results: dict, today: date | None = None) -> list:
                 verb = "is" if len(none) == 1 else "are"
                 text = (f"{len(none)} {client} inbox{'es' if len(none) != 1 else ''} {verb} in no weekly test, "
                         f"so nothing checks {'its' if len(none) == 1 else 'their'} placement.")
-                step = _gap_step(client, c, r.get("dt_tests") or {}, (r.get("untested_dts") or {}).get(client) or [])
+                step = _gap_step(client, c, r.get("dt_tests") or {}, (r.get("untested_dts") or {}).get(client) or [],
+                                 lambda: next(pool, SATURDAY))
                 if friday:
                     asks.append(dg.Ask("Friday reminder: " + text, step, urgent=True,
                                        key=f"{SOURCE}:coverage:{client}:{today.isoformat()}"))
@@ -731,12 +753,12 @@ def coverage_record(results: dict, prev: dict | None, today: date) -> dict:
             none = sorted(c.get("none") or [])
             members = set(c["all"]) if "all" in c else None
             gone_or_covered = sorted(set(since) - set(none))
-            resolved = [{"email": e, "since": since[e], "on": today.isoformat()} for e in gone_or_covered
-                        if members is None or e in members]
+            resolved = [{"email": e, "since": since[e], "on": today.isoformat(), "resolved": True}
+                        for e in gone_or_covered if members is None or e in members]
             left = [e for e in gone_or_covered if members is not None and e not in members]
             dupes = dict(sorted((c.get("dupes") or {}).items()))
-            doc = {"inboxes": c.get("inboxes", 0), "missing": [{"email": e, "since": since.get(e) or today.isoformat()}
-                                                               for e in none],
+            doc = {"inboxes": c.get("inboxes", 0),
+                   "missing": [{"email": e, "since": since.get(e) or today.isoformat(), "resolved": False} for e in none],
                    "missing_n": len(none), "dupes": dupes, "dupes_n": len(dupes), "resolved": resolved}
             if left:
                 doc["left"] = left
@@ -789,6 +811,7 @@ def _weekly_tests(key: str) -> list[dict]:
         d = cl.test(str(t["id"]))
         snd = [x for x in d.get("senders") or [] if isinstance(x, dict)]
         out.append({"id": t["id"], "name": d.get("name") or t.get("name"),
+                    "time": str((d.get("schedule") or t.get("schedule") or {}).get("timeOfDay") or "") or None,
                     "campaign_id": int(d.get("campaignId") or t.get("campaignId") or 0),
                     "senders": {str(x.get("email") or "").strip().lower() for x in snd if x.get("email")},
                     "sender_ids": {int(x["emailAccountId"]) for x in snd if str(x.get("emailAccountId") or "").isdigit()}})
@@ -917,6 +940,7 @@ def main() -> int:
                 by_email = {str(b["email"]).strip().lower(): int(b["id"]) for b in boxes if b.get("email")}
                 res["coverage"] = coverage(members, tests)
                 res["twins"] = twins(tests)
+                res["slots"] = sorted({t["time"] for t in tests if t.get("time")})
                 for client, cv in res["coverage"].items():
                     cv["on"] = {e: at.get(by_email.get(e)) for e in cv["none"]}
                     cv["all"] = sorted(e for e, cl in members.items() if cl == client)

@@ -512,7 +512,7 @@ def test_coverage_gaps_and_duplicates_are_digest_asks_and_full_coverage_is_quiet
     keys = {a.key: a for a in asks}
     gap = keys["dt-senders:coverage:Melior"]
     assert gap.text.startswith("1 Melior inbox is in no weekly test")
-    assert "DT Melior #3" in gap.step and "05:30 IST" in gap.step and "50" in gap.step
+    assert "DT Melior #3" in gap.step and "needs a new test at Sat 21 Nov 06:00 IST" in gap.step and "50" in gap.step
     assert "2 or more" in keys["dt-senders:coverage-dupes:Precise Leads"].text
     assert not any("Bettrdata" in k for k in keys)
 
@@ -649,8 +649,9 @@ def test_a_campaign_without_a_test_with_room_gets_a_new_test_on_saturday():
     asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))
     (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
     assert "1 on DT Melior #5 (its test \"M5\" is full)" in a.step
-    assert "1 on no DT campaign: put it on DT Melior #6" in a.step
-    assert a.step.count("create a new weekly v2 test") >= 1 and "Saturday after 05:30 IST" in a.step
+    assert "1 on no DT campaign: needs a new test at Sat 21 Nov 06:30 IST; put it on DT Melior #6 first" in a.step
+    assert "needs a new test at Sat 21 Nov 06:00 IST, on DT Melior #6" in a.step
+    assert a.step.count("create a new weekly v2 test") == 2 and "first run Sat 21 Nov 06:00 IST" in a.step
 
 
 def test_on_fridays_the_reminder_posts_at_once_once_per_friday():
@@ -680,14 +681,14 @@ def test_the_coverage_record_keeps_missing_since_and_marks_what_got_covered_as_r
     r = ts.coverage_record(res, prev, date(2026, 11, 17))
     assert r["_id"] == "2026-11-17" and r["tests_read"] == {"PRECISE_LEADS": True, "BETTRDATA": True}
     m = r["clients"]["Melior"]
-    assert m["missing"] == [{"email": "b@x.com", "since": "2026-11-12"}]
-    assert m["resolved"] == [{"email": "a@x.com", "since": "2026-11-10", "on": "2026-11-17"}]
+    assert m["missing"] == [{"email": "b@x.com", "since": "2026-11-12", "resolved": False}]
+    assert m["resolved"] == [{"email": "a@x.com", "since": "2026-11-10", "on": "2026-11-17", "resolved": True}]
     assert m["dupes"] == {"c@x.com": ["M1", "M2"]} and (m["inboxes"], m["missing_n"], m["dupes_n"]) == (3, 1, 1)
     assert r["clients"]["Bettrdata"] == {"inboxes": 2, "missing": [], "missing_n": 0, "dupes": {}, "dupes_n": 0,
                                          "resolved": []}
     assert r["all_covered"] is False
     first = ts.coverage_record(res, None, date(2026, 11, 17))
-    assert first["clients"]["Melior"]["missing"] == [{"email": "b@x.com", "since": "2026-11-17"}]
+    assert first["clients"]["Melior"]["missing"] == [{"email": "b@x.com", "since": "2026-11-17", "resolved": False}]
 
 
 def test_an_account_whose_tests_were_not_read_carries_its_last_record_and_resolves_nothing():
@@ -728,3 +729,38 @@ def test_pulled_inboxes_of_cancelled_orders_raise_no_no_room_ask():
     assert ts.drop_cancelled({"Precise Leads": [1, 2]}, boxes_, {"gone.com"}) == {"Precise Leads": [2]}
     assert ts.drop_cancelled({"Precise Leads": [1]}, boxes_, {"gone.com"}) == {}
     assert ts.drop_cancelled({"Precise Leads": [1]}, boxes_, None) == {"Precise Leads": [1]}   # tracker unread
+
+
+# --- t16 follow-ups (parent, 17 Nov): a free Saturday slot, resolved per inbox, Mongo off in tests ---------------------
+
+def test_the_free_slot_is_the_first_half_hour_after_0530_on_the_next_saturday_that_no_test_uses():
+    from datetime import date
+    taken = {"06:00", "06:30", "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00"}
+    assert ts.free_slots(taken, date(2026, 11, 17), 2) == ["Sat 21 Nov 11:30 IST", "Sat 21 Nov 12:00 IST"]
+    assert ts.free_slots(set(), date(2026, 11, 21), 1) == ["Sat 28 Nov 06:00 IST"]        # Saturday: the next one
+
+
+def test_a_group_with_no_test_room_needs_a_new_test_at_a_free_slot():
+    from datetime import date
+    res = _cov({"a@x.com": "DT Melior #5", "b@x.com": "DT Melior #6"},
+               tests={"DT Melior #5": {"test": "M5", "senders": 50}})
+    res["PRECISE_LEADS"]["slots"] = ["06:00", "06:30"]
+    res["BETTRDATA"] = {"slots": ["07:00"]}
+    asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))
+    (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
+    assert "needs a new test at Sat 21 Nov 07:30 IST" in a.step and "needs a new test at Sat 21 Nov 08:00 IST" in a.step
+
+
+def test_each_coverage_entry_says_whether_it_was_resolved():
+    from datetime import date
+    res = {"PRECISE_LEADS": {"coverage": {"Melior": {"inboxes": 2, "none": ["b@x.com"], "dupes": {}}}}}
+    prev = {"clients": {"Melior": {"missing": [{"email": "a@x.com", "since": "2026-11-10", "resolved": False}]}}}
+    m = ts.coverage_record(res, prev, date(2026, 11, 17))["clients"]["Melior"]
+    assert m["missing"] == [{"email": "b@x.com", "since": "2026-11-17", "resolved": False}]
+    assert m["resolved"] == [{"email": "a@x.com", "since": "2026-11-10", "on": "2026-11-17", "resolved": True}]
+
+
+def test_tests_never_see_the_live_mongo_uri():
+    import os
+    from smartlead.zapmail_asset_sync import _db
+    assert os.getenv("MONGO_URI") == "" and _db() is None
