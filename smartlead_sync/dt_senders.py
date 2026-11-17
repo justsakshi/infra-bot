@@ -314,10 +314,11 @@ def coverage(members: dict[str, str], tests: list[dict]) -> dict[str, dict]:
     """The coverage rule (Manveen 16 Nov 2026: "make sure we have all inboxes in test except scaled mail canceld
     orders"): every connected inbox we use in exactly one ACTIVE weekly v2 test. ``members`` {email: client};
     ``tests`` = active weekly tests [{name, senders}]. {client: {"inboxes": n, "none": [emails in no test],
-    "dupes": {email: [test names]}}}. Pure."""
+    "dupes": {email: [test names]}}}. The copy-check test counts for neither: an inbox whose only active test is
+    the copy check is in "none", and being in it next to a weekly test is no duplicate. Pure."""
     where: dict[str, list[str]] = {}
     for t in tests:
-        if is_copy_test(t.get("name")):     # it reuses a few inboxes on purpose (copy_sync), so never a duplicate
+        if is_copy_test(t.get("name")):     # reuses a few inboxes on purpose (copy_sync): no coverage, no duplicate
             continue
         for e in t.get("senders") or ():
             where.setdefault(str(e).lower(), []).append(str(t.get("name")))
