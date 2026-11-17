@@ -66,6 +66,9 @@ const JOBS = [
   // Sundays 07:00 IST: no other job reads Smartlead then, and it makes about an hour of message-history calls.
   { job: 'real-recipients', cron: '0 7 * * 0', title: 'Real-recipient reply check', when: env => env.REAL_RECIPIENTS_POST !== 'off',
     codes: { 1: 'no Smartlead account could be read, or the post was refused' } },
+  // Sundays 09:00 IST, after the real-recipient check: every emailed lead's sender, per inbox (t17, 17 Nov 2026).
+  { job: 'inbox-evidence', cron: '0 9 * * 0', title: 'Inbox evidence from real sends', when: env => env.INBOX_EVIDENCE !== 'off',
+    codes: { 1: 'no Smartlead account could be read' } },
   { job: 'fleet-scorecard', cron: '50 10 * * 1', title: 'Fleet scorecard' },
   { job: 'retest', cron: '0 11 * * *', title: 'Auto placement test' },
   // After the 10:00 sync has written the list. Posts only when a check disagrees, and every Monday.

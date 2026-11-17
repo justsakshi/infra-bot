@@ -1543,6 +1543,15 @@ async function start() {
       if (await onceToday('real-recipients')) return runJob('real-recipients', ['real_recipients.py', '--post', '--save'], { slot });
     });
 
+    // Inbox evidence from real sends (t17, Manveen 16 Nov 2026: "so complete your data we can't take chances"):
+    // Sundays 09:00 IST. The exact sending inbox of every lead emailed in 28 days, per recipient provider, checked
+    // against the team's reply logs; fills two All Inboxes columns and one digest line per client. Read-only on
+    // Smartlead. INBOX_EVIDENCE=off stops it.
+    at('inbox-evidence', async ({ slot }) => {
+      if (process.env.INBOX_EVIDENCE === 'off') return;
+      if (await onceToday('inbox-evidence')) return runJob('inbox-evidence', ['inbox_evidence.py', '--save', '--post'], { slot });
+    });
+
     // Weekly volume review, Tuesday 13:45 IST, after Kill warnings: hold or step back
     // daily limits per domain; it never raises one (smartlead/volume_rule.py). Changes only the pilot
     // domains (volume_review.py --pilot-add); every other domain is reported.

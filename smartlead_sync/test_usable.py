@@ -166,7 +166,7 @@ def test_old_callers_without_gate_data_keep_working_and_still_honour_the_tag():
 
 def test_the_all_inboxes_tab_carries_the_new_columns_last():
     from smartlead.sheets import SheetsWriter
-    assert SheetsWriter.MASTER_COLUMNS[-3:] == ["v2_status", "v2_date", "use_notes"]
+    assert SheetsWriter.MASTER_COLUMNS[-5:] == ["v2_status", "v2_date", "use_notes", "evidence", "evidence_label"]
     assert SheetsWriter.MASTER_COLUMNS[:6] == ["client", "email", "name", "provider", "account_id", "availability"]
 
 
@@ -285,3 +285,17 @@ def test_a_tagged_inbox_stays_busy_even_when_its_bounce_is_set_aside():
     data = {"checked": True, "error": "", "listed": set(), "v2": {"t@a.com": {"verdict": "PASS", "night": recent}}}
     got = _run([_row("t@a.com", bounce_rate=6.5, tags=["DO NOT USE"])], data)
     assert got["t@a.com"][:2] == ("BUSY", "do_not_use")
+
+
+def test_the_weeks_real_send_evidence_fills_two_columns_and_changes_no_availability():
+    from datetime import date
+    item = {"email": "A@x.com", "tags": [], "type": "OUTLOOK"}
+    data = {"v2": {}, "listed": set(), "checked": True, "error": "",
+            "evidence": {"a@x.com": {"evidence": "28d: Microsoft 40 sent, 0 replies, 0 OOO · 7d: 9 sent",
+                                     "label": "not enough data"}}, "evidence_week": "2026-11-15"}
+    reasons = usable.apply(item, data, date(2026, 11, 17), block_listed=False, require_v2_pass=False)
+    assert reasons == [] and item["evidence_label"] == "not enough data (week of 15 Nov)"
+    assert item["evidence"].startswith("28d: Microsoft 40 sent")
+    other = {"email": "b@x.com", "tags": []}
+    usable.apply(other, data, date(2026, 11, 17), block_listed=False, require_v2_pass=False)
+    assert other["evidence"] == "" and other["evidence_label"] == "no real sends in the window"
