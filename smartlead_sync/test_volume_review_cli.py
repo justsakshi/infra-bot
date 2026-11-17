@@ -92,8 +92,23 @@ def test_idle_inboxes_carry_their_client_and_do_not_use_tag():
     accts = [box(1, "n@pl.com"), box(2, "d@pl.com", tags=("Bot-Setup", "DO NOT USE - Google spam"))]
     _, waiting = build(accts, {**facts("n@pl.com", sending=False), **facts("d@pl.com", sending=False)})
     assert waiting["no_campaign"] == 2
-    assert waiting["idle"] == [{"email": "n@pl.com", "client": "Melior", "do_not_use": False},
-                               {"email": "d@pl.com", "client": "Melior", "do_not_use": True}]
+    assert waiting["idle"] == [{"email": "n@pl.com", "client": "Melior", "do_not_use": False, "recovering": False},
+                               {"email": "d@pl.com", "client": "Melior", "do_not_use": True, "recovering": False}]
+
+
+def test_an_inbox_out_of_campaigns_for_warm_up_repair_is_recovering_not_do_not_use_t273():
+    """Manveen 17 Nov 2026: "instead of pulled make it recovering". A person's DO NOT USE tag on an inbox under 90%
+    warm-up reads "recovering"; the tag name itself is untouched, and the v2 job's auto tag is not repair."""
+    accts = [box(1, "r@pl.com", tags=("Bot-Setup", "DO NOT USE - pulled from roundtable"), rep="71%"),
+             box(2, "a@pl.com", tags=("Bot-Setup", "DO NOT USE - failed v2 (auto)"), rep="71%"),
+             box(3, "d@pl.com", tags=("Bot-Setup", "DO NOT USE - Google spam"), rep="100%")]
+    _, waiting = build(accts, facts("r@pl.com", "a@pl.com", "d@pl.com", sending=False))
+    assert [(x["email"], x["do_not_use"], x["recovering"]) for x in waiting["idle"]] == [
+        ("r@pl.com", True, True), ("a@pl.com", True, False), ("d@pl.com", True, False)]
+    text = "\n".join(vr.idle_lines(waiting["idle"]))
+    assert "(recovering: out of campaigns while warm-up repairs)" in text and "(tagged DO NOT USE)" in text
+    note = "\n\n".join(vr._notes(waiting))
+    assert "(1 recovering, 2 tagged DO NOT USE)" in note
 
 
 # Where the review goes (t270): the daily digest when it is on; the old post when it is off or Mongo is down.

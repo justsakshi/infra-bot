@@ -59,7 +59,7 @@ def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, da
     approved = {email: (limit, approved on)}; pilot = domains the review may change ("*" = all);
     control = comparison domains, judged and shown but never changed (they win over "*")."""
     from smartlead.report_sheet import client_label
-    from smartlead.usable import DO_NOT_USE
+    from smartlead.usable import DO_NOT_USE, recovering
     rows: list[dict] = []
     waiting: dict = {"warming": 0, "first_ready": None, "no_campaign": 0, "idle": [], "by_hand": [], "skipped": [],
                      "rotate_ip": []}
@@ -95,7 +95,8 @@ def build_rows(per_account: dict[str, list[dict]], facts: dict, health: dict, da
                     names = [str(t.get("tag_name") or t.get("name") or "").strip().lower() for t in a.get("tags") or []]
                     waiting["idle"].append({"email": email,
                                             "client": f.get("client") or client_label(account, a.get("client_id")),
-                                            "do_not_use": any(n.startswith(DO_NOT_USE) for n in names)})
+                                            "do_not_use": any(n.startswith(DO_NOT_USE) for n in names),
+                                            "recovering": recovering(names, rep)})
                 elif reason.startswith("changed by hand"):
                     waiting["by_hand"].append(f"{email} {reason}")
                 else:

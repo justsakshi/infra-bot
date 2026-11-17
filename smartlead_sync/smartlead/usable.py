@@ -237,6 +237,25 @@ def is_do_not_use(tags) -> bool:
     return any(str(t).strip().lower().startswith(DO_NOT_USE) for t in tags or [])
 
 
+V2_AUTO_TAG = "do not use - failed v2 (auto)"     # v2_weekly.TAG, lower case: the v2 job's own pull, not repair
+RECOVERING = "recovering"
+RECOVERING_NOTE = "recovering: out of campaigns while its warm-up repairs (tag stays DO NOT USE)"
+
+
+def recovering(tags, rep) -> bool:
+    """Taken out of campaigns for warm-up repair: a person's DO NOT USE tag (not the v2 job's auto tag) on an inbox whose
+    warm-up reputation is readable and under the cutoff. Shown as "recovering", never "pulled" (Manveen 17 Nov 2026:
+    "instead of pulled make it recovering"). The tag name itself stays DO NOT USE (gtm presend matches on it). Pure."""
+    from smartlead.config import MIN_WARMUP_REP_PCT
+    hand = any(str(t).strip().lower().startswith(DO_NOT_USE) and str(t).strip().lower() != V2_AUTO_TAG
+               for t in tags or [])
+    try:
+        value = float(str(rep).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return False
+    return hand and value < MIN_WARMUP_REP_PCT
+
+
 def _day(iso: str) -> str:
     try:
         d = date.fromisoformat(str(iso)[:10])
@@ -384,6 +403,8 @@ def apply(item: dict, data: dict | None, today: date, *, block_listed: bool, req
                                          item.get("test_sheet_status", ""), item.get("test_date", ""), other)
         reasons += [r for r in g_reasons if r not in reasons]
         notes = g_notes + notes
+    if recovering(item.get("tags"), item.get("warmup_rep_pct")):
+        notes.insert(0, RECOVERING_NOTE)
     if data is not None and not checked:
         notes.append(NOT_READ)
     if item.get("test_signal"):         # the grid's other-provider spam (sheets.own_test_status): shown, never a reason

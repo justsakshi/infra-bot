@@ -1,5 +1,8 @@
 """When should an inbox be killed? The team's rule (agreed 2026-10-08).
 
+A Google inbox is never on the kill list for a seed test (17 Nov 2026, t268/t273): it is judged on real sends and
+warm-up (usable.google_gate), so its tests do not count and it reads NO DATA with GOOGLE_WHY.
+
 WARNING ONLY. This module never retires anything. It says SHOULD KILL / WATCH /
 GOOD / NO DATA and why; a person decides and acts.
 
@@ -79,7 +82,7 @@ def other_signal(test: dict) -> str:
 def grade(test: dict) -> float | None:
     """Inbox % of one test at the inbox's own receiving provider (worse provider for SMTP / unknown type), or None
     when it does not count. ``test`` = {date, seeds, spam, by: {provider: [seeds, spam]}, kind}."""
-    if int(test.get("seeds") or 0) < MIN_SEEDS:
+    if int(test.get("seeds") or 0) < MIN_SEEDS or _google(test):     # Google seeds: report only (t268/t273)
         return None
     if _own(test):
         n, spam = own_counts(test)
@@ -106,8 +109,20 @@ def _days(a: str, b: str) -> int:
     return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
 
 
+GOOGLE_WHY = "Google inbox: judged on real sends and warm-up; its seed tests are report only"
+
+
+def _google(test: dict) -> bool:
+    from smartlead.usable import real_send_rule
+    return real_send_rule(test.get("kind"))
+
+
 def judge(email: str, tests: list[dict], domain_verdict: tuple[bool, str] | None, today: date) -> dict:
-    """Verdict for one inbox. ``domain_verdict`` = (domain is dead by rule c, why)."""
+    """Verdict for one inbox. ``domain_verdict`` = (domain is dead by rule c, why).
+    A Google inbox is never SHOULD KILL or WATCH on a seed test, its own or its domain's (t268/t273, 17 Nov 2026:
+    Google seed results are report-only): NO DATA, saying why."""
+    if tests and all(_google(t) for t in tests):
+        return {"email": email, "verdict": NO_DATA, "rule": "", "why": GOOGLE_WHY}
     ct = counting_tests(tests)
     fresh = [(t, g) for t, g in ct if (today - date.fromisoformat(t["date"])).days <= FRESH_DAYS]
     if domain_verdict and domain_verdict[0]:

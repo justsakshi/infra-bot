@@ -6,6 +6,8 @@ since when?", and no post said "these things need you today" in one place.
 
 Each daily sync gives every inbox exactly one state (first match wins):
 
+  recovering         a person tagged it DO NOT USE to take it out of campaigns while its warm-up repairs
+                     (reputation under 90; usable.recovering, Manveen 17 Nov 2026: "instead of pulled make it recovering")
   do_not_use         a person tagged it DO NOT USE in Smartlead
   pulled             the v2 job took it out of campaigns after a failed test; it returns after two passes
   failed             its newest Smart Delivery v2 verdict is FAIL and it is not pulled
@@ -44,14 +46,15 @@ REPORT_ONLY: dict[str, str] = {}
 STATUS_COLLECTION = "inbox_status"
 HISTORY_COLLECTION = "inbox_status_history"
 META_COLLECTION = "inbox_status_meta"           # {_id: "post", date}: the post goes out once a day
-HELD = ("do_not_use", "pulled", "failed")       # must not send
-ORDER = ("sending", "sending_unproven", "set_aside", "free", "warming", "idle", "failed", "pulled", "do_not_use",
+HELD = ("recovering", "do_not_use", "pulled", "failed")       # must not send
+ORDER = ("sending", "sending_unproven", "set_aside", "free", "warming", "idle", "failed", "pulled", "recovering",
+         "do_not_use",
          "disconnected", "gone")
 LABEL = {"sending": "sending, passed the weekly test", "sending_unproven": "sending, no test result in 10 days",
          "set_aside": "failed the weekly test but it is not counted (test not trusted for its type, or put back by hand)",
          "free": "free to give to a campaign", "warming": "warming up", "idle": "not in use",
          "failed": "failed the weekly test", "pulled": "taken out by the weekly job",
-         "do_not_use": "tagged DO NOT USE", "disconnected": "disconnected", "gone": "gone from Smartlead"}
+         "recovering": "recovering (out of campaigns while warm-up repairs)", "do_not_use": "tagged DO NOT USE", "disconnected": "disconnected", "gone": "gone from Smartlead"}
 
 
 def _fresh_pass(v2_status: str, v2_date: str, today: date) -> bool:
@@ -64,10 +67,10 @@ def _fresh_pass(v2_status: str, v2_date: str, today: date) -> bool:
 
 
 def state_of(tags, v2_status: str, v2_date: str, connected: bool, sending: bool, free: bool,
-             warmup_state: str, today: date, set_aside: str = "") -> str:
+             warmup_state: str, today: date, set_aside: str = "", rep=None) -> str:
     names = [str(t).strip().lower() for t in tags or []]
     if any(t.startswith(usable.DO_NOT_USE) and t != AUTO_TAG for t in names):
-        return "do_not_use"
+        return usable.RECOVERING if usable.recovering(tags, rep) else "do_not_use"
     if AUTO_TAG in names:
         return "pulled"
     if str(v2_status or "").upper() == "FAIL" and not set_aside:
@@ -105,7 +108,8 @@ def states(rows: list[dict], today: date) -> list[dict]:
             aside = usable.fail_set_aside({"verdict": first.get("v2_status")}, first.get("provider"))
         state = state_of(tags, first.get("v2_status", ""), first.get("v2_date", ""), bool(first.get("connection_ok")),
                          bool(sending), str(first.get("availability") or "").upper() == "FREE",
-                         first.get("warmup_state", ""), today, set_aside=aside or "")
+                         first.get("warmup_state", ""), today, set_aside=aside or "",
+                         rep=first.get("warmup_rep_pct"))
         out.append({"email": email, "domain": email.split("@")[-1],
                     "client": str(first.get("sub_client") or first.get("client") or ""),
                     "account": str(first.get("client") or ""), "provider": str(first.get("provider") or ""),

@@ -169,8 +169,8 @@ def test_monday_weekly_line_per_client_is_a_done_line():
                 rep_at_start=88, latest_rep=88)]
     asks, done, detail = wr.digest_items(docs, MON)
     assert asks == []
-    assert [d.text for d in done] == ["Warm-up repair, PL: 1 repairing (1 warm-up blocked).",
-                                      "Warm-up repair, BettrData: 3 repairing, 1 recovered this week, 1 worse."]
+    assert [d.text for d in done] == ["Warm-up repair, PL: 1 recovering (1 warm-up blocked).",
+                                      "Warm-up repair, BettrData: 3 recovering, 1 recovered this week, 1 worse."]
     assert all(d.key.startswith("warmup-repair:week:") and d.key.endswith("2026-11-23") for d in done)
     text = "\n".join(detail)
     assert "c@example.com" in text and "71% → 60%" in text and "worse" in text
@@ -209,7 +209,7 @@ def test_fleet_watch_daily_tracks_repair_and_reports_to_its_own_digest_source(mo
     assert by["a@example.com"]["status"] == "recovered" and by["n@example.com"]["status"] == "repairing"
     srcs = [g[0] for g in got]
     assert srcs == ["warmup-repair", "fleet-watch"]
-    assert [d.text for d in got[0][2]] == ["Warm-up repair, BettrData: 1 repairing, 1 recovered this week."]
+    assert [d.text for d in got[0][2]] == ["Warm-up repair, BettrData: 1 recovering, 1 recovered this week."]
 
 
 def test_a_repair_failure_never_stops_fleet_watch(monkeypatch):
@@ -289,7 +289,7 @@ def test_seed_dry_run_writes_nothing_and_prints_the_lines(monkeypatch, tmp_path,
     assert cli.main(["seed", *files, "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert db["warmup_repair"].docs == [] and "3 to write" in out and "(dry run: nothing written)" in out
-    assert "Warm-up repair, BettrData: 1 repairing." in out and "71% → 78%" in out
+    assert "Warm-up repair, BettrData: 1 recovering." in out and "71% → 78%" in out
     assert cli.main(["seed", *files]) == 0 and len(db["warmup_repair"].docs) == 3
     assert cli.main(["seed", *files]) == 0 and "0 to write" in capsys.readouterr().out
 
