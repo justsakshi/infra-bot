@@ -590,8 +590,10 @@ def report_only_clients(args) -> set[str]:
 
 
 def report_only_types(args) -> set[str]:
+    """Types the job only reports: the untrusted ones (v2_trust) plus the types judged on real sends instead of v2
+    (usable.REAL_SEND_RULE: Google, t268, 17 Nov 2026, whatever v2_trust says), less any --act-types."""
     acting = {t.strip().upper() for t in str(getattr(args, "act_types", "") or "").split(",") if t.strip()}
-    return {t for t in REPORT_ONLY_TYPES if t not in acting}
+    return {t for t in {*REPORT_ONLY_TYPES, *usable.REAL_SEND_RULE} if t not in acting}
 
 
 def ro_reason(client: str | None, inbox_type: str | None, ro_clients: set, ro_types: set) -> dict | None:
@@ -601,7 +603,8 @@ def ro_reason(client: str | None, inbox_type: str | None, ro_clients: set, ro_ty
         return {"name": client, "why": REPORT_ONLY_WHY.get(client, ""), "client": client}
     typ = str(inbox_type or "").upper()
     if typ in ro_types:
-        return {"name": REPORT_ONLY_TYPES[typ], "why": REPORT_ONLY_TYPE_WHY.get(typ, ""), "client": None}
+        return {"name": REPORT_ONLY_TYPES.get(typ) or usable.REAL_SEND_RULE.get(typ) or typ,
+                "why": REPORT_ONLY_TYPE_WHY.get(typ, ""), "client": None}
     return None
 
 
@@ -1292,7 +1295,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         client = client_of.get(sorted(es)[0], "Not in Smartlead")
         r = report_only[sorted(es)[0]].get("reason") or {"name": client, "why": REPORT_ONLY_WHY.get(client, ""), "client": client}
         types = state.get("types") or {}
-        untrusted = report_only_types if report_only_types is not None else set(REPORT_ONLY_TYPES)
+        untrusted = report_only_types if report_only_types is not None else {*REPORT_ONLY_TYPES, *usable.REAL_SEND_RULE}
         if not r.get("client") or all(str(types.get(e) or "").upper() in untrusted for e in es):
             continue    # its senders failed only a test that is not trusted for their type: the campaign is fine
         needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "

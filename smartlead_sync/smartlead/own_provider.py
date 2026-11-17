@@ -24,6 +24,10 @@ SIGNAL = "a signal, not a verdict"
 # A grid cell for a domain's other provider below the pass line (v2_grid, the classic report's grid cells): the
 # team still sees where the seeds landed, and no reader takes it for a verdict (sheets.DeliverabilityReader).
 SIGNAL_CELL = "spam (other provider: signal only)"
+# A Google-only domain's own G suite cell below the pass line (17 Nov 2026, t269): Google seed results are report-only
+# for Google inboxes (usable.py, Google rule), so that cell is a signal too. Unlike SIGNAL_CELL it sits in the inbox's
+# own column, so the grid reader reads it as no verdict (sheets.grid_cell_status) and shows it as a note.
+GOOGLE_SIGNAL_CELL = "spam (Google seed result: signal only)"
 
 _ALIASES = {
     GOOGLE: ("google", "gmail", "g suite", "gsuite", "g_suite", "google_workspace", "googleworkspace",
@@ -81,6 +85,18 @@ def common_kind(kinds) -> str:
         k = ks.pop()
         return k if k in OWN_PROVIDER else ""
     return ""
+
+
+def grid_signal(provider, kind):
+    """What a grid writer puts in a seed cell's "signal" for a domain whose inboxes are all of ``kind``: True at the
+    other provider (written SIGNAL_CELL), GOOGLE_SIGNAL_CELL at Google for a Google domain, None when the cell is a
+    verdict (mixed, SMTP or unknown types, or an Outlook domain's Outlook cell)."""
+    own = own_provider(kind)
+    if not own:
+        return None
+    if provider_key(provider) != own:
+        return True
+    return GOOGLE_SIGNAL_CELL if own == GOOGLE else None
 
 
 def signal(provider, what: str) -> str:

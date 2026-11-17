@@ -139,10 +139,11 @@ def plan_writes(rows: list[list[str]], domain: str, by_provider: dict,
             continue
         verdict = "Inbox" if float(stats.get("inbox_pct", 0)) >= threshold else "spam"
         if verdict == "spam" and stats.get("signal"):
-            # The domain's other provider (every campaign is ESP-matched): where the seeds landed, labelled so no
-            # reader takes it for a verdict (smartlead/own_provider.py, 17 Nov 2026).
+            # The domain's other provider (every campaign is ESP-matched), or Google seeds for a Google domain
+            # (report-only, t269): where the seeds landed, labelled so no reader takes it for a verdict
+            # (smartlead/own_provider.py, 17 Nov 2026). A string "signal" is the label to write.
             from smartlead.own_provider import SIGNAL_CELL
-            verdict = SIGNAL_CELL
+            verdict = stats["signal"] if isinstance(stats["signal"], str) else SIGNAL_CELL
         plan.writes.append((ri, col_for[which], verdict))
 
     if not plan.writes and filled:

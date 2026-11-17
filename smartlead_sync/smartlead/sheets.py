@@ -657,9 +657,11 @@ _GRID_COLUMN = {"google": ("gsuite", "gsuite_date"), "microsoft": ("outlook", "o
 
 def grid_cell_status(value: str) -> str:
     """One grid cell -> "fail" (spam, low reputation, disqualified, fail, or a labelled "spam (...)" cell),
-    "inbox", or "" (empty / anything else). Pure."""
+    "inbox", or "" (empty / anything else). A Google domain's own G suite cell labelled
+    own_provider.GOOGLE_SIGNAL_CELL is "": Google seed results are report-only (t269), never a verdict. Pure."""
+    from smartlead.own_provider import GOOGLE_SIGNAL_CELL
     v = str(value or "").strip().lower()
-    if not v or v == "-":
+    if not v or v == "-" or v == GOOGLE_SIGNAL_CELL.lower():
         return ""
     if v in _GRID_FAIL or v.startswith("spam"):
         return "fail"
@@ -676,7 +678,7 @@ def own_test_status(entry: dict | None, kind) -> tuple[str, str, str]:
     shows spam the note says so. With no own-provider result, the other column's "inbox" still counts (as before)
     and its spam does not: the inbox is untested ("Unknown"). An SMTP or unknown-type inbox, and an entry with
     no per-column values (an API result), keep the merged status. Pure."""
-    from smartlead.own_provider import NAMES, SIGNAL, own_provider
+    from smartlead.own_provider import GOOGLE_SIGNAL_CELL, NAMES, SIGNAL, own_provider
     entry = entry if isinstance(entry, dict) else {}
     status, date = entry.get("status", "Unknown") or "Unknown", entry.get("date", "")
     own = own_provider(kind)
@@ -684,11 +686,14 @@ def own_test_status(entry: dict | None, kind) -> tuple[str, str, str]:
         return status, date, ""
     other = "microsoft" if own == "google" else "google"
     o_val, o_date = (entry.get(k, "") for k in _GRID_COLUMN[other])
-    note = ""
+    notes = []
     if grid_cell_status(o_val) == "fail":
         when = f" on {o_date}" if o_date else ""
-        note = f"{NAMES[other]} seeds in spam{when} (not its provider: {SIGNAL})"
+        notes.append(f"{NAMES[other]} seeds in spam{when} (not its provider: {SIGNAL})")
     m_val, m_date = (entry.get(k, "") for k in _GRID_COLUMN[own])
+    if str(m_val or "").strip().lower() == GOOGLE_SIGNAL_CELL.lower():   # t269: shown, never a verdict
+        notes.insert(0, f"Google seeds in spam{f' on {m_date}' if m_date else ''} (Google seed result: signal only)")
+    note = "; ".join(notes)
     mine = grid_cell_status(m_val)
     if mine:
         return mine, m_date or date, note

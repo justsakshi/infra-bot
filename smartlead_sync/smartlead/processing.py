@@ -543,14 +543,17 @@ def process_inbox_availability(
         bounce = item.get("bounce_rate")
         if bounce is not None and float(bounce) > float(BOUNCE_PROTECT_THRESHOLD):
             reasons.append("high_bounce")
-        if rep_val < MIN_WARMUP_REP_PCT:
-            reasons.append("low_rep")
-        if test == "stale":
-            reasons.append("stale_test")
-        elif test in ("fail", "spam"):
-            reasons.append("failed_test")
-        elif test != "inbox":
-            reasons.append("untested")  # Unknown / blank
+        # A Google inbox is judged on real sends and warm-up (usable.google_gate, t268, 17 Nov 2026): its seed test is
+        # a note there, and low reputation is set aside when its mail reached real inboxes.
+        if not usable.real_send_rule(item.get("type") or item.get("provider") or ""):
+            if rep_val < MIN_WARMUP_REP_PCT:
+                reasons.append("low_rep")
+            if test == "stale":
+                reasons.append("stale_test")
+            elif test in ("fail", "spam"):
+                reasons.append("failed_test")
+            elif test != "inbox":
+                reasons.append("untested")  # Unknown / blank
 
         # Check DNS records
         if not item.get("dns_spf_ok", True) or not item.get("dns_dkim_ok", True) or not item.get("dns_dmarc_ok", True):

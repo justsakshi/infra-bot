@@ -27,6 +27,16 @@ as far as bounces go, with the note BOUNCE_NOTE. Manveen, 16 Nov 2026: high boun
 use, "so just say so" (Outlook inboxes that passed v2 again with warm-up 91-100% were BUSY only for bounces from past
 campaigns' lead lists). It is a note in the sheet, never a digest ask.
 
+Google inboxes have their own rule (Manveen, 17 Nov 2026, t268: "yes i agree with this"). A Google (GMAIL) inbox is
+usable when it is connected, has no DO NOT USE tag, is not "quiet", and EITHER it reached an inbox in the last 28 days
+(the weekly real-send evidence, inbox_evidence.py: a real reply, out-of-office or wrong-person reply, at its own
+recipient provider, Gmail) OR its warm-up reputation is MIN_WARMUP_REP_PCT (90) or more. Low reputation with real
+replies is "repairing but usable" (a note). The v2 test and the seed / classic placement grid stay report-only for
+Google: shown in the notes, never a reason (``google_gate``). Missing evidence is "not enough data", never quiet; a
+quiet or reached label at another recipient provider is a signal only (own-provider rule, smartlead/own_provider.py).
+Accepted risk: "reached" counts OOO and wrong-person replies, so reputation 90+ is the only guard against an inbox
+whose mail mostly lands in spam. Capacity, warm-up blocked, DNS and bounce checks (processing.py) are unchanged.
+
 ``gate`` is pure. ``load_gate_data`` reads Mongo and never raises: without it the tag rule still holds
 (tags come from Smartlead) and every row gets a note saying the rest was not read.
 """
@@ -52,6 +62,11 @@ DEFAULT_NOT_TRUSTED = {"GMAIL": "Google inboxes"}
 # keeps it in Mongo v2_trust; the default above holds until it has, or when Mongo cannot be read.
 V2_NOT_TRUSTED = dict(DEFAULT_NOT_TRUSTED)
 TRUST_COLLECTION = "v2_trust"
+# Inbox types judged on real sends and warm-up instead of seed tests (t268, 17 Nov 2026), whatever v2_trust says, and
+# the recipient provider (inbox_evidence.py's MX label) each one is judged at.
+REAL_SEND_RULE = {"GMAIL": "Google inboxes"}
+OWN_RECIPIENT = {"GMAIL": "Gmail", "OUTLOOK": "Microsoft"}
+REACHED, NOT_ENOUGH = "reached the inbox", "not enough data"
 
 
 def trust_from(env_value: str | None, doc: dict | None) -> tuple[dict[str, str], str]:
@@ -105,8 +120,52 @@ def fail_set_aside(v2: dict | None, kind="") -> str:
         return ""
     if (v2 or {}).get("overridden"):
         return "a person put it back after this result"
-    name = V2_NOT_TRUSTED.get(kind_of(kind))
+    name = V2_NOT_TRUSTED.get(kind_of(kind)) or REAL_SEND_RULE.get(kind_of(kind))
     return f"the v2 test is not used for {name}" if name else ""
+
+
+def real_send_rule(kind) -> bool:
+    """Is this inbox judged on real sends and warm-up (the Google rule, t268) rather than on seed tests?"""
+    return kind_of(kind) in REAL_SEND_RULE
+
+
+def rep_pct(value) -> float:
+    """'95%' / '95' / 95 -> 95.0; anything unreadable ('N/A', '') -> 0.0, as processing.py reads it."""
+    try:
+        return float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def google_gate(rep: float, own_label: str, test_status: str = "", test_date: str = "",
+                other: dict | None = None) -> tuple[list[str], list[str]]:
+    """(busy reasons, notes) of the Google rule (module note, t268). Pure.
+
+    ``rep`` = warm-up reputation %; ``own_label`` = the week's real-send label at the inbox's own recipient provider
+    ("reached the inbox", "quiet (0 of ~N expected)", "not enough data"; "" = none = not enough data);
+    ``test_status``/``test_date`` = the seed grid's own-column result (report only); ``other`` = {recipient provider:
+    label} elsewhere (a signal only)."""
+    from smartlead.config import MIN_WARMUP_REP_PCT
+    from smartlead.own_provider import SIGNAL
+    label = str(own_label or "").strip() or NOT_ENOUGH
+    reached, quiet = label == REACHED, label.startswith("quiet")
+    reasons, notes = [], []
+    if quiet:
+        reasons.append("quiet")
+    if rep < MIN_WARMUP_REP_PCT:
+        if reached:
+            notes.append(f"repairing but usable: warm-up {rep:g}%, reached the inbox at Gmail in 28 days")
+        else:
+            reasons.append("low_rep")
+    t = str(test_status or "").strip().lower()
+    if t in ("fail", "spam", "stale"):
+        when = f" {_day(test_date)}" if test_date else ""
+        notes.append(f"seed test {'spam' if t != 'stale' else 'stale'}{when}: report only for Google inboxes")
+    for rp, lab in sorted((other or {}).items()):
+        lab = str(lab or "")
+        if lab == REACHED or lab.startswith("quiet"):
+            notes.append(f"{lab} at {rp} (not its provider: {SIGNAL})")
+    return reasons, notes
 
 
 def holds_back(v2: dict | None, kind="") -> bool:
@@ -211,7 +270,7 @@ def gate(tags, v2: dict | None, listed: bool | None, today: date, *, checked: bo
                    else f"v2 watch on {_day(night)}" if verdict == "WATCH"
                    else f"last v2 pass {_day(night)}, older than {V2_FRESH_DAYS} days" if verdict == "PASS"
                    else "no v2 result")
-            if require_v2_pass:
+            if require_v2_pass and not real_send_rule(kind):      # Google: v2 is report-only (t268)
                 reasons.append("no_v2_pass")
             notes.append(why)
     if listed:
@@ -256,16 +315,27 @@ def _db():
 
 def load_evidence(db) -> dict:
     """The newest weekly real-send evidence (inbox_evidence.py, Mongo inbox_evidence): {"evidence": {email: {evidence,
-    label}}, "evidence_week": day}, or {} when there is none or it can't be read. Report only: it never makes an
-    inbox BUSY or FREE (docs/INBOX_EVIDENCE.md)."""
+    label, providers: {recipient provider: label}}}, "evidence_week": day}, or {} when there is none or it can't be
+    read. Report only for Outlook; the Google rule reads it (``google_gate``, docs/INBOX_EVIDENCE.md)."""
     try:
         doc = next(iter(db["inbox_evidence"].find({}, {"_id": 1, "inboxes": 1}).sort("_id", -1).limit(1)), None)
     except Exception:  # noqa: BLE001 - the columns stay blank; nothing else depends on them
         return {}
     if not doc:
         return {}
-    return {"evidence": {str(k).lower(): {"evidence": v.get("evidence", ""), "label": v.get("label", "")}
+    return {"evidence": {str(k).lower(): {"evidence": v.get("evidence", ""), "label": v.get("label", ""),
+                                          "providers": {str(rp): str((c or {}).get("label") or "")
+                                                        for rp, c in (v.get("providers") or {}).items()}}
                          for k, v in (doc.get("inboxes") or {}).items()}, "evidence_week": str(doc["_id"])}
+
+
+def own_evidence(email: str, kind, data: dict | None) -> tuple[str, dict]:
+    """(label at the inbox's own recipient provider, {other recipient provider: label}) from the week's evidence.
+    No evidence, no row or no own-provider cell = "not enough data" (never quiet). Pure."""
+    row = ((data or {}).get("evidence") or {}).get(str(email or "").lower()) or {}
+    provs = dict(row.get("providers") or {})
+    own = OWN_RECIPIENT.get(kind_of(kind), "")
+    return provs.pop(own, "") or NOT_ENOUGH, provs
 
 
 def _evidence(item: dict, data: dict | None) -> None:
@@ -298,14 +368,22 @@ def load_gate_data() -> dict:
 
 def apply(item: dict, data: dict | None, today: date, *, block_listed: bool, require_v2_pass: bool) -> list[str]:
     """Fill the inbox row's v2 and note fields and return its extra busy reasons.
-    ``data`` None (callers that never loaded it) = the tag rule only, no notes."""
+    ``data`` None (callers that never loaded it) = the tag rule only, no notes; a Google inbox is still judged by
+    the Google rule (``google_gate``), its real-send evidence then "not enough data". ``item["warmup_rep_pct"]`` must
+    be filled first (processing.py does)."""
     email = str(item.get("email") or "").lower()
     checked = bool(data and data.get("checked"))
     v2 = (data or {}).get("v2", {}).get(email)
     listed = email.split("@")[-1] in (data or {}).get("listed", set()) if checked else None
+    kind = item.get("type") or item.get("provider") or ""
     reasons, notes = gate(item.get("tags"), v2, listed, today, checked=checked,
-                          block_listed=block_listed, require_v2_pass=require_v2_pass,
-                          kind=item.get("type") or item.get("provider") or "")
+                          block_listed=block_listed, require_v2_pass=require_v2_pass, kind=kind)
+    if real_send_rule(kind):            # the Google rule (t268): real sends + warm-up decide, seed tests are notes
+        own_label, other = own_evidence(email, kind, data)
+        g_reasons, g_notes = google_gate(rep_pct(item.get("warmup_rep_pct")), own_label,
+                                         item.get("test_sheet_status", ""), item.get("test_date", ""), other)
+        reasons += [r for r in g_reasons if r not in reasons]
+        notes = g_notes + notes
     if data is not None and not checked:
         notes.append(NOT_READ)
     if item.get("test_signal"):         # the grid's other-provider spam (sheets.own_test_status): shown, never a reason

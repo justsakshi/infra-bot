@@ -10,7 +10,9 @@ this copies each test night into the grid, per sending domain:
     a domain's cell is "Inbox" when 80%+ of its v2 seed emails at that provider reached the inbox, else "spam".
     When every inbox on the domain that night is of one type (v2_verdicts ``type``: GMAIL or OUTLOOK), the other
     provider's cell is only a signal (every campaign is ESP-matched, smartlead/own_provider.py): below 80% it reads
-    "spam (other provider: signal only)", which no reader takes for a fail (17 Nov 2026).
+    "spam (other provider: signal only)", which no reader takes for a fail (17 Nov 2026). On a Google-only domain the
+    G suite cell itself is a signal as well: Google seed results are report-only for Google inboxes (usable.py, the
+    Google rule, t269), so below 80% it reads "spam (Google seed result: signal only)" and never makes them BUSY.
 
 It keeps the grid writer's two rules (smartlead/placement_grid.py): a cell that already holds a value is never
 overwritten, and a domain is matched exactly on column A. A domain that is not in the tab is reported, never
@@ -73,9 +75,9 @@ def night_results(rows) -> dict[tuple[str, str], dict[str, dict]]:
     for key, doms in pool.items():
         out[key] = {}
         for dom, by in doms.items():
-            own = op.own_provider(op.common_kind(kinds[(*key, dom)]))
-            out[key][dom] = {p: {"inbox_pct": 100.0 * i / n, **({"signal": True} if own and op.provider_key(p) != own
-                                                                  else {})}
+            kind = op.common_kind(kinds[(*key, dom)])
+            out[key][dom] = {p: {"inbox_pct": 100.0 * i / n,
+                                 **({"signal": sig} if (sig := op.grid_signal(p, kind)) else {})}
                              for p, (i, n) in by.items() if n}
         out[key] = {dom: by for dom, by in out[key].items() if by}
     return out

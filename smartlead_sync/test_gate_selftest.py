@@ -260,3 +260,14 @@ def test_each_disagreement_names_its_inboxes_by_domain_2026_11_17():
                             "bad": ["a@x.com", "b@x.com", "c@y.com"]}])
     (a,) = asks
     assert a.detail == ["x.com: a@, b@", "y.com: c@"] and "thread" not in a.step
+
+
+def test_a_free_google_inbox_needs_no_v2_pass_t268():
+    """t268 (17 Nov 2026): a Google inbox is FREE on real sends and warm-up, so check 3 does not ask it for a v2 pass;
+    an Outlook inbox still needs one."""
+    inboxes, campaigns, rows, v2 = _world()
+    inboxes += [{"email": "g@x.com", "tags": [], "type": "GMAIL"}, {"email": "o@x.com", "tags": [], "type": "OUTLOOK"}]
+    rows += [_row("g@x.com", "FREE", ""), _row("o@x.com", "FREE", "")]
+    assert _run(inboxes, campaigns, rows, v2)["free_means_v2_pass"]["bad"] == ["o@x.com"]
+    rows += [{**_row("p@x.com", "FREE", ""), "Provider": "Gmail"}]           # type known only from the list
+    assert _run(inboxes, campaigns, rows, v2)["free_means_v2_pass"]["bad"] == ["o@x.com"]

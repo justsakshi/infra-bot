@@ -205,8 +205,8 @@ async def collect_results(acc, store: PlacementStore, schedule: PlacementSchedul
                 store.save_result(email, domain, status, date.today().isoformat(), "api")
             schedule.record_result(acc.name, domain, email, status, providers)
             if providers:
-                own = op.own_provider(kinds.get(email, ""))
-                cells = {p: ({**v, "signal": True} if own and op.provider_key(p) != own else v)
+                kind = kinds.get(email, "")
+                cells = {p: ({**v, "signal": sig} if (sig := op.grid_signal(p, kind)) else v)
                          for p, v in providers.items()}
                 plan = write_result(tab, domain, cells,
                                     threshold=RETEST_INBOX_THRESHOLD)

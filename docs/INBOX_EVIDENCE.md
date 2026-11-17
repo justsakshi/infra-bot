@@ -32,11 +32,12 @@ No single source says whether an inbox's email reaches the inbox. This page list
 
   A log the service account cannot open is reported, never worked around.
 - **Where it shows.** The week is kept in Mongo `inbox_evidence`, and the per-lead sender map in `lead_senders` (lead ids only, no addresses). All Inboxes gets two columns, "Real sends (28d)" and "Real-send evidence". The digest gets one done line per client.
-- **Report only.** None of this makes an inbox BUSY or FREE, takes it out of a campaign, or brings it back. Acting on it is a separate decision for Manveen.
+- **What it decides.** For an Outlook inbox it is report only. For a Google inbox it is half of the Google rule below (17 Nov 2026). It never takes an inbox out of a campaign or brings it back.
 
 ## Combining them
 
 - An Outlook inbox is judged by v2 at its own provider (`docs/V2_WEEKLY.md`), and only v2 takes it out or brings it back.
 - When v2 and real sends disagree, it is shown, never settled in silence. For example, a v2 fail on an inbox whose real sends "reached the inbox" at the same provider in the same weeks. The real-recipient check (`real_recipients.py`) settles disagreement per inbox type through `v2_trust`.
-- A Google inbox has no trusted v2 result. Real-send evidence, warm-up spam % and the own-recipient check are its evidence. The rule for acting on them is not decided yet; it is parked for Manveen's yes.
+- A Google inbox has no trusted v2 result. Manveen agreed its rule on 17 Nov 2026 (t268, `smartlead/usable.py` `google_gate`): it is FREE when it is connected, has no DO NOT USE tag, is not "quiet" at Gmail, and either "reached the inbox" at Gmail in the last 28 days or has warm-up reputation 90 or more. Low reputation with real replies is "repairing but usable" (a note). Missing evidence is "not enough data", never quiet. Labels at other recipient providers are signals only. v2 and the seed grid (whose Google cells read "spam (Google seed result: signal only)", t269) are shown in Notes, never a reason. Capacity, DNS, warm-up blocked and bounce checks still apply.
+- Known risk, accepted: "reached" counts out-of-office and wrong-person replies, so reputation 90+ is the only guard against a Google inbox whose mail mostly lands in spam.
 - A blocklist listing is never an ask (Manveen, 16 Nov 2026).
