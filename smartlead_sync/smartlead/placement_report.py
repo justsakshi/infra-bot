@@ -20,6 +20,8 @@ GOOD_AT = 80.0     # a mailbox at or above this inbox rate lands in the inbox; b
 BAD_BELOW = 50.0   # below this the mailbox is "bad" (worst of the spam group)
 
 _PROVIDER = {"GMAIL": "Google", "OUTLOOK": "Outlook", "SMTP": "SMTP"}
+OWN_RECEIVERS = ("Google", "Outlook")     # a sender of this type is judged on the receiver of the same name
+SIGNAL = "not its provider: a signal, not a verdict"
 
 
 def mx_provider(domain: str) -> str:
@@ -128,6 +130,11 @@ def build_report(senders: dict[str, list[dict]], type_by_email: dict[str, str],
             p["spam"] += is_spam
             if is_spam:
                 p["inboxes_hit"].add(email)
+        # Judged at its OWN receiving provider (a Google sender on the Google seeds, an Outlook sender on the
+        # Outlook seeds; every campaign is ESP-matched, 17 Nov 2026). The other provider stays in by_receiver and
+        # the route lines, labelled a signal. An SMTP or unknown sender is judged on every seed, as before.
+        if sp in OWN_RECEIVERS:
+            got, spam = recv.get(sp, (0, 0))
         pct = round(100.0 * (got - spam) / got, 1) if got else None
         inboxes[email] = {"email": email, "domain": email.split("@")[1], "sender": sp,
                           "seeds": got, "spam": spam, "pct": pct, "status": status_for(pct),
@@ -148,7 +155,10 @@ def build_report(senders: dict[str, list[dict]], type_by_email: dict[str, str],
         d["pct"] = round(100.0 * (d["seeds"] - d["spam"]) / d["seeds"], 1) if d["seeds"] else None
         d["verdict"] = domain_verdict(d["inboxes"], d["mailboxes_spam"])
         d["status"] = {"good": "good", "avoid_new": "watch", "spam": "bad"}[d["verdict"]]
-        # The grid has one cell per receiving provider (G suite / Outlook).
+        # The grid has one cell per receiving provider (G suite / Outlook). For a domain whose senders are all
+        # Google or all Outlook, the other receiver's cell is only a signal (report_sheet.grid_writes labels it).
+        kinds = {inboxes[e]["sender"] for e in d["emails"]}
+        d["own"] = next(iter(kinds)) if len(kinds) == 1 and kinds <= set(OWN_RECEIVERS) else None
         d["cells"] = {}
         for rp in ("Google", "Outlook"):
             per = [inboxes[e]["by_receiver"][rp] for e in d["emails"] if rp in inboxes[e]["by_receiver"]]
@@ -245,14 +255,18 @@ def format_slack(client: str, report: dict, test_names: list[str],
     if bl_line:
         head.append(bl_line)
 
-    routes, hot = [], []
+    routes, hot, cross = [], [], []
     for sp, rp in PAIR_ORDER:
         p = report["pairs"].get((sp, rp))
         if p and p["seeds"]:
             pct = 100.0 * p["spam"] / p["seeds"]
-            routes.append(f"\u2022 {sp} \u2192 {_receiver(rp)}: {p['spam']} of {p['seeds']} in spam ({pct:.0f}%)")
+            # Google -> Outlook and Outlook -> Google: every campaign is ESP-matched, so these routes never judge a
+            # mailbox (17 Nov 2026); they are shown, labelled a signal, and kept out of the spam headline.
+            other = sp != rp
+            routes.append(f"\u2022 {sp} \u2192 {_receiver(rp)}: {p['spam']} of {p['seeds']} in spam ({pct:.0f}%)"
+                          + (f" ({SIGNAL})" if other else ""))
             if pct > ROUTE_LINE_OVER:
-                hot.append((pct, f"{sp}\u2192{rp}", rp))
+                (cross if other else hot).append((pct, f"{sp}\u2192{rp}", rp))
     if hot:
         hot.sort(key=lambda h: -h[0])
         line = " \u00b7 ".join(f"{name} {pct:.0f}%{' spam' if n == 0 else ''}"
@@ -260,6 +274,10 @@ def format_slack(client: str, report: dict, test_names: list[str],
         if any(rp == "Google" for _, _, rp in hot):
             line += " (Google = Smartlead's own seeds)"
         head.append(line)
+    if cross:
+        cross.sort(key=lambda h: -h[0])
+        head.append("Other provider, a signal only (campaigns are ESP-matched): "
+                    + " \u00b7 ".join(f"{name} {pct:.0f}% spam" for pct, name, _ in cross))
 
     parts = []
     if flagged:
@@ -376,6 +394,7 @@ def inbox_rows(report: dict, client_by_email: dict[str, str] | None = None,
         g = i["by_receiver"].get("Google")
         o = i["by_receiver"].get("Outlook")
         pct = lambda v: round(100.0 * (v["seeds"] - v["spam"]) / v["seeds"]) if v and v["seeds"] else ""
+        # "Inbox %" is at the inbox's own provider (build_report); the two per-provider columns show both.
         rows.append([i["email"], i["domain"], client_by_email.get(i["email"], ""), i["sender"],
                      "" if i["pct"] is None else round(i["pct"]), pct(g), pct(o),
                      "Inbox" if in_inbox else "Spam", d["verdict"], usable, tested_on,

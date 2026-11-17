@@ -43,6 +43,7 @@ import httpx
 
 from smartlead.api import raise_for_status
 from smartlead import digest as dg
+from smartlead import kill_rule as kr
 from smartlead import renewal_review as rr
 from smartlead.accounts import discover_accounts
 from smartlead.config import BLACKLIST_COLLECTION, SMARTDELIVERY_BASE_URL
@@ -190,6 +191,7 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                         "client": client_label(acc.name, a.get("client_id")),
                         "connected": bool(a.get("is_smtp_success") and a.get("is_imap_success")),
                         "reputation": w.get("warmup_reputation"), "tags": _tag_names(a.get("tags")),
+                        "type": str(a.get("type") or ""),       # judged at its own provider (kill_rule)
                         "pct": None, "tested_on": None,
                         "tests": [], "campaigns": [], "sending": []}
                 if len(page) < 100:
@@ -212,7 +214,7 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
             listing = listing if isinstance(listing, list) else []
             tests = tests_to_read(listing + _older_scheduled(listing, key, acc.name))
             # Every test, newest first: the kill rule needs history (two strikes)
-            # and each seed's receiving provider (graded on the worse one).
+            # and each seed's receiving provider (graded on the inbox's own one).
             # Reports are fetched side by side; order is kept (pool.map).
             from concurrent.futures import ThreadPoolExecutor
             url = SMARTDELIVERY_BASE_URL + "/spam-test/report/{}/sender-account-wise"
@@ -240,11 +242,13 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                         slot[1] += is_spam
                     if not seeds:
                         continue
-                    facts[em].setdefault("tests", []).append(
-                        {"date": t["created_at"][:10], "seeds": seeds, "spam": spam, "by": by,
-                         "test_id": t["spam_test_id"]})
+                    test = {"date": t["created_at"][:10], "seeds": seeds, "spam": spam, "by": by,
+                            "test_id": t["spam_test_id"], "kind": facts[em].get("type") or ""}
+                    facts[em].setdefault("tests", []).append(test)
                     if facts[em].get("tested_on") is None:      # newest first
-                        facts[em]["pct"] = round(100.0 * (seeds - spam) / seeds, 1)
+                        # at its own receiving provider (kill_rule.own_counts); the whole test for SMTP / unknown
+                        n, bad = kr.own_counts(test)
+                        facts[em]["pct"] = round(100.0 * (n - bad) / n, 1) if n else None
                         facts[em]["tested_on"] = t["created_at"][:10]
         except Exception as exc:  # noqa: BLE001 - classic tests are an early warning only
             errors.append(f"{rr.CLASSIC_SOURCE} {acc.name}: {str(exc)[:150]}")

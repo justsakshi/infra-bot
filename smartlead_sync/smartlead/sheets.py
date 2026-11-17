@@ -593,7 +593,10 @@ class DeliverabilityReader:
             # Date = most recent test column that contributed a value
             dates = [col_dates[c] for c in (gs_col, ol_col) if c is not None and c in col_dates]
             test_date = max(dates) if dates else ""
-            mapping[domain] = {"status": status, "date": test_date}
+            # Each column as well: an inbox is judged on its own provider's column only (own_test_status).
+            mapping[domain] = {"status": status, "date": test_date,
+                               "gsuite": gs_val, "gsuite_date": col_dates.get(gs_col, "") if gs_col is not None else "",
+                               "outlook": ol_val, "outlook_date": col_dates.get(ol_col, "") if ol_col is not None else ""}
 
         print(f"  [Sheets] Loaded {len(mapping)} domain statuses.")
         return mapping
@@ -631,6 +634,77 @@ class DeliverabilityReader:
             return "inbox"
         # Fallback
         return gsuite or outlook or "Unknown"
+
+
+_GRID_FAIL = ("spam", "low reputation", "disqualified", "fail")
+_GRID_COLUMN = {"google": ("gsuite", "gsuite_date"), "microsoft": ("outlook", "outlook_date")}
+
+
+def grid_cell_status(value: str) -> str:
+    """One grid cell -> "fail" (spam, low reputation, disqualified, fail, or a labelled "spam (...)" cell),
+    "inbox", or "" (empty / anything else). Pure."""
+    v = str(value or "").strip().lower()
+    if not v or v == "-":
+        return ""
+    if v in _GRID_FAIL or v.startswith("spam"):
+        return "fail"
+    return "inbox" if "inbox" in v else ""
+
+
+def own_test_status(entry: dict | None, kind) -> tuple[str, str, str]:
+    """(status, date, signal note) of one inbox from its grid entry, judged at its OWN provider
+    (smartlead/own_provider.py): a Google inbox on the G suite column, an Outlook inbox on the Outlook column.
+
+    Until 17 Nov 2026 the row's two columns were merged ("fail = either lands spam"), so a Google domain whose
+    seeds landed in spam at Outlook only was BUSY "failed_test" and a P0 on the planning tab, though every
+    campaign is ESP-matched. Now the other column is only a signal: it never makes the status "fail", and when it
+    shows spam the note says so. With no own-provider result, the other column's "inbox" still counts (as before)
+    and its spam does not: the inbox is untested ("Unknown"). An SMTP or unknown-type inbox, and an entry with
+    no per-column values (an API result), keep the merged status. Pure."""
+    from smartlead.own_provider import NAMES, SIGNAL, own_provider
+    entry = entry if isinstance(entry, dict) else {}
+    status, date = entry.get("status", "Unknown") or "Unknown", entry.get("date", "")
+    own = own_provider(kind)
+    if own is None or ("gsuite" not in entry and "outlook" not in entry):
+        return status, date, ""
+    other = "microsoft" if own == "google" else "google"
+    o_val, o_date = (entry.get(k, "") for k in _GRID_COLUMN[other])
+    note = ""
+    if grid_cell_status(o_val) == "fail":
+        when = f" on {o_date}" if o_date else ""
+        note = f"{NAMES[other]} seeds in spam{when} (not its provider: {SIGNAL})"
+    m_val, m_date = (entry.get(k, "") for k in _GRID_COLUMN[own])
+    mine = grid_cell_status(m_val)
+    if mine:
+        return mine, m_date or date, note
+    if grid_cell_status(o_val) == "inbox":
+        return "inbox", o_date or date, note
+    return "Unknown", "", note
+
+
+def merge_grid_entries(old: dict | None, new: dict) -> dict:
+    """Two tabs' entries for one domain, per column: a failing cell wins, else the newer one; the merged status
+    is then worked out as the reader does. Entries without per-column values keep the old rule (fail wins on the
+    status, else the newer test). Pure."""
+    if not old:
+        return dict(new)
+    if not all(k in e for e in (old, new) for k in ("gsuite", "outlook")):
+        if new.get("status") == "fail" or old.get("status") == "fail":
+            return dict(new if new.get("status") == "fail" else old)
+        return dict(new if new.get("status") and new.get("date", "") >= old.get("date", "") else old)
+    out = {}
+    for col, dcol in (("gsuite", "gsuite_date"), ("outlook", "outlook_date")):
+        a, b = (old.get(col, ""), old.get(dcol, "")), (new.get(col, ""), new.get(dcol, ""))
+        if grid_cell_status(b[0]) == "fail" or not a[0]:
+            pick = b if b[0] or not a[0] else a
+        elif grid_cell_status(a[0]) == "fail" or not b[0]:
+            pick = a
+        else:
+            pick = b if b[1] >= a[1] else a
+        out[col], out[dcol] = pick
+    out["status"] = DeliverabilityReader._merge_provider_status(out["gsuite"], out["outlook"])
+    out["date"] = max(out["gsuite_date"], out["outlook_date"])
+    return out
 
 
 def read_master_inboxes(sheet_id: str, clients: list[str]) -> list[dict]:

@@ -867,7 +867,7 @@ def test_a_domain_with_half_its_inboxes_in_spam_rests_all_of_them(tmp_path):
     assert pulls(d) == set(WIDE) | {"untested@bad.com", "a@fine.com"}
     assert d["a@bad.com"]["why"] == "failed 2026-11-09" and "domain" not in d["a@bad.com"]
     for e in ("d@bad.com", "e@bad.com", "untested@bad.com"):     # passed, or never tested: out with the domain
-        assert d[e]["why"] == "its domain failed (3 of 6 inboxes in spam)"
+        assert d[e]["why"] == "its domain failed (3 of 6 inboxes in spam at their own provider)"
         assert d[e]["domain"] == {"name": "bad.com", "failed": 3, "inboxes": 6}
     assert d["b@fine.com"]["action"] is None                     # 1 of 4: only the inbox that failed
     assert wk.plan(st) == d                                      # no nights given: the newest night with new results
@@ -899,9 +899,9 @@ def test_a_domain_pulled_inbox_returns_only_once_its_domain_no_longer_fails(tmp_
         st["pulled"][e] = {"on": "2026-11-10", "campaigns": [1]}
     d = wk.plan(st, {"2026-11-23"})
     assert all(x["action"] is None for x in d.values())          # c and d passed twice, but 2 of 4 still fail
-    assert d["c@bad.com"]["why"] == "passed 2026-11-16 and 2026-11-23, but its domain failed (2 of 4 inboxes in spam)"
+    assert d["c@bad.com"]["why"] == "passed 2026-11-16 and 2026-11-23, but its domain failed (2 of 4 inboxes in spam at their own provider)"
     _, parts = wk.build_report(st, {**GOT, "nights": {"2026-11-23"}}, d, None, acted(), True, set(BAD))
-    assert ("• bad.com still fails (2 of 4 inboxes in spam), so 2 inboxes that passed twice stay out of campaigns "
+    assert ("• bad.com still fails (2 of 4 inboxes in spam at their own provider), so 2 inboxes that passed twice stay out of campaigns "
             "until it no longer does.") in "\n".join(parts)
 
     st["results"]["a@bad.com"].append(result(v2.FAIL, 0, 4, "2026-11-30"))
@@ -998,14 +998,14 @@ def test_report_gives_a_failed_domain_its_own_line(tmp_path):
     head, parts = wk.build_report(st, GOT, d, f, a, True, set())
     text = "\n".join(parts)
     # the fail line counts the 5 tested inboxes; the domain line counts all 6 the job knows on the domain
-    assert "• fail · bad.com · 3 of 5 inboxes · Google 0/4, Microsoft 4/4 → taken out of PL | A; tagged DO NOT USE" in text
-    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam → 3 more inboxes: 2 taken out of PL | A, 1 in no "
+    assert "• fail · bad.com · 3 of 5 inboxes · Google 0/4, Microsoft 4/4 (not its provider: a signal, not a verdict) → taken out of PL | A; tagged DO NOT USE" in text
+    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam at their own provider → 3 more inboxes: 2 taken out of PL | A, 1 in no "
             "campaign; tagged DO NOT USE") in text
     assert "• pass" not in text and "Pulled earlier" not in text  # the passing inboxes are in the domain line only
     assert head[1] == "5 inboxes · 2 pass · 0 watch · 3 fail"
 
     _, parts = wk.build_report(st, GOT, d, f, acted(removed={e: [1] for e in WIDE}), False, set())    # a dry run
-    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam → 2 more inboxes would be taken out of PL | A; "
+    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam at their own provider → 2 more inboxes would be taken out of PL | A; "
             "would be tagged DO NOT USE") in "\n".join(parts)
 
 
@@ -1024,7 +1024,7 @@ def test_an_inbox_already_out_with_its_domain_is_not_pulled_twice_and_stays_in_t
     a = acted(blocked={"d@bad.com": [1]}, tagged=["d@bad.com"])
     _, parts = wk.build_report(st, GOT, d, f, a, True, set(st["pulled"]))
     text = "\n".join(parts)
-    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam → 1 more inbox last good sender of live PL | A: not "
+    assert ("• domain failed · bad.com · 3 of 6 inboxes in spam at their own provider → 1 more inbox last good sender of live PL | A: not "
             "removed (see Needs you); tagged DO NOT USE") in text
     assert "• pass" not in text
 
@@ -1051,7 +1051,7 @@ def test_report_counts_an_inbox_by_its_own_provider_verdict(tmp_path):
     head, parts = wk.build_report(st, GOT, d, None, acted(tagged=["o@two.com"]), True, set())
     text = "\n".join(parts)
     assert head[1] == "2 inboxes · 1 pass · 0 watch · 1 fail"
-    assert "g@one.com" not in text and "• fail · two.com · o@two.com · Google 4/4, Microsoft 0/4 →" in text
+    assert "g@one.com" not in text and "• fail · two.com · o@two.com · Microsoft 0/4, Google 4/4 (not its provider: a signal, not a verdict) →" in text
 
 
 def test_a_small_test_cannot_rest_a_big_domain(tmp_path):

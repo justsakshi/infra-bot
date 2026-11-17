@@ -280,6 +280,8 @@ def apply(item: dict, data: dict | None, today: date, *, block_listed: bool, req
                           kind=item.get("type") or item.get("provider") or "")
     if data is not None and not checked:
         notes.append(NOT_READ)
+    if item.get("test_signal"):         # the grid's other-provider spam (sheets.own_test_status): shown, never a reason
+        notes.append(item["test_signal"])
     item["v2_status"] = (v2 or {}).get("verdict", "")
     item["v2_set_aside"] = fail_set_aside(v2, item.get("type") or item.get("provider") or "") if checked else ""
     item["v2_date"] = (v2 or {}).get("night", "")

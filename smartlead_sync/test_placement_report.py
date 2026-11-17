@@ -29,23 +29,27 @@ senders = {
 types = {"a@gm.com": "GMAIL", "b@out.com": "OUTLOOK"}
 rep = build_report(senders, types, prov, {"b@out.com": ["Camp 1"]})
 a, b = rep["inboxes"]["a@gm.com"], rep["inboxes"]["b@out.com"]
-ok(a["seeds"] == 3 and a["spam"] == 1, "an unclassified seed is not counted as inbox or spam")
-ok(round(a["pct"]) == 67 and a["status"] == "watch", "67% inbox = spam side of 80")
-ok(b["pct"] == 50.0 and b["campaigns"] == ["Camp 1"], "50% keeps its active campaign list")
+# Own provider (17 Nov 2026): a Google sender is judged on the Google seeds, an Outlook sender on the Outlook seeds.
+ok(a["seeds"] == 2 and a["spam"] == 1, "a Google sender counts its Google seeds; an unclassified seed is not counted")
+ok(round(a["pct"]) == 50 and a["status"] == "watch", "50% at its own provider = spam side of 80")
+ok(b["pct"] == 100.0 and b["status"] == "good" and b["campaigns"] == ["Camp 1"],
+   "an Outlook sender in spam at Google only is not flagged: the other provider is a signal")
 ok(rep["pairs"][("Google", "Google")] == {"seeds": 2, "spam": 1, "inboxes_hit": 1}, "Google -> Google counted")
-ok(rep["pairs"][("Outlook", "Google")]["spam"] == 1, "Outlook -> Google spam counted")
+ok(rep["pairs"][("Outlook", "Google")]["spam"] == 1, "Outlook -> Google spam still counted for the route lines")
 ok(a["by_receiver"]["Google"] == {"seeds": 2, "spam": 1}, "per-receiver counts kept per inbox")
-ok(counts(rep["inboxes"])["watch"] == 2, "counts by status")
+ok(b["by_receiver"]["Google"] == {"seeds": 1, "spam": 1}, "the other provider's spam is kept, not hidden")
+ok(counts(rep["inboxes"])["watch"] == 1 and counts(rep["inboxes"])["good"] == 1, "counts by status")
 head, parts = format_slack("X", rep, ["t1"], "2026-10-12")
 txt = "\n".join(parts)
-ok(head == ["\U0001f6a8 Classic seed test (early warning, not proof), X, 12 Oct: 2 of 2 mailboxes flagged (2 domains in spam)",
-            "1 still in live campaigns",
-            "Outlook\u2192Google 100% spam \u00b7 Google\u2192Google 50% (Google = Smartlead's own seeds)"],
-   f"headline: icon, early-warning label, client, date, result, got {head}")
-ok("Outlook \u2192 Google (Smartlead's own seeds): 1 of 1 in spam (100%)" in txt, "thread shows where the test emails landed")
-ok(txt.index("*Flagged mailboxes (2)*") < txt.index("Where the test emails landed"), "mailbox list comes first in the thread")
-ok("\u2022 b@out.com \u00b7 remove from Camp 1\n\u2022 a@gm.com \u00b7 not in a live campaign, nothing to remove" in txt,
-   "one list: each mailbox by name with what to do, live ones first")
+ok(head == ["\u26a0\ufe0f Classic seed test (early warning, not proof), X, 12 Oct: 1 of 2 mailboxes flagged (1 domain in spam)",
+            "Google\u2192Google 50% spam (Google = Smartlead's own seeds)",
+            "Other provider, a signal only (campaigns are ESP-matched): Outlook\u2192Google 100% spam"],
+   f"headline: own-provider routes as the result, the other provider's spam as a signal only, got {head}")
+ok("Outlook \u2192 Google (Smartlead's own seeds): 1 of 1 in spam (100%) (not its provider: a signal, not a verdict)" in txt,
+   "thread shows where the test emails landed, the other provider labelled a signal")
+ok(txt.index("*Flagged mailboxes (1)*") < txt.index("Where the test emails landed"), "mailbox list comes first in the thread")
+ok("\u2022 a@gm.com \u00b7 not in a live campaign, nothing to remove" in txt and "b@out.com" not in txt,
+   "only the mailbox that failed at its own provider is listed")
 ch, cp = format_slack("Y", build_report({"c@gm.com": [{"seed": "x@g.com", "folder": "Inbox"}]}, {"c@gm.com": "GMAIL"}, prov), ["t"])
 ok(ch == ["Classic seed test (early warning, not proof), Y: no mailbox flagged (1 tested)"]
    and "Google \u2192 Google (Smartlead's own seeds): 0 of 1 in spam" in "\n".join(cp)
