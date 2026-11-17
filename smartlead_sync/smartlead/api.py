@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import random
+import time
 from typing import Any
 
 import httpx
@@ -28,6 +30,32 @@ def raise_for_status(resp: httpx.Response) -> None:
     raise httpx.HTTPStatusError(
         f"{resp.status_code} on {resp.request.url.path}: {reason}",
         request=resp.request, response=resp) from None
+
+
+SYNC_RATE_WAIT_MAX = 60.0   # Smartlead's limit is 200 requests a minute: never wait longer than one window
+
+
+def get_json(url: str, key: str, *, tries: int = 5, sleep=time.sleep, headers: dict | None = None,
+             timeout: float = 120, **params) -> Any:
+    """Plain (non-async) GET for the scripts: waits out a 429 or a 5xx and tries again, then raises without the key.
+
+    17 Nov 2026: the 10:20 infra audit exited 1 on one 429 ("200 requests in 1 min") while the 10:00 sync shared the
+    account limit. The wait is Smartlead's Retry-After when given, else 5 s doubling, plus jitter so the parallel
+    readers do not all come back in the same second."""
+    resp = None
+    for attempt in range(max(1, tries)):
+        resp = httpx.get(url, params={"api_key": key, **params}, headers=headers, timeout=timeout)
+        if not (resp.status_code == 429 or resp.status_code >= 500) or attempt == tries - 1:
+            break
+        try:
+            base = float(resp.headers.get("Retry-After") or "")
+        except ValueError:
+            base = 5.0 * (2 ** attempt)
+        delay = min(base, SYNC_RATE_WAIT_MAX) + random.uniform(0, 5)
+        print(f"  [!] {resp.status_code} on {resp.request.url.path} - retrying in {delay:.0f}s (try {attempt + 2}/{tries})")
+        sleep(delay)
+    raise_for_status(resp)  # no key in the error text
+    return resp.json()
 
 
 class SmartleadClient:

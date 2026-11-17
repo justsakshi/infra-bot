@@ -67,7 +67,8 @@ def drift(account: dict, kind: str, vendor: str, want_limit: int | None = None) 
     w = account.get("warmup_details") or {}
     out = []
     if str(w.get("status") or "").upper() != "ACTIVE":
-        return ["warmup off"]
+        why = " ".join(str(w.get("blocked_reason") or "").split())[:80]
+        return [f"warmup off (Smartlead stopped it: {why})" if why else "warmup off"]
     if _int(account.get("message_per_day")) != want:
         out.append(f"daily limit {account.get('message_per_day')}, want {want}")
     wmax = _int(w.get("max_email_per_day") or w.get("warmup_max_count"))
