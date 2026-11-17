@@ -36,6 +36,13 @@ Coverage rule (Manveen, 16 Nov 2026: "make sure we have all inboxes in test exce
 docs/V2_WEEKLY.md): every connected inbox we use in exactly one ACTIVE weekly v2 test. The active tests come from the
 v2 API; their senders stay on their test's DT campaign (plan(pinned=...)); inboxes in no test or in two, and two
 tests with one name, are digest asks (coverage_asks). ScaledMail cancelled orders (asset tracker) are left out.
+
+Coverage reminder (t16, 17 Nov 2026; Manveen: "make sure you remid me to update weekly scheduled test for all missed
+inboxes ... mae sure we save thta on db as well"): the ask for inboxes in no test names, per DT campaign they sit on,
+the active test with room (under 50 senders) or a new test on Saturday after 05:30 IST, with a ready Claude-in-Chrome
+line (never "Run now"); on Fridays it is posted at once. Every --apply run saves the day in Mongo test_coverage
+(coverage_record). With the tests read, inboxes are only put on DT campaigns that have an active weekly test
+(plan(tested=...)); the bot never creates or stops a v2 test.
 """
 from __future__ import annotations
 
@@ -74,15 +81,16 @@ def _dt_number(name: str) -> int:
         return 0
 
 
-def _fill_first(dts: list[dict], members: set[int], cap: int, pinned: dict | None = None) -> dict:
+def _fill_first(dts: list[dict], members: set[int], cap: int, pinned: dict | None = None, create_ok: bool = True) -> dict:
     """Lay out one client's DT campaigns: earlier campaigns full (cap each)
     before later ones hold anything; an inbox stays put unless it must move.
     ``pinned`` {inbox id: campaign id}: a sender of an active weekly v2 test never moves off its test's campaign
     (the coverage rule, 17 Nov 2026); the others fill first around them.
-    Returns {"adds": {campaign: [ids]}, "removes": {id: [ids]}, "create": [...]}."""
+    ``create_ok`` False: no new campaign; inboxes that do not fit come back in "left".
+    Returns {"adds": {campaign: [ids]}, "removes": {id: [ids]}, "create": [...], "left": [ids]}."""
     pinned = pinned or {}
     dts = sorted(dts, key=lambda c: _dt_number(c["name"]))
-    n_needed = max(len(dts), -(-len(members) // cap)) if members else len(dts)
+    n_needed = max(len(dts), -(-len(members) // cap)) if members and create_ok else len(dts)
     slots = [{"key": c["id"], "have": set(c["attached"]) & members} for c in dts]
     create = []
     base = dts[-1]["name"].rsplit("#", 1)[0].strip() if dts else ""
@@ -111,7 +119,17 @@ def _fill_first(dts: list[dict], members: set[int], cap: int, pinned: dict | Non
         for i in take:
             if i in where:
                 removes.setdefault(where[i], []).append(i)
-    return {"adds": adds, "removes": {k: sorted(v) for k, v in removes.items()}, "create": create}
+    return {"adds": adds, "removes": {k: sorted(v) for k, v in removes.items()}, "create": create, "left": pool}
+
+
+def drop_cancelled(no_room: dict, boxes: list[dict], cancelled: set[str] | None) -> dict:
+    """``no_room`` {client: [ids]} without inboxes of ScaledMail cancelled orders (they are being deleted, so no ask
+    for them; they stay where they are). ``cancelled`` None = unknown: nothing left out. Pure."""
+    if not cancelled:
+        return dict(no_room)
+    dom = {int(b["id"]): str(b.get("email") or "").lower().split("@")[-1] for b in boxes}
+    out = {c: [i for i in ids if dom.get(int(i)) not in cancelled] for c, ids in no_room.items()}
+    return {c: ids for c, ids in out.items() if ids}
 
 
 def is_pulled(account: dict) -> bool:
@@ -124,7 +142,7 @@ def is_pulled(account: dict) -> bool:
 
 
 def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_others: bool = False,
-         retest: list[dict] | None = None, pinned: dict | None = None) -> dict:
+         retest: list[dict] | None = None, pinned: dict | None = None, tested: set[int] | None = None) -> dict:
     """inboxes = [{id, email, client}]; campaigns = [{id, name, client, role: main|dt,
     status, attached: set of inbox ids}]. Every current-client inbox goes on its
     client's main test campaign, and on exactly one of its DT campaigns, filled
@@ -141,7 +159,14 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
     (pulled inboxes newly put on, a subset of "adds") and "no_room": {client: [ids]} (pulled inboxes left on none).
 
     ``pinned`` = {inbox id: DT campaign id} (pins()): senders of an active weekly v2 test stay on their test's campaign,
-    in the sheet or not, never moved or taken off (a v2 test keeps the senders it was created with)."""
+    in the sheet or not, never moved or taken off (a v2 test keeps the senders it was created with).
+
+    ``tested`` = ids of the DT campaigns an active weekly v2 test runs on (None = the tests could not be read: the
+    layout above, unchanged). With it (t16, 17 Nov 2026, the hold comment on PR #82): inboxes are only ever put on a
+    DT campaign that has a test, never over ``cap``, and no campaign is created. Inboxes already on a campaign without
+    a test stay there (nothing moves for it); a pulled inbox on one moves to a tested campaign with room, else it stays
+    put and is in "no_room". New inboxes that do not fit are left off and listed in "unplaced" {client: [ids]} (the
+    coverage reminder asks for a test for them)."""
     from smartlead.inbox_intake import CURRENT_CLIENTS
     adds: dict = {}
     removes: dict = {}
@@ -150,6 +175,7 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
     problems: list[str] = []
     retest_new: dict = {}
     no_room: dict = {}
+    unplaced: dict = {}
     pulled_by_client: dict = {}
     for b in retest or []:
         if b["client"] in CURRENT_CLIENTS:
@@ -180,6 +206,15 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
         on_dt = {i for c in dts for i in c["attached"]}
         mine_pinned = {i: k for i, k in (pinned or {}).items() if any(c["id"] == k and i in c["attached"] for c in dts)}
         base = (ids if drop_others else ids | on_dt) | set(mine_pinned)
+        if tested is not None:
+            lay = _tested_layout(client, dts, base, ids, on_dt, mine_pinned, pulled_by_client.get(client, set()),
+                                 tested, cap, drop_others)
+            for k, v in (("adds", adds), ("removes", removes), ("drops", drops), ("retest", retest_new)):
+                v.update(lay[k])
+            if lay["no_room"]:
+                no_room[client] = lay["no_room"]
+            unplaced[client] = lay["unplaced"]
+            continue
         # pulled inboxes outside ``base``: those already on a DT campaign keep their place first, then by id
         extra = sorted(pulled_by_client.get(client, set()) - base, key=lambda i: (i not in on_dt, i))
         room = (max(len(dts), -(-len(base) // cap)) if base else len(dts)) * cap - len(base)
@@ -201,7 +236,45 @@ def plan(inboxes: list[dict], campaigns: list[dict], cap: int = DT_CAP, drop_oth
             if new:
                 retest_new[key] = new
     return {"adds": adds, "removes": removes, "drops": drops, "create": create, "problems": problems,
-            "retest": retest_new, "no_room": no_room}
+            "retest": retest_new, "no_room": no_room, "unplaced": unplaced}
+
+
+def _tested_layout(client: str, dts: list[dict], base: set[int], ids: set[int], on_dt: set[int], pinned: dict,
+                   pulled: set[int], tested: set[int], cap: int, drop_others: bool) -> dict:
+    """One client's DT layout when the active tests are known (plan(tested=...)). Pure."""
+    t_dts = [c for c in dts if int(c["id"]) in tested]
+    u_dts = [c for c in dts if int(c["id"]) not in tested]
+    on_t = {i for c in t_dts for i in c["attached"]}
+    on_u = {i for c in u_dts for i in c["attached"]}
+    stay = (base & on_u) - on_t - pulled - set(pinned)          # on a campaign without a test: left where it is
+    fill = base - stay
+    extra = sorted(pulled - fill, key=lambda i: (i not in on_t, i in on_u, i))   # tested seats first, then by id
+    room = max(0, len(t_dts) * cap - len(fill))
+    fit, left = set(extra[:room]), extra[room:]
+    drops: dict = {}
+    if drop_others:
+        for c in dts:
+            gone = sorted(c["attached"] - ids - pulled - set(pinned))
+            if gone:
+                drops[int(c["id"])] = gone
+                c["attached"] = c["attached"] - set(gone)
+    lay = _fill_first(t_dts, fill | fit, cap, pinned, create_ok=False) if t_dts else \
+        {"adds": {}, "removes": {}, "left": sorted(fill | fit)}
+    placed = {i for v in lay["adds"].values() for i in v}
+    removes = dict(lay["removes"])
+    for c in u_dts:                                              # a pulled inbox moved off a campaign without a test
+        moved = sorted(i for i in placed & c["attached"])
+        if moved:
+            removes.setdefault(int(c["id"]), []).extend(moved)
+    retest = {}
+    for key, add in lay["adds"].items():
+        new = [i for i in add if i in pulled and i not in on_dt]
+        if new:
+            retest[key] = new
+    not_placed = set(lay["left"])
+    return {"adds": lay["adds"], "removes": {k: sorted(v) for k, v in removes.items()}, "drops": drops,
+            "retest": retest, "no_room": sorted((set(left) | not_placed) & pulled),
+            "unplaced": sorted(not_placed - pulled - on_dt)}
 
 
 async def _clone(sl, src: int, name: str) -> int:
@@ -478,10 +551,58 @@ def _tab(client: str) -> str:
     return next((t for t in TABS if t.lower() == str(client).lower()), "the client's tab")
 
 
-def coverage_asks(results: dict) -> list:
-    """Digest asks of the coverage rule, per client: inboxes in no active weekly v2 test (the step names their DT
-    campaigns), inboxes in two or more, and an account whose tests could not be read (broken). Pure."""
+SATURDAY = "Saturday after 05:30 IST"     # the seed pool refills 05:30 IST daily; new weekly tests start on Saturdays
+
+
+def _chrome(test: str | None, camp: str | None, n: int) -> str:
+    """A ready Claude-in-Chrome line. Smartlead's API cannot edit a v2 test's senders and the help centre only shows
+    picking them when a test is created (17 Nov 2026), so the line edits only if the page allows it."""
+    them = "it" if n == 1 else f"the {n} inboxes"
+    new = (f"create a new weekly v2 test (Automatic, campaign {camp or 'a DT campaign of the client'}, Google + "
+           f"Microsoft, text only, weekly, first run {SATURDAY}, at most {DT_CAP} senders) with {them} listed in the "
+           "digest thread")
+    if test:
+        return (f"Claude in Chrome: \"In Smartlead > Smart Delivery, open the weekly v2 test '{test}'. If it lets you edit "
+                f"its sender accounts, add only {them} listed in the digest thread and save; change nothing else. "
+                f"If its senders cannot be edited, leave it as it is and {new}. Change nothing else; never click Run now.\"")
+    return f"Claude in Chrome: \"In Smartlead > Smart Delivery, {new}. Change nothing else; never click Run now.\""
+
+
+def _gap_step(client: str, c: dict, dt_tests: dict, untested: list[str]) -> str:
+    """Per DT campaign the missing inboxes sit on: the active test there with room, or a new test on Saturday."""
+    on = c.get("on") or {}
+    groups: dict = {}
+    for e in c.get("none") or []:
+        groups.setdefault(on.get(e), []).append(e)
+    parts = []
+    spare = untested[0] if untested else None
+    for camp in sorted(groups, key=lambda x: (x is None, str(x))):
+        n = len(groups[camp])
+        it = "it" if n == 1 else "them"
+        t = dt_tests.get(camp) if camp else None
+        if camp is None:
+            where = spare or "a new DT campaign of the client (a copy of its DT #1)"
+            parts.append(f"{n} on no DT campaign: put {it} on {where}, then {_chrome(None, where, n)}")
+        elif t and t["senders"] + n <= DT_CAP:
+            parts.append(f"{n} on {camp}: \"{t['test']}\" on {camp} has room ({t['senders']} of {DT_CAP} senders). "
+                         + _chrome(t["test"], camp, n))
+        elif t:
+            parts.append(f"{n} on {camp} (its test \"{t['test']}\" is full): create a new weekly v2 test with {it} on "
+                         f"{spare or camp}, first run {SATURDAY}. " + _chrome(None, spare or camp, n))
+        else:
+            parts.append(f"{n} on {camp}, which has no active weekly test: create a new weekly v2 test there, first run "
+                         f"{SATURDAY}. " + _chrome(None, camp, n))
+    return (" · ".join(parts) + f" A v2 test keeps the senders it was created with (at most {DT_CAP}), so putting an "
+            "inbox on a campaign is not enough. The list is in the thread.")
+
+
+def coverage_asks(results: dict, today: date | None = None) -> list:
+    """Digest asks of the coverage rule, per client: inboxes in no active weekly v2 test (per DT campaign they sit on:
+    the test with room or a new test on Saturday, with a Claude-in-Chrome line; on Fridays posted at once, once per
+    Friday: Manveen 17 Nov 2026, "remid me to update weekly scheduled test for all missed inboxes"), inboxes in two or
+    more, and an account whose tests could not be read (broken). Silent when every inbox is covered. Pure."""
     from smartlead import digest as dg
+    friday = bool(today and today.weekday() == 4)
     asks = []
     for acc, r in sorted(results.items()):
         if not isinstance(r, dict) or "coverage" not in r:
@@ -500,16 +621,15 @@ def coverage_asks(results: dict) -> list:
         for client, c in sorted(r["coverage"].items()):
             none, dupes = c.get("none") or [], c.get("dupes") or {}
             if none:
-                on = c.get("on") or {}
-                where = sorted({on.get(e) or "no DT campaign" for e in none})
                 verb = "is" if len(none) == 1 else "are"
-                asks.append(dg.Ask(
-                    f"{len(none)} {client} inbox{'es' if len(none) != 1 else ''} {verb} in no active weekly v2 test, "
-                    f"so nothing checks {'its' if len(none) == 1 else 'their'} placement.",
-                    f"In Smart Delivery, create a weekly v2 test with them (at most {DT_CAP} senders a test), starting "
-                    f"Saturday after 05:30 IST, on {', '.join(where)}. A v2 test keeps the senders it was created "
-                    "with, so adding them to a campaign is not enough. The list is in the thread.",
-                    key=f"{SOURCE}:coverage:{client}"))
+                text = (f"{len(none)} {client} inbox{'es' if len(none) != 1 else ''} {verb} in no weekly test, "
+                        f"so nothing checks {'its' if len(none) == 1 else 'their'} placement.")
+                step = _gap_step(client, c, r.get("dt_tests") or {}, (r.get("untested_dts") or {}).get(client) or [])
+                if friday:
+                    asks.append(dg.Ask("Friday reminder: " + text, step, urgent=True,
+                                       key=f"{SOURCE}:coverage:{client}:{today.isoformat()}"))
+                else:
+                    asks.append(dg.Ask(text, step, key=f"{SOURCE}:coverage:{client}"))
             if dupes:
                 asks.append(dg.Ask(
                     f"{_n(len(dupes))} of {client} {'is' if len(dupes) == 1 else 'are'} in 2 or more active weekly v2 "
@@ -572,7 +692,7 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
             f"Make room on a DT campaign of {client}, or create the next DT campaign and its weekly test; the next run "
             f"(06:00 IST) puts {'them' if k != 1 else 'it'} on.",
             key=f"{SOURCE}:no-room:{client}"))
-    asks += coverage_asks(results)
+    asks += coverage_asks(results, today)
     if errors:
         names = sorted({e.split(":", 1)[0] for e in errors})
         asks.append(dg.Ask(f"The test-campaign job could not finish: {', '.join(names)}.",
@@ -583,6 +703,65 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
                            "Nothing to do: it is kept and sent again with the next run.", key=f"{SOURCE}:dm",
                            kind="broken"))
     return asks, done
+
+
+def coverage_record(results: dict, prev: dict | None, today: date) -> dict:
+    """Mongo test_coverage, one doc a day (Manveen 17 Nov 2026: "mae sure we save thta on db as well"): per client the
+    inboxes in no weekly test (each with the day it was first seen missing), the duplicates, and "resolved": inboxes
+    missing on the last record that are covered now (an inbox that left our list is "left", not resolved). An account
+    whose tests were not read keeps its last record (stale) and resolves nothing. Pure."""
+    prev = prev or {}
+    pclients = prev.get("clients") or {}
+    clients: dict[str, dict] = {}
+    read: dict[str, bool] = {}
+    accounts: dict[str, list[str]] = {}
+    for acc, r in sorted(results.items()):
+        if not isinstance(r, dict) or "coverage" not in r:
+            continue
+        read[acc] = r["coverage"] is not None
+        if r["coverage"] is None:
+            for client in (prev.get("accounts") or {}).get(acc) or []:
+                old = pclients.get(client) or {}
+                clients[client] = {**old, "resolved": [], "stale": True}
+            accounts[acc] = list((prev.get("accounts") or {}).get(acc) or [])
+            continue
+        accounts[acc] = sorted(r["coverage"])
+        for client, c in sorted(r["coverage"].items()):
+            since = {m["email"]: m.get("since") for m in (pclients.get(client) or {}).get("missing") or []}
+            none = sorted(c.get("none") or [])
+            members = set(c["all"]) if "all" in c else None
+            gone_or_covered = sorted(set(since) - set(none))
+            resolved = [{"email": e, "since": since[e], "on": today.isoformat()} for e in gone_or_covered
+                        if members is None or e in members]
+            left = [e for e in gone_or_covered if members is not None and e not in members]
+            dupes = dict(sorted((c.get("dupes") or {}).items()))
+            doc = {"inboxes": c.get("inboxes", 0), "missing": [{"email": e, "since": since.get(e) or today.isoformat()}
+                                                               for e in none],
+                   "missing_n": len(none), "dupes": dupes, "dupes_n": len(dupes), "resolved": resolved}
+            if left:
+                doc["left"] = left
+            clients[client] = doc
+    all_read = bool(read) and all(read.values())
+    return {"_id": today.isoformat(), "date": today.isoformat(), "tests_read": read, "accounts": accounts,
+            "clients": clients,
+            "all_covered": (all(not c["missing"] for c in clients.values()) if all_read else None)}
+
+
+def _coverage_store():
+    """(read the newest earlier record, save a record) on Mongo test_coverage; (None-returning, no-op) without Mongo."""
+    from smartlead.zapmail_asset_sync import _db
+    db = _db()
+    if db is None:
+        return (lambda: None), (lambda doc: None)
+    col = db["test_coverage"]
+    today = date.today().isoformat()
+
+    def prev():
+        return next(iter(col.find({"_id": {"$lt": today}}).sort("_id", -1).limit(1)), None)
+
+    def save(doc):
+        col.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+    return prev, save
 
 
 def _state_col():
@@ -710,18 +889,22 @@ def main() -> int:
             try:
                 tests, tests_error = await asyncio.to_thread(_weekly_tests, acc.api_key), ""
                 pinned = pins(tests, camps)
+                tested = {int(t["campaign_id"]) for t in tests if not is_copy_test(t.get("name"))}
             except v2_api.V2ApiError as exc:     # tests unknown: nobody on a DT campaign moves today
                 tests, tests_error = None, v2_api.describe(exc)
                 pinned = {int(i): int(x["id"]) for x in camps if x["role"] == "dt" for i in x["attached"]}
+                tested = None
             used = only_tracked(boxes, tracked)
-            p = plan(used, camps, drop_others=tracked is not None, retest=pulled, pinned=pinned)
+            p = plan(used, camps, drop_others=tracked is not None, retest=pulled, pinned=pinned, tested=tested)
+            p["no_room"] = drop_cancelled(p["no_room"], boxes, cancelled)
             names = {x["id"]: x["name"] for x in camps}
             res = {"would_add": {names.get(k, k): len(v) for k, v in p["adds"].items()},
                    "would_remove": {names.get(k, k): len(v) for k, v in p["removes"].items()},
                    "would_drop": {names.get(k, k): len(v) for k, v in p["drops"].items()},
                    "would_create": [x["name"] for x in p["create"]], "problems": p["problems"],
                    "would_retest": {names.get(k, k): len(v) for k, v in p["retest"].items()},
-                   "no_room": {cl: len(v) for cl, v in p["no_room"].items()}}
+                   "no_room": {cl: len(v) for cl, v in p["no_room"].items()},
+                   "unplaced": {cl: len(v) for cl, v in p["unplaced"].items() if v}}
             ok = {int(a["id"]) for a in listed if a.get("is_smtp_success") and a.get("is_imap_success")}
             members = {str(b["email"]).strip().lower(): b["client"] for b in used + pulled
                        if b["client"] in CURRENT_CLIENTS and int(b["id"]) in ok and b.get("email")
@@ -734,8 +917,17 @@ def main() -> int:
                 by_email = {str(b["email"]).strip().lower(): int(b["id"]) for b in boxes if b.get("email")}
                 res["coverage"] = coverage(members, tests)
                 res["twins"] = twins(tests)
-                for cv in res["coverage"].values():
+                for client, cv in res["coverage"].items():
                     cv["on"] = {e: at.get(by_email.get(e)) for e in cv["none"]}
+                    cv["all"] = sorted(e for e, cl in members.items() if cl == client)
+                names_by_id = {int(x["id"]): x["name"] for x in camps if x["role"] == "dt"}
+                res["dt_tests"] = {names_by_id[int(t["campaign_id"])]: {"test": t["name"], "senders": len(t["senders"])}
+                                   for t in tests if not is_copy_test(t.get("name"))
+                                   and int(t["campaign_id"]) in names_by_id}
+                res["untested_dts"] = {}
+                for x in sorted(camps, key=lambda x: _dt_number(x["name"])):
+                    if x["role"] == "dt" and x["name"] not in res["dt_tests"]:
+                        res["untested_dts"].setdefault(x["client"], []).append(x["name"])
             if tracked is not None:
                 unt: dict = {}
                 for b in boxes:
@@ -804,6 +996,11 @@ def main() -> int:
                 col.update_one({"_id": PENDING_DM}, {"$set": {**keep, "at": date.today().isoformat()}}, upsert=True)
             elif pending:
                 col.delete_one({"_id": PENDING_DM})
+        try:                                       # the daily coverage record (Mongo test_coverage)
+            get_prev, save = _coverage_store()
+            save(coverage_record(out, get_prev(), date.today()))
+        except Exception as exc:  # noqa: BLE001 - the record is extra; the run goes on
+            errors.append(f"test_coverage: {type(exc).__name__}")
         known = set((col.find_one({"_id": UNTRACKED}) or {}).get("domains") or []) if col is not None else None
         head, thread, now = infra_report(out, known, errors, sent is False, date.today())
         posted = True
