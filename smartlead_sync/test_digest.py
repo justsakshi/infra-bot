@@ -162,6 +162,18 @@ def test_the_digest_waits_for_a_running_morning_job():
     assert slept == [60, 60]
 
 
+def test_the_digest_does_not_wait_for_a_run_a_restart_killed():
+    """17 and 18 Nov 2026: a restart killed the 10:00 sync; the digest waited 30 minutes for a run that was gone.
+    index.js marks such runs lost when the bot starts again."""
+    class Runs:
+        def find(self, q):
+            return [{"job": "smartlead-sync", "lost": True}]
+    db = type("D", (), {"cron_runs": Runs()})()
+    slept = []
+    dp.wait_for_jobs(db, now_fn=lambda: T0, sleep=slept.append)
+    assert slept == []
+
+
 def test_an_urgent_ask_that_was_fixed_and_comes_back_posts_again():
     """Lead review 16 Nov: an urgent key posted once ever, so a key that died again next month stayed quiet."""
     db, posted = DB(), []

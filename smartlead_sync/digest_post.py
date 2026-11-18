@@ -194,8 +194,9 @@ def wait_for_jobs(db, now_fn=lambda: datetime.now(timezone.utc), sleep=time.slee
     waited = 0
     while waited < max_s:
         since = now_fn() - timedelta(hours=3)
-        running = list(db.cron_runs.find({"job": {"$in": list(WAIT_FOR)}, "started": {"$gte": since},
-                                          "ended": {"$exists": False}}))
+        # A run a restart killed never ends; index.js marks it lost when the bot starts again (17-18 Nov 2026).
+        running = [r for r in db.cron_runs.find({"job": {"$in": list(WAIT_FOR)}, "started": {"$gte": since},
+                                                 "ended": {"$exists": False}}) if not r.get("lost")]
         if not running:
             return
         print(f"  waiting for {', '.join(sorted({r['job'] for r in running}))} to finish")
