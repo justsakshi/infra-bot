@@ -166,8 +166,9 @@ def report(source: str, asks: list | None = None, done: list | None = None, deta
     except Exception as exc:  # noqa: BLE001 - never lose an ask: the caller posts instead
         print(f"  [Digest] not written ({type(exc).__name__}); posting the old way")
         return False
+    holds = load_holds(db) if any(a["urgent"] for a in merged) else []
     for a in merged:
-        if a["urgent"]:
+        if a["urgent"] and not held_whole(a, holds, now):    # a decided item does not post at once either
             _urgent(db, source, a, now, post_urgent)
     print(f"  [Digest] {source}: {len(merged)} ask(s), {len(done or [])} done, {len(detail or [])} detail part(s)")
     return True
@@ -202,6 +203,243 @@ def _urgent(db, source: str, a: dict, now: datetime, post_urgent=None) -> bool:
 def channel() -> str:
     from smartlead.config import INFRA_CHANNEL
     return (os.getenv("DIGEST_CHANNEL") or "").strip() or INFRA_CHANNEL
+
+
+# --- what the digest leaves out: decisions, repeats, asks without their list (18 Nov 2026) -----------------------
+#
+# Manveen, 18 Nov 2026, on the 11:30 digest: "why did i get these 13 messages". Four of them were one kill list told
+# by two jobs; others had been decided already (another person handles them, a retest is booked, a delete list he
+# does by hand) and came back every day; one said "each domain in the thread" with nothing under it.
+#
+# A decision is a doc in Mongo digest_holds (never in the repo, which is public):
+#   {_id, reason, owner: "Manveen" | "Anjali" | "session <name>", until: "YYYY-MM-DD" or None,
+#    domains: [...], inboxes: [...], keys: [ask keys, * allowed], when: None | "kill-list" | "disconnected",
+#    set_on, set_by}
+# It holds back every ask about those domains or inboxes (or with those keys), and with ``when`` only asks of that
+# kind. It holds from now until ``until`` (the day the item comes back; None = until someone deletes the doc). An
+# ask with part of its list held shows the rest. Owner Anjali, no date: the item never goes to Manveen. The digest
+# says "Held back: N (decided)" and lists every held item, its reason, owner and date in the thread, so nothing
+# held goes invisible.
+
+HOLDS = "digest_holds"
+
+_EMAIL = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+", re.I)
+_DOMAIN = re.compile(r"(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?![\w.-]*\w)", re.I)
+_FILES = ("csv", "json", "py", "txt", "md", "png", "js", "log", "html", "pdf", "xlsx")
+
+# Asks that are one kill list, told by different jobs (fleet watch daily, the kill report weekly). Value: what the
+# ask says about an inbox it lists ("" = its lines are domains).
+KILL_LIST = {"kill-report:sending": "still sending",
+             "kill-report:idle": "in switched-on campaigns that are not sending",
+             "fleet-watch:kill": "on the kill list",
+             "kill-report:domains": ""}
+_KILL_ORDER = ("still sending", "in switched-on campaigns that are not sending", "on the kill list")
+_DOMAIN_REASON = {"kill-report:domains": "domain landing in spam on the classic tests"}
+_WHEN = {"disconnected": re.compile(r"disconnect|can.?t log in|cannot log in|log in to them", re.I),
+         "kill-list": re.compile(r"kill list|landing in spam", re.I)}
+_NEEDS_LIST = re.compile(r"\blisted\b|in the thread|\beach (?:one|domain|inbox|campaign)\b|the list is", re.I)
+
+
+def items_of(a: dict) -> tuple[set[str], set[str]]:
+    """(inboxes, domains) an ask is about, read from its text and its list (lowercase). File names are not
+    domains; an inbox's domain is not counted again as a domain."""
+    inboxes, domains = set(), set()
+    for line in [a.get("text") or ""] + [str(x) for x in a.get("detail") or []]:
+        found = {e.lower() for e in _EMAIL.findall(line)}
+        inboxes |= found
+        rest = _EMAIL.sub(" ", line)
+        domains |= {d.lower() for d in _DOMAIN.findall(rest) if d.rsplit(".", 1)[-1].lower() not in _FILES}
+    return inboxes, domains
+
+
+def load_holds(db) -> list[dict]:
+    """Every recorded decision; none when Mongo can't be read (then nothing is held back, so nothing is lost)."""
+    try:
+        return list(db[HOLDS].find({}))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _until(h: dict):
+    u = h.get("until")
+    if not u:
+        return None
+    try:
+        return datetime.fromisoformat(str(u)[:10]).date()
+    except ValueError:
+        return None
+
+
+def active_holds(holds, now: datetime) -> list[dict]:
+    """Holds in force today (IST): no end date, or today is before ``until``. A hold with an unreadable date is
+    ignored, so its items show."""
+    today = now.astimezone(IST).date()
+    out = []
+    for h in holds or []:
+        if h.get("until") and _until(h) is None:
+            continue
+        if _until(h) is None or today < _until(h):
+            out.append(h)
+    return out
+
+
+def _applies(h: dict, a: dict) -> bool:
+    w = h.get("when")
+    if not w:
+        return True
+    rx = _WHEN.get(w)
+    if rx is None:
+        return False                     # an unknown kind holds nothing
+    return bool(rx.search(f"{a.get('key', '')} {a.get('text', '')}")) or (w == "kill-list" and a.get("key") in KILL_LIST)
+
+
+def _held_item(h: dict, item: str) -> bool:
+    doms = {d.lower() for d in h.get("domains") or []}
+    if "@" in item:
+        return item in {i.lower() for i in h.get("inboxes") or []} or item.rsplit("@", 1)[1] in doms
+    return item in doms
+
+
+def _key_held(h: dict, key: str) -> bool:
+    from fnmatch import fnmatchcase
+    return any(fnmatchcase(key or "", k) for k in h.get("keys") or [])
+
+
+def _line_items(line: str) -> set[str]:
+    i, d = items_of({"text": line})
+    return i | d
+
+
+def apply_holds(asks: list[dict], holds, now: datetime) -> tuple[list[dict], list[dict]]:
+    """(asks still shown, held) where held = [{hold, ask, n, whole}]. An ask goes when a hold names its key, or
+    every inbox and domain it is about; with part of its list held, its list keeps the rest and its text says
+    how many are held back."""
+    live = active_holds(holds, now)
+    kept, held = [], []
+    for a in asks:
+        hs = [h for h in live if _applies(h, a)]
+        if not hs:
+            kept.append(a)
+            continue
+        whole = next((h for h in hs if _key_held(h, a.get("key", ""))), None)
+        if whole:
+            held.append({"hold": whole, "ask": a, "n": 0, "whole": True})
+            continue
+        inboxes, domains = items_of(a)
+        items = inboxes | domains
+        by = {x: next((h for h in hs if _held_item(h, x)), None) for x in items}
+        if items and all(by.values()):
+            for h in {id(h): h for h in by.values()}.values():
+                held.append({"hold": h, "ask": a, "n": sum(1 for v in by.values() if v is h), "whole": True})
+            continue
+        if not any(by.values()):
+            kept.append(a)
+            continue
+        lines, gone = [], {}
+        for line in bullets(a.get("detail")):
+            li = _line_items(line)
+            hit = [by.get(x) for x in li]
+            if li and all(hit):
+                for h in hit:
+                    gone[id(h)] = (h, gone.get(id(h), (h, 0))[1] + 1)
+                continue
+            lines.append(line)
+        if not a.get("detail"):          # its items are in its text: they can't be cut out, only counted
+            for h in (v for v in by.values() if v):
+                gone[id(h)] = (h, gone.get(id(h), (h, 0))[1] + 1)
+        n = sum(k for _, k in gone.values())
+        for h, k in gone.values():
+            held.append({"hold": h, "ask": a, "n": k, "whole": False})
+        kept.append({**a, "detail": lines, "text": f"{a['text']} ({n} of them held back, decided)" if n else a["text"]})
+    return kept, held
+
+
+def held_whole(a: dict, holds, now: datetime) -> bool:
+    kept, _ = apply_holds([a], holds, now)
+    return not kept
+
+
+def listless(a: dict) -> bool:
+    """An ask whose step or text points at a list it does not carry (17 Nov: "Look each domain in the thread up"
+    with nothing under it): Manveen can't act on it, so it is left out and counted."""
+    if a.get("kind") == "broken" or bullets(a.get("detail")):
+        return False
+    inboxes, domains = items_of({"text": a.get("text")})
+    if inboxes or domains:
+        return False
+    return bool(_NEEDS_LIST.search(f"{a.get('step', '')} {a.get('text', '')}"))
+
+
+def _n(k: int, one: str, many: str) -> str:
+    return f"{k} {one if k == 1 else many}"
+
+
+def merge_kill_list(asks: list[dict], labels: dict | None = None) -> tuple[list[dict], list[str]]:
+    """(asks, thread lines): every kill-list ask, from whichever job, as one item with one line per domain and
+    the number of jobs that report it. Its lines are what is still shown after holds."""
+    labels = labels or {}
+    members = [a for a in asks if a.get("key") in KILL_LIST]
+    if not members:
+        return asks, []
+    inbox_reason: dict[str, str] = {}
+    dom_reasons: dict[str, set] = {}
+    for a in members:
+        reason = KILL_LIST[a["key"]]
+        for line in bullets(a.get("detail")):
+            inboxes, domains = items_of({"text": line})
+            if inboxes and reason:
+                for i in inboxes:
+                    old = inbox_reason.get(i)
+                    if old is None or _KILL_ORDER.index(reason) < _KILL_ORDER.index(old):
+                        inbox_reason[i] = reason
+            else:
+                for d in domains | {i.rsplit("@", 1)[1] for i in inboxes}:
+                    dom_reasons.setdefault(d, set()).add(_DOMAIN_REASON.get(a["key"], "whole domain on the kill list"))
+    if not inbox_reason and not dom_reasons:
+        return [a for a in asks if a.get("key") not in KILL_LIST], []
+    lines = []
+    for dom in sorted({i.rsplit("@", 1)[1] for i in inbox_reason} | set(dom_reasons)):
+        parts = []
+        for reason in _KILL_ORDER:
+            users = sorted(i.rsplit("@", 1)[0] + "@" for i, r in inbox_reason.items()
+                           if r == reason and i.endswith("@" + dom))
+            if users:
+                shown = ", ".join(users[:4]) + (f" and {len(users) - 4} more" if len(users) > 4 else "")
+                parts.append(f"{_n(len(users), 'inbox', 'inboxes')} {reason} ({shown})")
+        parts += sorted(dom_reasons.get(dom, ()))
+        lines.append(f"• {dom}: {'; '.join(parts)}")
+    jobs = sorted({labels.get(a["source"], a["source"]) for a in members if a.get("source")})
+    what = " and ".join(x for x in (_n(len(inbox_reason), "inbox", "inboxes") if inbox_reason else "",
+                                    _n(len(dom_reasons), "domain", "domains") if dom_reasons else "") if x)
+    reasons = set(inbox_reason.values())
+    do = []
+    if reasons & {"still sending", "on the kill list"}:
+        do.append("take each inbox listed out of its campaigns (Smartlead, the campaign, Email Accounts tab)")
+    if "in switched-on campaigns that are not sending" in reasons:
+        do.append("pause the switched-on campaigns that still hold one, or take it out of them")
+    if dom_reasons:
+        do.append("don't add inboxes on the domains listed to campaigns, and don't renew those domains at their "
+                  "next bill")
+    step = "; ".join(do)
+    step = step[:1].upper() + step[1:] + ". Campaign names and bill dates: thread, part \"Kill list\"."
+    merged = {"text": f"Kill list: {what}, reported by {_n(len(jobs), 'job', 'jobs')} ({', '.join(jobs)}).",
+              "step": step, "key": "digest:kill-list", "kind": "ask", "detail": lines, "source": "kill-list",
+              "urgent": any(a.get("urgent") for a in members),
+              "since": min((str(a.get("since")) for a in members if a.get("since")), default=None),
+              "checked": max((a["checked"] for a in members if a.get("checked")), default=None)}
+    thread = []
+    for a in members:
+        thread.append(f"{labels.get(a.get('source'), a.get('source'))}: {a['text']}")
+        thread += [f"   {x}" for x in bullets(a.get("detail"))]
+    out, placed = [], False
+    for a in asks:
+        if a.get("key") in KILL_LIST:
+            if not placed:
+                out.append(merged)
+                placed = True
+            continue
+        out.append(a)
+    return out, thread
 
 
 def _post_now(text: str) -> bool:
