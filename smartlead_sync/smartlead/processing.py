@@ -469,6 +469,12 @@ def process_inbox_availability(
         item["warmup_spam_count"] = info.get("warmup_spam_count", 0) if isinstance(info, dict) else 0
         item["warmup_sent_7d"] = info.get("warmup_sent_7d", 0) if isinstance(info, dict) else 0
         item["warmup_reply_rate_pct"] = info.get("warmup_reply_rate_pct") if isinstance(info, dict) else None
+        # Warm-up run by the vendor outside Smartlead (t248, smartlead/external_warmup.py): Smartlead's warm-up being
+        # off, blocked or low is no reason, and the warm-up planner skips this state.
+        warmed_by = usable.warmed_by(email, gate_data)
+        if warmed_by:
+            from smartlead.external_warmup import STATE
+            item["warmup_state"] = STATE
 
         # Aggregate True Load and CAMPAIGN-visible Capacity.
         #
@@ -546,7 +552,7 @@ def process_inbox_availability(
         # A Google inbox is judged on real sends and warm-up (usable.google_gate, t268, 17 Nov 2026): its seed test is
         # a note there, and low reputation is set aside when its mail reached real inboxes.
         if not usable.real_send_rule(item.get("type") or item.get("provider") or ""):
-            if rep_val < MIN_WARMUP_REP_PCT:
+            if rep_val < MIN_WARMUP_REP_PCT and not warmed_by:
                 reasons.append("low_rep")
             if test == "stale":
                 reasons.append("stale_test")

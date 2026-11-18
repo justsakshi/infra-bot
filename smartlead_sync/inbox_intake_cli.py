@@ -343,6 +343,8 @@ def main() -> int:
         args.apply, args.post, args.only = True, False, domain.strip().lower()
     by_domain = deliveries(plans, jobs)
     results: dict[str, dict] = {}
+    from smartlead.external_warmup import load_live
+    external = load_live()            # inboxes a vendor warms outside Smartlead (t248): never set up or called drift
 
     async def run_all():
         for acc in discover_accounts():
@@ -352,7 +354,8 @@ def main() -> int:
                 async with SmartleadClient(acc.api_key, account_name=acc.name) as sl:
                     results[acc.name] = await run_account(
                         sl, acc.name, approve=args.apply, since=since, today=today, by_domain=by_domain,
-                        tracker=tracker, store=store, profile=lambda c: profile_for(c)[1], only=args.only)
+                        tracker=tracker, store=store, profile=lambda c: profile_for(c)[1], only=args.only,
+                        external=external)
             except Exception as exc:  # noqa: BLE001 - say so, keep the other account
                 results[acc.name] = {"set_up": [], "would": [], "waiting": [], "complete": [], "ready": [],
                                      "problems": [f"{acc.name}: could not read Smartlead ({redact(str(exc))[:120]})"]}

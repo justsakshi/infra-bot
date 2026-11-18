@@ -178,7 +178,8 @@ def run(only: str | None = None) -> dict:
         findings += ia.check_dns(d, c, mx[d], dmarc[d])
         findings += ia.check_redirect(d, c, mains.get(c, ""), sites[d])
     findings += ia.check_ns_clusters(ns, client_of_domain)
-    findings += ia.check_mailboxes(accounts, client_of_email, active, now)
+    from smartlead.external_warmup import load_live
+    findings += ia.check_mailboxes(accounts, client_of_email, active, now, external=load_live())
     findings += ia.check_provider_mix(accounts, client_of_email)
     findings += ia.check_esp_matching(campaigns, client_of_campaign)
     findings += ia.check_smtp_ips(ip_listings, client_of_host)

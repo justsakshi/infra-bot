@@ -29,7 +29,7 @@ def test_record_holds_the_inbox_state_for_the_day():
                  "warmup_blocked": None, "connected": True, "campaigns": 1, "sending": True,
                  "ready_on": "2026-10-27", "warmup_started": "2026-10-13", "test_date": "2026-10-13", "test_pct": 95.0,
                  "verdict": "GOOD", "sent_14d": 120, "bounced_14d": 1, "warm_sent_7d": 90, "warm_spam_7d": 12,
-                 "tags": ["Bot-Setup", "ScaledMail-Google"], "live_campaigns": ["PL 1", "PL 2"]}
+                 "tags": ["Bot-Setup", "ScaledMail-Google"], "live_campaigns": ["PL 1", "PL 2"], "warmup_by": None}
     unread = fw.record("PRECISE_LEADS", acct(), FACTS, verdicts={}, per_domain={"d.com": 3}, approved={}, health={}, today=TODAY)
     assert (unread["warm_sent_7d"], unread["warm_spam_7d"]) == (None, None)       # warm-up stats not read: no numbers
 

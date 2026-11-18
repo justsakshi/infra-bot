@@ -56,6 +56,8 @@ KINDS = {
 DAILY_KINDS = {"listed_live", "warmup_off", "bounce_high", "kill", "smtp_ip", "early_campaign", "over_limit",
                "hand_limit"}
 BLOCKLIST_KINDS = ("blocklist", "listed_live")
+# Kinds read from Smartlead warm-up; none fires on an inbox its vendor warms (record "warmup_by", t248).
+WARMUP_KINDS = ("warmup_off", "low_rep", "warmup_spam", "smtp_ip")
 # A case whose check stops firing because a stronger case on the same inbox fired is replaced, not cleared:
 # a disconnected inbox cannot warm up, a second failed test is the kill list, a raise above the standard is over_limit.
 SUPERSEDED_BY = {"warmup_off": "disconnected", "failed_test": "kill", "hand_limit": "over_limit"}
@@ -152,9 +154,10 @@ def checks(records: list[dict], history: dict[str, list[dict]], listed: dict, to
     for r in records:
         by_dom[r["domain"]].append(r)
         e = r["email"]
+        ext = bool(r.get("warmup_by"))        # a vendor warms it outside Smartlead (t248): no Smartlead warm-up check
         if r.get("connected") is False:
             out.append(_case("disconnected", e, r))
-        elif not r.get("warmup_on"):          # a disconnected inbox cannot warm up: reconnecting comes first
+        elif not r.get("warmup_on") and not ext:   # a disconnected inbox cannot warm up: reconnecting comes first
             out.append(_case("warmup_off", e, r))
         live = list(r.get("live_campaigns") or [])
         if live and _dnu(r):
@@ -166,10 +169,10 @@ def checks(records: list[dict], history: dict[str, list[dict]], listed: dict, to
             out.append(_case("failed_test", e, r))
         level = st.good_reputation(r["kind"])
         last = [h.get("rep") for h in (history.get(e) or [])][-LOW_REP_DAYS:]      # history includes today
-        if len(last) >= LOW_REP_DAYS and all(x is not None and x < level for x in last):
+        if not ext and len(last) >= LOW_REP_DAYS and all(x is not None and x < level for x in last):
             out.append(_case("low_rep", e, r, f"{e} ({r.get('rep')}%)"))
         pct = warmup_spam_pct(r)
-        if pct is not None and pct >= WARMUP_SPAM_RETEST_PCT:
+        if pct is not None and pct >= WARMUP_SPAM_RETEST_PCT and not ext:
             # 10 Nov 2026: 50 inboxes were over this line and no post named them. The auto placement test
             # answers it with a classic test, which said "100% inbox" for inboxes at 38%.
             out.append(_case("warmup_spam", e, r,
@@ -194,7 +197,8 @@ def checks(records: list[dict], history: dict[str, list[dict]], listed: dict, to
             if pct >= BOUNCE_WATCH:
                 kind = "bounce_high" if pct >= BOUNCE_HIGH else "bounce_watch"
                 out.append(_case(kind, dom, r0, f"{dom} bounced {round(pct, 1):g}% of {sent} sent"))
-        smtp_low = [r for r in rs if r["kind"] == "smtp" and st.needs_ip_rotation("smtp", r.get("rep"))
+        smtp_low = [r for r in rs if r["kind"] == "smtp" and not r.get("warmup_by")
+                    and st.needs_ip_rotation("smtp", r.get("rep"))
                     and r.get("warmup_started")
                     and (today - date.fromisoformat(r["warmup_started"])).days >= SMTP_WARMUP_DAYS]
         if smtp_low:
@@ -278,6 +282,8 @@ def acted(kind: str, at_open: dict, now: dict) -> bool:
 
 def _shows_fixed(kind: str, mine: list[dict]) -> bool:
     """Today's records hold what the check reads, and it reads fine (the check did not fire on them)."""
+    if kind in WARMUP_KINDS and mine and all(r.get("warmup_by") for r in mine):
+        return True                      # marked as warmed by its vendor since (t248): Smartlead warm-up is not judged
     if kind == "warmup_off":
         return all(r.get("warmup_on") for r in mine)
     if kind == "disconnected":

@@ -175,6 +175,8 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
     note-only "campaign lists <acc>" / "classic tests <acc>" (rr.NOTE_ONLY), which never stop a
     verdict. Every error lands in ``errors``, so kill_report, fleet_watch and volume_review see it."""
     from placement_report import attachments
+    from smartlead.external_warmup import load_live, vendor as warm_vendor
+    external = load_live()     # inboxes a vendor warms outside Smartlead (t248): their reputation is not judged
     facts: dict[str, dict] = {}
     for acc in discover_accounts():
         if acc.name.upper() in PAST:
@@ -191,6 +193,7 @@ def smartlead_facts(errors: list[str]) -> dict[str, dict]:
                         "client": client_label(acc.name, a.get("client_id")),
                         "connected": bool(a.get("is_smtp_success") and a.get("is_imap_success")),
                         "reputation": w.get("warmup_reputation"), "tags": _tag_names(a.get("tags")),
+                        "warmup_by": warm_vendor(a["from_email"], external),
                         "type": str(a.get("type") or ""),       # judged at its own provider (kill_rule)
                         "pct": None, "tested_on": None,
                         "tests": [], "campaigns": [], "sending": []}

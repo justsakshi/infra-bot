@@ -24,9 +24,9 @@ def _rep(row: dict) -> float:
 
 
 def _healthy(row: dict) -> bool:
+    external = str(row.get("warmup_state", "")).lower() == "external"    # the vendor warms it (t248)
     return (bool(row.get("connection_ok"))
-            and str(row.get("warmup_state", "")).lower() in _ON_STATES
-            and _rep(row) >= 90.0
+            and (external or (str(row.get("warmup_state", "")).lower() in _ON_STATES and _rep(row) >= 90.0))
             and str(row.get("test_sheet_status", "")).lower() == "inbox")
 
 

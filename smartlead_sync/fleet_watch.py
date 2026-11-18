@@ -60,9 +60,12 @@ LIVE_STATUSES = ("ACTIVE", "SCHEDULED")   # campaigns that send, or will, withou
 
 
 def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict, approved: dict, health: dict,
-           today: date, live: dict | None = None, warm: dict | None = None) -> dict:
+           today: date, live: dict | None = None, warm: dict | None = None, external: dict | None = None) -> dict:
     """One inbox on one day. Pure. ``live`` = {email: [live non-test campaign names]} (see _live_campaigns);
-    ``warm`` = {email: (warm-up emails sent, landed in spam) over 7 days} (see _warmup_spam), None = not read."""
+    ``warm`` = {email: (warm-up emails sent, landed in spam) over 7 days} (see _warmup_spam), None = not read;
+    ``external`` = the marks of inboxes a vendor warms outside Smartlead (smartlead/external_warmup.py, t248):
+    ``warmup_by`` names the vendor, and fleet.py and warmup_repair.py then judge no Smartlead warm-up."""
+    from smartlead.external_warmup import vendor as warm_vendor
     from smartlead.report_sheet import client_label
     email = str(a.get("from_email", "")).lower()
     dom = email.split("@")[-1]
@@ -73,7 +76,8 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
     vendor = next((n.split("-")[0] for n in names if n.startswith(("ScaledMail-", "Zapmail-"))), None)
     w = a.get("warmup_details") or {}
     started = st.warmup_started(a)
-    ready = st.ready_date(a, kind) if setup else None
+    warmed_by = warm_vendor(email, external)
+    ready = st.ready_date(a, kind) if setup and not warmed_by else None     # the vendor's warm-up has no ready date here
     sent, bounced = health.get(email, (0, 0))
     connected = f.get("connected")
     if connected is None:
@@ -95,7 +99,8 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
             "sent_14d": int(sent), "bounced_14d": int(bounced),
             "warm_sent_7d": (warm or {}).get(email, (None, None))[0],
             "warm_spam_7d": (warm or {}).get(email, (None, None))[1],
-            "tags": names, "live_campaigns": list(dict.fromkeys((live or {}).get(email) or []))}
+            "tags": names, "live_campaigns": list(dict.fromkeys((live or {}).get(email) or [])),
+            "warmup_by": warmed_by}
 
 
 class FleetStore:
@@ -225,6 +230,7 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str], 
     closes as 'gone' only when the roster shows it left."""
     from renewal_review import smartlead_facts
     from smartlead import kill_rule as kr
+    from smartlead import external_warmup as xw
     from smartlead.client_filter import is_excluded_inbox
     from smartlead.inbox_intake import CURRENT_CLIENTS, IntakeStore
     from smartlead.notify import redact
@@ -236,6 +242,7 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str], 
     tracked = tracked_domains()               # inboxes we use (deliverability sheet); None = sheet unreadable
     if tracked is None:
         errors.append("deliverability sheet (judging every inbox today)")
+    external = xw.load_live()                 # inboxes a vendor warms outside Smartlead (t248); {} = none or unread
     records, metrics = [], {}
     present, dropped = set(facts), set()      # facts: its own inbox read fails loudly on a bad page
     clients = _clients()
@@ -259,7 +266,7 @@ def gather(today: date, errors: list[str]) -> tuple[list[dict], dict, set[str], 
         per_domain = Counter(str(a.get("from_email", "")).lower().split("@")[-1] for a in accts)
         kept = set()
         for a in accts:
-            r = record(name, a, facts, verdicts, per_domain, approved, health, today, live, warm)
+            r = record(name, a, facts, verdicts, per_domain, approved, health, today, live, warm, external=external)
             if r["client"] in CURRENT_CLIENTS:
                 records.append(r)
                 kept.add(r["email"])

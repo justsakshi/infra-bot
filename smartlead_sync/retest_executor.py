@@ -41,6 +41,13 @@ def _domain(email: str) -> str:
     return email.split("@", 1)[1].lower() if "@" in email else ""
 
 
+def warmup_toggle_ids(sender_ids: list[str], senders: list[str], external: dict | None) -> list[str]:
+    """The sender ids whose warm-up a test may switch off (and back on after): never an inbox its vendor warms
+    outside Smartlead (smartlead/external_warmup.py, t248). Pure."""
+    from smartlead.external_warmup import vendor
+    return [i for i, e in zip(sender_ids, senders) if not vendor(e, external)]
+
+
 async def _restore_warmup(api_key: str, client: str, ids: list[str]) -> list[str]:
     """Best-effort warmup re-enable. Returns the ids that FAILED to restore
     (empty list = all restored). Callers must not consider a test finished
@@ -242,6 +249,8 @@ async def main() -> None:
         return
     print(f"[Retest] {len(recent)} inbox(es) tested since {since} - skipped by the 7-day floor.")
     pending_emails = store.pending_emails() | recent
+    from smartlead.external_warmup import load_live
+    external = load_live()           # inboxes a vendor warms (t248): a test never switches their warm-up off or on
     all_targets: list[dict] = []
     acc_by_client = {a.name: a for a in accounts}
     id_by_email: dict[str, str] = {}
@@ -295,7 +304,7 @@ async def main() -> None:
         disabled_ids: list[str] = []
         if RETEST_DISABLE_WARMUP:
             async with SmartleadClient(acc.api_key, acc.name) as slc:
-                for aid in sender_ids:
+                for aid in warmup_toggle_ids(sender_ids, senders, external):
                     try:
                         await slc.set_warmup(aid, enabled=False)
                         disabled_ids.append(aid)
