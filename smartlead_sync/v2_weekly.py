@@ -15,7 +15,7 @@ What it does (rules in smartlead/v2_results.py):
   * a domain fails when half or more of its inboxes (all the job knows on it, tested or not) fail at
     their own provider: every other inbox on that domain is taken out the same way, and none of them
     comes back while it still fails;
-  * FAIL, or WATCH in two Monday tests 6+ days apart: removed from every live campaign that is not a
+  * FAIL, or WATCH in two weekly tests (Sat/Sun/Mon start) 6+ days apart: removed from every live campaign that is not a
     test campaign, its leads moved to the campaign's other senders (stalled leads resumed), and
     tagged "DO NOT USE - failed v2 (auto)" so gtm presend refuses it. Warm-up stays on, and it
     stays in its DT test campaign, so next Monday tests it again;

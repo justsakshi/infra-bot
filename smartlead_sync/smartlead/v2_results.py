@@ -17,8 +17,8 @@ result that is not complete):
   * a domain fails when half or more of its inboxes fail at their own provider (failed_domains): the
     share is of every inbox the job knows on it, tested or not, so a small one-off test cannot rest a
     big domain. Then every other inbox on it is pulled too, and none comes back while it still fails.
-  * FAIL -> pull it from live campaigns. WATCH twice running -> pull, but only when both are Monday
-    (weekly) tests from new files, 6+ days apart; a one-off or history result never counts.
+  * FAIL -> pull it from live campaigns. WATCH twice running -> pull, but only when both are weekly
+    tests (Sat/Sun/Mon start) from new files, 6+ days apart; a one-off or history result never counts.
   * a pulled inbox comes back after two passes, at least 6 days apart, both after the pull.
   * if nearly every inbox in one night's tests, or in one test file, is below 4 of 4 at one provider, the
     test is suspect: hold (inboxes already known bad are left out of that count).
@@ -399,7 +399,7 @@ def copy_verdict(rows: list[dict], types: dict[str, str], good: set[str]) -> dic
 # --- decisions ---------------------------------------------------------------------
 
 def two_weeks_running(a: dict, b: dict) -> bool:
-    """a then b count as two weeks running: both Monday (weekly) tests from new files, 6+ days apart.
+    """a then b count as two weeks running: both weekly tests (see is_weekly_night) from new files, 6+ days apart.
     A one-off midweek test, or a history file, never pairs (audit PLACEMENT-10)."""
     if a.get("history") or b.get("history") or not (is_weekly_night(a["night"]) and is_weekly_night(b["night"])):
         return False

@@ -639,7 +639,7 @@ expressApp.get('/trigger-smartlead', (req, res) => {
   }
 });
 
-// Manual trigger for the simple 5:15 PM reminder (for testing)
+// Manual trigger for the simple 4:00 PM IST reminder (for testing)
 expressApp.get('/trigger-reminder', async (req, res) => {
   try {
     console.log('Manual trigger: runSimpleReminder');
@@ -971,7 +971,7 @@ async function runDailySummary() {
   }
 }
 
-/* -------------------- 4:00 PM IST Summary (Structured) -------------------- */
+/* -------------------- 10:00 AM IST Summary (Structured) -------------------- */
 // The renewal check's count for the day, read by the 4 PM reminder (which posts only when something expires).
 let lastExpiringCount = null;
 // Returns true when posted, 'skipped' when another instance already posted today, false on an error.
@@ -1075,7 +1075,7 @@ async function runNoonSummary() {
   }
 }
 
-/* -------------------- 5:15 PM IST Simple Reminder -------------------- */
+/* -------------------- 4:00 PM IST Simple Reminder -------------------- */
 async function runSimpleReminder() {
   try {
     if (!(await onceToday('simpleReminder'))) {
