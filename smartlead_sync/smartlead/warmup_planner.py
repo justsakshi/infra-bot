@@ -44,7 +44,7 @@ from smartlead.config import (
 # warmup_state values that mean "warmup is currently ON"
 _ON_STATES = {"warming", "ramped", "on"}
 # never auto-manage these (human-only)
-_SKIP_STATES = {"blocked"}
+_SKIP_STATES = {"blocked", "external"}   # external: the vendor runs its warm-up (t248, external_warmup.py)
 
 
 def _rep(row: dict) -> float:

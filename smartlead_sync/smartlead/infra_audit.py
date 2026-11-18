@@ -125,10 +125,12 @@ def check_main_domain(domain: str, client: str, main_domain: str) -> list[dict]:
 # ── mailboxes ────────────────────────────────────────────────────────────────
 
 def check_mailboxes(accounts: list[dict], client_of_email: dict[str, str],
-                    active: dict[str, list[str]], now: datetime) -> list[dict]:
+                    active: dict[str, list[str]], now: datetime, external: dict | None = None) -> list[dict]:
     """Per-domain caps, per-mailbox caps, warmup age/volume, signature, drift
-    from the inbox standard (inboxes set up by intake)."""
+    from the inbox standard (inboxes set up by intake). ``external`` = marks of inboxes a vendor warms outside
+    Smartlead (smartlead/external_warmup.py, t248): no warm-up age, volume, on/off or drift finding for them."""
     from smartlead import inbox_standard as std
+    from smartlead.external_warmup import vendor as warm_vendor
     out = []
     by_domain: dict[str, list[dict]] = defaultdict(list)
     for a in accounts:
@@ -158,7 +160,9 @@ def check_mailboxes(accounts: list[dict], client_of_email: dict[str, str],
             out.append(finding("sends_per_mailbox", "P2", client, email, f"daily limit {mpd} (cap {cap} for {kind.title()})",
                                f"Set the daily limit to {cap} or less in Smartlead."))
         w = a.get("warmup_details") or {}
-        age = _days_since(w.get("warmup_created_at") or a.get("created_at"), now)
+        if warm_vendor(email, external):
+            w = {"status": "ACTIVE"}               # the vendor warms it (t248): Smartlead's warm-up is not judged
+        age = None if warm_vendor(email, external) else _days_since(w.get("warmup_created_at") or a.get("created_at"), now)
         stype = std.inbox_kind(a, len(by_domain[email.split("@")[-1]]))
         need = std.standard_for(stype)["ready_after_days"]
         if in_use and age is not None and age < need:
@@ -166,7 +170,7 @@ def check_mailboxes(accounts: list[dict], client_of_email: dict[str, str],
                                f"warmed {age:.0f} days, already in {', '.join(active[email][:2])}",
                                f"Take it out of the campaign until day {need}."))
         names = [str(t.get("tag_name") or t.get("name") or "") for t in a.get("tags") or []]
-        if std.SETUP_TAG in names:
+        if std.SETUP_TAG in names and not warm_vendor(email, external):
             off = std.drift(a, stype, "scaledmail" if any("ScaledMail" in n for n in names) else "zapmail")
             if off:
                 out.append(finding("setup_drift", "P2", client, email, "; ".join(off),

@@ -138,13 +138,14 @@ def rep_pct(value) -> float:
 
 
 def google_gate(rep: float, own_label: str, test_status: str = "", test_date: str = "",
-                other: dict | None = None) -> tuple[list[str], list[str]]:
+                other: dict | None = None, warmed_by: str | None = None) -> tuple[list[str], list[str]]:
     """(busy reasons, notes) of the Google rule (module note, t268). Pure.
 
     ``rep`` = warm-up reputation %; ``own_label`` = the week's real-send label at the inbox's own recipient provider
     ("reached the inbox", "quiet (0 of ~N expected)", "not enough data"; "" = none = not enough data);
     ``test_status``/``test_date`` = the seed grid's own-column result (report only); ``other`` = {recipient provider:
-    label} elsewhere (a signal only)."""
+    label} elsewhere (a signal only); ``warmed_by`` = the vendor that runs its warm-up outside Smartlead
+    (smartlead/external_warmup.py, t248): its Smartlead warm-up reputation is then no reason."""
     from smartlead.config import MIN_WARMUP_REP_PCT
     from smartlead.own_provider import SIGNAL
     label = str(own_label or "").strip() or NOT_ENOUGH
@@ -152,7 +153,9 @@ def google_gate(rep: float, own_label: str, test_status: str = "", test_date: st
     reasons, notes = [], []
     if quiet:
         reasons.append("quiet")
-    if rep < MIN_WARMUP_REP_PCT:
+    if warmed_by:                       # the vendor warms it (t248): Smartlead's reputation says nothing about it
+        pass
+    elif rep < MIN_WARMUP_REP_PCT:
         if reached:
             notes.append(f"repairing but usable: warm-up {rep:g}%, reached the inbox at Gmail in 28 days")
         else:
@@ -166,6 +169,12 @@ def google_gate(rep: float, own_label: str, test_status: str = "", test_date: st
         if lab == REACHED or lab.startswith("quiet"):
             notes.append(f"{lab} at {rp} (not its provider: {SIGNAL})")
     return reasons, notes
+
+
+def warmed_by(email: str, data: dict | None) -> str | None:
+    """The vendor that runs this inbox's warm-up outside Smartlead (gate data's "external" marks), or None."""
+    from smartlead import external_warmup as xw
+    return xw.vendor(email, (data or {}).get("external"))
 
 
 def holds_back(v2: dict | None, kind="") -> bool:
@@ -379,7 +388,13 @@ def load_gate_data() -> dict:
         refresh_trust(db)
         v2 = newest_judged(db["v2_verdicts"].find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1, "overridden": 1}))
         listed = listed_domains(db[BLACKLIST_COLLECTION].find({}, {"_id": 0, "domain": 1, "date": 1, "listed_on": 1}))
-        return {"v2": v2, "listed": listed, "checked": True, "error": "", **load_evidence(db)}
+        from smartlead import external_warmup as xw
+        try:
+            marks_col = db[xw.COLLECTION]
+        except Exception:  # noqa: BLE001 - a test db without it
+            marks_col = None
+        return {"v2": v2, "listed": listed, "checked": True, "error": "", **load_evidence(db),
+                "external": xw.load(marks_col)}
     except Exception as exc:  # noqa: BLE001 - the tag rule still holds; the sheet says the rest was not read
         print(f"  [Usable] v2 verdicts and blocklists not read: {str(exc)[:150]}")
         return {"v2": {}, "listed": set(), "checked": False, "error": str(exc)[:150]}
@@ -397,13 +412,18 @@ def apply(item: dict, data: dict | None, today: date, *, block_listed: bool, req
     kind = item.get("type") or item.get("provider") or ""
     reasons, notes = gate(item.get("tags"), v2, listed, today, checked=checked,
                           block_listed=block_listed, require_v2_pass=require_v2_pass, kind=kind)
+    vendor = warmed_by(email, data)
     if real_send_rule(kind):            # the Google rule (t268): real sends + warm-up decide, seed tests are notes
         own_label, other = own_evidence(email, kind, data)
         g_reasons, g_notes = google_gate(rep_pct(item.get("warmup_rep_pct")), own_label,
-                                         item.get("test_sheet_status", ""), item.get("test_date", ""), other)
+                                         item.get("test_sheet_status", ""), item.get("test_date", ""), other,
+                                         warmed_by=vendor)
         reasons += [r for r in g_reasons if r not in reasons]
         notes = g_notes + notes
-    if recovering(item.get("tags"), item.get("warmup_rep_pct")):
+    if vendor:
+        from smartlead import external_warmup as xw
+        notes.insert(0, xw.note(vendor))
+    elif recovering(item.get("tags"), item.get("warmup_rep_pct")):
         notes.insert(0, RECOVERING_NOTE)
     if data is not None and not checked:
         notes.append(NOT_READ)

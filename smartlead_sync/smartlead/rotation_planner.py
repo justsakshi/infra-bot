@@ -57,7 +57,8 @@ def _is_bench(row: dict) -> bool:
     status = str(row.get("test_sheet_status", "")).strip().lower()
     return (
         status == "inbox"
-        and _rep(row) >= HEALTH_WARMUP_ZERO
+        and (_rep(row) >= HEALTH_WARMUP_ZERO
+             or str(row.get("warmup_state", "")).lower() == "external")   # the vendor warms it (t248)
         and bool(row.get("connection_ok", False))
         and str(row.get("warmup_state", "")).lower() != "blocked"
         and _num(row.get("capacity_left", row.get("available_capacity", 0))) > 0

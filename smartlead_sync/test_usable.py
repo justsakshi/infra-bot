@@ -446,3 +446,77 @@ def test_a_person_tagged_inbox_under_90_warm_up_is_recovering_everywhere_it_is_d
     assert "recovering" in ins.HELD and ins.LABEL["recovering"].startswith("recovering")
     rows = [{"email": "r@g.com", "tags": hand, "warmup_rep_pct": "71%", "connection_ok": True, "provider": "Gmail"}]
     assert ins.states(rows, t)[0]["state"] == "recovering"
+
+
+# Warm-up run by the vendor (t248, Manveen 18 Nov 2026: "inboxxkit handles warmup") -----------------------------
+
+OFF = {"rep": "0%", "warmup_state": "off", "warmup_max_count": 0, "last_active_date": "", "warmup_spam_count": 0}
+BLOCKED = {**OFF, "warmup_state": "blocked"}
+
+
+def _xrun(rows_reps, marks, *, v2=None, evidence=None, require=False):
+    from smartlead import config
+    rows = [r for r, _ in rows_reps]
+    data = {"checked": True, "error": "", "listed": set(), "v2": v2 or {}, "evidence": evidence or {},
+            "evidence_week": "2026-11-17", "external": marks}
+    old = config.AVAILABILITY_REQUIRE_V2_PASS
+    config.AVAILABILITY_REQUIRE_V2_PASS = require
+    try:
+        process_inbox_availability(rows, {r["email"]: rep for r, rep in rows_reps}, {}, gate_data=data)
+    finally:
+        config.AVAILABILITY_REQUIRE_V2_PASS = old
+    return {r["email"]: r for r in rows}
+
+
+def test_a_vendor_warmed_google_inbox_with_smartlead_warm_up_off_is_free_and_says_who_warms_it():
+    marks = {"g@kit.test": "InboxKit"}
+    got = _xrun([(_row("g@kit.test", provider="Gmail", type="GMAIL"), OFF),
+                 (_row("g@self.test", provider="Gmail", type="GMAIL"), OFF)], marks)
+    x = got["g@kit.test"]
+    assert (x["availability"], x["busy_reason"]) == ("FREE", "")
+    assert "warm-up run by InboxKit" in x["use_notes"] and x["warmup_state"] == "external"
+    assert x["available_capacity"] == 15                                   # off is not "warming": its limit is open
+    assert got["g@self.test"]["availability"] == "BUSY" and "low_rep" in got["g@self.test"]["busy_reason"]
+
+
+def test_a_vendor_warmed_outlook_inbox_is_never_busy_for_low_or_blocked_warm_up():
+    marks = {"kit.test": "InboxKit"}                                       # a whole-domain mark
+    got = _xrun([(_row("o@kit.test", provider="Outlook", type="OUTLOOK"), BLOCKED)], marks)
+    x = got["o@kit.test"]
+    assert (x["availability"], x["busy_reason"]) == ("FREE", "")
+
+
+def test_a_vendor_warmed_inbox_is_still_judged_on_everything_else():
+    marks = {"kit.test": "InboxKit"}
+    got = _xrun([(_row("a@kit.test", provider="Outlook", type="OUTLOOK", connection_ok=False), OFF),
+                 (_row("b@kit.test", provider="Outlook", type="OUTLOOK", tags=["DO NOT USE - spam"]), OFF),
+                 (_row("c@kit.test", provider="Outlook", type="OUTLOOK"), OFF),
+                 (_row("d@kit.test", provider="Gmail", type="GMAIL"), OFF),
+                 (_row("e@kit.test", provider="Outlook", type="OUTLOOK", test_sheet_status=""), OFF)],
+                marks, v2={"c@kit.test": {"verdict": "FAIL", "night": "2026-11-17"}},
+                evidence={"d@kit.test": {"evidence": "28d", "label": "quiet", "providers": {"Gmail": "quiet (0 of ~9)"}}},
+                require=True)
+    assert got["a@kit.test"]["busy_reason"] == "disconnected,no_v2_pass"
+    assert "do_not_use" in got["b@kit.test"]["busy_reason"]
+    assert got["c@kit.test"]["busy_reason"] == "failed_v2"
+    assert got["d@kit.test"]["busy_reason"] == "quiet"                     # the Google real-send rule still holds
+    assert got["e@kit.test"]["busy_reason"] == "untested,no_v2_pass"      # tests are not warm-up
+    assert not any("low_rep" in r["busy_reason"] or "warmup" in r["busy_reason"] for r in got.values())
+
+
+def test_marks_are_read_with_the_gate_data_and_an_unread_collection_marks_nothing(monkeypatch):
+    class Col:
+        def __init__(self, rows, boom=False):
+            self.rows, self.boom = rows, boom
+
+        def find(self, *a):
+            if self.boom:
+                raise RuntimeError("x")
+            return self.rows
+    db = {"v2_verdicts": Col([]), "blacklist_checks": Col([]),
+          "external_warmup": Col([{"_id": "kit.test", "vendor": "inboxkit"}])}
+    monkeypatch.setattr(usable, "_db", lambda: db)
+    assert usable.load_gate_data()["external"] == {"kit.test": "InboxKit"}
+    db["external_warmup"] = Col([], boom=True)
+    got = usable.load_gate_data()
+    assert got["checked"] and got["external"] == {}

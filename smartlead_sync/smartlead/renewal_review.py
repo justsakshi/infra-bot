@@ -215,7 +215,7 @@ def judge_inbox(email: str, facts: dict | None, kill: dict | None, today: date,
         why.append("still tagged DO NOT USE by the v2 job, waiting for two passes")
     if not f.get("connected", True):
         why.append("Smartlead connection broken")
-    rep = _rep(f.get("reputation"))
+    rep = None if f.get("warmup_by") else _rep(f.get("reputation"))     # warmup_by: its vendor warms it (t248)
     if rep is not None and rep < MIN_REPUTATION:
         why.append(f"warmup reputation {rep:.0f}%")
     if why:

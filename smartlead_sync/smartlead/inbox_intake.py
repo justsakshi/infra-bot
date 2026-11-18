@@ -179,13 +179,18 @@ def _vendor(d: dict | None, tracker_row: dict) -> str:
 
 
 async def run_account(sl, account_name: str, *, approve: bool, since: date, today: date,
-                      by_domain: dict, tracker: dict, store, profile, only: str | None = None) -> dict:
+                      by_domain: dict, tracker: dict, store, profile, only: str | None = None,
+                      external: dict | None = None) -> dict:
     """One Smartlead account. ``only`` (an inbox or a domain) limits the run,
-    for trying a few inboxes before the rest."""
+    for trying a few inboxes before the rest. ``external`` = marks of inboxes a vendor warms outside Smartlead
+    (smartlead/external_warmup.py, t248): they are never set up (no ask, no warm-up, limit, signature or tag write)
+    and never reported as drift."""
+    from smartlead.external_warmup import vendor as warm_vendor
     from smartlead.inbox_setup import plan_changes
     from smartlead.notify import redact
     out: dict = {"set_up": [], "would": [], "waiting": [], "problems": [], "complete": [], "ready": [], "ask": []}
-    accounts = await sl.list_email_accounts()
+    listed = await sl.list_email_accounts()
+    accounts = [a for a in listed if not warm_vendor(a.get("from_email"), external)]
     tags = {t["name"]: t["id"] for t in await sl.list_tags()}
     email_of = lambda a: str(a.get("from_email", "")).lower()          # noqa: E731
     dom_of = lambda a: email_of(a).split("@")[-1]                       # noqa: E731
@@ -198,7 +203,7 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
             fresh_on.setdefault(dom_of(a), []).append(a)
     melior_id = (profile("Melior") or {}).get("smartlead_client_id")
     approved = {e: lim for e, (lim, _) in store.approved_limits().items()}
-    out["problems"] += _drift_sweep(accounts, per_domain, approved)
+    out["problems"] += _drift_sweep(accounts, per_domain, approved, external)
     # Set-up domains that just became ready (or reached their date still warming), with whose they are.
     owners: dict[str, str] = {}
     for a in accounts:
@@ -329,13 +334,18 @@ async def run_account(sl, account_name: str, *, approve: bool, since: date, toda
     return out
 
 
-def _drift_sweep(accounts: list[dict], per_domain: dict[str, int], approved: dict[str, int] | None = None) -> list[str]:
+def _drift_sweep(accounts: list[dict], per_domain: dict[str, int], approved: dict[str, int] | None = None,
+                 external: dict | None = None) -> list[str]:
     """Inboxes intake set up whose settings no longer match the standard (or a
     setting that was never set, like the empty "Minimum time gap" on 15 Oct),
-    one line per kind of problem. Read-only; posted only when new (CLI)."""
+    one line per kind of problem. Read-only; posted only when new (CLI). Inboxes a vendor warms (``external``,
+    t248) are never drift: their Smartlead warm-up is off on purpose."""
+    from smartlead.external_warmup import vendor as warm_vendor
     groups: dict[str, list[str]] = {}
     for a in accounts:
         if not _has_tag(a, st.SETUP_TAG) or _do_not_use(a):     # pulled inboxes are not drift (17 Nov 2026)
+            continue
+        if warm_vendor(a.get("from_email"), external):
             continue
         email = str(a.get("from_email", "")).lower()
         dom = email.split("@")[-1]

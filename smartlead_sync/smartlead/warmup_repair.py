@@ -157,7 +157,7 @@ def run(docs: list[dict], records: list[dict], today: date, *, read: set[str], r
     for r in records:
         rep = _rep(r.get("rep"))
         if (r["email"] in known or r.get("client") not in CLIENTS or r.get("connected") is not True or rep is None
-                or rep >= level(r.get("kind"))):
+                or rep >= level(r.get("kind")) or r.get("warmup_by")):      # warmup_by: its vendor warms it (t248)
             continue
         known.add(r["email"])
         new.append(update(new_doc(r["email"], r.get("account") or "", r["client"], None, r.get("kind") or "google",
