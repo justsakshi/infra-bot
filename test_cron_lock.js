@@ -36,8 +36,9 @@ ok(/insertOne\(health\.lockDoc\(key\)\)/.test(takeLockFn), 'takeLock inserts hea
 ok(!/createdAt/.test(takeLockFn), 'takeLock never writes createdAt');
 ok(!/expires:\s*'2h'/.test(src), 'no 2h expiry left in index.js');
 const keys = [...src.matchAll(/takeLock\((`[^`]*`)\)/g)].map(m => m[1]);
-eq(keys, ['`${job}-${health.istDay(now)}`', '`bot-health-restart-${health.slotKey(now).slice(0, 13)}`'],
-  'every takeLock key is dated (onceToday: IST day; restart post: IST hour)');
+eq(keys, ['`${job}-${health.istDay(now)}`', '`smartleadSync-rerun-${health.istDay(new Date())}`',
+  '`bot-health-restart-${health.slotKey(now).slice(0, 13)}`'],
+  'every takeLock key is dated (onceToday and the sync rerun: IST day; restart post: IST hour)');
 eq(src.split('takeLock(').length - 1, keys.length + 1, 'no other takeLock call (the +1 is its definition)');
 eq(istDay(new Date('2026-11-09T20:00:00Z')), '2026-11-10', 'IST day: 01:30 IST Tuesday is Tuesday');
 eq(slotKey(new Date('2026-11-10T08:00:00Z')).slice(0, 13), '2026-11-10T13', 'IST hour');

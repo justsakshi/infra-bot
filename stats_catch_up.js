@@ -50,4 +50,33 @@ function missedRuns(now, env = {}) {
   return out;
 }
 
-module.exports = { missedStatsPost, missedRuns, CATCH_UPS };
+// A restart kills whatever the bot was running and leaves its cron_runs record with no end (17 and 18 Nov 2026: the
+// 10:00 sheet sync died mid-run two days running; All Inboxes stayed a day old and the 11:00 digest waited 30 minutes
+// for a run that was gone). A new process marks those runs lost and runs the day's sync again, once (index.js).
+const DAY_MS = 24 * 60 * 60 * 1000;
+const istDate = d => new Date(+d + 330 * 60000).toISOString().slice(0, 10);
+
+/** Runs the previous process left open: started in the 24 h before this process started, no end recorded. */
+function lostRuns(runs, processStart) {
+  const t = +processStart;
+  return runs.filter(r => !r.ended && r.started && +new Date(r.started) < t && +new Date(r.started) > t - DAY_MS);
+}
+
+/**
+ * What a bot that started at processStart owes today's 10:00 sheet sync, checked at `now`:
+ * {kind: 'lost', slot} - it started before this process and never finished (run it again);
+ * {kind: 'missed', slot} - no record today (the bot was down at 10:00);
+ * null - before 10:00 IST, finished, or this process already started one.
+ */
+function syncCatchUp(now, processStart, runs) {
+  const ist = new Date(+now + 330 * 60000);
+  if (ist.getUTCHours() < 10) return null;
+  const date = istDate(now);
+  const slot = `${date}T10:00+05:30`;
+  const today = runs.filter(r => r.job === 'smartlead-sync' && r.started && istDate(new Date(r.started)) === date);
+  if (!today.length) return { kind: 'missed', slot };
+  if (today.some(r => r.ended || +new Date(r.started) >= +processStart)) return null;
+  return { kind: 'lost', slot: today[0].slot || slot };
+}
+
+module.exports = { missedStatsPost, missedRuns, CATCH_UPS, lostRuns, syncCatchUp };

@@ -1610,6 +1610,31 @@ async function start() {
       }, 60 * 1000);
     }
 
+    // 2 minutes after a start: runs the previous process left open are marked lost (the digest stops waiting for
+    // them; bot health still lists them as unfinished), and today's 10:00 sheet sync is run if a restart killed it
+    // (once a day) or the bot was down at 10:00. 17 and 18 Nov 2026: a restart mid-sync left All Inboxes a day old.
+    setTimeout(async () => {
+      try {
+        const catchUp = require('./stats_catch_up');
+        const col = healthCol('cron_runs');
+        const recent = await col.find({ started: { $gte: new Date(+PROCESS_START - 24 * 3600 * 1000) } }).toArray();
+        const lost = catchUp.lostRuns(recent, PROCESS_START);
+        if (lost.length) {
+          await col.updateMany({ _id: { $in: lost.map(r => r._id) } }, { $set: { lost: true, lost_seen: new Date() } });
+          console.log(`[restart] ${lost.length} run(s) the previous process left open marked lost: ${lost.map(r => r.job).join(', ')}`);
+        }
+        const owed = catchUp.syncCatchUp(new Date(), PROCESS_START, recent);
+        if (!owed) return;
+        const lock = owed.kind === 'lost' ? takeLock(`smartleadSync-rerun-${health.istDay(new Date())}`) : onceToday('smartleadSync');
+        if (await lock) {
+          console.log(`[smartlead-sync] today's 10:00 sync was ${owed.kind === 'lost' ? 'cut off by a restart' : 'missed'}: running it now`);
+          runJob('smartlead-sync', ['run.py'], { slot: owed.slot, label: owed.kind === 'lost' ? 'rerun' : 'catch-up' });
+        }
+      } catch (err) {
+        console.error(`[restart] lost-run check failed: ${err.message}`);
+      }
+    }, 2 * 60 * 1000);
+
     // Once after a restart, 3 minutes in (after the catch-ups started): the bot-health post for
     // the time since the last one. On a weekday after 10:05 with no 10:05 post yet, it is that
     // day's post. At most one restart post an hour, so a crash loop cannot flood the channel.
