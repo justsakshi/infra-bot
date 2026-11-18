@@ -254,3 +254,142 @@ def test_asks_stored_before_the_list_existed_still_render():
                      "urgent": False, "since": T0.isoformat()}]}
     head, _ = dp.build([src], [], [], T0)
     assert "\n1. 7 inboxes are disconnected.\nDo: Reconnect them." in "\n".join(head)
+
+
+# 18 Nov 2026 (Manveen, on the 11:30 digest: "why did i get these 13 messages"): the same kill-list inboxes came from
+# two jobs as four asks, and items already decided (another person handles them, a retest is booked, a delete list
+# he does by hand) came back every day. Synthetic names only (public repo).
+
+NOW = datetime(2026, 11, 18, 5, 30, tzinfo=timezone.utc)        # Wed 18 Nov 11:00 IST
+
+
+def _kill_sources():
+    fleet = _src("fleet-watch", [{"text": "5 inboxes are on the kill list.", "key": "fleet-watch:kill",
+                                  "step": "Take it out of campaigns, do not renew for each one listed.",
+                                  "detail": ["a1@alpha.test (open since 11 Nov)", "a2@alpha.test (open since 11 Nov)",
+                                             "b1@bravo.test (open since 14 Nov)", "b2@bravo.test (open since 14 Nov)",
+                                             "b3@bravo.test (open since 14 Nov)"]}], at=NOW - timedelta(minutes=30))
+    kill = _src("kill-report", [
+        {"text": "2 inboxes on the kill list are still sending.", "key": "kill-report:sending",
+         "step": "Take each inbox listed out of the campaigns named today.",
+         "detail": ["a1@alpha.test (Client A): sending in Camp One", "a2@alpha.test (Client A): sending in Camp One"]},
+        {"text": "1 inbox on the kill list sits in switched-on campaigns that are not sending.",
+         "key": "kill-report:idle", "step": "Pause the campaigns named.",
+         "detail": ["c1@charlie.test (Client C): in Camp Two"]},
+        {"text": "3 domains are landing in spam on the classic tests and should not be used.",
+         "key": "kill-report:domains", "step": "Don't add inboxes on the domains listed to campaigns.",
+         "detail": ["Client A · alpha.test (2 inboxes): 70% reached the inbox",
+                    "Client B · bravo.test (3 inboxes): 57% reached the inbox",
+                    "Client C · charlie.test (1 inbox): 67% reached the inbox"]}], at=NOW - timedelta(days=1))
+    return [fleet, kill]
+
+
+def _text(built):
+    head, parts = built
+    return "\n".join(head), parts
+
+
+def test_the_kill_list_from_several_jobs_is_one_item_with_the_job_count():
+    text, _ = _text(dp.build(_kill_sources(), [], [], NOW))
+    assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text
+    assert "\n2." not in text
+    assert "Kill list: 6 inboxes and 3 domains, reported by 2 jobs (Fleet watch, Kill warnings)." in text
+    # one line per domain, saying what each job found there
+    assert "• alpha.test: 2 inboxes still sending (a1@, a2@); domain landing in spam on the classic tests" in text
+    assert "• charlie.test: 1 inbox in switched-on campaigns that are not sending (c1@)" in text
+    assert "Do: " in text and "Email Accounts tab" in text and "don't renew" in text
+
+
+def _holds():
+    return [{"_id": "alpha", "domains": ["alpha.test"], "reason": "Another teammate handles these.",
+             "owner": "Teammate", "until": None},
+            {"_id": "bravo", "domains": ["bravo.test"], "when": "kill-list", "reason": "Retest booked Sat 21 Nov.",
+             "owner": "Manveen", "until": "2026-11-22"},
+            {"_id": "dead", "domains": ["delta.test", "echo.test"], "when": "disconnected",
+             "reason": "Mailboxes gone; on Manveen's delete list.", "owner": "Manveen", "until": None}]
+
+
+def test_a_recorded_decision_holds_items_back_and_says_so_in_one_line():
+    v2 = _src("v2-weekly", [{"text": "6 inboxes did not send in the test, and Smartlead can't log in to them "
+                                     "(delta.test 3, echo.test 3). Reconnect them, or delete them in Smartlead.",
+                             "key": "v2-weekly:cant-log-in"},
+                            {"text": "2 test runs sent fewer than 4 emails per provider: run-1.csv, run-2.csv.",
+                             "key": "v2-weekly:short"}])
+    text, parts = _text(dp.build(_kill_sources() + [v2], [], [], NOW, holds=_holds()))
+    assert f"<@{dg.OWNER}>, 2 things need you today:" in text
+    assert "Kill list: 1 inbox and 1 domain, reported by 1 job (Kill warnings)." in text   # only charlie is left
+    assert "alpha.test" not in text and "bravo.test" not in text and "delta.test" not in text
+    assert "2 test runs sent fewer" in text                                                   # not decided: shown
+    assert "\nHeld back: 4 (decided). What and why: thread." in text
+    held = next(p for p in parts if p.startswith("Held back (decided)"))
+    assert "alpha.test" in held and "Owner Teammate, no end date" in held and "Another teammate" in held
+    assert "Owner Manveen, until Sun 22 Nov" in held and "Retest booked" in held
+    assert "delete list" in held
+    # the fleet-watch kill list is split between two decisions: each says its share
+    assert "5 inboxes are on the kill list (Fleet watch, 2 of its list)" in held
+    assert "5 inboxes are on the kill list (Fleet watch, 3 of its list)" in held
+    assert ". (" not in held
+
+
+def test_a_hold_ends_on_its_date_and_the_item_comes_back():
+    later = datetime(2026, 11, 22, 5, 30, tzinfo=timezone.utc)                  # Sun 22 Nov 11:00 IST
+    text, _ = _text(dp.build(_kill_sources(), [], [], later, holds=_holds()))
+    assert "bravo.test: 3 inboxes on the kill list" in text and "alpha.test" not in text
+
+
+def test_a_conditional_hold_only_holds_asks_of_its_kind():
+    """The dead-mailbox decision covers 'Smartlead can't log in' asks only: the same domains landing in spam on a
+    test (a different problem) still show."""
+    other = _src("kill-report", [{"text": "1 domain is landing in spam on the classic tests and should not be used.",
+                                  "key": "kill-report:domains", "step": "Don't add inboxes on the domains listed.",
+                                  "detail": ["Client D · delta.test (3 inboxes): 50% reached the inbox"]}])
+    text, _ = _text(dp.build([other], [], [], NOW, holds=_holds()))
+    assert "delta.test" in text and "Held back" not in text
+
+
+def test_a_partly_held_ask_shows_only_what_is_left_and_counts_the_rest():
+    src = _src("inbox-status", [{"text": "3 inboxes are disconnected.", "step": "Reconnect each one listed.",
+                                 "key": "inbox-status:disc",
+                                 "detail": ["x1@alpha.test", "y1@golf.test", "y2@golf.test"]}])
+    text, _ = _text(dp.build([src], [], [], NOW, holds=_holds()))
+    assert "y1@golf.test" in text and "x1@alpha.test" not in text
+    assert "(1 of them held back, decided)" in text
+
+
+def test_an_ask_that_says_listed_but_carries_no_list_is_left_out_and_counted():
+    """17 Nov 2026: 'Look each domain in the thread up ...' with nothing under it: Manveen could not act on it."""
+    src = _src("reply-monitor", [{"text": "1 sending domain gets far fewer replies than expected over 14 days.",
+                                  "key": "reply-monitor:alert",
+                                  "step": "Look each domain in the thread up in this week's v2 test results."}])
+    ok = _src("inbox-status", [{"text": "13 inboxes are sending with no weekly test.", "step": "Add each listed.",
+                                "detail": ["Client E · foxtrot.test: 13 inboxes"]}])
+    text, _ = _text(dp.build([src, ok], [], [], NOW))
+    assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text and "far fewer replies" not in text.split("Checks")[0]
+    assert "1 ask came without its list, so it was left out (Reply check)" in text
+
+
+def test_an_ask_naming_its_domains_in_its_own_text_is_not_listless():
+    src = _src("v2-weekly", [{"text": "3 inboxes did not send, and Smartlead can't log in to them (golf.test 3)."}])
+    assert "golf.test 3" in _text(dp.build([src], [], [], NOW))[0]
+
+
+def test_items_of_reads_inboxes_and_domains_but_not_file_names():
+    a = {"text": "2 runs short: run-1.csv, x.json; see hotel.test", "detail": ["• a@india.test: in Camp", "• juliet.test: b@"]}
+    inboxes, domains = dg.items_of(a)
+    assert inboxes == {"a@india.test"} and domains == {"hotel.test", "juliet.test"}
+
+
+def test_holds_are_read_from_mongo_and_an_urgent_held_ask_is_not_posted():
+    db, posted = DB(), []
+    db[dg.HOLDS].replace_one({"_id": "alpha"}, _holds()[0], upsert=True)
+    a = dg.Ask("2 inboxes on the kill list are still sending.", "Take them out.", key="kill-report:sending",
+               urgent=True, detail=["a1@alpha.test (Client A): sending in Camp One"])
+    dg.report("kill-report", [a], db=db, now=NOW, post_urgent=lambda t: posted.append(t) or True)
+    assert posted == []
+    assert [h["_id"] for h in dg.load_holds(db)] == ["alpha"]
+
+
+def test_held_items_alone_post_nothing():
+    """A day with only decided items is a quiet day: no post just to say 'held back'."""
+    fleet = _kill_sources()[0]
+    assert dp.build([fleet], [], [], NOW, holds=_holds()) is None

@@ -8,6 +8,11 @@ job's full report goes in the thread. Jobs hand their part over through smartlea
 Besides what the jobs hand over, the digest checks three things itself: the PC's v2 weekly job ran in the last
 3 hours (Mongo v2_heartbeat), Render runs the latest code on main (RENDER_GIT_COMMIT against GitHub), and a sheet
 sync has finished since the last 10:00 IST slot (the sync's own report time in digest_asks).
+
+What it leaves out (18 Nov 2026, "why did i get these 13 messages"): the kill list told by several jobs is one item;
+anything a recorded decision covers (Mongo digest_holds, see smartlead/digest.py) is held back under one line,
+"Held back: N (decided)", and listed with its reason, owner and date in the thread; an ask that points at a list
+it does not carry is left out and counted under the broken checks.
 """
 from __future__ import annotations
 
@@ -82,12 +87,44 @@ def _ask_line(i: int, a: dict, now: datetime) -> str:
     return f"\n{i}. {a['text']}{listed}{step}" + (f" {' '.join(tail)}" if tail else "")
 
 
-def build(sources: list[dict], done: list[dict], checks: list[dict], now: datetime
+def _held_part(held: list[dict]) -> str:
+    """Every held item with its reason, owner and date, one decision per line (nothing held goes invisible)."""
+    lines, order, shared = [], {}, {}
+    for x in held:
+        order.setdefault(id(x["hold"]), (x["hold"], []))[1].append(x)
+        shared[id(x["ask"])] = shared.get(id(x["ask"]), 0) + 1
+    for h, xs in order.values():
+        what = ", ".join(list(h.get("domains") or []) + list(h.get("inboxes") or []) + list(h.get("keys") or [])) \
+            or str(h.get("_id"))
+        until = dg._until(h)
+        when = f"until {_day(datetime(until.year, until.month, until.day, 12, tzinfo=IST))}" if until \
+            else "no end date"
+        asks = "; ".join(f"{x['ask']['text'].rstrip('.')} ({LABELS.get(x['ask'].get('source'), x['ask'].get('source'))}"
+                         + (f", {x['n']} of its list" if x["n"] and (not x["whole"] or shared[id(x["ask"])] > 1)
+                            else "") + ")" for x in xs)
+        lines.append(f"• {what}: {h.get('reason') or 'no reason recorded'} Owner {h.get('owner') or 'not named'}, "
+                     f"{when}. Held today: {asks}")
+    return "Held back (decided), not in today's list\n\n" + "\n".join(lines)
+
+
+def build(sources: list[dict], done: list[dict], checks: list[dict], now: datetime, holds=()
           ) -> tuple[list[str], list[str]] | None:
     """(headline lines, thread parts), or None when there is nothing to say (no post: routine 'all fine' is
-    silent). ``checks``: the digest's own findings, as asks of kind 'broken' or 'ask'."""
+    silent). ``checks``: the digest's own findings, as asks of kind 'broken' or 'ask'. ``holds``: the recorded
+    decisions (Mongo digest_holds): what they cover is left out and counted in one line, listed in the thread."""
     asks, broken = collect(sources + [{"_id": "digest", "at": now.isoformat(), "asks": checks}], now)
-    if not asks and not broken and not done:
+    bare = [a for a in asks if dg.listless(a)]
+    asks = [a for a in asks if not dg.listless(a)]
+    asks, held = dg.apply_holds(asks, holds, now)
+    asks, kill_thread = dg.merge_kill_list(asks, LABELS)
+    if bare:
+        jobs = ", ".join(sorted({LABELS.get(a["source"], a["source"]) for a in bare}))
+        k = len(bare)
+        broken.append({"kind": "broken", "source": "digest", "key": "digest:listless",
+                       "text": f"{k} ask{'s' if k != 1 else ''} came without {'its' if k == 1 else 'their'} list, so "
+                               f"{'it was' if k == 1 else 'they were'} left out ({jobs}).",
+                       "step": "Each job's report is in the thread; its next run sends the ask with its list."})
+    if not asks and not broken and not done:       # held items alone: a quiet day, no post
         return None
     n = len(asks)
     head = [f"Inbox digest, {_day(now)}",
@@ -96,6 +133,9 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
     head += [_ask_line(i, a, now) for i, a in enumerate(asks[:MAX_SHOWN], 1)]
     if n > MAX_SHOWN:
         head.append(f"\n{n - MAX_SHOWN} more in the thread.")
+    n_held = len({id(x["ask"]) for x in held})
+    if n_held:
+        head.append(f"\nHeld back: {n_held} (decided). What and why: thread.")
     if done:
         head.append("\nDone by the bot since the last digest:")
         head += [f"• {d['text']}" for d in done[:15]]
@@ -112,6 +152,13 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
                                                                    for i, a in enumerate(asks[MAX_SHOWN:], MAX_SHOWN + 1)))
     if len(done) > 15:
         parts.append("Everything done by the bot\n\n" + "\n".join(f"• {d['text']}" for d in done))
+    if held:
+        parts.append(_held_part(held))
+    if kill_thread:
+        parts.append("Kill list, as each job reported it\n\n" + "\n".join(kill_thread))
+    if bare:
+        parts.append("Left out: asks that came without their list\n\n"
+                     + "\n".join(f"• {a['text']} ({LABELS.get(a['source'], a['source'])})" for a in bare))
     for s in sorted(sources, key=lambda s: s["_id"]):
         at = _parse(s.get("at"))
         if s.get("detail") and at and now - at < STALE:
@@ -225,7 +272,7 @@ def main(argv=None) -> int:
     checks = pc_check(db.v2_heartbeat.find_one({"_id": "pc"}), now)
     checks += render_check(running, _compare(running) if running else None)
     checks += sync_check(sources, now)
-    built = build(sources, done, checks, now)
+    built = build(sources, done, checks, now, dg.load_holds(db))
     if not built:
         print("Nothing needs anyone and nothing was done: no digest today")
         db[dg.META].replace_one({"_id": "last"}, {"_id": "last", "at": now.isoformat(), "posted": False}, upsert=True)
