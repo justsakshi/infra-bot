@@ -312,8 +312,8 @@ def run(today: date, fleet: dict[str, dict], unread: dict[str, str], history: li
     return verdicts, posts
 
 
-ALERT_STEP = ("Look each domain listed up in this week's v2 test results; if it failed there too, take its "
-              "inboxes out of their campaigns. Nothing was paused.")
+ALERT_STEP = ("Check each domain's weekly test result; if it failed there too, take its inboxes out of their "
+              "campaigns. Nothing was paused.")
 RETRY_STEP = "It runs again tomorrow at 13:00; if it fails twice, check that account's Smartlead API key."
 
 

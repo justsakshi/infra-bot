@@ -715,12 +715,12 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
     if new:
         k = len(new)
         tabs = sorted({_tab(untracked[d]["client"]) for d in new})
-        text = (f"{k} current-client domain{'s are' if k != 1 else ' is'} in Smartlead but not in the deliverability "
-                f"sheet, so {'their' if k != 1 else 'its'} inboxes are kept off the weekly placement test.")
+        text = (f"{k} current-client domain{'s are' if k != 1 else ' is'} not in the deliverability sheet, so "
+                f"{'their' if k != 1 else 'its'} inboxes get no weekly test.")
         step = (f"If we use it, add {new[0]} to the deliverability sheet, tab {tabs[0]}, column A; the next run puts "
                 "its inboxes on the test campaigns." if k == 1 else
-                f"For each domain listed that we use, add it to the deliverability sheet (tab {', '.join(tabs)}), "
-                "column A; the next run puts its inboxes on the test campaigns.")
+                f"Add each one we use to the deliverability sheet (tab {', '.join(tabs)}, column A); the next run "
+                "puts its inboxes on the test campaigns.")
         asks.append(dg.Ask(text, step, key=f"{SOURCE}:untracked",
                            detail=[f"{d} ({untracked[d]['client']}, {_n(untracked[d]['inboxes'])})" for d in new]))
     for client, k in sorted(_no_room(results).items()):

@@ -142,17 +142,20 @@ def merge_asks(source: str, asks: list, before: list[dict] | None, now: datetime
 
 
 def report(source: str, asks: list | None = None, done: list | None = None, detail: list[str] | None = None,
-           *, db=None, now: datetime | None = None, post_urgent=None) -> bool:
+           *, db=None, now: datetime | None = None, post_urgent=None, numbers: dict | None = None) -> bool:
     """Hand the digest a job's current asks (replacing its previous ones), what it did by itself, and its full
     report for the thread. Urgent asks are posted at once, one time per key. False when Mongo can't be written:
-    the caller then posts the old way."""
+    the caller then posts the old way. ``numbers`` ({client: {group: count}}, the inbox list only): where the
+    inboxes stand, for the digest's quiet line and its numbers reply."""
     now = now or _now()
     try:
         db = db if db is not None else _db()
         prev = db[ASKS].find_one({"_id": source}) or {}
         merged = merge_asks(source, list(asks or []), prev.get("asks"), now)
-        db[ASKS].replace_one({"_id": source}, {"_id": source, "asks": merged, "detail": list(detail or [])[:20],
-                                               "at": now.isoformat(timespec="seconds")}, upsert=True)
+        doc = {"_id": source, "asks": merged, "detail": list(detail or [])[:20], "at": now.isoformat(timespec="seconds")}
+        if numbers:
+            doc["numbers"] = {str(c): {str(g): int(n) for g, n in (v or {}).items()} for c, v in numbers.items()}
+        db[ASKS].replace_one({"_id": source}, doc, upsert=True)
         # An urgent ask that is no longer reported was fixed: forget it was posted, so if it comes back it posts again.
         for key in {a.get("key") for a in prev.get("asks") or [] if a.get("urgent")} - {a["key"] for a in merged}:
             db[URGENT].delete_one({"_id": key})
@@ -176,9 +179,9 @@ def report(source: str, asks: list | None = None, done: list | None = None, deta
 
 def urgent_text(source: str, a: dict) -> str:
     """What is wrong, what it is about (its list), the step, and that it stays in the digest. Each part apart."""
-    lines = detail_lines(a, URGENT_LINES)
-    return "\n".join([f"🚨 {a['text']}", ""] + (lines + [""] if lines else [])
-                     + [f"<@{OWNER}> {a['step']}" if a.get("step") else f"<@{OWNER}>",
+    lines = [plain(x) for x in detail_lines(a, URGENT_LINES)]
+    return "\n".join([f"🚨 {plain(a['text'])}", ""] + (lines + [""] if lines else [])
+                     + [f"<@{OWNER}> {plain(a['step'])}" if a.get("step") else f"<@{OWNER}>",
                         "", "It stays in the daily digest until it is fixed."])
 
 
@@ -440,6 +443,63 @@ def merge_kill_list(asks: list[dict], labels: dict | None = None) -> tuple[list[
             continue
         out.append(a)
     return out, thread
+
+
+# --- plain words and one item per set of inboxes (19 Nov 2026) ---------------------------------------------------
+#
+# Manveen, 19 Nov 2026, on the 11:00 digest: "i got this and it's long spammy i can not unserstand anything". It
+# used the bot's own words ("dt_senders", "v2", "BUSY", "report-only until real replies agree with the seed test")
+# and told the same 24 inboxes twice (a sheet the domains were missing from, and a tracker the inboxes were missing
+# from). Every line the digest shows goes through plain(), and asks about the same inboxes become one item.
+
+_NOT_WORD = r"(?<![\w.@/-])"          # never inside a domain, an address, a file or a campaign name
+_PLAIN = [(re.compile(_NOT_WORD + p + r"(?![\w.@/-])"), w) for p, w in (
+    (r"dt_senders", "the test-campaign job"),
+    (r"v2 weekly(?: test)? job", "weekly test job"),
+    (r"DT (?:test )?campaign(s?)", r"test campaign\1"),
+    (r"DT test(s?)", r"weekly test\1"),
+    (r"(?:Smart Delivery )?v2 (?:weekly )?test(s?)", r"weekly test\1"),
+    (r"v2 result(s?)", r"weekly test result\1"),
+    (r"v2 pass(es)?", r"weekly test pass\1"),
+    (r"failed v2", "failed the weekly test"),
+    (r"v2", "weekly test"),
+    (r"BUSY", "held back"),
+    (r"FREE", "free"),
+)] + [(re.compile(r"report-only until real replies agree with the seed test"),
+       "not acted on yet: Google results wait until real replies agree")]
+
+
+def plain(text) -> str:
+    """The bot's own words in plain ones ('v2 test' -> 'weekly test', 'dt_senders' -> 'the test-campaign job'),
+    never inside a domain, an inbox or a name like 'Campaign | V2'."""
+    out = str(text or "")
+    for rx, word in _PLAIN:
+        out = rx.sub(word, out)
+    return out
+
+
+def reach(a: dict) -> set[str]:
+    """The domains an ask is about: its domains and its inboxes' domains."""
+    inboxes, domains = items_of(a)
+    return domains | {i.rsplit("@", 1)[1] for i in inboxes}
+
+
+def merge_same(asks: list[dict], broken: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(asks, broken) with every item about the same inboxes told once: an item whose domains are all in an earlier
+    item's (or that holds all of an earlier item's) goes under it as ``also``, asks before broken checks. Items that
+    name no domain are never merged."""
+    hosts: list[dict] = []
+    out_asks, out_broken = [], []
+    for a, out in [(x, out_asks) for x in asks] + [(x, out_broken) for x in broken]:
+        r = reach(a)
+        host = next((h for h in hosts if r and h["_reach"] and (r <= h["_reach"] or h["_reach"] <= r)), None)
+        if host is not None:
+            host["item"].setdefault("also", []).append(a)
+            continue
+        a = {**a}
+        hosts.append({"item": a, "_reach": r})
+        out.append(a)
+    return out_asks, out_broken
 
 
 def _post_now(text: str) -> bool:

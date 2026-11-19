@@ -102,6 +102,7 @@ def states(rows: list[dict], today: date) -> list[dict]:
         sending = sorted({str(r.get("campaign_name") or "") for r in rs
                           if str(r.get("campaign_status") or "").upper() in SENDING_STATUSES
                           and not _is_test_campaign(r.get("campaign_name", ""))})
+        in_test = any(_is_test_campaign(r.get("campaign_name", "")) for r in rs)
         tags = sorted({t for r in rs for t in r.get("tags") or []})
         aside = first.get("v2_set_aside")
         if aside is None:   # a row from before the list carried it: the type rule still applies
@@ -114,6 +115,8 @@ def states(rows: list[dict], today: date) -> list[dict]:
                     "client": str(first.get("sub_client") or first.get("client") or ""),
                     "account": str(first.get("client") or ""), "provider": str(first.get("provider") or ""),
                     "account_id": str(first.get("account_id") or ""), "state": state, "campaigns": sending,
+                    "in_test": in_test,
+                    "group": usable.team_group(first.get("busy_reason"), first.get("provider"), first.get("use_notes")),
                     "v2_status": str(first.get("v2_status") or ""), "v2_date": str(first.get("v2_date") or ""),
                     "set_aside": str(aside or ""),
                     "availability": str(first.get("availability") or ""),
@@ -139,7 +142,10 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
     2. a sending campaign has no usable inbox left, or half or more of its inboxes cannot send;
     3. an inbox in a sending campaign cannot connect (one that sits idle is listed in the thread, not here:
        an item that never clears teaches people to skip the post; the renewal review asks about it at its bill);
-    4. once a v2 pass is required: inboxes sending without one (the week's v2 files are not in)."""
+    4. once a v2 pass is required: inboxes sending without one that are on no test campaign. One on a test campaign
+       is not a job for a person: the next weekly test covers it, and a test campaign whose inboxes miss their
+       weekly test is asked about by the test-campaign job and the v2 job (19 Nov 2026: 13 inboxes already on a test
+       campaign, retest booked, were asked about with a step to add them to the sheet)."""
     if require_pass is None:
         require_pass = usable.require_v2_pass(today)
     items: list[dict] = []
@@ -209,7 +215,7 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
                               f"Smartlead. Reconnect {'it' if len(off) == 1 else 'them'}",
                       "detail": [f"• {c} · {camp}: {_names(sorted(es), 12)}" for (c, camp), es in sorted(by_camp.items())]})
 
-    unproven = [r for r in records if r["state"] == "sending_unproven"]
+    unproven = [r for r in records if r["state"] == "sending_unproven" and not r.get("in_test")]
     if unproven and require_pass:
         # By client and domain: the deliverability sheet (the step) is kept per domain.
         by_dom: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -217,8 +223,8 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
             by_dom[(r["client"], r["domain"])].append(r)
         items.append({"key": "sending_unproven",
                       "text": f"{_n(len(unproven))} {'is' if len(unproven) == 1 else 'are'} sending with no weekly test "
-                              f"result in the last {usable.V2_FRESH_DAYS} days. Check each is in a DT test campaign and "
-                              f"that its weekly test ran in Smart Delivery",
+                              f"result in the last {usable.V2_FRESH_DAYS} days and {'is' if len(unproven) == 1 else 'are'} "
+                              f"on no test campaign, so no weekly test will check {'it' if len(unproven) == 1 else 'them'}",
                       "detail": [f"• {c} · {d}: {_n(len(rs))}, in {', '.join(sorted({x for r in rs for x in r['campaigns']}))}"
                                  + (f"; last test {max(r['v2_date'] for r in rs)[:10]}"
                                     if any(r["v2_date"] for r in rs) else "; never tested")
@@ -239,8 +245,12 @@ def format_post(records: list[dict], changes: list[dict], items: list[dict], tod
     if saved_error:
         head.append(f"History not saved today ({saved_error})")
     parts = ["\n".join([f"*{i}. {it['text']}*"] + it["detail"]) for i, it in enumerate(items, 1)]
+    waiting = sum(1 for r in records if r["state"] == "sending_unproven" and r.get("in_test"))
     parts.append("\n".join(["*Every inbox, by where it stands*"]
-                           + [f"• {LABEL[s]}: {count[s]}" for s in ORDER if count.get(s)]))
+                           + [f"• {LABEL[s]}: {count[s]}" for s in ORDER if count.get(s)]
+                           + ([f"{_n(waiting)} sending with no result in {usable.V2_FRESH_DAYS} days "
+                               f"{'is' if waiting == 1 else 'are'} on a test campaign: the next weekly test covers "
+                               f"{'it' if waiting == 1 else 'them'}."] if waiting else [])))
     by_client: dict[str, Counter] = defaultdict(Counter)
     for r in records:
         by_client[r["client"] or "no client"][r["state"]] += 1
@@ -344,9 +354,18 @@ DIGEST_STEPS = {
                       "enough. If the campaign should not be sending at all, pause it.",
     "disconnected": "Smartlead, Email Accounts, filter Disconnected, Reconnect each inbox listed (or delete it "
                     "if it was cancelled).",
-    "sending_unproven": "Add any listed inbox that is in no DT campaign to the deliverability sheet; dt_senders puts "
-                        "it in the next weekly test.",
+    "sending_unproven": "Add each domain listed to the deliverability sheet (its client's tab, column A); the 06:00 "
+                        "IST test-campaign job then puts its inboxes on the weekly test.",
 }
+
+
+def numbers(records: list[dict]) -> dict:
+    """{client: {group: n}}: every inbox in the All Inboxes groups (usable.team_group), for the digest's numbers."""
+    out: dict[str, Counter] = defaultdict(Counter)
+    for r in records:
+        if r.get("group"):
+            out[r["client"] or "no client"][r["group"]] += 1
+    return {c: dict(k) for c, k in sorted(out.items())}
 
 
 def digest_asks(items: list[dict]) -> list:
@@ -378,7 +397,8 @@ def run(rows: list[dict], today: date, complete: bool, post: bool, db=None) -> d
            "headline": head, "thread": parts, "posted": False}
     if post and records and os.getenv("FLEET_STATUS_POST", "on").strip().lower() != "off":
         from smartlead import digest as dg
-        if dg.on() and db is not None and dg.report("inbox-status", digest_asks(items), [], ["\n".join(head)] + parts, db=db):
+        if dg.on() and db is not None and dg.report("inbox-status", digest_asks(items), [], ["\n".join(head)] + parts, db=db,
+                                                    numbers=numbers(records)):
             out["digest"] = True
             return out
         token = os.getenv("SLACK_BOT_TOKEN", "").strip()
