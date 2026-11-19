@@ -520,3 +520,65 @@ def test_marks_are_read_with_the_gate_data_and_an_unread_collection_marks_nothin
     db["external_warmup"] = Col([], boom=True)
     got = usable.load_gate_data()
     assert got["checked"] and got["external"] == {}
+
+
+# ── One verdict for every reader (t320, 19 Nov 2026) ────────────────────────────────────────────────────────────────
+
+def test_send_verdict_reads_only_the_tab_codes():
+    assert usable.send_verdict("no_capacity,do_not_use,no_v2_pass", "Outlook") == ("never", ["do_not_use"])
+    assert usable.send_verdict("failed_v2", "Outlook") == ("never", ["failed_v2"])
+    assert usable.send_verdict("disconnected,dns_error", "Outlook") == ("cannot", ["disconnected", "dns_error"])
+    assert usable.send_verdict("high_bounce,no_v2_pass", "Outlook") == ("hold", ["no_v2_pass"])
+    assert usable.send_verdict("blocklisted", "Outlook") == ("hold", ["blocklisted"])
+    # picking-a-new-campaign codes never stop an inbox that sends
+    assert usable.send_verdict("no_capacity,low_rep,stale_test,untested,failed_test,high_bounce", "Outlook") == ("send", [])
+    assert usable.send_verdict("", "Outlook") == ("send", [])
+
+
+def test_google_rows_hold_on_their_own_evidence():
+    """The Google rule (t268): quiet at Gmail, or low warm-up without real replies, is the Google inbox's verdict."""
+    assert usable.send_verdict("quiet", "Gmail") == ("hold", ["quiet"])
+    assert usable.send_verdict("no_capacity,low_rep", "Gmail") == ("hold", ["low_rep"])
+    assert usable.send_verdict(["low_rep"], "Outlook") == ("send", [])
+
+
+def test_team_group_never_calls_a_held_inbox_safe():
+    """A chart or report word is built on send_verdict: "Safe to send" only for "send"."""
+    codes = ["do_not_use", "failed_v2", "no_v2_pass", "blocklisted", "quiet", "low_rep", "disconnected",
+             "no_capacity", "high_bounce", "stale_test"]
+    import itertools
+    for kind in ("Outlook", "Gmail", "Other"):
+        for n in (0, 1, 2):
+            for combo in itertools.combinations(codes, n):
+                for notes in ("", usable.RECOVERING_NOTE):
+                    group = usable.team_group(",".join(combo), kind, notes)
+                    assert group in usable.TEAM_GROUPS
+                    if group == "Safe to send":
+                        assert usable.send_verdict(combo, kind)[0] == "send", (combo, kind)
+
+
+def test_team_group_words():
+    rec = usable.RECOVERING_NOTE
+    assert usable.team_group("", "Outlook") == "Safe to send"
+    assert usable.team_group("no_capacity,high_bounce", "Outlook") == "Safe to send"
+    assert usable.team_group("no_v2_pass", "Outlook") == "Not proven yet"          # e.g. a pass older than 10 days
+    assert usable.team_group("do_not_use", "Outlook") == "Do not use"             # a tag is never "not proven"
+    assert usable.team_group("do_not_use,low_rep", "Gmail", rec) == "Recovering"
+    assert usable.team_group("low_rep", "Gmail") == "Recovering"
+    assert usable.team_group("low_rep", "Outlook") == "Recovering"
+    assert usable.team_group("quiet", "Gmail") == "Do not use"
+    assert usable.team_group("disconnected,warmup_blocked", "Gmail") == "Do not use"
+
+
+def test_the_sync_and_send_verdict_agree_on_a_google_quiet_inbox(monkeypatch):
+    """What the sync writes is what send_verdict reads back: a quiet Google inbox is BUSY and held."""
+    from smartlead import config
+    monkeypatch.setattr(config, "MIN_WARMUP_REP_PCT", 90)
+    item = {"email": "a@x.test", "type": "GMAIL", "provider": "Gmail", "connection_ok": True, "message_per_day": 15,
+            "tags": [], "test_sheet_status": ""}
+    data = {"v2": {}, "listed": set(), "checked": True,
+            "evidence": {"a@x.test": {"evidence": "", "label": "quiet", "providers": {"Gmail": "quiet (0 of ~4 expected)"}}},
+            "evidence_week": "2026-11-09"}
+    process_inbox_availability([item], {"a@x.test": {"rep": "100%", "warmup_state": "ramped"}}, {}, gate_data=data)
+    assert item["availability"] == "BUSY"
+    assert usable.send_verdict(item["busy_reason"], item["provider"]) == ("hold", ["quiet"])
