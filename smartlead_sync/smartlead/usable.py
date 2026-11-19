@@ -37,6 +37,8 @@ quiet or reached label at another recipient provider is a signal only (own-provi
 Accepted risk: "reached" counts OOO and wrong-person replies, so reputation 90+ is the only guard against an inbox
 whose mail mostly lands in spam. Capacity, warm-up blocked, DNS and bounce checks (processing.py) are unchanged.
 
+Which codes stop an inbox from sending, for every reader: ``send_verdict`` (and ``team_group`` for reports), t320.
+
 ``gate`` is pure. ``load_gate_data`` reads Mongo and never raises: without it the tag rule still holds
 (tags come from Smartlead) and every row gets a note saying the rest was not read.
 """
@@ -306,6 +308,59 @@ def gate(tags, v2: dict | None, listed: bool | None, today: date, *, checked: bo
             reasons.append("blocklisted")
         notes.append("domain on Spamhaus DBL or URIBL")
     return reasons, notes
+
+
+# ── May this inbox send? One answer for every reader (t320, 19 Nov 2026) ────────────────────────────────────────────
+# Manveen, 19 Nov 2026: "i want all of my agents to be on the same page for inboxes". The All Inboxes tab's Busy Reason
+# is the one verdict. A reader that decides whether an inbox may SEND (gtm tools/lib/inbox_list.py for presend and
+# sl_guard, Campaign Desk's sender gate, report and chart scripts) reads these codes from the tab and adds no rule of
+# its own. "never": nothing lets it send. "hold": held back until the evidence changes (gtm's --sender-override, with
+# a name and a reason, can let one through). Every other code (no_capacity, Outlook low_rep, stale_test ...) is about
+# giving an inbox a NEW campaign, not about one that already sends.
+SEND_NEVER = ("do_not_use", "failed_v2")
+SEND_HOLD = ("no_v2_pass", "blocklisted")
+GOOGLE_HOLD = ("quiet", "low_rep")              # the Google rule (t268): its own evidence in place of v2
+CANNOT_SEND = ("disconnected", "dns_error", "warmup_blocked")
+TEAM_GROUPS = ("Safe to send", "Not proven yet", "Recovering", "Do not use")
+
+
+def reason_codes(busy_reason) -> list[str]:
+    """'no_capacity,no_v2_pass' (the tab's Busy Reason) or a list -> ['no_capacity', 'no_v2_pass']."""
+    items = busy_reason if isinstance(busy_reason, (list, tuple, set)) else str(busy_reason or "").split(",")
+    return [str(x).strip() for x in items if str(x).strip()]
+
+
+def send_verdict(busy_reason, kind="") -> tuple[str, list[str]]:
+    """("never" | "cannot" | "hold" | "send", the codes behind it) for one All Inboxes row. ``kind`` = its Provider
+    (Google rows also hold on ``quiet`` and ``low_rep``). "cannot" = Smartlead can't send from it (connection, DNS,
+    warm-up blocked). Pure."""
+    codes = reason_codes(busy_reason)
+    hold = SEND_HOLD + (GOOGLE_HOLD if real_send_rule(kind) else ())
+    for verdict, names in (("never", SEND_NEVER), ("cannot", CANNOT_SEND), ("hold", hold)):
+        hit = [c for c in codes if c in names]
+        if hit:
+            return verdict, hit
+    return "send", []
+
+
+def team_group(busy_reason, kind="", notes="") -> str:
+    """The word reports and charts use for one All Inboxes row (TEAM_GROUPS), built on ``send_verdict`` so a chart can
+    never call "Safe to send" an inbox the gate holds back. ``notes`` = the row's Notes (RECOVERING_NOTE marks a
+    person's DO NOT USE tag on an inbox whose warm-up is being repaired). Pure.
+
+    Safe to send   may send, warm-up fine
+    Not proven yet held back for missing proof (no v2 pass in 10 days, listed domain)
+    Recovering     warm-up under 90: tagged out while it repairs, a Google inbox held for low warm-up, or an Outlook
+                   inbox that may send but gets no extra volume
+    Do not use     tagged, failed v2, quiet at Gmail, or Smartlead can't send from it"""
+    verdict, codes = send_verdict(busy_reason, kind)
+    if verdict == "never":
+        return "Recovering" if RECOVERING_NOTE in str(notes or "") else "Do not use"
+    if verdict == "cannot" or "quiet" in codes:
+        return "Do not use"
+    if verdict == "hold":
+        return "Recovering" if "low_rep" in codes else "Not proven yet"
+    return "Recovering" if "low_rep" in reason_codes(busy_reason) else "Safe to send"
 
 
 def newest_judged(rows) -> dict[str, dict]:
