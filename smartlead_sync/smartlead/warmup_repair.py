@@ -15,6 +15,19 @@ Report-only. Nothing here changes a warm-up setting, cancels, deletes or calls S
 of the first ones by hand, with Manveen's approval, and seeded them from local files (warmup_repair_cli.py). Inboxes the
 bot enrols by itself carry settings_after None. A recovered inbox is freed by the inbox list on its own (low_rep
 clears; processing.py + usable.py), nothing here holds it back.
+
+Every bad inbox, not only low warm-up (t325, 19 Nov 2026; Manveen: "make sure inboxes that are bad are recovering").
+A connected inbox of the three clients is enrolled for any reason the gate holds it back that someone can repair
+(``reasons``, the same codes as the All Inboxes tab and usable.py): low warm-up, warm-up blocked, a person's DO NOT USE
+tag, the v2 job's pull tag, a v2 FAIL that holds it back, a sending domain on Spamhaus DBL / URIBL. Each doc keeps
+``reasons`` (today's) and ``reasons_at_start``; PATHS says what brings each one back. It is "recovered" only when no
+reason is left. Warm-up repaired (90+, not blocked) while only a person's tag still holds it = "ready": the digest asks
+Manveen, who alone removes the tag (the bot never untags). Under 90 and not on the repair settings (<= 10/day, 30-40%
+reply, Smartlead's guide api.smartlead.ai/guides/email-warmup, used 16 Nov) is a digest ask too. Warm-up switched off
+and bad inboxes in live campaigns are fleet.py's daily asks (warmup_off, dnu_live, listed_live); one active weekly v2
+test per inbox is dt_senders' coverage rule. Docs from before t325 (no ``reasons``) keep the warm-up-only rule.
+Disconnected and DNS-dead inboxes (the tab's disconnected / dns_error, read from the sync's Mongo inbox_status) are
+never enrolled: nothing to repair.
 """
 from __future__ import annotations
 
@@ -33,7 +46,17 @@ _SEED_CLIENT = {"PL": "Precise Leads", "PRECISE LEADS": "Precise Leads", "MELIOR
 SETTING_KEYS = ("status", "warmup_min_count", "warmup_max_count", "max_email_per_day", "reply_rate",
                 "daily_reply_limit", "is_rampup_enabled", "rampup_value", "auto_adjust_warmup",
                 "send_warmups_only_on_weekdays", "warmup_key_id")
-IN_REPAIR = ("repairing", "no_improvement")
+IN_REPAIR = ("repairing", "no_improvement", "ready")
+# Why a bad inbox is out, and what brings it back (t325). Codes as in the All Inboxes tab, except v2_pulled: the v2
+# job's own tag (usable.V2_AUTO_TAG), which the v2 job takes off itself; do_not_use here is a person's tag only.
+PATHS = {"low_rep": "its warm-up is back to 90",
+         "warmup_blocked": "its warm-up is unblocked (credentials fixed first)",
+         "v2_pulled": "the v2 job returns it after two v2 passes 6+ days apart",
+         "failed_v2": "it passes v2 in its weekly test",
+         "blocklisted": "its domain is off Spamhaus DBL / URIBL",
+         "do_not_use": "a person removes the DO NOT USE tag"}
+WARMUP_REASONS = ("low_rep", "warmup_blocked")
+REPAIR_PER_DAY, REPAIR_REPLY = 10, (30, 40)      # the 16 Nov repair settings: 10/day, ramp 5, 35% reply
 
 
 def level(kind: str | None = None) -> int:
@@ -66,11 +89,56 @@ def _why_blocked(reason: str | None) -> str:
 
 
 def new_doc(email: str, account: str, client: str, typ: str | None, kind: str, started: str, rep: int | None, *,
-            before: dict | None, after: dict | None, why: str | None, blocked: bool, by: str) -> dict:
-    return {"email": email, "account": account, "client": client, "type": typ, "kind": kind, "started": started,
-            "rep_at_start": rep, "settings_before": before, "settings_after": after, "why_not_changed": why,
-            "blocked": bool(blocked), "status": "repairing", "enrolled_by": by, "recovered_on": None,
-            "latest_rep": rep, "latest_on": None, "gone_on": None}
+            before: dict | None, after: dict | None, why: str | None, blocked: bool, by: str,
+            reasons: list[str] | None = None) -> dict:
+    d = {"email": email, "account": account, "client": client, "type": typ, "kind": kind, "started": started,
+         "rep_at_start": rep, "settings_before": before, "settings_after": after, "why_not_changed": why,
+         "blocked": bool(blocked), "status": "repairing", "enrolled_by": by, "recovered_on": None,
+         "latest_rep": rep, "latest_on": None, "gone_on": None}
+    if reasons is not None:
+        d["reasons"], d["reasons_at_start"] = list(reasons), list(reasons)
+    return d
+
+
+def reasons(r: dict, v2: dict | None = None, listed: set[str] | None = None, prev=()) -> list[str]:
+    """Why this inbox is out, from today's reading ``r`` (fleet_watch.record). ``v2`` = {email: newest judged v2
+    verdict} (usable.newest_judged), ``listed`` = listed sending domains (usable.listed_domains); None = not read today,
+    and the inbox's last answer (``prev``) stands. An inbox a vendor warms (``warmup_by``, t248) is never judged on its
+    Smartlead warm-up. Pure."""
+    from smartlead import usable
+    out = []
+    ext = bool(r.get("warmup_by"))
+    rep = _rep(r.get("rep"))
+    if not ext and rep is not None and rep < level(r.get("kind")):
+        out.append("low_rep")
+    if not ext and r.get("warmup_blocked"):
+        out.append("warmup_blocked")
+    tags = [str(t).strip().lower() for t in r.get("tags") or []]
+    if any(t.startswith(usable.DO_NOT_USE) and t != usable.V2_AUTO_TAG for t in tags):
+        out.append("do_not_use")
+    if usable.V2_AUTO_TAG in tags:
+        out.append("v2_pulled")
+    if v2 is None:
+        out += [x for x in ("failed_v2",) if x in prev]
+    elif usable.holds_back(v2.get(str(r.get("email") or "").lower()), r.get("kind") or ""):
+        out.append("failed_v2")
+    dom = str(r.get("domain") or str(r.get("email") or "").split("@")[-1]).lower()
+    if listed is None:
+        out += [x for x in ("blocklisted",) if x in prev]
+    elif dom in listed:
+        out.append("blocklisted")
+    return out
+
+
+def off_repair_settings(d: dict) -> bool:
+    """Under 90 on warm-up, warm-up on, and not on the repair settings (more than 10/day, or reply outside 30-40%).
+    Settings not read = no claim. Pure."""
+    if "low_rep" not in (d.get("reasons") or ()) or d.get("warmup_on") is False:
+        return False
+    per_day, reply = d.get("warmup_per_day"), d.get("reply_rate")
+    if per_day is None or reply is None:
+        return False
+    return per_day > REPAIR_PER_DAY or not REPAIR_REPLY[0] <= reply <= REPAIR_REPLY[1]
 
 
 def seed_docs(changes: dict, before: dict, today: date) -> list[dict]:
@@ -109,8 +177,10 @@ def worse(d: dict) -> bool:
     return rep is not None and start is not None and rep <= start - WORSE_BY
 
 
-def update(d: dict, reading: dict | None, today: date) -> dict:
-    """The doc after today's reading (None = no reading today: the last one stands). Pure."""
+def update(d: dict, reading: dict | None, today: date, why: list[str] | None = None) -> dict:
+    """The doc after today's reading (None = no reading today: the last one stands). ``why`` = today's ``reasons``
+    (None = not judged today: the doc's last ones stand). A doc without ``reasons`` (before t325) recovers on warm-up
+    alone. Pure."""
     d = dict(d)
     if reading:
         if reading.get("rep") is not None:
@@ -118,13 +188,33 @@ def update(d: dict, reading: dict | None, today: date) -> dict:
         d["kind"] = reading.get("kind") or d.get("kind")
         if reading.get("warmup_blocked") is not None:
             d["blocked"] = bool(reading["warmup_blocked"])
+        for k in ("warmup_on", "warmup_per_day", "reply_rate"):
+            if k in reading:
+                d[k] = reading[k]
+        if "live_campaigns" in reading:
+            d["live"] = len(reading.get("live_campaigns") or [])
         d["gone_on"] = None
+    if why is not None:
+        if "reasons_at_start" not in d:                 # a doc from before t325 was enrolled for low warm-up
+            d["reasons_at_start"] = (["low_rep"] if "reasons" not in d and "low_rep" not in why else []) + list(why)
+        d["reasons"] = list(why)
     rep, start = d.get("latest_rep"), d.get("rep_at_start")
-    if rep is not None and rep >= level(d.get("kind")) and not d.get("blocked"):
+    held = d.get("reasons")
+    if held is None:                                   # before t325: warm-up only
+        warm_ok = rep is not None and rep >= level(d.get("kind")) and not d.get("blocked")
+        other = []
+    else:
+        warm_ok = not any(x in WARMUP_REASONS for x in held)
+        other = [x for x in held if x not in WARMUP_REASONS]
+    if warm_ok and not other:
         d["status"] = "recovered"
         d["recovered_on"] = d.get("recovered_on") or today.isoformat()
         return d
     d["recovered_on"] = None
+    if warm_ok:                                         # warm-up fine: something else holds it (PATHS)
+        repaired = "low_rep" in (d.get("reasons_at_start") or ["low_rep"])
+        d["status"] = "ready" if other == ["do_not_use"] and repaired else "repairing"
+        return d
     days = (today - date.fromisoformat(str(d["started"])[:10])).days
     stuck = rep is None or start is None or rep <= start + IMPROVE_BY
     d["status"] = "no_improvement" if days >= NO_IMPROVEMENT_DAYS and stuck and not d.get("blocked") else "repairing"
@@ -136,16 +226,19 @@ def _left(email: str, roster: dict | None) -> bool:
     return fl.left({"domain": email.split("@")[-1], "scope": "inbox", "target": email}, roster)
 
 
-def run(docs: list[dict], records: list[dict], today: date, *, read: set[str], roster: dict | None
+def run(docs: list[dict], records: list[dict], today: date, *, read: set[str], roster: dict | None,
+        v2: dict | None = None, listed: set[str] | None = None, dead: set[str] | None = None
         ) -> tuple[list[dict], list[dict]]:
     """(every doc after today's readings, the docs enrolled today). A doc missing from today's records turns
-    'gone' only when its account was read in full and the roster shows the inbox left. Pure."""
+    'gone' only when its account was read in full and the roster shows the inbox left. ``v2``/``listed``: see
+    ``reasons``. ``dead`` = inboxes the All Inboxes gate calls disconnected or dns_error: never enrolled (nothing to
+    repair; Smartlead may still call a DNS-broken inbox connected). Pure."""
     by_email = {r["email"]: r for r in records}
     out = []
     for d in docs:
         e = d["email"]
         if e in by_email:
-            out.append(update(d, by_email[e], today))
+            out.append(update(d, by_email[e], today, reasons(by_email[e], v2, listed, d.get("reasons") or ())))
         elif d.get("status") == "gone":
             out.append(d)
         elif d.get("account") in read and _left(e, roster):
@@ -156,14 +249,15 @@ def run(docs: list[dict], records: list[dict], today: date, *, read: set[str], r
     new = []
     for r in records:
         rep = _rep(r.get("rep"))
-        if (r["email"] in known or r.get("client") not in CLIENTS or r.get("connected") is not True or rep is None
-                or rep >= level(r.get("kind")) or r.get("warmup_by")):      # warmup_by: its vendor warms it (t248)
+        why = reasons(r, v2, listed)                     # warmup_by: its vendor warms it, no warm-up reason (t248)
+        if (r["email"] in known or r.get("client") not in CLIENTS or r.get("connected") is not True or not why
+                or r["email"] in (dead or ())):
             continue
         known.add(r["email"])
         new.append(update(new_doc(r["email"], r.get("account") or "", r["client"], None, r.get("kind") or "google",
                                   today.isoformat(), rep, before=None, after=None,
                                   why="report-only: enrolled by the bot, warm-up settings unchanged",
-                                  blocked=bool(r.get("warmup_blocked")), by="auto"), r, today))
+                                  blocked=bool(r.get("warmup_blocked")), by="auto", reasons=why), r, today, why))
     return out + new, new
 
 
@@ -182,15 +276,35 @@ def _n(k: int) -> str:
     return f"{k} inbox{'es' if k != 1 else ''}"
 
 
+SHORT = {"v2_pulled": "v2 retest (the v2 job pulled them)", "failed_v2": "v2 fail", "do_not_use": "a person's DO NOT USE tag",
+         "blocklisted": "listed domain"}
+OTHER_ORDER = ("v2_pulled", "failed_v2", "do_not_use", "blocklisted")
+
+
+def warm_path(d: dict) -> bool:
+    """Is this doc in warm-up repair (under 90 or blocked)? Docs from before t325 always are."""
+    held = d.get("reasons")
+    return held is None or any(x in WARMUP_REASONS for x in held)
+
+
+def other_path(d: dict) -> str | None:
+    """The first reason other than warm-up that keeps it out (OTHER_ORDER), or None."""
+    return next((x for x in OTHER_ORDER if x in (d.get("reasons") or ())), None)
+
+
 def week_line(client: str, docs: list[dict], today: date) -> str | None:
-    """'Warm-up repair, BettrData: 30 repairing, 4 recovered this week, 2 worse.' None when there is nothing."""
-    rep = [d for d in docs if d.get("status") == "repairing"]
+    """'Warm-up repair, BettrData: 30 recovering, 4 recovered this week, 2 worse.' plus, since t325, the bad inboxes
+    out for another reason ('Other recovery: 25 listed domain.') and those waiting on Manveen's untag. None when there
+    is nothing."""
+    rep = [d for d in docs if d.get("status") == "repairing" and warm_path(d)]
+    other = [d for d in docs if d.get("status") == "repairing" and not warm_path(d)]
+    ready = [d for d in docs if d.get("status") == "ready"]
     stuck = [d for d in docs if d.get("status") == "no_improvement"]
     rec = [d for d in docs if d.get("status") == "recovered" and _this_week(d.get("recovered_on"), today)]
-    bad = [d for d in docs if d.get("status") in IN_REPAIR and worse(d)]
+    bad = [d for d in docs if d.get("status") in IN_REPAIR and warm_path(d) and worse(d)]
     gone = [d for d in docs if d.get("status") == "gone" and _this_week(d.get("gone_on"), today)]
     blocked = sum(1 for d in rep if d.get("blocked"))
-    if not (rep or stuck or rec or gone):
+    if not (rep or stuck or rec or gone or other or ready):
         return None
     parts = [f"{len(rep)} recovering" + (f" ({blocked} warm-up blocked)" if blocked else "")]
     if stuck:
@@ -201,7 +315,13 @@ def week_line(client: str, docs: list[dict], today: date) -> str | None:
         parts.append(f"{len(bad)} worse")
     if gone:
         parts.append(f"{len(gone)} gone")
-    return f"Warm-up repair, {CLIENTS.get(client, client)}: {', '.join(parts)}."
+    line = f"Warm-up repair, {CLIENTS.get(client, client)}: {', '.join(parts)}."
+    if other:
+        by = Counter(other_path(d) for d in other)
+        line += " Other recovery: " + ", ".join(f"{by[k]} {SHORT[k]}" for k in OTHER_ORDER if by[k]) + "."
+    if ready:
+        line += f" {_n(len(ready))} repaired, waiting on your untag."
+    return line
 
 
 def _detail_line(d: dict, today: date) -> str:
@@ -209,11 +329,19 @@ def _detail_line(d: dict, today: date) -> str:
     rep = d.get("latest_rep")
     flags = [{"repairing": "recovering", "no_improvement": "no improvement in 3 weeks (cancel candidate)",
               "recovered": f"recovered {_day(d['recovered_on'])}" if d.get("recovered_on") else "recovered",
+              "ready": "warm-up repaired: only a person's DO NOT USE tag keeps it out",
               "gone": "gone"}.get(d.get("status"), str(d.get("status")))]
     if d.get("status") in IN_REPAIR and worse(d):
         flags.append("worse")
     if d.get("blocked"):
         flags.append("warm-up blocked")
+    also = [SHORT[x] for x in OTHER_ORDER if x in (d.get("reasons") or ())]
+    if also and d.get("status") != "ready":
+        flags.append("also out for: " + ", ".join(also))
+    if off_repair_settings(d):
+        flags.append(f"not on repair settings ({d.get('warmup_per_day')}/day, {d.get('reply_rate')}% reply)")
+    if d.get("live"):
+        flags.append(f"in {d['live']} live campaign{'s' if d['live'] != 1 else ''}")
     b, a = d.get("settings_before") or {}, d.get("settings_after")
     setting = (f"warm-up {b.get('warmup_max_count')}→{a.get('warmup_max_count')}/day, reply "
                f"{b.get('reply_rate')}→{a.get('reply_rate')}%" if a else (d.get("why_not_changed") or "settings unchanged"))
@@ -221,9 +349,25 @@ def _detail_line(d: dict, today: date) -> str:
             f"(good from {level(d.get('kind'))}%) · day {days} · {', '.join(flags)} · {setting}")
 
 
+def _other_lines(docs: list[dict]) -> list[str]:
+    """Inboxes out for a reason other than warm-up, one line per domain and reason (a domain is one decision)."""
+    groups: dict[tuple, list[dict]] = {}
+    for d in docs:
+        groups.setdefault((d["email"].split("@")[-1], d.get("kind"), other_path(d)), []).append(d)
+    out = []
+    for (dom, kind, why), ds in sorted(groups.items(), key=lambda kv: (OTHER_ORDER.index(kv[0][2]), kv[0][0])):
+        live = sum(1 for d in ds if d.get("live"))
+        since = min(str(d.get("started")) for d in ds)
+        out.append(f"• {dom} · {_n(len(ds))} {kind} · {SHORT[why]} · back when {PATHS[why]} · since {_day(since)}"
+                   + (f" · {live} still in live campaigns" if live else ""))
+    return out
+
+
 def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> tuple[list, list, list[str]]:
     """(asks, done, detail) for the digest. The weekly line per client is a Done line on Mondays (``weekly``
-    overrides the day). The only ask: inboxes 3 weeks in repair without improving, as cancel candidates."""
+    overrides the day). Asks: inboxes 3 weeks in repair without improving (cancel candidates); since t325, inboxes
+    whose warm-up is repaired and only a person's tag keeps out (untag is Manveen's call), and inboxes under 90 not
+    on the repair settings."""
     from smartlead import digest as dg
     weekly = today.weekday() == 0 if weekly is None else weekly
     by_client: dict[str, list[dict]] = {}
@@ -236,12 +380,25 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> t
             if line:
                 done.append(dg.Done(line, key=f"warmup-repair:week:{CLIENTS.get(client, client)}:{today.isoformat()}"))
     stuck = [d for d in docs if d.get("status") == "no_improvement"]
+    ready = [d for d in docs if d.get("status") == "ready"]
+    off = [d for d in docs if d.get("status") in IN_REPAIR and off_repair_settings(d)]
     asks = []
     if stuck:
         n = len(stuck)
         asks.append(dg.Ask(f"{_n(n)} did not improve in 3 weeks of warm-up repair: cancel candidates, your call.",
                            "Say which of those listed to cancel; the bot never cancels or deletes an inbox.",
                            key="warmup-repair:cancel-candidates", detail=[_detail_line(d, today) for d in stuck]))
+    if ready:
+        asks.append(dg.Ask(f"{_n(len(ready))} finished warm-up repair (90%+) and only a person's DO NOT USE tag keeps "
+                           "them out: untag is your call.",
+                           "Say which of those listed to untag; the bot never removes a tag.",
+                           key="warmup-repair:ready-to-untag", detail=[_detail_line(d, today) for d in ready]))
+    if off:
+        asks.append(dg.Ask(f"{_n(len(off))} under 90% warm-up are not on the repair settings ({REPAIR_PER_DAY}/day or "
+                           f"less, {REPAIR_REPLY[0]}-{REPAIR_REPLY[1]}% reply).",
+                           f"A yes: set {REPAIR_PER_DAY}/day (never higher than now), ramp 5, 35% reply, read it back "
+                           "and record it (warmup_repair_cli.py changes). The bot changes no warm-up setting.",
+                           key="warmup-repair:not-on-repair-settings", detail=[_detail_line(d, today) for d in off]))
     live = [d for d in docs if d.get("status") in IN_REPAIR
             or (d.get("status") == "recovered" and _this_week(d.get("recovered_on"), today))
             or (d.get("status") == "gone" and _this_week(d.get("gone_on"), today))]
@@ -250,12 +407,18 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> t
         counts = Counter(d.get("status") for d in live)
         head = (f"Warm-up repair, {_day(today)}: {counts['repairing'] + counts['no_improvement']} recovering, "
                 f"{counts['recovered']} recovered this week (report-only: the bot changes no warm-up setting)")
-        order = {"no_improvement": 0, "repairing": 1, "recovered": 2, "gone": 3}
+        order = {"no_improvement": 0, "ready": 1, "repairing": 2, "recovered": 3, "gone": 4}
         lines = [head]
         for client in sorted({d.get("client") for d in live}, key=lambda c: list(CLIENTS).index(c) if c in CLIENTS else 9):
-            mine = sorted((d for d in live if d.get("client") == client),
+            mine = [d for d in live if d.get("client") == client]
+            warm = sorted((d for d in mine if warm_path(d) or d.get("status") != "repairing"),
                           key=lambda d: (order.get(d.get("status"), 9), d.get("latest_rep") or 0, d["email"]))
-            lines.append(f"\n{CLIENTS.get(client, client)}:\n" + "\n".join(_detail_line(d, today) for d in mine))
+            rest = [d for d in mine if not warm_path(d) and d.get("status") == "repairing"]
+            text = "\n".join(_detail_line(d, today) for d in warm)
+            if rest:
+                text += ("\n" if text else "") + "Out for another reason (the All Inboxes gate decides who sends):\n" \
+                        + "\n".join(_other_lines(rest))
+            lines.append(f"\n{CLIENTS.get(client, client)}:\n" + text)
         detail = ["\n".join(lines)]
     return asks, done, detail
 
