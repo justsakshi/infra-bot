@@ -129,7 +129,8 @@ class ExpandiClient:
 
     async def list_messengers(self, li_account_id: int, campaign_instance_id: int,
                               page_size: int = 100, max_pages: int = 40,
-                              stop_when: "callable | None" = None
+                              stop_when: "callable | None" = None,
+                              keep: "tuple[str, ...] | None" = None
                               ) -> tuple[list[dict], bool]:
         """Per-lead rows for one campaign, carrying invited_at / connected_at.
 
@@ -148,6 +149,11 @@ class ExpandiClient:
         reached the final page — the caller cannot infer this from row counts,
         because a campaign's `stats.initiated` can exceed the rows this endpoint
         returns and would otherwise look permanently incomplete.
+
+        `keep` names the only fields to hold per row. A full row carries the
+        lead's profile and messages; the stats post needs two dates, and
+        holding every full row of every campaign got the 10:15 job killed on
+        Render (18-19 Nov 2026, SIGKILL, likely out of memory).
         """
         assert self._client, "Use `async with ExpandiClient(...)`."
         out: list[dict] = []
@@ -169,7 +175,7 @@ class ExpandiClient:
                 self.last_error = f"page {page}: not a JSON object"
                 break
             rows = data.get("results") or []
-            out.extend(rows)
+            out.extend([{k: r.get(k) for k in keep} for r in rows] if keep else rows)
             if not data.get("next"):
                 # Reached the final page: every row this endpoint will ever
                 # return for the campaign has now been seen.
