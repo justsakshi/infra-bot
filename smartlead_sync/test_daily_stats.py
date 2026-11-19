@@ -184,7 +184,7 @@ class _FakeExpandi:
     def __init__(self, script):
         self.script, self.last_error, self.calls = list(script), "", 0
 
-    async def list_messengers(self, acc_id, inst_id, page_size=100, max_pages=1000):
+    async def list_messengers(self, acc_id, inst_id, page_size=100, max_pages=1000, keep=None):
         self.calls += 1
         step = self.script.pop(0)
         if step is True:
@@ -237,3 +237,18 @@ def test_an_error_in_the_post_never_carries_its_text():
                                 response=httpx.Response(429, request=req))
     assert ds._why(exc) == "HTTPStatusError 429"
     assert ds._why(RuntimeError("anything")) == "RuntimeError"
+
+
+def test_expandi_lead_rows_keep_only_the_two_dates():
+    # 18-19 Nov 2026: full lead rows for every campaign got the 10:15 job killed on Render.
+    import asyncio
+    from smartlead.expandi import ExpandiClient
+    c = ExpandiClient.__new__(ExpandiClient)
+    c._client, c.workspace_name, c.last_error = object(), "X", ""
+    page = {"results": [{"invited_at": "2026-11-18T10:00:00Z", "connected_at": None,
+                         "contact": {"name": "A", "about": "x" * 5000}, "messages": [1, 2]}], "next": None}
+    async def _get(url):
+        return page
+    c._get = _get
+    rows, done = asyncio.run(c.list_messengers(1, 2, keep=("invited_at", "connected_at")))
+    assert done and rows == [{"invited_at": "2026-11-18T10:00:00Z", "connected_at": None}]

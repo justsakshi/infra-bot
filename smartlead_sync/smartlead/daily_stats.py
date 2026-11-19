@@ -322,7 +322,8 @@ async def _expandi_leads(exc_client, camp: dict, tries: int = 2) -> tuple[list[d
         for acc_id, inst_id in camp.get("_instance_refs", []):
             try:
                 got, done = await exc_client.list_messengers(acc_id, inst_id, page_size=100,
-                                                             max_pages=1000)
+                                                             max_pages=1000,
+                                                             keep=("invited_at", "connected_at"))
             except Exception as exc:  # noqa: BLE001
                 got, done = [], False
                 exc_client.last_error = type(exc).__name__
