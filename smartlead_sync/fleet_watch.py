@@ -24,7 +24,8 @@ Since 16 Nov 2026 both go to the daily digest instead (smartlead/digest.py): eve
 one ask per kind, and the scorecard in the digest's thread only. DIGEST_MODE=off, or Mongo down: the posts above.
 
 Since 17 Nov 2026 the saved runs also update the warm-up repair tracker (smartlead/warmup_repair.py, Mongo
-warmup_repair; report-only) and hand the digest its own source, warmup-repair.
+warmup_repair; report-only) and hand the digest its own source, warmup-repair. Since 19 Nov 2026 (t325) that tracker
+holds every bad inbox in recovery, not only low warm-up: it also reads the v2 verdicts and today's blocklist.
 """
 from __future__ import annotations
 
@@ -87,6 +88,8 @@ def record(account: str, a: dict, facts: dict, verdicts: dict, per_domain: dict,
             "setup": setup, "limit": st._int(a.get("message_per_day")),
             "approved_limit": approved.get(email, (None, None))[0],
             "warmup_on": str(w.get("status") or "").upper() == "ACTIVE", "rep": st._int(w.get("warmup_reputation")),
+            # warm-up settings as the inbox list gives them (t325: is an inbox under 90 on the repair settings?)
+            "warmup_per_day": st._int(w.get("max_email_per_day")), "reply_rate": st._int(w.get("reply_rate")),
             "warmup_status": str(w.get("status")).upper() if w.get("status") else None,
             "blocked_reason": w.get("blocked_reason") or None,
             # the inbox list says blocked_reason (the detail call says is_warmup_blocked); None = not said
@@ -109,7 +112,8 @@ class FleetStore:
     from inbox_daily, v2_verdicts and inbox_evidence (smartlead/warmup_changes.py). ``repair`` / ``changes`` None with
     collections passed in = not tracked."""
 
-    def __init__(self, daily=None, cases=None, repair=None, *, changes=None, verdicts=None, evidence=None) -> None:
+    def __init__(self, daily=None, cases=None, repair=None, *, changes=None, verdicts=None, evidence=None,
+                 status=None) -> None:
         if daily is None or cases is None:
             from smartlead.zapmail_asset_sync import _db
             db = _db()
@@ -117,8 +121,9 @@ class FleetStore:
                 raise RuntimeError("Mongo unavailable; nothing saved")
             daily, cases, repair = db["inbox_daily"], db["fleet_cases"], db["warmup_repair"]
             changes, verdicts, evidence = db["warmup_changes"], db["v2_verdicts"], db["inbox_evidence"]
+            status = db["inbox_status"]          # the sync's copy of each inbox's All Inboxes Busy Reason (t325)
         self.daily, self.cases, self.repair = daily, cases, repair
-        self.changes, self.verdicts, self.evidence = changes, verdicts, evidence
+        self.changes, self.verdicts, self.evidence, self.status = changes, verdicts, evidence, status
 
     def save_state(self, records: list[dict]) -> None:
         for r in records:
@@ -325,16 +330,45 @@ def _short_reads(read: set[str], records: list[dict], last: dict[str, int]) -> d
             if last.get(a) and now.get(a, 0) < last[a] * (1 - READ_DROP)}
 
 
-def _repair(store, records: list[dict], read: set[str], roster: dict | None, today: date, errors: list[str]):
-    """Update the warm-up repair docs from today's readings and enrol new low-reputation inboxes (report-only:
-    no warm-up setting is changed). (asks, done, detail) for the digest, or None when not tracked or it failed;
-    a failure is a read error, never a stop."""
+DEAD_CODES = ("disconnected", "dns_error")      # the All Inboxes codes of an inbox with nothing to repair (t325)
+
+
+def _repair_inputs(store, blocklist: dict | None) -> tuple[dict | None, set[str] | None, set[str]]:
+    """(newest judged v2 verdict per inbox, listed sending domains, dead inboxes) for the recovery tracker. v2/listed
+    None = not read (the tracker then keeps each inbox's last answer). Dead = the sync's All Inboxes Busy Reason (Mongo
+    inbox_status) says disconnected or dns_error: never enrolled; empty when not read. Never raises."""
+    from smartlead import usable
+    dead: set[str] = set()
+    if getattr(store, "status", None) is not None:
+        try:
+            dead = {str(d.get("email") or "").lower() for d in store.status.find({}, {"_id": 0, "email": 1,
+                                                                                    "busy_reason": 1})
+                    if set(usable.reason_codes(d.get("busy_reason"))) & set(DEAD_CODES)}
+        except Exception:  # noqa: BLE001 - nothing marked dead today
+            dead = set()
+    v2 = None
+    if getattr(store, "verdicts", None) is not None:
+        try:
+            v2 = usable.newest_judged(store.verdicts.find({}, {"_id": 0, "email": 1, "night": 1, "verdict": 1,
+                                                               "overridden": 1}))
+        except Exception:  # noqa: BLE001 - last answers stand
+            v2 = None
+    listed = usable.listed_domains(list(blocklist.values())) if blocklist is not None else None
+    return v2, listed, dead
+
+
+def _repair(store, records: list[dict], read: set[str], roster: dict | None, today: date, errors: list[str],
+            blocklist: dict | None = None):
+    """Update the recovery docs (warm-up repair and every other reason a bad inbox is out, t325) from today's
+    readings and enrol new bad inboxes (report-only: no warm-up setting is changed). (asks, done, detail) for the
+    digest, or None when not tracked or it failed; a failure is a read error, never a stop."""
     if getattr(store, "repair", None) is None:
         return None
     from smartlead import warmup_repair as wr
     try:
         rs = wr.RepairStore(store.repair)
-        docs, _ = wr.run(rs.all(), records, today, read=read, roster=roster)
+        v2, listed, dead = _repair_inputs(store, blocklist)
+        docs, _ = wr.run(rs.all(), records, today, read=read, roster=roster, v2=v2, listed=listed, dead=dead)
         rs.save(docs)
         return wr.digest_items(docs, today)
     except Exception as exc:  # noqa: BLE001 - the rest of fleet watch goes on
@@ -383,7 +417,7 @@ def daily(store, records: list[dict], metrics: dict, read: set[str], blocklist: 
                                                blocklist=blocklist, roster=roster)
     if store:
         store.save_cases(open_now + closed)
-    repair = _repair(store, records, read, roster, today, errors) if store else None
+    repair = _repair(store, records, read, roster, today, errors, blocklist) if store else None
     learned = _learning(store, today, errors) if store else None
     if learned is not None:
         asks_r, done_r, detail_r = repair or ([], [], [])

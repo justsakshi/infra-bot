@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Warm-up repair tracker: seed it from the lead's local files, or preview what the digest would say.
+"""Warm-up repair tracker (since t325, 19 Nov 2026: every bad inbox in recovery): seed it from the lead's local files,
+or preview what the digest would say.
 Logic: smartlead/warmup_repair.py. Fleet watch updates it every day (10:30 IST) and hands the digest its lines.
 Never changes a warm-up setting and never calls Smartlead.
 
@@ -44,11 +45,31 @@ def latest_readings(daily_col, today: date) -> list[dict]:
     return list(latest.values())
 
 
-def preview(docs: list[dict], readings: list[dict], today: date) -> tuple[list[dict], list, list, list[str]]:
-    """(docs after the readings, asks, done, detail) without saving anything. No roster: nothing turns gone."""
-    docs, new = wr.run(docs, readings, today, read=set(), roster=None)
+def preview(docs: list[dict], readings: list[dict], today: date, v2: dict | None = None,
+            listed: set[str] | None = None, dead: set[str] | None = None) -> tuple[list[dict], list, list, list[str]]:
+    """(docs after the readings, asks, done, detail) without saving anything. No roster: nothing turns gone.
+    ``v2``/``listed``/``dead``: as fleet watch reads them (see fleet_watch._repair_inputs)."""
+    docs, new = wr.run(docs, readings, today, read=set(), roster=None, v2=v2, listed=listed, dead=dead)
     asks, done, detail = wr.digest_items(docs, today, weekly=True)
     return new, asks, done, detail
+
+
+def _gate_inputs(db) -> tuple[dict | None, set[str] | None, set[str]]:
+    """(newest judged v2 verdict per inbox, listed sending domains, dead inboxes) from Mongo, as fleet watch reads
+    them; None / empty when a collection is missing or unreadable. Read-only."""
+    import fleet_watch as fw
+    from smartlead.config import BLACKLIST_COLLECTION
+
+    def col(name):
+        try:
+            return db[name]
+        except (KeyError, TypeError):
+            return None
+
+    class _Store:
+        verdicts, status = col("v2_verdicts"), col("inbox_status")
+    blocklist = col(BLACKLIST_COLLECTION)
+    return fw._repair_inputs(_Store, fw._blocklisted(blocklist) if blocklist is not None else None)
 
 
 def _print(new, asks, done, detail, quiet: bool) -> None:
@@ -183,7 +204,7 @@ def main(argv=None) -> int:
         merged = {d["email"]: d for d in docs}
         merged.update({d["email"]: d for d in todo})
         docs = list(merged.values())
-    _print(*preview(docs, latest_readings(db["inbox_daily"], today), today), quiet=args.quiet)
+    _print(*preview(docs, latest_readings(db["inbox_daily"], today), today, *_gate_inputs(db)), quiet=args.quiet)
     return 0
 
 

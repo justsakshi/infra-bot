@@ -297,3 +297,143 @@ def test_seed_dry_run_writes_nothing_and_prints_the_lines(monkeypatch, tmp_path,
 def test_the_digest_names_the_source():
     import digest_post
     assert digest_post.LABELS["warmup-repair"] == "Warm-up repair"
+
+
+# --- every bad inbox, not only low warm-up (t325, 19 Nov 2026) ---------------------------------------------------------
+
+HAND = "DO NOT USE - pulled by hand"
+AUTO = "DO NOT USE - failed v2 (auto)"
+FAIL = {"verdict": "FAIL", "night": "2026-11-21", "overridden": False}
+
+
+def test_reasons_are_the_gate_codes_a_person_or_the_bot_can_repair():
+    r = reading("a@example.com", rep=80, kind="outlook", tags=[HAND, AUTO], warmup_blocked=True, domain="example.com")
+    assert wr.reasons(r, {"a@example.com": FAIL}, {"example.com"}) == [
+        "low_rep", "warmup_blocked", "do_not_use", "v2_pulled", "failed_v2", "blocklisted"]
+    assert wr.reasons(reading("ok@example.com", rep=95, kind="outlook"), {}, set()) == []
+
+
+def test_a_google_v2_fail_and_a_fail_a_person_overrode_are_no_reason():
+    g = reading("g@example.com", rep=100, kind="google")
+    o = reading("o@example.com", rep=100, kind="outlook")
+    assert wr.reasons(g, {"g@example.com": FAIL}, set()) == []
+    assert wr.reasons(o, {"o@example.com": {**FAIL, "overridden": True}}, set()) == []
+
+
+def test_an_inbox_its_vendor_warms_is_never_judged_on_smartlead_warm_up():
+    r = reading("x@example.com", rep=40, warmup_blocked=True, warmup_by="InboxKit", tags=[HAND])
+    assert wr.reasons(r, {}, set()) == ["do_not_use"]
+
+
+def test_v2_or_blocklist_not_read_today_keeps_the_last_answer():
+    r = reading("a@example.com", rep=100, kind="outlook")
+    assert wr.reasons(r, None, None, prev=("failed_v2", "blocklisted")) == ["failed_v2", "blocklisted"]
+    assert wr.reasons(r, {}, set(), prev=("failed_v2", "blocklisted")) == []
+
+
+def test_every_bad_connected_inbox_of_the_three_clients_is_enrolled_whatever_the_reason():
+    recs = [reading("v2@example.com", rep=100, kind="outlook"),
+            reading("listed@listed.example", rep=97, kind="outlook", domain="listed.example"),
+            reading("tag@example.com", rep=100, tags=[HAND]),
+            reading("blocked@example.com", rep=100, warmup_blocked=True),
+            reading("clean@example.com", rep=100),
+            reading("dead@example.com", rep=100, tags=[HAND], connected=False),
+            reading("osc@example.com", rep=100, tags=[HAND], client="OSC")]
+    _, new = wr.run([], recs, MON, read={"BETTRDATA"}, roster=None, v2={"v2@example.com": FAIL}, listed={"listed.example"})
+    by = {d["email"]: d for d in new}
+    assert sorted(by) == ["blocked@example.com", "listed@listed.example", "tag@example.com", "v2@example.com"]
+    assert by["v2@example.com"]["reasons"] == by["v2@example.com"]["reasons_at_start"] == ["failed_v2"]
+    assert all(d["status"] == "repairing" and d["enrolled_by"] == "auto" for d in new)
+
+
+def test_a_v2_fail_with_good_warm_up_recovers_on_its_retest_with_warm_up_left_alone():
+    r = reading("v2@example.com", rep=100, kind="outlook")
+    docs, _ = wr.run([], [r], MON, read=set(), roster=None, v2={"v2@example.com": FAIL}, listed=set())
+    assert docs[0]["status"] == "repairing" and docs[0]["settings_after"] is None
+    passed = {"v2@example.com": {"verdict": "PASS", "night": "2026-11-28", "overridden": False}}
+    docs, _ = wr.run(docs, [r], MON + timedelta(days=6), read=set(), roster=None, v2=passed, listed=set())
+    assert (docs[0]["status"], docs[0]["recovered_on"], docs[0]["reasons"]) == ("recovered", "2026-11-29", [])
+
+
+def test_warm_up_repaired_but_still_tagged_by_a_person_is_ready_and_asks_for_the_untag():
+    old = doc("a@example.com")                                   # a doc from before t325: no reasons
+    docs, _ = wr.run([old], [reading("a@example.com", rep=92, tags=[HAND])], MON, read=set(), roster=None,
+                     v2={}, listed=set())
+    assert docs[0]["status"] == "ready" and docs[0]["reasons_at_start"] == ["low_rep", "do_not_use"]
+    asks, _, detail = wr.digest_items(docs, MON + timedelta(days=1))
+    (a,) = asks
+    assert a.key == "warmup-repair:ready-to-untag" and "untag is your call" in a.text and "never removes" in a.step
+    assert "a@example.com" in a.detail[0] and detail
+    docs, _ = wr.run(docs, [reading("a@example.com", rep=92)], MON, read=set(), roster=None, v2={}, listed=set())
+    assert docs[0]["status"] == "recovered"
+
+
+def test_a_tag_only_inbox_with_good_warm_up_is_not_called_repaired():
+    docs, _ = wr.run([], [reading("t@example.com", rep=100, tags=[HAND])], MON, read=set(), roster=None,
+                     v2={}, listed=set())
+    assert docs[0]["status"] == "repairing"                      # never had a warm-up problem: its path is the tag
+
+
+def test_under_ninety_and_not_on_the_repair_settings_is_an_ask():
+    def low(e, per_day, reply):
+        return reading(e, rep=80, kind="outlook", warmup_per_day=per_day, reply_rate=reply)
+    recs = [low("hi@example.com", 16, 65), low("ok@example.com", 10, 35), low("lower@example.com", 5, 30),
+            low("unread@example.com", None, None), reading("off@example.com", rep=80, warmup_on=False,
+                                                           warmup_per_day=20, reply_rate=20)]
+    docs, _ = wr.run([], recs, MON, read=set(), roster=None, v2={}, listed=set())
+    asks, _, _ = wr.digest_items(docs, MON + timedelta(days=1))
+    (a,) = asks
+    assert a.key == "warmup-repair:not-on-repair-settings" and [x.split(" · ")[0] for x in a.detail] == ["• hi@example.com"]
+    assert "16/day, 65% reply" in a.detail[0] and "never higher than now" in a.step
+
+
+def test_the_weekly_line_and_thread_show_other_recovery_per_domain():
+    recs = [reading(f"m{i}@listed.example", rep=97, kind="outlook", domain="listed.example", client="Melior",
+                    account="PRECISE_LEADS", live_campaigns=["Live 1"] if i < 2 else []) for i in range(3)]
+    recs += [reading("w@example.com", rep=70, client="Melior", account="PRECISE_LEADS")]
+    docs, _ = wr.run([], recs, MON, read=set(), roster=None, v2={}, listed={"listed.example"})
+    _, done, detail = wr.digest_items(docs, MON)
+    assert [d.text for d in done] == ["Warm-up repair, Melior: 1 recovering. Other recovery: 3 listed domain."]
+    text = "\n".join(detail)
+    assert "• listed.example · 3 inboxes outlook · listed domain · back when its domain is off Spamhaus DBL / URIBL" in text
+    assert "2 still in live campaigns" in text and "w@example.com" in text
+
+
+def test_fleet_watch_hands_the_tracker_the_v2_verdicts_and_the_blocklist(monkeypatch):
+    monkeypatch.setenv("DIGEST_MODE", "off")
+    repair, verdicts = FakeCol(), FakeCol()
+    verdicts.docs = [{"email": "v2@example.com", "night": "2026-11-21", "verdict": "FAIL"}]
+    s = fw.FleetStore(FakeCol(), FakeCol(), repair=repair, verdicts=verdicts)
+    recs = [reading("v2@example.com", rep=100, kind="outlook"),
+            reading("l@listed.example", rep=100, kind="outlook", domain="listed.example")]
+    blocklist = {"listed.example": {"domain": "listed.example", "date": "2026-11-22", "listed_on": ["spamhaus dbl"]}}
+    fw.daily(s, recs, {}, {"BETTRDATA"}, blocklist, MON, [], post=False, poster=Poster())
+    assert {d["email"]: d["reasons"] for d in repair.docs} == {"v2@example.com": ["failed_v2"],
+                                                               "l@listed.example": ["blocklisted"]}
+
+
+def test_preview_judges_with_the_v2_verdicts_and_blocklist_fleet_watch_reads(monkeypatch, capsys):
+    import warmup_repair_cli as cli
+    from smartlead import zapmail_asset_sync
+    from smartlead.config import BLACKLIST_COLLECTION
+    db = {"warmup_repair": FakeCol(), "inbox_daily": FakeCol(), "v2_verdicts": FakeCol(), BLACKLIST_COLLECTION: FakeCol()}
+    db["inbox_daily"].docs = [{"email": "v2@example.com", "domain": "example.com", "date": date.today().isoformat(),
+                               "rep": 100, "kind": "outlook", "client": "Melior", "account": "PRECISE_LEADS",
+                               "connected": True}]
+    db["v2_verdicts"].docs = [{"email": "v2@example.com", "night": date.today().isoformat(), "verdict": "FAIL"}]
+    monkeypatch.setattr(zapmail_asset_sync, "_db", lambda: db)
+    assert cli.main(["preview"]) == 0
+    out = capsys.readouterr().out
+    assert "enrolled by the bot today (report-only): 1" in out and "Other recovery: 1 v2 fail." in out
+    assert db["warmup_repair"].docs == []                        # preview writes nothing
+
+
+def test_an_inbox_the_gate_calls_dead_is_never_enrolled():
+    status = FakeCol()
+    status.docs = [{"email": "dns@example.com", "busy_reason": "warmup_blocked,dns_error"},
+                   {"email": "bad@example.com", "busy_reason": "no_capacity,do_not_use"}]
+    s = fw.FleetStore(FakeCol(), FakeCol(), repair=FakeCol(), status=status)
+    recs = [reading("dns@example.com", rep=100, warmup_blocked=True), reading("bad@example.com", rep=100, tags=[HAND])]
+    fw.daily(s, recs, {}, {"BETTRDATA"}, {}, MON, [], post=False, poster=Poster())
+    assert [d["email"] for d in s.repair.docs] == ["bad@example.com"]
+    assert fw._repair_inputs(fw.FleetStore(FakeCol(), FakeCol()), None) == (None, None, set())   # nothing read
