@@ -1347,7 +1347,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         runs = ", ".join(f"{name} ({', '.join(f'{c} {p.title()}' for p, c in sorted(by.items()))})"
                          if len(set(by.values())) > 1 else f"{name} ({n} per provider)" for name, n, by in thin)
         k = len(thin)
-        needs.append(f"{k} test run{'s' if k != 1 else ''} sent fewer than 4 emails per provider, so the job can't "
+        # For info, not a need (19 Nov 2026, digest review: "a Smartlead seed-pool fact, not a task"); the inboxes stay
+        # unjudged until a later run sends 4 per provider.
+        info.append(f"{k} test run{'s' if k != 1 else ''} sent fewer than 4 emails per provider, so the job can't "
                      f"judge {'their' if k != 1 else 'its'} inboxes (it needs 4 of 4): {runs}. Smartlead's test inboxes "
                      f"refill once a day at 05:30 IST and run low late in the day, so runs started then come back "
                      f"short, and a few minutes' gap does not help. Run {'them' if k != 1 else 'it'} again after "

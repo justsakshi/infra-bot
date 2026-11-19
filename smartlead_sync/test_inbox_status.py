@@ -87,8 +87,8 @@ def test_needs_you_names_what_a_person_must_do_and_is_empty_when_all_is_well(mon
     head, parts = st.format_post(st.states(rows, T), [], items, T)
     assert ("*Not connected and in no sending campaign (the renewal review asks about these at their bill)*\n"
             "• Bettrdata: 1 inbox on b.co") in parts
-    assert items[4]["text"] == ("1 inbox is sending with no weekly test result in the last 10 days. Check each is in "
-                                "a DT test campaign and that its weekly test ran in Smart Delivery")
+    assert items[4]["text"] == ("1 inbox is sending with no weekly test result in the last 10 days and is on no test "
+                                "campaign, so no weekly test will check it")
     # before the v2 pass is required, sending without one is not a job for a person
     assert "sending_unproven" not in [i["key"] for i in st.needs_you(st.states(rows, T), T, require_pass=False)]
 
@@ -240,7 +240,7 @@ def test_with_the_digest_on_the_day_goes_to_the_digest_with_steps_not_to_slack(m
     monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
     monkeypatch.setenv("DIGEST_MODE", "on")
     monkeypatch.setattr(notify, "post_with_thread", lambda *a: sent.append(a) or "ts")
-    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None: got.append((src, asks, detail)) or True)
+    monkeypatch.setattr(dg, "report", lambda src, asks, done, detail, db=None, numbers=None: got.append((src, asks, detail)) or True)
     rows = [_row(f"g{i}@x.com", "Camp A", "ACTIVE", v2_status="PASS", v2_date="2026-11-09") for i in range(2)]
     rows += [_row("off@x.com", "Camp A", "ACTIVE", connection_ok=False),
              _row("off2@x.com", "Camp A", "ACTIVE", connection_ok=False)]
@@ -299,3 +299,30 @@ def test_every_digest_ask_carries_its_list_and_no_step_points_at_a_thread():
     from smartlead import digest as dg
     text = dg.urgent_text("inbox-status", short.doc("inbox-status"))
     assert "Camp One" in text and "Camp P" in text and "thread" not in text
+
+
+def test_an_untested_inbox_already_on_a_test_campaign_is_not_an_ask():
+    """19 Nov 2026: 13 inboxes sending in a live campaign and already on a DT test campaign (retest booked) were
+    asked about every day, with a step to add them to the deliverability sheet. The next weekly test covers them."""
+    rows = [_row("w1@x.com", "Camp C", "ACTIVE"), _row("w1@x.com", "DT PL #1", "ACTIVE"),
+            _row("w2@x.com", "Camp C", "ACTIVE"), _row("w2@x.com", "DT PL #1", "PAUSED"),
+            _row("lone@y.com", "Camp C", "ACTIVE")]
+    recs = st.states(rows, T)
+    assert {r["email"]: r["in_test"] for r in recs} == {"lone@y.com": False, "w1@x.com": True, "w2@x.com": True}
+    items = st.needs_you(recs, T, require_pass=True)
+    (it,) = [i for i in items if i["key"] == "sending_unproven"]
+    assert it["text"].startswith("1 inbox is sending") and it["detail"] == ["• Precise Leads · y.com: 1 inbox, in Camp C; never tested"]
+    (ask,) = [a for a in st.digest_asks(items) if a.key == "inbox-status:sending_unproven"]
+    assert "dt_senders" not in ask.step and "deliverability sheet" in ask.step
+    _, parts = st.format_post(recs, [], items, T)
+    assert any("2 inboxes sending with no result in 10 days are on a test campaign: the next weekly test covers them."
+               in p for p in parts)
+
+
+def test_the_inbox_list_hands_the_digest_its_numbers_per_client():
+    rows = [_row("a@x.com", availability="FREE", busy_reason=""),
+            _row("b@x.com", busy_reason="no_v2_pass"),
+            _row("c@x.com", busy_reason="do_not_use", tags=["DO NOT USE - x"]),
+            _row("d@m.com", sub="Melior", busy_reason="low_rep")]
+    assert st.numbers(st.states(rows, T)) == {"Melior": {"Recovering": 1},
+                                              "Precise Leads": {"Safe to send": 1, "Not proven yet": 1, "Do not use": 1}}

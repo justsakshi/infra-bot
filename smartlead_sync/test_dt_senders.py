@@ -368,7 +368,7 @@ def test_digest_items_for_errors_moves_and_new_campaigns():
     asks, done = ts.digest_items(res, set(), ["BETTRDATA: 402 plan expired"], False, date(2026, 11, 16))
     assert [d.key for d in done] == ["dt-senders:2026-11-16:DT PL #3:created", "dt-senders:2026-11-16:DT PL #3:added",
                                      "dt-senders:2026-11-16:DT PL #2:moved"]
-    assert asks[0].text.startswith("2 current-client domains are in Smartlead") and "tab Melior, Precise Leads" in asks[0].step
+    assert asks[0].text.startswith("2 current-client domains are not in the deliverability sheet") and "tab Melior, Precise Leads" in asks[0].step
     assert asks[1].kind == "broken" and asks[1].text == "The test-campaign job could not finish: BETTRDATA."
     assert ts.digest_items(res, None, [], False, date(2026, 11, 16))[0] == []     # sheet unread: no domain ask
 

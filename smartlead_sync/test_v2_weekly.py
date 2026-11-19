@@ -620,7 +620,8 @@ def test_a_one_email_test_is_reported_not_judged(tmp_path):
     f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
     head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
     assert ("1 test run sent fewer than 4 emails per provider, so the job can't judge its inboxes (it needs 4 of 4): "
-            "bd-run-1.csv (1 per provider).") in parts[0]
+            "bd-run-1.csv (1 per provider).") in "\n".join(parts)
+    assert "fewer than 4 emails" not in "\n".join(wk._needs(parts))     # for info: nothing for a person to do
     assert any("the test sent 1 email per provider, too few to judge; nothing done" in x for x in parts)
 
 
@@ -640,8 +641,9 @@ def test_a_test_thin_at_one_provider_asks_for_a_person(tmp_path):
     f = fleet()
     f["PRECISE_LEADS"]["inboxes"]["a@x.com"] = {"id": 30, "client": "Bettrdata", "tags": []}
     head, parts = wk.build_report(st, got, wk.plan(st), f, acted(), False, set())
-    assert "(it needs 4 of 4): bd-run-1.csv (1 Google, 4 Microsoft). Smartlead's test inboxes refill" in parts[0]
-    assert "Run it again after 05:30 IST, spread through the day." in parts[0]
+    text = "\n".join(parts)                     # for info since 19 Nov 2026: a seed-pool fact, not a task
+    assert "(it needs 4 of 4): bd-run-1.csv (1 Google, 4 Microsoft). Smartlead's test inboxes refill" in text
+    assert "Run it again after 05:30 IST, spread through the day." in text
 
 
 def test_a_midweek_test_skips_the_weekly_checks(tmp_path):

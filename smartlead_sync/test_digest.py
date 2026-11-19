@@ -96,11 +96,14 @@ def test_the_digest_lists_asks_with_steps_done_items_and_broken_checks():
     text = "\n".join(head)
     assert head[0] == "Inbox digest, Tue 17 Nov"
     assert f"<@{dg.OWNER}>, 2 things need you today:" in text
-    assert "\n1. Zapmail declined the card.\nDo: Pay the invoice." in text            # urgent first
-    assert "\n2. 7 inboxes are disconnected.\nDo: Reconnect them. Open since Sun 15 Nov." in text
-    assert "Done by the bot since the last digest:\n• Took 3 inboxes" in text
-    assert "Checks that broke" in text and "Campaign stats job failed (exit 2)." in text
-    assert parts == ["Inboxes, as of Tue 17 Nov 11:00\n\nfull inbox list"]
+    assert "\n1. Zapmail declined the card. Do: Pay the invoice." in text            # urgent first
+    assert "\n2. 7 inboxes are disconnected. Do: Reconnect them. Open since Sun 15 Nov." in text
+    assert "1 job failed or could not check: Campaign stats job." in text
+    assert "In the thread: 1 thing the bot did by itself." in text
+    thread = "\n".join(parts)
+    assert "Done by the bot since the last digest\n• Took 3 inboxes out of 2 live campaigns (failed the weekly test)." in thread
+    assert "Campaign stats job failed (exit 2)." in thread
+    assert "full inbox list" not in thread               # a job's own report is no longer copied into the thread
 
 
 def test_nothing_to_say_posts_nothing():
@@ -145,7 +148,7 @@ def test_the_unfinished_sync_line_is_in_the_posted_digest():
     yesterday = {"_id": "smartlead-sync", "asks": [], "at": "2026-11-16T05:06:45+00:00"}
     head, _ = dp.build([yesterday], [], dp.sync_check([yesterday], T0), T0)
     text = "\n".join(head)
-    assert "Checks that broke" in text and "daily sheet sync has not finished" in text
+    assert "1 job failed or could not check: Daily sheet sync." in text
 
 
 def test_the_digest_waits_for_a_running_morning_job():
@@ -233,19 +236,21 @@ def test_detail_lines_get_a_bullet_and_blank_ones_are_dropped():
 def test_the_digest_shows_each_asks_list_under_it():
     sources = [_src("inbox-status", [{"text": "2 live campaigns have lost half or more of their inboxes.",
                                       "step": "Add inboxes to each campaign listed.", "detail": SHORT}])]
-    head, _ = dp.build(sources, [], [], T0 + timedelta(hours=1))
+    head, parts = dp.build(sources, [], [], T0 + timedelta(hours=1))
     text = "\n".join(head)
-    assert ("\n1. 2 live campaigns have lost half or more of their inboxes.\n" + "\n".join(SHORT)
-            + "\nDo: Add inboxes to each campaign listed.") in text
+    assert ("\n1. 2 live campaigns have lost half or more of their inboxes: Client A · Campaign One, "
+            "Client A · Campaign Two. Do: Add inboxes to each campaign listed.") in text
+    assert "\n".join(SHORT) in parts[0]                  # the full list, in the thread
 
 
 def test_the_digest_caps_each_list_and_says_the_rest_is_in_the_thread():
-    lines = [f"• inbox{i}@example.com" for i in range(9)]
-    head, _ = dp.build([_src("inbox-intake", [{"text": "9 inboxes drifted.", "step": "Fix them.", "detail": lines}])],
-                       [], [], T0)
+    lines = [f"• inbox{i}@example.com" for i in range(15)]
+    head, parts = dp.build([_src("inbox-intake", [{"text": "15 inboxes drifted.", "step": "Fix them.",
+                                                   "detail": lines}])], [], [], T0)
     text = "\n".join(head)
-    assert "inbox4@example.com" in text and "inbox5@example.com" not in text
-    assert "• and 4 more in the thread" in text
+    assert "15 inboxes drifted: inbox0@example.com, inbox1@example.com, inbox2@example.com and 12 more." in text
+    assert "inbox11@example.com" in parts[0] and "inbox12@example.com" not in parts[0]
+    assert "• and 3 more" in parts[0]
 
 
 def test_asks_stored_before_the_list_existed_still_render():
@@ -253,7 +258,7 @@ def test_asks_stored_before_the_list_existed_still_render():
            "asks": [{"text": "7 inboxes are disconnected.", "step": "Reconnect them.", "key": "k", "kind": "ask",
                      "urgent": False, "since": T0.isoformat()}]}
     head, _ = dp.build([src], [], [], T0)
-    assert "\n1. 7 inboxes are disconnected.\nDo: Reconnect them." in "\n".join(head)
+    assert "\n1. 7 inboxes are disconnected. Do: Reconnect them." in "\n".join(head)
 
 
 # 18 Nov 2026 (Manveen, on the 11:30 digest: "why did i get these 13 messages"): the same kill-list inboxes came from
@@ -290,13 +295,14 @@ def _text(built):
 
 
 def test_the_kill_list_from_several_jobs_is_one_item_with_the_job_count():
-    text, _ = _text(dp.build(_kill_sources(), [], [], NOW))
+    text, parts = _text(dp.build(_kill_sources(), [], [], NOW))
     assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text
     assert "\n2." not in text
-    assert "Kill list: 6 inboxes and 3 domains, reported by 2 jobs (Fleet watch, Kill warnings)." in text
-    # one line per domain, saying what each job found there
-    assert "• alpha.test: 2 inboxes still sending (a1@, a2@); domain landing in spam on the classic tests" in text
-    assert "• charlie.test: 1 inbox in switched-on campaigns that are not sending (c1@)" in text
+    assert ("Kill list: 6 inboxes and 3 domains, reported by 2 jobs (Fleet watch, Kill warnings): alpha.test, "
+            "bravo.test, charlie.test.") in text
+    # one line per domain in the thread, saying what each job found there
+    assert "• alpha.test: 2 inboxes still sending (a1@, a2@); domain landing in spam on the classic tests" in parts[0]
+    assert "• charlie.test: 1 inbox in switched-on campaigns that are not sending (c1@)" in parts[0]
     assert "Do: " in text and "Email Accounts tab" in text and "don't renew" in text
 
 
@@ -317,24 +323,21 @@ def test_a_recorded_decision_holds_items_back_and_says_so_in_one_line():
                              "key": "v2-weekly:short"}])
     text, parts = _text(dp.build(_kill_sources() + [v2], [], [], NOW, holds=_holds()))
     assert f"<@{dg.OWNER}>, 2 things need you today:" in text
-    assert "Kill list: 1 inbox and 1 domain, reported by 1 job (Kill warnings)." in text   # only charlie is left
+    assert "Kill list: 1 inbox and 1 domain, reported by 1 job (Kill warnings): charlie.test: 1 inbox" in text  # only charlie left
     assert "alpha.test" not in text and "bravo.test" not in text and "delta.test" not in text
     assert "2 test runs sent fewer" in text                                                   # not decided: shown
-    assert "\nHeld back: 4 (decided). What and why: thread." in text
-    held = next(p for p in parts if p.startswith("Held back (decided)"))
-    assert "alpha.test" in held and "Owner Teammate, no end date" in held and "Another teammate" in held
-    assert "Owner Manveen, until Sun 22 Nov" in held and "Retest booked" in held
-    assert "delete list" in held
-    # the fleet-watch kill list is split between two decisions: each says its share
-    assert "5 inboxes are on the kill list (Fleet watch, 2 of its list)" in held
-    assert "5 inboxes are on the kill list (Fleet watch, 3 of its list)" in held
-    assert ". (" not in held
+    assert "4 decided items left out on purpose" in text
+    held = next(p for p in parts if p.startswith("Left out on purpose (decided earlier)"))
+    assert "• alpha.test: Another teammate handles these. Owner Teammate, no end date." in held
+    assert "• bravo.test: Retest booked Sat 21 Nov. Owner Manveen, until Sun 22 Nov." in held
+    assert "• delta.test, echo.test: Mailboxes gone; on Manveen's delete list. Owner Manveen, no end date." in held
+    assert len(held.split("\n")) == 4                    # one short line per decision
 
 
 def test_a_hold_ends_on_its_date_and_the_item_comes_back():
     later = datetime(2026, 11, 22, 5, 30, tzinfo=timezone.utc)                  # Sun 22 Nov 11:00 IST
-    text, _ = _text(dp.build(_kill_sources(), [], [], later, holds=_holds()))
-    assert "bravo.test: 3 inboxes on the kill list" in text and "alpha.test" not in text
+    text, parts = _text(dp.build(_kill_sources(), [], [], later, holds=_holds()))
+    assert "bravo.test: 3 inboxes on the kill list" in parts[0] and "alpha.test" not in text + parts[0]
 
 
 def test_a_conditional_hold_only_holds_asks_of_its_kind():
@@ -344,7 +347,7 @@ def test_a_conditional_hold_only_holds_asks_of_its_kind():
                                   "key": "kill-report:domains", "step": "Don't add inboxes on the domains listed.",
                                   "detail": ["Client D · delta.test (3 inboxes): 50% reached the inbox"]}])
     text, _ = _text(dp.build([other], [], [], NOW, holds=_holds()))
-    assert "delta.test" in text and "Held back" not in text
+    assert "delta.test" in text and "left out on purpose" not in text
 
 
 def test_a_partly_held_ask_shows_only_what_is_left_and_counts_the_rest():
@@ -363,9 +366,10 @@ def test_an_ask_that_says_listed_but_carries_no_list_is_left_out_and_counted():
                                   "step": "Look each domain in the thread up in this week's v2 test results."}])
     ok = _src("inbox-status", [{"text": "13 inboxes are sending with no weekly test.", "step": "Add each listed.",
                                 "detail": ["Client E · foxtrot.test: 13 inboxes"]}])
-    text, _ = _text(dp.build([src, ok], [], [], NOW))
-    assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text and "far fewer replies" not in text.split("Checks")[0]
-    assert "1 ask came without its list, so it was left out (Reply check)" in text
+    text, parts = _text(dp.build([src, ok], [], [], NOW))
+    assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text and "far fewer replies" not in text
+    assert "could not check: Reply check (an ask without its list)." in text
+    assert "1 ask came without its list, so it was left out (Reply check)" in parts[0]
 
 
 def test_an_ask_naming_its_domains_in_its_own_text_is_not_listless():
@@ -393,3 +397,148 @@ def test_held_items_alone_post_nothing():
     """A day with only decided items is a quiet day: no post just to say 'held back'."""
     fleet = _kill_sources()[0]
     assert dp.build([fleet], [], [], NOW, holds=_holds()) is None
+
+
+# 19 Nov 2026 (Manveen, on the 11:00 digest: "i got this and it's long spammy i can not unserstand anything"): a top
+# post of ~35 lines and 15 thread replies, the same 24 inboxes told by two jobs, three runs of the day before that
+# "never finished" although they had run fine since, and the bot's own words. Synthetic names only (public repo).
+
+def _lines(head):
+    return [x for x in "\n".join(head).split("\n") if x.strip()]
+
+
+def test_the_digest_goes_out_once_a_day():
+    """No duplicate headline: a second --post run the same IST day does not post it again."""
+    meta = {"_id": "last", "at": "2026-11-19T05:30:09+00:00", "posted": True, "ts": "1.2"}
+    assert dp.already_posted(meta, datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc))          # 11:30 IST, same day
+    assert dp.already_posted(meta, datetime(2026, 11, 19, 18, 0, tzinfo=timezone.utc))         # 23:30 IST, same day
+    assert not dp.already_posted(meta, datetime(2026, 11, 19, 18, 31, tzinfo=timezone.utc))    # 00:01 IST next day
+    assert not dp.already_posted({**meta, "posted": False}, datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc))
+    assert not dp.already_posted(None, NOW)
+
+
+def test_main_does_not_post_twice(monkeypatch):
+    db = DB()
+    db[dg.META].replace_one({"_id": "last"}, {"_id": "last", "at": datetime.now(timezone.utc).isoformat(),
+                                              "posted": True}, upsert=True)
+    monkeypatch.setattr(dg, "_db", lambda: db)
+    built = []
+    monkeypatch.setattr(dp, "build", lambda *a, **k: built.append(1))
+    assert dp.main(["--post"]) == 0 and built == []
+
+
+def _busy_day():
+    many = [{"text": f"Thing {i} on host{i}.test needs a look.", "key": f"x:{i}", "step": "Look at it.",
+             "detail": [f"h{i}-{k}@host{i}.test" for k in range(30)]} for i in range(9)]
+    broken = [{"text": f"Job {i} could not read its source.", "kind": "broken", "key": f"y:{i}",
+               "detail": [f"error line {k}" for k in range(9)]} for i in range(6)]
+    done = [{"_id": f"d{i}", "text": f"Took inbox{i}@host.test out of a campaign."} for i in range(60)]
+    srcs = [_src("inbox-intake", many), _src("key-health", broken),
+            {**_src("inbox-status", []), "numbers": {"Client A": {"Safe to send": 30, "Recovering": 4},
+                                                     "Client B": {"Safe to send": 5, "Do not use": 7}}}]
+    return srcs, done
+
+
+def test_the_top_post_is_at_most_8_lines():
+    srcs, done = _busy_day()
+    head, _ = dp.build(srcs, done, [], NOW, holds=_holds())
+    lines = _lines(head)
+    assert len(lines) <= 8, lines
+    assert lines[1] == f"<@{dg.OWNER}>, 9 things need you today:"
+    assert "In the thread: 5 more things for you, 60 things the bot did by itself." in lines[-1]
+    assert "1 job failed or could not check: API keys. Being looked at; what broke is in the thread." in lines
+
+
+def test_the_thread_is_at_most_3_short_replies():
+    from smartlead import notify
+    srcs, done = _busy_day()
+    srcs.append(_src("fleet-watch", [], detail=["Fleet watch, 19 Nov\n" + "\n".join(f"• kill{i}@a.test" for i in range(40))]))
+    _, parts = dp.build(srcs, done, [], NOW, holds=_holds())
+    assert 1 <= len(parts) <= 3
+    for p in parts:
+        assert len(p.split("\n")) <= notify._THREAD_CHUNK            # one part is one Slack reply
+    assert "kill7@a.test" not in "\n".join(parts)                    # a job's own report is not copied
+
+
+def test_asks_about_the_same_inboxes_are_one_item():
+    """19 Nov: 8 domains missing from the deliverability sheet (test campaigns job) and their 24 inboxes missing
+    from the asset tracker (gate self-test, a broken check) were told twice in the post and twice in the thread."""
+    doms = ["kilo.test", "lima.test", "mike.test"]
+    sheet = _src("dt-senders", [{"text": "3 current-client domains are in Smartlead but not in the deliverability sheet.",
+                                 "key": "dt-senders:untracked", "step": "Add each domain listed to the sheet.",
+                                 "detail": [f"{d} (Client A, 3 inboxes)" for d in doms]}])
+    gate = _src("gate-selftest", [{"text": "Gate self-test: 9 inboxes have no row in the asset tracker.",
+                                   "kind": "broken", "key": "gate-selftest:tracker",
+                                   "step": "Add the inboxes listed to the asset tracker.",
+                                   "detail": dg.by_domain([f"{u}@{d}" for d in doms for u in ("a", "b", "c")])}])
+    other = _src("reply-monitor", [{"text": "1 domain gets far fewer replies than expected.", "key": "r:1",
+                                    "step": "Check it.", "detail": ["november.test (Client B): 0 replies on 200 sends"]}])
+    head, parts = dp.build([sheet, gate, other], [], [], NOW)
+    text = "\n".join(head)
+    assert f"<@{dg.OWNER}>, 2 things need you today:" in text
+    assert "The same inboxes are also flagged by Gate self-test (thread)." in text
+    assert "failed or could not check" not in text                     # the gate line is not a second item
+    assert text.count("kilo.test") == 1
+    assert "also, Gate self-test: 9 inboxes have no row" in parts[0]
+    assert "Do: Add the inboxes listed to the asset tracker." in parts[0]
+
+
+def test_a_job_that_ran_fine_since_its_failure_is_not_reported():
+    """19 Nov: 'Smartlead sync started Wed 18 Nov 10:00 and never finished' although the 19 Nov run had finished."""
+    d = lambda h: (NOW - timedelta(hours=h)).replace(tzinfo=None)                  # noqa: E731 - Mongo dates are naive UTC
+    runs = [{"job": "smartlead-sync", "started": d(25), "lost": True},
+            {"job": "smartlead-sync", "started": d(1), "ended": d(0.5), "exit_code": 0},
+            {"job": "campaign-stats-post", "started": d(25)},
+            {"job": "campaign-stats-post", "started": d(1.2), "ended": d(1), "exit_code": 137},
+            {"job": "infra-audit", "started": d(25)},
+            {"job": "infra-audit", "started": d(0.5)}]                                  # still going: says nothing yet
+    bh = _src("bot-health", [
+        {"text": "Smartlead sync started Wed 18 Nov 10:00 and never finished.", "kind": "broken",
+         "key": "bot-health:unfinished:smartlead-sync", "step": "It runs again at its next time."},
+        {"text": "Campaign stats post failed, last Thu 19 Nov 10:15 (stopped by SIGKILL).", "kind": "broken",
+         "key": "bot-health:failed:campaign-stats-post", "step": "The error is in the Render log."},
+        {"text": "Campaign stats post started Wed 18 Nov 10:15 and never finished.", "kind": "broken",
+         "key": "bot-health:unfinished:campaign-stats-post", "step": "It runs again at its next time."},
+        {"text": "Infra audit started Wed 18 Nov 10:20 and never finished.", "kind": "broken",
+         "key": "bot-health:unfinished:infra-audit", "step": "It runs again at its next time."}])
+    head, parts = dp.build([bh], [], [], NOW, runs=runs)
+    text = "\n".join(head)
+    assert "2 jobs failed or could not check: Campaign stats post, Infra audit." in text
+    assert "Smartlead sync" not in text + "\n".join(parts)
+    # one line per job: its failure today, not also yesterday's unfinished run
+    assert "Campaign stats post failed" in parts[0] and "Campaign stats post started" not in parts[0]
+    assert dp.recovered("bot-health:unfinished:smartlead-sync", runs, NOW)
+    assert not dp.recovered("bot-health:failed:campaign-stats-post", runs, NOW)
+    assert not dp.recovered("bot-health:unfinished:infra-audit", runs, NOW)
+    assert not dp.recovered("digest:pc-job", runs, NOW)
+
+
+def test_a_broken_check_with_a_step_for_manveen_is_a_thing_to_do():
+    r = dp.render_check("abc1234def", {"behind": 3})
+    head, _ = dp.build([], [], r, NOW)
+    text = "\n".join(head)
+    assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text
+    assert "Do: Render, infra-bot-1, Manual Deploy, Deploy latest commit." in text
+    assert "could not check" not in text
+
+
+def test_a_quiet_day_says_so_with_the_numbers_and_pings_nobody():
+    src = {**_src("inbox-status", []), "numbers": {"Client A": {"Safe to send": 30, "Recovering": 4, "Not proven yet": 2},
+                                                   "Client B": {"Safe to send": 5, "Do not use": 7}}}
+    head, parts = dp.build([src], [], [], NOW)
+    lines = _lines(head)
+    assert lines[1] == "Nothing needs you today."
+    assert lines[2] == ("Inboxes safe to send: Client A 30, Client B 5. Also recovering 4, waiting for a test 2, "
+                        "not usable 7.")
+    assert "<@" not in "\n".join(head)
+    assert parts[0].startswith("Where the inboxes stand (All Inboxes tab)\n• Client A: 30 safe to send, 2 not proven yet, 4 recovering")
+
+
+def test_plain_words_never_touch_a_domain_or_a_name():
+    t = dg.plain("dt_senders puts it in the next v2 test; BUSY on failed v2; no v2 pass in 10 days; DT campaign")
+    assert t == ("the test-campaign job puts it in the next weekly test; held back on failed the weekly test; no "
+                 "weekly test pass in 10 days; test campaign")
+    assert dg.plain("The PC's v2 weekly job ran") == "The PC's weekly test job ran"
+    kept = "x-v2.test, ops@v2.test, Client | Roundtable | V2, file-v2.csv"
+    assert dg.plain(kept) == kept
+    assert "seed test" not in dg.plain("(Google inboxes: report-only until real replies agree with the seed test)")

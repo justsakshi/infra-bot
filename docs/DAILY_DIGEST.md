@@ -6,15 +6,30 @@ minutes throughout the day nobody will read that and nothing will happen".
 
 ## What the post says
 
-1. **Things that need you today**, each with the exact step ("Do: ..."). Up to 12 in the post, the rest in the thread.
-   An ask open for more than a day says since when.
-2. **Done by the bot since the last digest**: what the pipeline changed by itself (inboxes pulled from campaigns,
-   tagged, returned, test campaigns filled, copy refreshed, inboxes set up).
-3. **Checks that broke**: a job that could not read a source or crashed, the PC's v2 job silent for 3 hours, Render
-   behind main.
-4. **Thread**: each job's full report from the last 30 hours.
+Since 19 Nov 2026 (Manveen, on the 11:00 digest: "i got this and it's long spammy i can not unserstand anything") the
+post is at most about 8 lines:
 
-No asks, nothing done and nothing broken: no post that day.
+1. **N things need you today**, one paragraph each: what, where (the one line of its list, or the first three things
+   it lists and "N more"), and the one step ("Do: ..."). At most 4 in the post; the rest are in the thread. An item
+   open for more than a day says since when. Asks about the same inboxes or domains, from different jobs, are one
+   item ("The same inboxes are also flagged by ..."). A broken check whose step is Manveen's (deploy Render, switch
+   the PC job back on) is one of these things.
+2. **Nothing needs you today**, when that is so, with the numbers that matter: inboxes safe to send per client, and
+   how many are recovering, waiting for a test or not usable (the All Inboxes groups, `usable.team_group`). No
+   @mention on a quiet day.
+3. **One line for jobs that failed**: "N jobs failed or could not check: X, Y. Being looked at." One line per job
+   in the thread. A job whose latest run (not counting one still going) ended fine is left out, so yesterday's
+   "never finished" does not come back after a good run.
+4. **In the thread: ...**: how many more things, decided items left out on purpose, and things the bot did.
+
+The thread has at most 3 replies: the full lists of today's items (up to 12 lines each) and what broke; what was left
+out on purpose (one line per decision: what, why, owner, until) and what the bot did by itself; where the inboxes
+stand per client, with the sheet link. Each job's own report is no longer copied into the thread (the inbox sheet
+has the lists). The bot's own words are put plainly in every line (`digest.plain`: "v2 test" is "weekly test",
+"dt_senders" is "the test-campaign job", "BUSY" is "held back").
+
+The digest posts once a day: a second `--post` run the same IST day does nothing (`--again` to repeat it).
+No asks, nothing done, nothing broken and no inbox numbers: no post that day.
 
 **Urgent** items post at once and stay in the digest until fixed: a payment failed, a subscription not renewed or
 cancelled, a Smartlead key rejected, a live campaign losing half its inboxes or left with only failed ones. Each
@@ -22,8 +37,7 @@ posts once; if it is fixed and comes back later, it posts again.
 
 Every ask carries its own list: which campaigns, inboxes, domains, bills or batches it is about (17 Nov 2026,
 Manveen, on an urgent post that named no campaign: "what was the point of this message if it's not gonna give me
-the complete info"). The digest shows up to 5 lines under each ask ("and N more in the thread"); an urgent post shows
-up to 10 ("and N more"). A step says "each campaign listed", never "in the thread": an urgent post has no thread.
+the complete info"). The digest shows its list in the thread (12 lines, "and N more"); an urgent post shows up to 10 ("and N more"). A step says "each campaign listed", never "in the thread": an urgent post has no thread.
 A broken check shows its error under it. A bill ask names the vendor, bill date, amount, inboxes and domains, and
 one bill is one ask (a failed payment is not asked about again as "not renewed").
 
@@ -45,7 +59,7 @@ Bot health leaves out a missed run nobody can act on: the digest's own slot, and
 | Job (digest source) | When (IST) | Before | Now |
 |---|---|---|---|
 | v2 weekly (`v2-weekly`, PC) | hourly | post per run with "Needs you" | asks; pulls, tags, returns are done lines |
-| Inbox list (`inbox-status`) | 10:00 | daily post | asks (disconnected, half lost: urgent) |
+| Inbox list (`inbox-status`) | 10:00 | daily post | asks (disconnected, half lost: urgent; sending untested and on no test campaign); the numbers per client |
 | Billing watch (`billing-watch`) | every 2 h from 10:05 | post per alert | urgent ask per failed / not renewed / cancelled bill; new and gone kept 3 days |
 | Renewal review (`renewal-review`) | 09:50 | post when bills are due | one ask per bill with inboxes to drop or check |
 | Zapmail digest (`zapmail-digest`) | 09:40 | daily post | asks (wallet, expiring domains, batches, ScaledMail orders); status lines in the thread |

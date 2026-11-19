@@ -1,35 +1,46 @@
-"""The daily inbox digest: one post a morning (IST), addressed to Manveen, with only what a person must do today
-(each with its exact step), what the bot did by itself since the last digest, and any check that broke. Every
-job's full report goes in the thread. Jobs hand their part over through smartlead/digest.py.
+"""The daily inbox digest: one short post a morning (IST), addressed to Manveen, with only what a person must do
+today, one line each (what, where, the one step), one line for jobs that failed, and at most three short thread
+replies (the full lists; what was left out on purpose and what the bot did; where the inboxes stand). Jobs hand their
+part over through smartlead/digest.py.
 
     python digest_post.py            # dry run: prints the digest, posts nothing, marks nothing
-    python digest_post.py --post     # post it (the bot runs this every morning)
+    python digest_post.py --post     # post it (the bot runs this every morning; once a day, --again to repeat)
 
 Besides what the jobs hand over, the digest checks three things itself: the PC's v2 weekly job ran in the last
 3 hours (Mongo v2_heartbeat), Render runs the latest code on main (RENDER_GIT_COMMIT against GitHub), and a sheet
 sync has finished since the last 10:00 IST slot (the sync's own report time in digest_asks).
 
 What it leaves out (18 Nov 2026, "why did i get these 13 messages"): the kill list told by several jobs is one item;
-anything a recorded decision covers (Mongo digest_holds, see smartlead/digest.py) is held back under one line,
-"Held back: N (decided)", and listed with its reason, owner and date in the thread; an ask that points at a list
-it does not carry is left out and counted under the broken checks.
+anything a recorded decision covers (Mongo digest_holds, see smartlead/digest.py) is left out and listed with its
+reason, owner and date in the thread; an ask that points at a list it does not carry is left out and counted.
+19 Nov 2026 ("i got this and it's long spammy i can not unserstand anything"): asks about the same inboxes are one
+item, a failed job that has run fine since is not reported, the bot's own words are put plainly, and each job's own
+report is no longer copied into the thread.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 
 from smartlead import digest as dg
+from smartlead.config import DEFAULT_SHEET_ID
+from smartlead.usable import TEAM_GROUPS
 
 IST = dg.IST
 MAX_ASK_AGE = timedelta(days=8)      # a job that stopped reporting for longer than this: its asks are dropped
 STALE = timedelta(hours=30)          # older than this, an ask says when its job last checked
-MAX_SHOWN = 12                       # asks in the post itself; the rest are in the thread
+MAX_SHOWN = 4                        # things in the post itself; the rest are in the thread (19 Nov 2026)
+MAX_PARTS = 3                        # thread replies, at most
+PART_LINES = 38                      # lines per reply (notify._THREAD_CHUNK is 40: one part is one reply)
+LIST_LINES = 12                      # lines of one item's list in the thread
+
 PC_STALE = timedelta(hours=3)
 REPO = os.getenv("RENDER_GIT_REPO_SLUG") or "justsakshi/infra-bot"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}"
 WAIT_FOR = ("smartlead-sync", "fleet-watch")   # jobs whose asks the digest waits for when they are still running
 WAIT_MAX_S = 30 * 60
 
@@ -74,99 +85,248 @@ def collect(sources: list[dict], now: datetime) -> tuple[list[dict], list[dict]]
     return sorted(asks, key=order), sorted(broken, key=order)
 
 
-def _ask_line(i: int, a: dict, now: datetime) -> str:
+def _head(line: str) -> str:
+    """What a list line is about: the part before its first ': ' or ' (' ('a.test (Client, 3 inboxes)' -> 'a.test')."""
+    cut = [i for i in (line.find(": "), line.find(" (")) if i > 0]
+    return line[:min(cut)] if cut else line
+
+
+def _where(a: dict) -> str:
+    """Where an item is, in a few words: its one list line whole, or the first three things it lists and how many
+    more (the full list is in the thread)."""
+    lines = [dg.plain(x.lstrip("•-– ").strip()) for x in dg.bullets(a.get("detail"))]
+    if len(lines) <= 1:
+        return lines[0] if lines else ""
+    heads = list(dict.fromkeys(_head(x) for x in lines))
+    return ", ".join(heads[:3]) + (f" and {len(heads) - 3} more" if len(heads) > 3 else "")
+
+
+def _tail(a: dict, now: datetime) -> str:
     since, checked = _parse(a.get("since")), a.get("checked")
     tail = []
     if since and now - since > timedelta(hours=20):
         tail.append(f"Open since {_day(since)}.")
     if checked and now - checked > STALE:
         tail.append(f"(last checked {_day(checked)})")
-    step = f"\nDo: {a['step']}" if a.get("step") else ""
-    lines = dg.detail_lines(a, dg.DIGEST_LINES, " in the thread")
-    listed = ("\n" + "\n".join(lines)) if lines else ""
-    return f"\n{i}. {a['text']}{listed}{step}" + (f" {' '.join(tail)}" if tail else "")
+    return (" " + " ".join(tail)) if tail else ""
 
 
-def _held_part(held: list[dict]) -> str:
-    """Every held item with its reason, owner and date, one decision per line (nothing held goes invisible)."""
-    lines, order, shared = [], {}, {}
+def _label(a: dict) -> str:
+    return LABELS.get(a.get("source"), a.get("source") or "")
+
+
+def _item_line(i: int, a: dict, now: datetime) -> str:
+    """One thing to do, in one paragraph: what, where, the one step. Items about the same inboxes say so."""
+    text = dg.plain(a.get("text")).strip()
+    where = _where(a)
+    if where:
+        text = text.rstrip(".") + f": {where}."
+    elif text and text[-1] not in ".!?)":
+        text += "."
+    step = f" Do: {dg.plain(a['step']).strip()}" if a.get("step") else ""
+    also = ""
+    if a.get("also"):
+        jobs = ", ".join(sorted({_label(x) for x in a["also"]}))
+        also = f" The same inboxes are also flagged by {jobs} (thread)."
+    return f"{i}. {text}{step}{also}{_tail(a, now)}"
+
+
+def _unlabel(a: dict) -> str:
+    """An item's text without its job's name in front ('Gate self-test: 24 inboxes ...' -> '24 inboxes ...')."""
+    text = dg.plain(a.get("text")).strip()
+    lab = _label(a)
+    return text[len(lab) + 1:].strip() if lab and text.lower().startswith(lab.lower() + ":") else text
+
+
+def one_per_job(broken: list[dict]) -> list[dict]:
+    """One bot-health line per job: 'failed' before 'never finished' before 'did not run' (19 Nov 2026: 'Campaign
+    stats post failed' and 'Campaign stats post started Wed 18 Nov and never finished' were two lines)."""
+    rank = {"failed": 0, "unfinished": 1, "missed": 2}
+    best: dict[str, dict] = {}
+    out = []
+    for b in broken:
+        m = re.match(r"bot-health:(failed|unfinished|missed):(.+)$", str(b.get("key") or ""))
+        if not m:
+            out.append(b)
+            continue
+        old = best.get(m.group(2))
+        if old is None:
+            best[m.group(2)] = b
+            out.append(b)
+        elif rank[m.group(1)] < rank[old["key"].split(":")[1]]:
+            out[out.index(old)] = b
+            best[m.group(2)] = b
+    return out
+
+
+def _job_name(b: dict) -> str:
+    """The job a broken line is about: bot health names it at the start of its text, the digest's own checks carry
+    a name, any other job is its own label."""
+    if str(b.get("key") or "").startswith("bot-health:"):
+        return re.split(r" (?:failed|started|did not run)\b", str(b.get("text") or ""))[0].strip()
+    return b.get("name") or _label(b)
+
+
+def recovered(key: str, runs, now: datetime) -> bool:
+    """True when a bot-health line ('X failed', 'X never finished', 'X did not run') is old news: the job's latest
+    run, not counting one still going, ended fine. 19 Nov 2026: three 18 Nov runs 'never finished' sat in the digest
+    although the sync had run fine since (PR #101 re-runs a sync cut off by a restart)."""
+    m = re.match(r"bot-health:(?:failed|unfinished|missed):(.+)$", str(key or ""))
+    if not m:
+        return False
+    job = m.group(1)
+    over = []
+    for r in runs or []:
+        if r.get("job") != job or r.get("skipped"):
+            continue
+        started = _parse(r.get("started"))
+        if not started:
+            continue
+        if r.get("ended") or r.get("lost") or now - started > timedelta(hours=3):
+            over.append((started, r))
+    if not over:
+        return False
+    last = max(over, key=lambda x: x[0])[1]
+    return bool(last.get("ended")) and not last.get("error") and last.get("exit_code") == 0
+
+
+def _numbers(sources: list[dict], now: datetime) -> dict:
+    """{client: {group: n}} from the inbox list's last report (the All Inboxes groups, usable.team_group)."""
+    s = next((s for s in sources if s.get("_id") == "inbox-status"), None)
+    at = _parse((s or {}).get("at"))
+    return dict(s.get("numbers") or {}) if s and at and now - at < STALE else {}
+
+
+def _quiet_line(numbers: dict) -> str:
+    """The 2-3 numbers that matter: inboxes safe to send per client, and how many are recovering or not usable."""
+    safe = sorted(((c, int(g.get("Safe to send") or 0)) for c, g in numbers.items()), key=lambda x: (-x[1], x[0]))
+    total = lambda grp: sum(int(g.get(grp) or 0) for g in numbers.values())  # noqa: E731
+    line = "Inboxes safe to send: " + (", ".join(f"{c} {n}" for c, n in safe if n) or "none") + "."
+    rest = [f"{w} {total(g)}" for g, w in (("Recovering", "recovering"), ("Not proven yet", "waiting for a test"),
+                                            ("Do not use", "not usable")) if total(g)]
+    return line + (f" Also {', '.join(rest)}." if rest else "")
+
+
+def _cap(lines: list[str], n: int = 0) -> list[str]:
+    n = n or PART_LINES
+    return lines if len(lines) <= n else lines[:n - 1] + [f"… and {len(lines) - n + 1} more lines (the inbox sheet)"]
+
+
+def _held_part(held: list[dict]) -> list[str]:
+    """Each decision once, short: what, why (its first sentence), owner, until when."""
+    lines, order = [], {}
     for x in held:
-        order.setdefault(id(x["hold"]), (x["hold"], []))[1].append(x)
-        shared[id(x["ask"])] = shared.get(id(x["ask"]), 0) + 1
-    for h, xs in order.values():
-        what = ", ".join(list(h.get("domains") or []) + list(h.get("inboxes") or []) + list(h.get("keys") or [])) \
-            or str(h.get("_id"))
+        order.setdefault(id(x["hold"]), x["hold"])
+    for h in order.values():
+        things = list(h.get("domains") or []) + list(h.get("inboxes") or []) + list(h.get("keys") or [])
+        what = (", ".join(things[:3]) + (f" and {len(things) - 3} more" if len(things) > 3 else "")) or str(h.get("_id"))
         until = dg._until(h)
         when = f"until {_day(datetime(until.year, until.month, until.day, 12, tzinfo=IST))}" if until \
             else "no end date"
-        asks = "; ".join(f"{x['ask']['text'].rstrip('.')} ({LABELS.get(x['ask'].get('source'), x['ask'].get('source'))}"
-                         + (f", {x['n']} of its list" if x["n"] and (not x["whole"] or shared[id(x["ask"])] > 1)
-                            else "") + ")" for x in xs)
-        lines.append(f"• {what}: {h.get('reason') or 'no reason recorded'} Owner {h.get('owner') or 'not named'}, "
-                     f"{when}. Held today: {asks}")
-    return "Held back (decided), not in today's list\n\n" + "\n".join(lines)
+        why = str(h.get("reason") or "no reason recorded").strip()
+        why = why.split(". ")[0].rstrip(".")
+        lines.append(f"• {what}: {why}. Owner {h.get('owner') or 'not named'}, {when}.")
+    return lines
 
 
-def build(sources: list[dict], done: list[dict], checks: list[dict], now: datetime, holds=()
+def build(sources: list[dict], done: list[dict], checks: list[dict], now: datetime, holds=(), runs=()
           ) -> tuple[list[str], list[str]] | None:
-    """(headline lines, thread parts), or None when there is nothing to say (no post: routine 'all fine' is
-    silent). ``checks``: the digest's own findings, as asks of kind 'broken' or 'ask'. ``holds``: the recorded
-    decisions (Mongo digest_holds): what they cover is left out and counted in one line, listed in the thread."""
+    """(headline lines, thread parts), or None when there is nothing to say. ``checks``: the digest's own findings,
+    as asks of kind 'broken' or 'ask'. ``holds``: the recorded decisions (Mongo digest_holds). ``runs``: recent
+    cron_runs, so a job that has run fine since its failure is not reported.
+
+    19 Nov 2026 (Manveen: "i got this and it's long spammy i can not unserstand anything"): the post is at most
+    about 8 lines: the things to do, one line each (what, where, the one step); one line for jobs that failed; one
+    line saying what else is in the thread. The thread is at most 3 short replies: the full lists, what was left
+    out on purpose and what the bot did, and where the inboxes stand. Each job's own report is no longer posted."""
     asks, broken = collect(sources + [{"_id": "digest", "at": now.isoformat(), "asks": checks}], now)
+    broken = one_per_job([b for b in broken if not recovered(b.get("key"), runs, now)])
+    # A broken check whose step is Manveen's (deploy Render, switch the PC on) is a thing for him to do.
+    his = [b for b in broken if str(b.get("step") or "").startswith("Manveen:")]
+    broken = [b for b in broken if b not in his]
+    asks += [{**b, "kind": "ask", "step": b["step"].split(":", 1)[1].strip()} for b in his]
     bare = [a for a in asks if dg.listless(a)]
     asks = [a for a in asks if not dg.listless(a)]
     asks, held = dg.apply_holds(asks, holds, now)
-    asks, kill_thread = dg.merge_kill_list(asks, LABELS)
+    asks, _ = dg.merge_kill_list(asks, LABELS)
+    asks, broken = dg.merge_same(asks, broken)
     if bare:
-        jobs = ", ".join(sorted({LABELS.get(a["source"], a["source"]) for a in bare}))
+        jobs = ", ".join(sorted({_label(a) for a in bare}))
         k = len(bare)
-        broken.append({"kind": "broken", "source": "digest", "key": "digest:listless",
+        broken.append({"kind": "broken", "source": "digest", "key": "digest:listless", "name": f"{jobs} (an ask without its list)",
                        "text": f"{k} ask{'s' if k != 1 else ''} came without {'its' if k == 1 else 'their'} list, so "
                                f"{'it was' if k == 1 else 'they were'} left out ({jobs}).",
-                       "step": "Each job's report is in the thread; its next run sends the ask with its list."})
-    if not asks and not broken and not done:       # held items alone: a quiet day, no post
+                       "step": "Its next run sends the ask with its list.",
+                       "detail": [f"{a['text']} ({_label(a)})" for a in bare]})
+    numbers = _numbers(sources, now)
+    if not asks and not broken and not done and not numbers:
         return None
     n = len(asks)
-    head = [f"Inbox digest, {_day(now)}",
-            f"\n<@{dg.OWNER}>, " + (f"{n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you today:"
-                                    if n else "nothing needs you today.")]
-    head += [_ask_line(i, a, now) for i, a in enumerate(asks[:MAX_SHOWN], 1)]
-    if n > MAX_SHOWN:
-        head.append(f"\n{n - MAX_SHOWN} more in the thread.")
-    n_held = len({id(x["ask"]) for x in held})
-    if n_held:
-        head.append(f"\nHeld back: {n_held} (decided). What and why: thread.")
-    if done:
-        head.append("\nDone by the bot since the last digest:")
-        head += [f"• {d['text']}" for d in done[:15]]
-        if len(done) > 15:
-            head.append(f"• and {len(done) - 15} more (thread)")
+    head = [f"Inbox digest, {_day(now)}"]
+    if n:
+        head.append(f"\n<@{dg.OWNER}>, {n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you today:")
+        head += [f"\n{_item_line(i, a, now)}" for i, a in enumerate(asks[:MAX_SHOWN], 1)]
+    else:
+        head.append("\nNothing needs you today.")
+        if numbers:
+            head.append(f"\n{_quiet_line(numbers)}")
     if broken:
-        head.append("\nChecks that broke (being fixed, or the step says who acts):")
-        for b in broken:     # its list (an error, the tabs or inboxes) right under it, a few lines at most
-            head.append(f"• {b['text']}" + (f" {b['step']}" if b.get("step") else ""))
-            head += [f"   {x}" for x in dg.detail_lines(b, 3, " in the thread")]
-    parts = []
-    if n > MAX_SHOWN:
-        parts.append("More things that need you\n\n" + "\n\n".join(_ask_line(i, a, now).strip()
-                                                                   for i, a in enumerate(asks[MAX_SHOWN:], MAX_SHOWN + 1)))
-    if len(done) > 15:
-        parts.append("Everything done by the bot\n\n" + "\n".join(f"• {d['text']}" for d in done))
+        names = list(dict.fromkeys(_job_name(b) for b in broken))
+        k = len(names)
+        head.append(f"\n{k} job{'s' if k != 1 else ''} failed or could not check: {', '.join(names)}. "
+                    f"Being looked at; what broke is in the thread.")
+
+    # thread, part 1: the full lists of today's items and what broke
+    lists = []
+    for i, a in enumerate(asks, 1):
+        rows = dg.bullets(a.get("detail"))
+        if i > MAX_SHOWN:
+            lists += ["", _item_line(i, a, now)] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
+        elif len(rows) > 1:
+            lists += ["", f"{i}. {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
+        for x in a.get("also") or []:
+            lists += ["", f"{i}. also, {_label(x)}: {_unlabel(x)}"
+                      + (f" Do: {dg.plain(x['step'])}" if x.get("step") else "")]
+            lists += [dg.plain(y) for y in dg.detail_lines(x, 3)]
+    if broken:
+        lists += ["", "What broke"]
+        for b in broken:
+            lists.append(f"• {dg.plain(b['text'])}" + (f" {dg.plain(b['step'])}" if b.get("step") else ""))
+            lists += [f"   {dg.plain(x)}" for x in dg.detail_lines(b, 3)]
+            for x in b.get("also") or []:
+                lists.append(f"   also, {_label(x)}: {_unlabel(x)}")
+    # part 2: left out on purpose, and what the bot did by itself
+    other = []
     if held:
-        parts.append(_held_part(held))
-    if kill_thread:
-        parts.append("Kill list, as each job reported it\n\n" + "\n".join(kill_thread))
-    if bare:
-        parts.append("Left out: asks that came without their list\n\n"
-                     + "\n".join(f"• {a['text']} ({LABELS.get(a['source'], a['source'])})" for a in bare))
-    for s in sorted(sources, key=lambda s: s["_id"]):
-        at = _parse(s.get("at"))
-        if s.get("detail") and at and now - at < STALE:
-            parts.append(f"{LABELS.get(s['_id'], s['_id'])}, as of {_day(at)} {at.astimezone(IST):%H:%M}\n\n"
-                         + "\n\n".join(s["detail"]))
+        other += ["Left out on purpose (decided earlier)"] + _held_part(held)
+    if done:
+        other += ([""] if other else []) + ["Done by the bot since the last digest"] + [f"• {dg.plain(d['text'])}" for d in done]
+    # part 3: where the inboxes stand
+    stand = []
+    if numbers:
+        stand = ["Where the inboxes stand (All Inboxes tab)"] + [
+            f"• {c}: " + ", ".join(f"{int(g[k])} {k.lower()}" for k in TEAM_GROUPS if int(g.get(k) or 0))
+            for c, g in sorted(numbers.items(), key=lambda x: -sum(int(v or 0) for v in x[1].values()))]
+        stand.append(f"Full lists: <{SHEET_URL}|the inbox sheet>.")
+    parts = []
+    if lists:
+        parts.append("\n".join(_cap(["Today's items in full"] + lists)))
+    if other:
+        parts.append("\n".join(_cap(other)))
+    if stand:
+        parts.append("\n".join(_cap(stand)))
+
+    more = []
+    if n > MAX_SHOWN:
+        more.append(f"{n - MAX_SHOWN} more thing{'s' if n - MAX_SHOWN != 1 else ''} for you")
+    if held:
+        k = len({id(x["ask"]) for x in held})
+        more.append(f"{k} decided item{'s' if k != 1 else ''} left out on purpose")
+    if done:
+        more.append(f"{len(done)} thing{'s' if len(done) != 1 else ''} the bot did by itself")
     if parts:
-        head.append("\nEach check's full report is in the thread.")
-    return head, parts
+        head.append("\nIn the thread: " + (", ".join(more) if more else "the full lists") + ".")
+    return head, parts[:MAX_PARTS]
 
 
 # --- the digest's own checks ------------------------------------------------------------
@@ -215,7 +375,7 @@ def sync_check(sources: list[dict], now: datetime) -> list[dict]:
         return []
     shows = (f"the sync that finished {_day(at)} {at.astimezone(IST):%H:%M} IST" if at
              else "an older sync (no finished sync on record)")
-    return [{"kind": "broken", "key": "digest:sync-not-finished",
+    return [{"kind": "broken", "key": "digest:sync-not-finished", "name": "Daily sheet sync",
              "text": f"The daily sheet sync has not finished since {_day(due)} {due:%H:%M} IST, so All Inboxes and "
                      f"the other sync tabs still show {shows}.",
              "step": "Look in the Render log (search [smartlead-sync]): a run still going writes the sheet when it "
@@ -251,10 +411,18 @@ def wait_for_jobs(db, now_fn=lambda: datetime.now(timezone.utc), sleep=time.slee
         waited += 60
 
 
+def already_posted(meta: dict | None, now: datetime) -> bool:
+    """True when today's digest (IST) is already out. 19 Nov 2026: the post read as if it came twice; Slack had one,
+    but a second run the same day (a restart catch-up, a hand run with --post) would post the same headline again."""
+    at = _parse((meta or {}).get("at"))
+    return bool(meta and meta.get("posted") and at and at.astimezone(IST).date() == now.astimezone(IST).date())
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--post", action="store_true", help="post it and mark what it listed (else a dry run)")
     ap.add_argument("--no-wait", action="store_true")
+    ap.add_argument("--again", action="store_true", help="post even if today's digest is already out")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     try:
@@ -262,6 +430,9 @@ def main(argv=None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"Mongo not reachable ({type(exc).__name__}): no digest today")
         return 1
+    if args.post and not args.again and already_posted(db[dg.META].find_one({"_id": "last"}), datetime.now(timezone.utc)):
+        print("Today's digest is already out: not posting it twice (--again to post anyway)")
+        return 0
     if args.post and not args.no_wait:
         wait_for_jobs(db)
     now = datetime.now(timezone.utc)
@@ -272,7 +443,11 @@ def main(argv=None) -> int:
     checks = pc_check(db.v2_heartbeat.find_one({"_id": "pc"}), now)
     checks += render_check(running, _compare(running) if running else None)
     checks += sync_check(sources, now)
-    built = build(sources, done, checks, now, dg.load_holds(db))
+    try:
+        runs = list(db.cron_runs.find({"started": {"$gte": now - timedelta(days=4)}}))
+    except Exception:  # noqa: BLE001 - without runs every broken line stays, nothing is lost
+        runs = []
+    built = build(sources, done, checks, now, dg.load_holds(db), runs)
     if not built:
         print("Nothing needs anyone and nothing was done: no digest today")
         db[dg.META].replace_one({"_id": "last"}, {"_id": "last", "at": now.isoformat(), "posted": False}, upsert=True)
