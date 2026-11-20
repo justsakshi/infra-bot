@@ -314,9 +314,13 @@ def test_an_untested_inbox_already_on_a_test_campaign_is_not_an_ask():
     assert it["text"].startswith("1 inbox is sending") and it["detail"] == ["• Precise Leads · y.com: 1 inbox, in Camp C; never tested"]
     (ask,) = [a for a in st.digest_asks(items) if a.key == "inbox-status:sending_unproven"]
     assert "dt_senders" not in ask.step and "deliverability sheet" in ask.step
-    _, parts = st.format_post(recs, [], items, T)
-    assert any("2 inboxes sending with no result in 10 days are on a test campaign: the next weekly test covers them."
-               in p for p in parts)
+    head, parts = st.format_post(recs, [], items, T)
+    # 20 Nov 2026: they are one info line, never a thing to do (not counted in the headline)
+    assert head[0].endswith("1 thing needs you")
+    assert ("For info: 2 inboxes sending with no weekly test result in the last 10 days are on a test campaign, so "
+            "the next weekly run (Sat 14 Nov) checks them.") in head
+    (info,) = [a for a in st.digest_asks(items) if a.key == "inbox-status:sending_test_short"]
+    assert info.kind == "info" and info.step == "" and info.doc("inbox-status")["kind"] == "info"
 
 
 def test_the_inbox_list_hands_the_digest_its_numbers_per_client():
@@ -326,3 +330,99 @@ def test_the_inbox_list_hands_the_digest_its_numbers_per_client():
             _row("d@m.com", sub="Melior", busy_reason="low_rep")]
     assert st.numbers(st.states(rows, T)) == {"Melior": {"Recovering": 1},
                                               "Precise Leads": {"Safe to send": 1, "Not proven yet": 1, "Do not use": 1}}
+
+
+def _unproven_on_test(email, test="DT PL #1"):
+    return [_row(email, "Camp C", "ACTIVE"), _row(email, test, "PAUSED"),
+            _row(email, "PL Deliverability Test - all PL inboxes", "PAUSED")]      # the copy check: not named
+
+
+def test_untested_inboxes_are_split_by_why_they_have_no_result():
+    """20 Nov 2026 ("this is still not fixed"): 25 inboxes already in an active weekly test, whose last runs came back
+    short, were told to go on the deliverability sheet. Now: on no test campaign = the sheet step; on a test campaign
+    its weekly test leaves out = add them to that test; in the weekly test with short runs = info, no step."""
+    rows = (_unproven_on_test("s1@short.example") + _unproven_on_test("s2@short.example")
+            + _unproven_on_test("gap@left.example", "DT PL #2") + [_row("lone@none.example", "Camp C", "ACTIVE")])
+    v2 = [{"email": "s1@short.example", "night": "2026-11-09", "verdict": "INCOMPLETE",
+           "google": {"sent": 1}, "microsoft": {"sent": 1}},
+          {"email": "s1@short.example", "night": "2026-11-07", "verdict": "INCOMPLETE",
+           "google": {"sent": 1}, "microsoft": {"sent": 1}},
+          {"email": "s1@short.example", "night": "2026-10-20", "verdict": "INCOMPLETE",      # too old to count
+           "google": {"sent": 1}, "microsoft": {"sent": 1}},
+          {"email": "s2@short.example", "night": "2026-11-09", "verdict": "INCOMPLETE",
+           "google": {"sent": 1}, "microsoft": {"sent": 4}},
+          {"email": "s2@short.example", "night": "2026-10-28", "verdict": "PASS"}]
+    recs = st.add_test_facts(st.states(rows, T), {"gap@left.example"}, v2, T)
+    by = {r["email"]: r for r in recs}
+    assert by["gap@left.example"]["weekly_test"] == "missing" and by["s1@short.example"]["weekly_test"] == "in"
+    assert [x["night"] for x in by["s1@short.example"]["short_runs"]] == ["2026-11-07", "2026-11-09"]
+    items = {i["key"]: i for i in st.needs_you(recs, T, require_pass=True)}
+    assert set(items) == {"sending_unproven", "sending_not_in_test", "sending_test_short"}
+
+    assert items["sending_unproven"]["detail"] == ["• Precise Leads · none.example: 1 inbox, in Camp C; never tested"]
+    gap = items["sending_not_in_test"]
+    assert gap["text"].startswith("1 inbox sending with no weekly test result in the last 10 days sits on a test campaign")
+    assert gap["detail"] == ["• Precise Leads · left.example: 1 inbox, on DT PL #2"]
+
+    info = items["sending_test_short"]
+    assert info["info"] is True
+    assert info["text"] == ("2 inboxes sending with no weekly test result in the last 10 days are in the weekly test, "
+                            "but the last Smart Delivery runs sent too few emails to judge them; next run Sat 14 Nov")
+    assert info["detail"] == ["• Precise Leads · short.example: 2 inboxes, in the weekly test of DT PL #1; last runs "
+                              "7 Nov and 9 Nov sent 1 email per provider (4 needed)"]
+
+    asks = {a.key: a for a in st.digest_asks(list(items.values()))}
+    assert "deliverability sheet" in asks["inbox-status:sending_unproven"].step
+    left = asks["inbox-status:sending_not_in_test"].step
+    assert "Smart Delivery" in left and "add those inboxes" in left and "deliverability sheet" not in left
+    short = asks["inbox-status:sending_test_short"]
+    assert short.kind == "info" and short.step == "" and "deliverability" not in short.text
+
+
+def test_without_a_coverage_record_an_inbox_on_a_test_campaign_is_never_told_to_go_on_the_sheet():
+    recs = st.add_test_facts(st.states(_unproven_on_test("a@x.example"), T), None, [], T)
+    assert recs[0]["weekly_test"] is None
+    (it,) = st.needs_you(recs, T, require_pass=True)
+    assert it["key"] == "sending_test_short" and it["info"]
+    assert it["detail"] == ["• Precise Leads · x.example: 1 inbox, on DT PL #1; the next weekly run checks them"]
+
+
+def test_next_weekly_run_is_the_coming_saturday_or_today():
+    assert st.next_weekly_run(date(2026, 11, 20)) == date(2026, 11, 21)      # Fri -> Sat
+    assert st.next_weekly_run(date(2026, 11, 21)) == date(2026, 11, 21)      # Sat
+    assert st.next_weekly_run(date(2026, 11, 22)) == date(2026, 11, 28)      # Sun
+
+
+class _Col:
+    def __init__(self, docs):
+        self.docs = docs
+
+    def find(self, q=None, proj=None):
+        q = q or {}
+        out = self.docs
+        if "_id" in q:
+            out = [d for d in out if d["_id"] >= q["_id"]["$gte"]]
+        if "email" in q:
+            out = [d for d in out if d["email"] in q["email"]["$in"]]
+        return _Cur(out)
+
+
+class _Cur(list):
+    def sort(self, key, way):
+        return _Cur(sorted(self, key=lambda d: d[key], reverse=way < 0))
+
+    def limit(self, n):
+        return _Cur(self[:n])
+
+
+def test_test_facts_reads_todays_coverage_only_when_every_account_was_read():
+    cov = {"_id": "2026-11-11", "tests_read": {"A": True, "B": True},
+           "clients": {"Precise Leads": {"missing": [{"email": "Gap@x.example"}]}}}
+    db = {"test_coverage": _Col([cov]), "v2_verdicts": _Col([{"email": "a@x.example", "night": "2026-11-09"}])}
+    missing, rows = st.test_facts(db, T, {"a@x.example"})
+    assert missing == {"gap@x.example"} and rows == [{"email": "a@x.example", "night": "2026-11-09"}]
+    db["test_coverage"] = _Col([{**cov, "tests_read": {"A": True, "B": False}}])
+    assert st.test_facts(db, T, set())[0] is None
+    db["test_coverage"] = _Col([{**cov, "_id": "2026-11-08"}])                # older than yesterday: not known
+    assert st.test_facts(db, T, set())[0] is None
+    assert st.test_facts({}, T, {"a@x.example"}) == (None, [])                 # a read that fails: nothing known

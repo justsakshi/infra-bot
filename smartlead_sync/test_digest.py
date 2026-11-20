@@ -542,3 +542,34 @@ def test_plain_words_never_touch_a_domain_or_a_name():
     kept = "x-v2.test, ops@v2.test, Client | Roundtable | V2, file-v2.csv"
     assert dg.plain(kept) == kept
     assert "seed test" not in dg.plain("(Google inboxes: report-only until real replies agree with the seed test)")
+
+
+def test_an_info_item_is_one_line_not_a_thing_to_do():
+    """20 Nov 2026 ("this is still not fixed"): inboxes already in the weekly test whose last runs came back short
+    were a numbered thing to do with a wrong step. A fact with no step (kind "info") is one 'For info' line after
+    the things to do, not counted among them and never merged into one; its list is in the thread."""
+    info = _src("inbox-status", [{"text": "3 inboxes are in the weekly test, but the last runs sent too few emails "
+                                          "to judge them; next run Sat 21 Nov.", "kind": "info",
+                                  "key": "inbox-status:sending_test_short",
+                                  "detail": ["Client A · kilo.test: 2 inboxes, in the weekly test of DT A #1",
+                                             "Client A · lima.test: 1 inbox, in the weekly test of DT A #1"]}])
+    ask = _src("dt-senders", [{"text": "1 domain is not in the deliverability sheet.", "key": "dt-senders:untracked",
+                               "step": "Add it to the sheet.", "detail": ["kilo.test (Client A, 3 inboxes)"]}])
+    head, parts = dp.build([info, ask], [], [], NOW)
+    lines = _lines(head)
+    assert lines[1] == f"<@{dg.OWNER}>, 1 thing needs you today:"
+    assert lines[2].startswith("1. 1 domain is not in the deliverability sheet: kilo.test")
+    assert lines[3] == ("For info, nothing to do: 3 inboxes are in the weekly test, but the last runs sent too few "
+                        "emails to judge them; next run Sat 21 Nov: Client A · kilo.test, Client A · lima.test.")
+    assert "also flagged" not in "\n".join(head)                          # not merged with the ask on kilo.test
+    assert "Do:" not in lines[3]
+    assert "For info: 3 inboxes are in the weekly test" in parts[0] and "lima.test: 1 inbox" in parts[0]
+
+
+def test_an_info_item_alone_still_posts_and_says_nothing_needs_you():
+    info = _src("inbox-status", [{"text": "1 inbox is in the weekly test; next run Sat 21 Nov.", "kind": "info",
+                                  "key": "inbox-status:sending_test_short", "detail": ["Client A · kilo.test: 1 inbox"]}])
+    head, _ = dp.build([info], [], [], NOW)
+    lines = _lines(head)
+    assert lines[1] == "Nothing needs you today."
+    assert lines[2].startswith("For info, nothing to do: 1 inbox is in the weekly test")

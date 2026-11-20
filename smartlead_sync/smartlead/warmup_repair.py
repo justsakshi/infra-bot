@@ -141,6 +141,63 @@ def off_repair_settings(d: dict) -> bool:
     return per_day > REPAIR_PER_DAY or not REPAIR_REPLY[0] <= reply <= REPAIR_REPLY[1]
 
 
+def login_blocked(d: dict) -> bool:
+    """Warm-up blocked because Smartlead can't log in (Smartlead's blocked_reason names authentication failures or
+    credentials; a doc without a reason read falls back on why_not_changed). Another block (hard bounces ...) is not
+    a login step. Pure."""
+    if not d.get("blocked"):
+        return False
+    r = str(d.get("blocked_reason") or "").lower()
+    if r:
+        return "authentic" in r or "credential" in r
+    return "credentials" in str(d.get("why_not_changed") or "")
+
+
+def repair_would_help(d: dict) -> bool:
+    """Would the repair settings help this inbox now? Not while its warm-up is blocked (Smartlead can't log in, so no
+    warm-up runs: the login comes first), nor while its domain is on Spamhaus DBL / URIBL (the listing keeps it out
+    whatever its warm-up; fleet.py asks about listed inboxes in live campaigns). 20 Nov 2026: 3 of the 4 inboxes
+    the digest asked to put on the repair settings were warm-up blocked, the 4th on a listed domain. Pure."""
+    return not d.get("blocked") and "blocklisted" not in (d.get("reasons") or ())
+
+
+KIND_WORDS = {"google": "Google", "outlook": "Outlook", "outlook_dense": "Outlook", "smtp": "custom mail server"}
+
+
+def kind_word(kind: str | None) -> str:
+    """The inbox type in plain words ('outlook_dense' -> 'Outlook')."""
+    return KIND_WORDS.get(str(kind or ""), str(kind or "inbox type not known"))
+
+
+def _score(d: dict) -> str:
+    rep = d.get("latest_rep")
+    return f"warm-up score {rep}%" if rep is not None else "warm-up score not read"
+
+
+def _blocked_lines(docs: list[dict]) -> list[str]:
+    """One line per domain: client, how many, type, score, the inboxes. Plain words, no codes."""
+    groups: dict[tuple, list[dict]] = {}
+    for d in docs:
+        groups.setdefault((d["email"].split("@")[-1], CLIENTS.get(d.get("client"), d.get("client") or "")), []).append(d)
+    out = []
+    for (dom, client), ds in sorted(groups.items()):
+        reps = sorted(d["latest_rep"] for d in ds if d.get("latest_rep") is not None)
+        score = (f"warm-up score {reps[0]}%" if reps and reps[0] == reps[-1] else
+                 f"warm-up score {reps[0]}-{reps[-1]}%" if reps else "warm-up score not read")
+        kinds = ", ".join(sorted({kind_word(d.get("kind")) for d in ds}))
+        users = ", ".join(sorted(d["email"].split("@")[0] + "@" for d in ds))
+        out.append(f"• {dom} ({client}): {_n(len(ds))}, {kinds}, {score} (good from {level()}%): {users}")
+    return out
+
+
+def _settings_line(d: dict) -> str:
+    """'a@x.com: Outlook, warm-up score 85% (good from 90%), now 20 warm-up emails a day at 30% reply'."""
+    live = d.get("live")
+    return (f"• {d['email']}: {kind_word(d.get('kind'))}, {_score(d)} (good from {level(d.get('kind'))}%), now "
+            f"{d.get('warmup_per_day')} warm-up emails a day at {d.get('reply_rate')}% reply"
+            + (f", in {live} live campaign{'s' if live != 1 else ''}" if live else ""))
+
+
 def seed_docs(changes: dict, before: dict, today: date) -> list[dict]:
     """One doc per inbox in the lead's before-snapshot (``before['inboxes']``), with the settings change from
     ``changes`` ({email: {on, before, after, ok}}) or why the settings were left alone. Pure."""
@@ -188,6 +245,7 @@ def update(d: dict, reading: dict | None, today: date, why: list[str] | None = N
         d["kind"] = reading.get("kind") or d.get("kind")
         if reading.get("warmup_blocked") is not None:
             d["blocked"] = bool(reading["warmup_blocked"])
+            d["blocked_reason"] = str(reading.get("blocked_reason") or "")[:200] if d["blocked"] else None
         for k in ("warmup_on", "warmup_per_day", "reply_rate"):
             if k in reading:
                 d[k] = reading[k]
@@ -367,7 +425,8 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> t
     """(asks, done, detail) for the digest. The weekly line per client is a Done line on Mondays (``weekly``
     overrides the day). Asks: inboxes 3 weeks in repair without improving (cancel candidates); since t325, inboxes
     whose warm-up is repaired and only a person's tag keeps out (untag is Manveen's call), and inboxes under 90 not
-    on the repair settings."""
+    on the repair settings. Since 20 Nov 2026 inboxes whose warm-up is blocked (a login problem) are their own ask
+    ("fix the login first"), and the repair-settings ask lists only inboxes it would help (``repair_would_help``)."""
     from smartlead import digest as dg
     weekly = today.weekday() == 0 if weekly is None else weekly
     by_client: dict[str, list[dict]] = {}
@@ -381,7 +440,8 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> t
                 done.append(dg.Done(line, key=f"warmup-repair:week:{CLIENTS.get(client, client)}:{today.isoformat()}"))
     stuck = [d for d in docs if d.get("status") == "no_improvement"]
     ready = [d for d in docs if d.get("status") == "ready"]
-    off = [d for d in docs if d.get("status") in IN_REPAIR and off_repair_settings(d)]
+    blocked = [d for d in docs if d.get("status") in IN_REPAIR and login_blocked(d)]
+    off = [d for d in docs if d.get("status") in IN_REPAIR and off_repair_settings(d) and repair_would_help(d)]
     asks = []
     if stuck:
         n = len(stuck)
@@ -393,12 +453,23 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> t
                            "them out: untag is your call.",
                            "Say which of those listed to untag; the bot never removes a tag.",
                            key="warmup-repair:ready-to-untag", detail=[_detail_line(d, today) for d in ready]))
+    if blocked:
+        k = len(blocked)
+        asks.append(dg.Ask(f"{_n(k)} can't warm up: Smartlead blocked {'their' if k != 1 else 'its'} warm-up "
+                           f"because it can't log in to {'them' if k != 1 else 'it'} (credentials), so no warm-up "
+                           "setting helps until the login is fixed.",
+                           "Fix the login first: in Smartlead, Email Accounts, open each inbox listed and reconnect "
+                           "it with its current password (or app password); warm-up starts again once it connects. "
+                           "If one was cancelled, say so.",
+                           key="warmup-repair:login-blocked", detail=_blocked_lines(blocked)))
     if off:
-        asks.append(dg.Ask(f"{_n(len(off))} under 90% warm-up are not on the repair settings ({REPAIR_PER_DAY}/day or "
-                           f"less, {REPAIR_REPLY[0]}-{REPAIR_REPLY[1]}% reply).",
-                           f"A yes: set {REPAIR_PER_DAY}/day (never higher than now), ramp 5, 35% reply, read it back "
-                           "and record it (warmup_repair_cli.py changes). The bot changes no warm-up setting.",
-                           key="warmup-repair:not-on-repair-settings", detail=[_detail_line(d, today) for d in off]))
+        k = len(off)
+        asks.append(dg.Ask(f"{_n(k)} with a warm-up score under {level()}% {'are' if k != 1 else 'is'} not on the "
+                           f"repair settings (at most {REPAIR_PER_DAY} warm-up emails a day, "
+                           f"{REPAIR_REPLY[0]}-{REPAIR_REPLY[1]}% reply).",
+                           f"A yes: set {REPAIR_PER_DAY} a day (never higher than now), ramp 5, 35% reply, read it "
+                           "back and record it (warmup_repair_cli.py changes). The bot changes no warm-up setting.",
+                           key="warmup-repair:not-on-repair-settings", detail=[_settings_line(d) for d in off]))
     live = [d for d in docs if d.get("status") in IN_REPAIR
             or (d.get("status") == "recovered" and _this_week(d.get("recovered_on"), today))
             or (d.get("status") == "gone" and _this_week(d.get("gone_on"), today))]

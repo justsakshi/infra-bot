@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 from smartlead import usable
 
@@ -102,7 +102,7 @@ def states(rows: list[dict], today: date) -> list[dict]:
         sending = sorted({str(r.get("campaign_name") or "") for r in rs
                           if str(r.get("campaign_status") or "").upper() in SENDING_STATUSES
                           and not _is_test_campaign(r.get("campaign_name", ""))})
-        in_test = any(_is_test_campaign(r.get("campaign_name", "")) for r in rs)
+        tests = sorted({str(r.get("campaign_name") or "") for r in rs if _is_test_campaign(r.get("campaign_name", ""))})
         tags = sorted({t for r in rs for t in r.get("tags") or []})
         aside = first.get("v2_set_aside")
         if aside is None:   # a row from before the list carried it: the type rule still applies
@@ -115,7 +115,7 @@ def states(rows: list[dict], today: date) -> list[dict]:
                     "client": str(first.get("sub_client") or first.get("client") or ""),
                     "account": str(first.get("client") or ""), "provider": str(first.get("provider") or ""),
                     "account_id": str(first.get("account_id") or ""), "state": state, "campaigns": sending,
-                    "in_test": in_test,
+                    "in_test": bool(tests), "tests": tests,
                     "group": usable.team_group(first.get("busy_reason"), first.get("provider"), first.get("use_notes")),
                     "v2_status": str(first.get("v2_status") or ""), "v2_date": str(first.get("v2_date") or ""),
                     "set_aside": str(aside or ""),
@@ -142,10 +142,14 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
     2. a sending campaign has no usable inbox left, or half or more of its inboxes cannot send;
     3. an inbox in a sending campaign cannot connect (one that sits idle is listed in the thread, not here:
        an item that never clears teaches people to skip the post; the renewal review asks about it at its bill);
-    4. once a v2 pass is required: inboxes sending without one that are on no test campaign. One on a test campaign
-       is not a job for a person: the next weekly test covers it, and a test campaign whose inboxes miss their
-       weekly test is asked about by the test-campaign job and the v2 job (19 Nov 2026: 13 inboxes already on a test
-       campaign, retest booked, were asked about with a step to add them to the sheet)."""
+    4. once a v2 pass is required, inboxes sending without one, split by why (20 Nov 2026, Manveen on the digest:
+       "this is still not fixed"; 25 inboxes already in an active weekly test were told to go on the sheet):
+       a. on no test campaign: add the domain to the deliverability sheet (an ask);
+       b. on a test campaign, but its active weekly test leaves them out (dt_senders' coverage record, Mongo
+          test_coverage; a test keeps the inboxes it was created with): add them to that test (an ask);
+       c. in the weekly test, whose last runs came back short or incomplete (Mongo v2_verdicts), or not known to be
+          missing from it: nothing for a person to do, one line for info (``info``: no step, not counted).
+       ``weekly_test`` ("missing" or "in", None = not known) and ``short_runs`` come from ``add_test_facts``."""
     if require_pass is None:
         require_pass = usable.require_v2_pass(today)
     items: list[dict] = []
@@ -216,6 +220,10 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
                       "detail": [f"• {c} · {camp}: {_names(sorted(es), 12)}" for (c, camp), es in sorted(by_camp.items())]})
 
     unproven = [r for r in records if r["state"] == "sending_unproven" and not r.get("in_test")]
+    left_out = [r for r in records if r["state"] == "sending_unproven" and r.get("in_test")
+                and r.get("weekly_test") == "missing"]
+    waiting = [r for r in records if r["state"] == "sending_unproven" and r.get("in_test")
+               and r.get("weekly_test") != "missing"]
     if unproven and require_pass:
         # By client and domain: the deliverability sheet (the step) is kept per domain.
         by_dom: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -229,7 +237,144 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
                                  + (f"; last test {max(r['v2_date'] for r in rs)[:10]}"
                                     if any(r["v2_date"] for r in rs) else "; never tested")
                                  for (c, d), rs in sorted(by_dom.items())]})
+    if left_out and require_pass:
+        k = len(left_out)
+        items.append({"key": "sending_not_in_test",
+                      "text": f"{_n(k)} sending with no weekly test result in the last {usable.V2_FRESH_DAYS} days "
+                              f"{'sits' if k == 1 else 'sit'} on a test campaign, but its weekly test leaves "
+                              f"{'it' if k == 1 else 'them'} out (a test keeps the inboxes it was created with)",
+                      "detail": [f"• {c} · {d}: {_n(len(rs))}, on {_test_names(rs)}"
+                                 for (c, d), rs in _by_client_domain(left_out)]})
+    if waiting and require_pass:
+        items.append(_waiting_item(waiting, today))
     return items
+
+
+def _test_names(rs: list[dict]) -> str:
+    """The test campaigns these inboxes sit on, the DT ones only when there are any (the weekly tests run on the
+    "DT <client> #n" campaigns; the main test campaign is the copy check)."""
+    names = sorted({t for r in rs for t in r.get("tests") or []})
+    dt = [n for n in names if n.upper().startswith("DT ")]
+    return ", ".join(dt or names)
+
+
+def _by_client_domain(records: list[dict]) -> list[tuple[tuple[str, str], list[dict]]]:
+    out: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for r in records:
+        out[(r["client"], r["domain"])].append(r)
+    return sorted(out.items())
+
+
+def next_weekly_run(today: date) -> date:
+    """The next day the weekly v2 tests run: Saturday (dt_senders.SATURDAY: the weekly tests are set up to start on
+    Saturdays after the 05:30 IST seed refill), today when today is a Saturday."""
+    return today + timedelta(days=(5 - today.weekday()) % 7)
+
+
+def _day(d: date) -> str:
+    return f"{d:%a} {d.day} {d:%b}"
+
+
+def _runs_text(runs: list[dict]) -> str:
+    """'last runs 14 Nov and 16 Nov sent 1 email per provider (4 needed)' for one domain's short runs."""
+    nights = sorted({r["night"] for r in runs})
+    when = " and ".join(f"{date.fromisoformat(n).day} {date.fromisoformat(n):%b}" for n in nights[-2:])
+    sent = sorted({r["sent"] for r in runs if r.get("sent")})
+    word = "run" if len(nights[-2:]) == 1 else "runs"
+    if sent and max(sent) < _seeds_needed():
+        many = "-".join(str(x) for x in (sent[:1] + sent[-1:] if len(sent) > 1 else sent))
+        return f"last {word} {when} sent {many} email{'s' if sent[-1] != 1 else ''} per provider ({_seeds_needed()} needed)"
+    return f"last {word} {when} came back incomplete (not every seed result came in)"
+
+
+def _seeds_needed() -> int:
+    from smartlead import v2_results
+    return int(v2_results.PASS_SEEDS)
+
+
+def _waiting_item(waiting: list[dict], today: date) -> dict:
+    """One info line for inboxes in the weekly test that have no result to judge (c. in ``needs_you``)."""
+    k = len(waiting)
+    nxt = _day(next_weekly_run(today))
+    short = [r for r in waiting if r.get("short_runs")]
+    few = all(0 < x["sent"] < _seeds_needed() for r in short for x in r["short_runs"])
+    if len(short) == k:
+        what = "sent too few emails to judge" if few else "came back short or incomplete, too little to judge"
+        text = (f"{_n(k)} sending with no weekly test result in the last {usable.V2_FRESH_DAYS} days "
+                f"{'is' if k == 1 else 'are'} in the weekly test, but the last Smart Delivery runs {what} "
+                f"{'it' if k == 1 else 'them'}; next run {nxt}")
+    else:
+        text = (f"{_n(k)} sending with no weekly test result in the last {usable.V2_FRESH_DAYS} days "
+                f"{'is' if k == 1 else 'are'} on a test campaign, so the next weekly run ({nxt}) checks "
+                f"{'it' if k == 1 else 'them'}")
+    detail = []
+    for (c, d), rs in _by_client_domain(waiting):
+        runs = [x for r in rs for x in r.get("short_runs") or []]
+        on = _test_names(rs)
+        if runs:
+            why = _runs_text(runs)
+        elif any(r.get("weekly_test") == "in" for r in rs):
+            why = f"no run in the last {usable.V2_FRESH_DAYS} days"
+        else:
+            why = "the next weekly run checks them"
+        where = "in the weekly test of" if any(r.get("weekly_test") == "in" for r in rs) else "on"
+        detail.append(f"• {c} · {d}: {_n(len(rs))}, {where} {on}; {why}")
+    return {"key": "sending_test_short", "info": True, "text": text, "detail": detail}
+
+
+def add_test_facts(records: list[dict], missing: set[str] | None, v2_rows, today: date) -> list[dict]:
+    """``records`` with, for each inbox sending without a fresh pass, ``weekly_test`` ("missing": in no active
+    weekly test per dt_senders' coverage record; "in": in one; None: not known, ``missing`` None) and
+    ``short_runs`` ([{night, verdict, sent}]: its v2 rows in the last V2_FRESH_DAYS days that are no verdict,
+    newest last; ``sent`` = fewest emails a seed provider got). ``v2_rows`` = Mongo v2_verdicts rows. Pure."""
+    rows: dict[str, list[dict]] = defaultdict(list)
+    for x in v2_rows or []:
+        rows[str(x.get("email") or "").lower()].append(x)
+    out = []
+    for r in records:
+        if r.get("state") != "sending_unproven":
+            out.append(r)
+            continue
+        weekly = None if missing is None else ("missing" if r["email"] in missing else "in")
+        short = []
+        for x in sorted(rows.get(r["email"]) or [], key=lambda x: str(x.get("night") or "")):
+            night = str(x.get("night") or "")[:10]
+            try:
+                age = (today - date.fromisoformat(night)).days
+            except ValueError:
+                continue
+            if age > usable.V2_FRESH_DAYS or str(x.get("verdict") or "").upper() in usable.JUDGED:
+                continue
+            sent = [int((x.get(p) or {}).get("sent") or 0) for p in ("google", "microsoft") if x.get(p)]
+            short.append({"night": night, "verdict": str(x.get("verdict") or ""),
+                          "sent": min((s for s in sent if s), default=0)})
+        out.append({**r, "weekly_test": weekly, "short_runs": short})
+    return out
+
+
+def test_facts(db, today: date, emails: set[str]) -> tuple[set[str] | None, list[dict]]:
+    """(inboxes in no active weekly test, from dt_senders' newest coverage record of today or yesterday when every
+    account's tests were read, else None; the v2_verdicts rows of ``emails``). Never raises: a read that fails
+    leaves that fact unknown."""
+    missing = None
+    try:
+        doc = next(iter(db["test_coverage"].find({"_id": {"$gte": (today - timedelta(days=1)).isoformat()}})
+                        .sort("_id", -1).limit(1)), None)
+        read = (doc or {}).get("tests_read") or {}
+        if doc and read and all(read.values()):
+            missing = {str(m.get("email") or "").lower() for c in (doc.get("clients") or {}).values()
+                       for m in c.get("missing") or []}
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Status] test coverage not read: {str(exc)[:120]}")
+    rows = []
+    if emails:
+        try:
+            rows = list(db["v2_verdicts"].find({"email": {"$in": sorted(emails)}},
+                                               {"_id": 0, "email": 1, "night": 1, "verdict": 1, "google": 1,
+                                                "microsoft": 1}))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [Status] v2 verdicts not read: {str(exc)[:120]}")
+    return missing, rows
 
 
 def format_post(records: list[dict], changes: list[dict], items: list[dict], today: date,
@@ -237,20 +382,24 @@ def format_post(records: list[dict], changes: list[dict], items: list[dict], tod
     """(headline lines, thread parts) for the one daily fleet post. Pure."""
     count = Counter(r["state"] for r in records)
     day = f"{today.day} {today.strftime('%b')}"
+    info = [it for it in items if it.get("info")]
+    items = [it for it in items if not it.get("info")]
     head = [(f"⚠️ Inboxes, {day}: {len(items)} thing{'s' if len(items) != 1 else ''} need{'' if len(items) != 1 else 's'} you"
              if items else f"✅ Inboxes, {day}: nothing needs you")]
     head += [f"{i}. {it['text']}." for i, it in enumerate(items, 1)]
+    head += [f"For info: {it['text']}." for it in info]
     live = sum(1 for r in records if r["campaigns"])
     head.append(f"{_n(len(records))} in Smartlead, {live} in live campaigns. The list is in the thread.")
     if saved_error:
         head.append(f"History not saved today ({saved_error})")
     parts = ["\n".join([f"*{i}. {it['text']}*"] + it["detail"]) for i, it in enumerate(items, 1)]
+    parts += ["\n".join([f"*For info: {it['text']}*"] + it["detail"]) for it in info]
     waiting = sum(1 for r in records if r["state"] == "sending_unproven" and r.get("in_test"))
     parts.append("\n".join(["*Every inbox, by where it stands*"]
                            + [f"• {LABEL[s]}: {count[s]}" for s in ORDER if count.get(s)]
                            + ([f"{_n(waiting)} sending with no result in {usable.V2_FRESH_DAYS} days "
                                f"{'is' if waiting == 1 else 'are'} on a test campaign: the next weekly test covers "
-                               f"{'it' if waiting == 1 else 'them'}."] if waiting else [])))
+                               f"{'it' if waiting == 1 else 'them'}."] if waiting and not info else [])))
     by_client: dict[str, Counter] = defaultdict(Counter)
     for r in records:
         by_client[r["client"] or "no client"][r["state"]] += 1
@@ -356,6 +505,9 @@ DIGEST_STEPS = {
                     "if it was cancelled).",
     "sending_unproven": "Add each domain listed to the deliverability sheet (its client's tab, column A); the 06:00 "
                         "IST test-campaign job then puts its inboxes on the weekly test.",
+    "sending_not_in_test": "In Smart Delivery, open the weekly test of each test campaign listed and add those inboxes "
+                           "to it (or re-create the test from its campaign). The sheet is not the fix: they are on "
+                           "the test campaign already.",
 }
 
 
@@ -372,6 +524,10 @@ def digest_asks(items: list[dict]) -> list:
     from smartlead import digest as dg
     asks = []
     for it in items:
+        if it.get("info"):           # a fact, no step: the digest shows it as info, not as a thing to do
+            asks.append(dg.Ask(it["text"] + ".", "", key=f"inbox-status:{it['key']}", kind="info",
+                               detail=it.get("detail") or []))
+            continue
         text = it["text"].split(". ")[0] + "." if it["key"] in DIGEST_STEPS else it["text"] + "."
         asks.append(dg.Ask(text, DIGEST_STEPS.get(it["key"], ""), key=f"inbox-status:{it['key']}",
                            urgent=it["key"] == "campaign_short", detail=it.get("detail") or []))
@@ -389,11 +545,15 @@ def run(rows: list[dict], today: date, complete: bool, post: bool, db=None) -> d
         except Exception as exc:  # noqa: BLE001
             print(f"  [Status] Mongo not reachable: {str(exc)[:120]}")
     res = save(records, today, complete, db) if db is not None else {"changes": [], "saved": 0, "error": "Mongo not reachable"}
+    if db is not None:
+        unproven = {r["email"] for r in records if r["state"] == "sending_unproven"}
+        if unproven:
+            records = add_test_facts(records, *test_facts(db, today, unproven), today)
     # the first run records every inbox as new: that is the baseline, not a day's news
     changes = [] if res["changes"] and all(c.get("from") is None for c in res["changes"]) else res["changes"]
     items = needs_you(records, today)
     head, parts = format_post(records, changes, items, today, res["error"])
-    out = {"inboxes": len(records), "changes": len(res["changes"]), "needs_you": [i["key"] for i in items],
+    out = {"inboxes": len(records), "changes": len(res["changes"]), "needs_you": [i["key"] for i in items if not i.get("info")],
            "headline": head, "thread": parts, "posted": False}
     if post and records and os.getenv("FLEET_STATUS_POST", "on").strip().lower() != "off":
         from smartlead import digest as dg
