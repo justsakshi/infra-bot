@@ -8,7 +8,7 @@ Code: `smartlead_sync/v2_weekly.py` (files, state, Smartlead, Slack, Mongo), `sm
 
 | When | What happens | Who |
 |---|---|---|
-| Sun 00:00 IST | Smart Delivery v2 tests DT PL #1-3, DT Melior #1-4 and DT BettrData #1-2 (weekly, one by one, 5-minute gap, 4 emails per provider). The gap is for the whole test and 5 minutes is the least Smartlead allows, so a 50-mailbox test (400 emails) takes about 33 hours and is in on Monday morning. A test that starts on a Saturday, Sunday or Monday counts as the week's test | Smartlead, automatic |
+| Sat 06:00-11:00 IST | Smart Delivery v2 tests DT PL #1-3, DT Melior #1-4 and DT BettrData #1-2 (weekly, one test every 30 minutes from 06:00, 5-minute gap between emails, 4 emails per provider). The gap is for the whole test and 5 minutes is the least Smartlead allows, so a 50-mailbox test (400 emails) takes about 33 hours and is in by Sunday night. A test that starts on a Saturday, Sunday or Monday counts as the week's test | Smartlead, automatic |
 | Each hour | The job reads every finished run from the Smart Delivery v2 API, and any v2 CSV in `C:\Users\Manveen\Downloads` | Job |
 | About 2 hours after the last run of a night finished | The job acts on the night, then posts in the infra channel | Job |
 | Tue 12:00 IST | If any DT test has no result for the week, one reminder naming each missing test. When the API's test list was read, only a DT campaign whose ACTIVE v2 test should have run is named, with why, and nothing asks for a download; a DT campaign with no v2 test is left to the coverage check | Job |
