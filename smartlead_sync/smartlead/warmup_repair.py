@@ -421,13 +421,18 @@ def _other_lines(docs: list[dict]) -> list[str]:
     return out
 
 
-def digest_items(docs: list[dict], today: date, weekly: bool | None = None) -> tuple[list, list, list[str]]:
+def digest_items(docs: list[dict], today: date, weekly: bool | None = None,
+                 removed: set[str] | None = None) -> tuple[list, list, list[str]]:
     """(asks, done, detail) for the digest. The weekly line per client is a Done line on Mondays (``weekly``
     overrides the day). Asks: inboxes 3 weeks in repair without improving (cancel candidates); since t325, inboxes
     whose warm-up is repaired and only a person's tag keeps out (untag is Manveen's call), and inboxes under 90 not
     on the repair settings. Since 20 Nov 2026 inboxes whose warm-up is blocked (a login problem) are their own ask
-    ("fix the login first"), and the repair-settings ask lists only inboxes it would help (``repair_would_help``)."""
+    ("fix the login first"), and the repair-settings ask lists only inboxes it would help (``repair_would_help``).
+    ``removed``: inboxes their provider removed (provider_removed.emails, t352): left out of every ask and count here,
+    as there is nothing to repair; the digest's delete reminder lists them."""
     from smartlead import digest as dg
+    if removed:
+        docs = [d for d in docs if str(d.get("email") or "").lower() not in removed]
     weekly = today.weekday() == 0 if weekly is None else weekly
     by_client: dict[str, list[dict]] = {}
     for d in docs:

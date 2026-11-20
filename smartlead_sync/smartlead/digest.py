@@ -358,6 +358,65 @@ def apply_holds(asks: list[dict], holds, now: datetime) -> tuple[list[dict], lis
     return kept, held
 
 
+REMOVED_KEY = "provider-removed:delete"     # provider_removed.KEY: the one delete reminder
+_MORE = re.compile(r"\band \d+ more\b")
+
+
+def _strip(line: str, emails) -> str:
+    """The line without these addresses (and the comma that joined each one to the list)."""
+    for e in emails:
+        e = re.escape(e)
+        line = re.sub(r",\s*" + e + r"(?![\w.-])", "", line, flags=re.I)
+        line = re.sub(e + r"(?![\w.-]),?\s*", "", line, flags=re.I)
+    return re.sub(r"(^[•\-–]\s*|:\s*)and (\d+ more)", r"\1\2", line).rstrip(" ,")
+
+
+def drop_removed(asks: list[dict], inboxes, domains=()) -> list[dict]:
+    """Every ask without the inboxes their provider removed (t352, 20 Nov 2026: the digest asked to reconnect inboxes
+    on a cancelled ScaledMail order). Those inboxes are in one ask only, the delete reminder (REMOVED_KEY), which this
+    leaves as it is. ``inboxes``: the removed inboxes; ``domains``: domains every Smartlead inbox of which is removed,
+    so a line naming only the domain is about removed inboxes. An ask about nothing else goes; one with some of them
+    keeps the rest of its list (a line naming others too loses only those addresses) and says it left some out."""
+    gone = {str(i).lower() for i in inboxes or ()} | {str(d).lower() for d in domains or ()}
+    if not gone:
+        return asks
+    out = []
+    for a in asks:
+        if a.get("key") == REMOVED_KEY:
+            out.append(a)
+            continue
+        inb, doms = items_of(a)
+        items = inb | doms
+        if not items & gone:
+            out.append(a)
+            continue
+        lines = bullets(a.get("detail"))
+        if items <= gone and not any(_MORE.search(x) for x in lines + [a.get("text") or ""]):
+            continue                                  # about removed inboxes only
+        kept, cut = [], []
+        for line in lines:
+            li = _line_items(line)
+            hit = li & gone
+            if not hit:
+                kept.append(line)
+            elif li <= gone and not _MORE.search(line):
+                cut += sorted(hit)
+            else:
+                named = sorted(x for x in hit if "@" in x)
+                cut += named
+                kept.append(_strip(line, named) if named else line)
+        if lines and not kept:
+            continue
+        if lines and not cut:
+            out.append(a)                             # a removed one is named only in its text: nothing to cut
+            continue
+        named = cut if lines else sorted(items & gone)
+        n = f"{len(named)} of them" if all("@" in x for x in named) else "some"   # a domain line: count not known
+        out.append({**a, "detail": kept, "text": f"{str(a['text']).rstrip('.')} ({n} removed by their provider, "
+                                                 f"left out: see the delete reminder)."})
+    return out
+
+
 def held_whole(a: dict, holds, now: datetime) -> bool:
     kept, _ = apply_holds([a], holds, now)
     return not kept
