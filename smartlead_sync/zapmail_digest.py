@@ -23,6 +23,8 @@ billing watch, which asks about them already. If the digest can't be written, th
 Provider facts (t352, 20 Nov 2026): it also saves which domains and mailboxes ScaledMail and Zapmail still have
 and every Smartlead inbox (Mongo provider_inventory, smartlead/provider_removed.py), so the digest can remind Manveen
 to delete, by hand, the Smartlead inboxes their provider removed, and leave them out of every other ask. GETs only.
+Then (t353) it checks which of those are still in a real campaign or had a lead reply in the last 30 days, so the
+reminder says "delete now" or "check first" (provider_removed.check_use; once a day, paced, GETs only).
 """
 from __future__ import annotations
 
@@ -424,6 +426,17 @@ def save_provider_facts(facts: dict) -> bool:
     return ok
 
 
+async def check_removed_use() -> None:
+    """Delete now or check first (t353): which removed inboxes are still in a real campaign or had a lead reply in
+    the last 30 days, once a day, after the provider facts are saved. Smartlead GETs only. Never raises."""
+    try:
+        from smartlead import digest as dg
+        from smartlead import provider_removed as pr
+        await pr.check_use(dg._db())
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Removed inboxes] not checked ({type(exc).__name__})")
+
+
 def post_to_slack(headline_lines: list[str], thread_parts: list[str]) -> bool:
     from smartlead.notify import post_with_thread
     channel = os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "").strip()
@@ -466,6 +479,7 @@ async def main() -> int:
         asks = digest_asks(data["status"], data["renewals"], data["batches"], **inputs)
         if not to_digest(asks, head, parts):
             post_to_slack(head, parts)
+        await check_removed_use()          # after the post: up to 15 minutes of paced Smartlead reads
     return 0
 
 

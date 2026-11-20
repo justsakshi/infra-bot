@@ -21,7 +21,8 @@ weekly test whose last runs came back short). It is one "For info" line, after t
 among them, with its list in the thread.
 20 Nov 2026 (t352, "if they are rmoved don't remind me just remid me to delte"): inboxes their provider removed
 (smartlead/provider_removed.py: ScaledMail or Zapmail data, never a login failure alone) are one delete reminder,
-and every other item is shown without them.
+and every other item is shown without them. Since t353 the reminder is in two lists, "delete now" and "check first"
+(still in a real campaign, or a lead replied in the last 30 days), and says where in its own text.
 """
 from __future__ import annotations
 
@@ -100,7 +101,9 @@ def _head(line: str) -> str:
 
 def _where(a: dict) -> str:
     """Where an item is, in a few words: its one list line whole, or the first three things it lists and how many
-    more (the full list is in the thread)."""
+    more (the full list is in the thread). An item that says where in its own text carries "where" (t353)."""
+    if a.get("where") is not None:
+        return dg.plain(a["where"])
     lines = [dg.plain(x.lstrip("•-– ").strip()) for x in dg.bullets(a.get("detail"))]
     if len(lines) <= 1:
         return lines[0] if lines else ""
@@ -312,7 +315,7 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
         if i > MAX_SHOWN:
             lists += ["", _item_line(i, a, now)] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
         elif len(rows) > 1:
-            lists += ["", f"{i}. {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
+            lists += ["", f"{i}. {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, a.get("lines") or LIST_LINES)]
         for x in a.get("also") or []:
             lists += ["", f"{i}. also, {_label(x)}: {_unlabel(x)}"
                       + (f" Do: {dg.plain(x['step'])}" if x.get("step") else "")]
