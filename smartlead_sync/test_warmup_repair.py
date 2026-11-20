@@ -383,8 +383,46 @@ def test_under_ninety_and_not_on_the_repair_settings_is_an_ask():
     docs, _ = wr.run([], recs, MON, read=set(), roster=None, v2={}, listed=set())
     asks, _, _ = wr.digest_items(docs, MON + timedelta(days=1))
     (a,) = asks
-    assert a.key == "warmup-repair:not-on-repair-settings" and [x.split(" · ")[0] for x in a.detail] == ["• hi@example.com"]
-    assert "16/day, 65% reply" in a.detail[0] and "never higher than now" in a.step
+    assert a.key == "warmup-repair:not-on-repair-settings" and [x.split(":")[0] for x in a.detail] == ["• hi@example.com"]
+    # plain words (20 Nov 2026): no "outlook_dense", no "80% → 80%"
+    assert a.detail == ["• hi@example.com: Outlook, warm-up score 80% (good from 90%), now 16 warm-up emails a day "
+                        "at 65% reply"]
+    assert a.text == "1 inbox with a warm-up score under 90% is not on the repair settings (at most 10 warm-up emails a day, 30-40% reply)."
+    assert "never higher than now" in a.step
+
+
+def test_a_blocked_login_is_its_own_step_and_the_repair_settings_ask_lists_only_inboxes_it_helps():
+    """20 Nov 2026: 3 of the 4 inboxes asked to go on the repair settings had warm-up blocked (Smartlead can't log in),
+    the 4th sat on a listed domain. A settings yes helps neither: the login comes first, the listing keeps it out."""
+    login = "Account blocked: authentication failures persisted >= 3 days - update mailbox credentials"
+    recs = [reading(f"{u}@locked.example", rep=88, kind="smtp", client="Precise Leads", account="PRECISE_LEADS",
+                    warmup_per_day=20, reply_rate=30, warmup_blocked=True, blocked_reason=login) for u in ("a", "b")]
+    recs += [reading("x@listed.example", rep=85, kind="outlook_dense", warmup_per_day=10, reply_rate=65,
+                     domain="listed.example"),
+             reading("bounce@other.example", rep=95, kind="outlook", warmup_blocked=True,
+                     blocked_reason="[hard_bounce_3_days] <html>..."),
+             reading("fix@example.com", rep=80, kind="google", warmup_per_day=16, reply_rate=65)]
+    docs, _ = wr.run([], recs, MON, read=set(), roster=None, v2={}, listed={"listed.example"})
+    asks = {a.key: a for a in wr.digest_items(docs, MON + timedelta(days=1))[0]}
+    assert set(asks) == {"warmup-repair:login-blocked", "warmup-repair:not-on-repair-settings"}
+    lock = asks["warmup-repair:login-blocked"]
+    assert lock.text.startswith("2 inboxes can't warm up: Smartlead blocked their warm-up because it can't log in")
+    assert lock.step.startswith("Fix the login first:")
+    assert lock.detail == ["• locked.example (PL): 2 inboxes, custom mail server, warm-up score 88% "
+                           "(good from 90%): a@, b@"]
+    fix = asks["warmup-repair:not-on-repair-settings"]
+    assert [x.split(":")[0] for x in fix.detail] == ["• fix@example.com"]       # not the listed one, not the blocked
+    for a in asks.values():
+        text = " ".join([a.text, a.step] + a.detail)
+        assert "smtp" not in text and "outlook_dense" not in text and "→" not in text
+
+
+def test_a_seeded_blocked_doc_without_a_reason_read_counts_as_a_login_block():
+    d = doc(blocked=True, why_not_changed="warm-up blocked: credentials must be fixed first")
+    assert wr.login_blocked(d) and not wr.repair_would_help(d)
+    assert not wr.login_blocked(doc(blocked=True, blocked_reason="[hard_bounce_3_days] ..."))
+    assert not wr.login_blocked(doc())
+    assert wr.repair_would_help(doc(reasons=["low_rep"])) and not wr.repair_would_help(doc(reasons=["low_rep", "blocklisted"]))
 
 
 def test_the_weekly_line_and_thread_show_other_recovery_per_domain():

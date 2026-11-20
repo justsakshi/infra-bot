@@ -16,6 +16,9 @@ reason, owner and date in the thread; an ask that points at a list it does not c
 19 Nov 2026 ("i got this and it's long spammy i can not unserstand anything"): asks about the same inboxes are one
 item, a failed job that has run fine since is not reported, the bot's own words are put plainly, and each job's own
 report is no longer copied into the thread.
+20 Nov 2026 ("this is still not fixed"): a job can hand over a fact with no step (kind "info", e.g. inboxes in the
+weekly test whose last runs came back short). It is one "For info" line, after the things to do and not counted
+among them, with its list in the thread.
 """
 from __future__ import annotations
 
@@ -115,14 +118,26 @@ def _label(a: dict) -> str:
     return LABELS.get(a.get("source"), a.get("source") or "")
 
 
-def _item_line(i: int, a: dict, now: datetime) -> str:
-    """One thing to do, in one paragraph: what, where, the one step. Items about the same inboxes say so."""
+def _what(a: dict) -> str:
+    """What an item is about and where, in one sentence."""
     text = dg.plain(a.get("text")).strip()
     where = _where(a)
     if where:
         text = text.rstrip(".") + f": {where}."
     elif text and text[-1] not in ".!?)":
         text += "."
+    return text
+
+
+def _info_line(infos: list[dict]) -> str:
+    """The one line for facts with no step (kind "info"): the first in full, how many more are in the thread."""
+    k = len(infos) - 1
+    return f"For info, nothing to do: {_what(infos[0])}" + (f" ({k} more in the thread.)" if k else "")
+
+
+def _item_line(i: int, a: dict, now: datetime) -> str:
+    """One thing to do, in one paragraph: what, where, the one step. Items about the same inboxes say so."""
+    text = _what(a)
     step = f" Do: {dg.plain(a['step']).strip()}" if a.get("step") else ""
     also = ""
     if a.get("also"):
@@ -249,6 +264,8 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
     asks = [a for a in asks if not dg.listless(a)]
     asks, held = dg.apply_holds(asks, holds, now)
     asks, _ = dg.merge_kill_list(asks, LABELS)
+    infos = [a for a in asks if a.get("kind") == "info"]      # a fact, no step: never merged into a thing to do
+    asks = [a for a in asks if a.get("kind") != "info"]
     asks, broken = dg.merge_same(asks, broken)
     if bare:
         jobs = ", ".join(sorted({_label(a) for a in bare}))
@@ -259,7 +276,7 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
                        "step": "Its next run sends the ask with its list.",
                        "detail": [f"{a['text']} ({_label(a)})" for a in bare]})
     numbers = _numbers(sources, now)
-    if not asks and not broken and not done and not numbers:
+    if not asks and not broken and not done and not numbers and not infos:
         return None
     n = len(asks)
     head = [f"Inbox digest, {_day(now)}"]
@@ -270,6 +287,8 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
         head.append("\nNothing needs you today.")
         if numbers:
             head.append(f"\n{_quiet_line(numbers)}")
+    if infos:
+        head.append(f"\n{_info_line(infos)}")
     if broken:
         names = list(dict.fromkeys(_job_name(b) for b in broken))
         k = len(names)
@@ -288,6 +307,10 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
             lists += ["", f"{i}. also, {_label(x)}: {_unlabel(x)}"
                       + (f" Do: {dg.plain(x['step'])}" if x.get("step") else "")]
             lists += [dg.plain(y) for y in dg.detail_lines(x, 3)]
+    for i, a in enumerate(infos):
+        rows = dg.bullets(a.get("detail"))
+        if i or len(rows) > 1:
+            lists += ["", f"For info: {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
     if broken:
         lists += ["", "What broke"]
         for b in broken:

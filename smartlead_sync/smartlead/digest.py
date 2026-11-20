@@ -50,13 +50,14 @@ class Ask:
     text: str                    # what is wrong, in one plain sentence
     step: str = ""               # the exact thing to do
     key: str = ""                # stable id across runs (counts may change, the key does not)
-    kind: str = "ask"            # "ask" (a person must act) or "broken" (a check or job that broke)
+    kind: str = "ask"            # "ask" (a person must act), "broken" (a check or job that broke) or "info" (a
+                                 # fact with no step: shown once, not counted as a thing to do; 20 Nov 2026)
     urgent: bool = False         # also post at once, one time per key
     detail: list = field(default_factory=list)   # what it is about, one line each (campaign, inbox, domain, bill)
 
     def doc(self, source: str) -> dict:
         return {"text": self.text, "step": self.step, "key": self.key or default_key(source, self.text),
-                "kind": self.kind if self.kind in ("ask", "broken") else "ask", "urgent": bool(self.urgent),
+                "kind": self.kind if self.kind in ("ask", "broken", "info") else "ask", "urgent": bool(self.urgent),
                 "detail": bullets(self.detail)[:KEEP_LINES]}
 
 

@@ -122,12 +122,22 @@ def _run(rows, data, monkeypatch=None):
     return {r["email"]: (r["availability"], r["busy_reason"], r["use_notes"]) for r in rows}
 
 
+def _recent() -> str:
+    """A v2 night 2 days before the day process_inbox_availability judges (IST), so a pass stays fresh (10 days)
+    whenever the suite runs; a fixed "2026-11-09" went stale on 20 Nov 2026."""
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone(timedelta(hours=5, minutes=30))).date() - timedelta(days=2)).isoformat()
+
+
+RECENT = _recent()
+
+
 def test_free_needs_more_than_capacity_reputation_and_a_seed_test():
     """Every row below was FREE before: connected, capacity, 99% reputation, a fresh 'inbox' in the grid."""
     data = {"checked": True, "error": "", "listed": {"listed.com"},
-            "v2": {"pass@ok.com": {"verdict": "PASS", "night": "2026-11-09"},
-                   "fail@bad.com": {"verdict": "FAIL", "night": "2026-11-09"},
-                   "p@listed.com": {"verdict": "PASS", "night": "2026-11-09"}}}
+            "v2": {"pass@ok.com": {"verdict": "PASS", "night": RECENT},
+                   "fail@bad.com": {"verdict": "FAIL", "night": RECENT},
+                   "p@listed.com": {"verdict": "PASS", "night": RECENT}}}
     rows = [_row("pass@ok.com"), _row("fail@bad.com"), _row("tag@pulled.com", tags=["DO NOT USE - Google spam (Nov 2026)"]),
             _row("new@untested.com"), _row("p@listed.com")]
     got = _run(rows, data)
@@ -136,7 +146,7 @@ def test_free_needs_more_than_capacity_reputation_and_a_seed_test():
     assert got["tag@pulled.com"][0] == "BUSY" and "do_not_use" in got["tag@pulled.com"][1]
     assert got["new@untested.com"] == ("FREE", "", "no v2 result")                    # a warning until the switch
     assert got["p@listed.com"] == ("FREE", "", "domain on Spamhaus DBL or URIBL")
-    assert rows[1]["v2_status"] == "FAIL" and rows[1]["v2_date"] == "2026-11-09" and rows[3]["v2_status"] == ""
+    assert rows[1]["v2_status"] == "FAIL" and rows[1]["v2_date"] == RECENT and rows[3]["v2_status"] == ""
 
 
 def test_the_two_switches_turn_the_warnings_into_blocks(monkeypatch):
@@ -144,7 +154,7 @@ def test_the_two_switches_turn_the_warnings_into_blocks(monkeypatch):
     monkeypatch.setattr(config, "AVAILABILITY_BLOCK_LISTED", True)
     monkeypatch.setattr(config, "AVAILABILITY_REQUIRE_V2_PASS", True)
     data = {"checked": True, "error": "", "listed": {"listed.com"},
-            "v2": {"p@listed.com": {"verdict": "PASS", "night": "2026-11-09"}}}
+            "v2": {"p@listed.com": {"verdict": "PASS", "night": RECENT}}}
     got = _run([_row("new@untested.com"), _row("p@listed.com")], data)
     assert got["new@untested.com"][:2] == ("BUSY", "no_v2_pass")
     assert got["p@listed.com"][:2] == ("BUSY", "blocklisted")
