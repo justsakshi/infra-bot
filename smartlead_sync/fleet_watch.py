@@ -114,6 +114,7 @@ class FleetStore:
 
     def __init__(self, daily=None, cases=None, repair=None, *, changes=None, verdicts=None, evidence=None,
                  status=None) -> None:
+        self.db = None                           # the Mongo db when built here (provider facts, t352)
         if daily is None or cases is None:
             from smartlead.zapmail_asset_sync import _db
             db = _db()
@@ -122,6 +123,7 @@ class FleetStore:
             daily, cases, repair = db["inbox_daily"], db["fleet_cases"], db["warmup_repair"]
             changes, verdicts, evidence = db["warmup_changes"], db["v2_verdicts"], db["inbox_evidence"]
             status = db["inbox_status"]          # the sync's copy of each inbox's All Inboxes Busy Reason (t325)
+            self.db = db
         self.daily, self.cases, self.repair = daily, cases, repair
         self.changes, self.verdicts, self.evidence, self.status = changes, verdicts, evidence, status
 
@@ -370,7 +372,9 @@ def _repair(store, records: list[dict], read: set[str], roster: dict | None, tod
         v2, listed, dead = _repair_inputs(store, blocklist)
         docs, _ = wr.run(rs.all(), records, today, read=read, roster=roster, v2=v2, listed=listed, dead=dead)
         rs.save(docs)
-        return wr.digest_items(docs, today)
+        from smartlead import provider_removed as pr
+        gone = pr.emails(store.db) if getattr(store, "db", None) is not None else set()
+        return wr.digest_items(docs, today, removed=gone)
     except Exception as exc:  # noqa: BLE001 - the rest of fleet watch goes on
         errors.append(f"warm-up repair ({type(exc).__name__})")
         return None

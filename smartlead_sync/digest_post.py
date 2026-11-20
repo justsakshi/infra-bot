@@ -19,6 +19,9 @@ report is no longer copied into the thread.
 20 Nov 2026 ("this is still not fixed"): a job can hand over a fact with no step (kind "info", e.g. inboxes in the
 weekly test whose last runs came back short). It is one "For info" line, after the things to do and not counted
 among them, with its list in the thread.
+20 Nov 2026 (t352, "if they are rmoved don't remind me just remid me to delte"): inboxes their provider removed
+(smartlead/provider_removed.py: ScaledMail or Zapmail data, never a login failure alone) are one delete reminder,
+and every other item is shown without them.
 """
 from __future__ import annotations
 
@@ -56,7 +59,8 @@ LABELS = {"v2-weekly": "v2 weekly test (PC job)", "inbox-status": "Inboxes", "bi
           "zapmail-digest": "Domains and inboxes (Zapmail, ScaledMail)", "fleet-scorecard": "Fleet scorecard",
           "inbox-intake": "New inboxes set up", "inbox-ready": "ScaledMail inboxes made ready",
           "smartlead-sync": "Daily sheet sync", "warmup-repair": "Warm-up repair",
-          "inbox-evidence": "Inbox evidence", "volume-review": "Volume review"}
+          "inbox-evidence": "Inbox evidence", "volume-review": "Volume review",
+          "provider-removed": "Inboxes removed by their provider"}
 
 
 def _day(dt: datetime) -> str:
@@ -260,13 +264,19 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
     his = [b for b in broken if str(b.get("step") or "").startswith("Manveen:")]
     broken = [b for b in broken if b not in his]
     asks += [{**b, "kind": "ask", "step": b["step"].split(":", 1)[1].strip()} for b in his]
+    # Inboxes their provider removed are in the one delete reminder only (t352): every other item without them.
+    gone = next((a for a in asks if a.get("key") == dg.REMOVED_KEY), None)
+    if gone:
+        asks = dg.drop_removed(asks, gone.get("inboxes"), gone.get("domains"))
     bare = [a for a in asks if dg.listless(a)]
     asks = [a for a in asks if not dg.listless(a)]
     asks, held = dg.apply_holds(asks, holds, now)
     asks, _ = dg.merge_kill_list(asks, LABELS)
     infos = [a for a in asks if a.get("kind") == "info"]      # a fact, no step: never merged into a thing to do
     asks = [a for a in asks if a.get("kind") != "info"]
-    asks, broken = dg.merge_same(asks, broken)
+    delete = [a for a in asks if a.get("key") == dg.REMOVED_KEY]    # never merged: other items name other inboxes
+    asks, broken = dg.merge_same([a for a in asks if a.get("key") != dg.REMOVED_KEY], broken)
+    asks += delete
     if bare:
         jobs = ", ".join(sorted({_label(a) for a in bare}))
         k = len(bare)
@@ -419,6 +429,19 @@ def _compare(running: str) -> dict:
         return {"error": type(exc).__name__}
 
 
+def removed_source(db, now: datetime) -> list[dict]:
+    """The delete reminder for inboxes their provider removed, as a digest source ([] when none). It is built here,
+    from what zapmail_digest saved at 09:40 (provider facts and Smartlead's inbox list) and today's sync (Mongo
+    inbox_status), so an inbox deleted by hand leaves it the next day. Never raises."""
+    try:
+        from smartlead import provider_removed as pr
+        s = pr.source(db, now)
+        return [s] if s else []
+    except Exception as exc:  # noqa: BLE001 - the digest goes out without it
+        print(f"  [Digest] removed inboxes not read ({type(exc).__name__})")
+        return []
+
+
 def wait_for_jobs(db, now_fn=lambda: datetime.now(timezone.utc), sleep=time.sleep, max_s: int = WAIT_MAX_S) -> None:
     """Wait (up to 30 minutes) for a morning job that is still running, so its asks are in today's digest."""
     waited = 0
@@ -462,6 +485,7 @@ def main(argv=None) -> int:
     sources = list(db[dg.ASKS].find({}))
     done = sorted(db[dg.DONE].find({"posted_on": None}), key=lambda d: str(d.get("at")))
     done = [d for d in done if (_parse(d.get("at")) or now) > now - MAX_ASK_AGE]
+    sources += removed_source(db, now)
     running = os.getenv("RENDER_GIT_COMMIT")
     checks = pc_check(db.v2_heartbeat.find_one({"_id": "pc"}), now)
     checks += render_check(running, _compare(running) if running else None)

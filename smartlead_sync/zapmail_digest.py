@@ -19,6 +19,10 @@ wallet, client domains expiring, batches due or to reconcile, ScaledMail orders 
 with no client) is an ask with its step; an account or report that could not be read is a "broken" ask; the
 status lines are silent and the full digest goes in the digest's thread. Failed payments are left to the
 billing watch, which asks about them already. If the digest can't be written, the old post goes out.
+
+Provider facts (t352, 20 Nov 2026): it also saves which domains and mailboxes ScaledMail and Zapmail still have
+and every Smartlead inbox (Mongo provider_inventory, smartlead/provider_removed.py), so the digest can remind Manveen
+to delete, by hand, the Smartlead inboxes their provider removed, and leave them out of every other ask. GETs only.
 """
 from __future__ import annotations
 
@@ -390,6 +394,36 @@ async def extra_sections(today: date) -> dict:
     return out
 
 
+async def provider_facts() -> dict:
+    """What ScaledMail and Zapmail still have, for provider_removed (GETs only). A provider not read says so."""
+    from smartlead import provider_removed as pr
+    out = {"zapmail": await pr.read_zapmail(), "smartlead": await pr.read_smartlead(),
+           "scaledmail": {"read": False, "why": "not configured"}}
+    try:
+        from smartlead.scaledmail import configured
+        if configured():
+            from smartlead.scaledmail import ScaledMailClient
+            with ScaledMailClient() as sm:
+                out["scaledmail"] = await asyncio.to_thread(pr.read_scaledmail, sm)
+    except Exception as exc:  # noqa: BLE001 - the digest still posts
+        out["scaledmail"] = {"read": False, "why": type(exc).__name__}
+    return out
+
+
+def save_provider_facts(facts: dict) -> bool:
+    """Save them for the digest and fleet watch. Never raises."""
+    try:
+        from smartlead import digest as dg
+        from smartlead import provider_removed as pr
+        ok = pr.save_facts(dg._db(), facts)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Provider facts] not saved ({type(exc).__name__})")
+        return False
+    print("  [Provider facts] " + ", ".join(f"{p} {'read' if (facts.get(p) or {}).get('read') else 'NOT read'}"
+                                            for p in ("scaledmail", "zapmail", "smartlead")) + (", saved" if ok else ""))
+    return ok
+
+
 def post_to_slack(headline_lines: list[str], thread_parts: list[str]) -> bool:
     from smartlead.notify import post_with_thread
     channel = os.getenv("ZAPMAIL_NOTIFY_CHANNEL", "").strip()
@@ -428,6 +462,7 @@ async def main() -> int:
     else:
         print(as_text(head, parts))
     if not args.no_post:
+        save_provider_facts(await provider_facts())
         asks = digest_asks(data["status"], data["renewals"], data["batches"], **inputs)
         if not to_digest(asks, head, parts):
             post_to_slack(head, parts)
