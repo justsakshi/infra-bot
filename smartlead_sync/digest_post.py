@@ -315,7 +315,8 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
     n = len(asks)
     head = [f"Inbox digest, {_day(now)}"]
     if n:
-        head.append(f"\n<@{dg.OWNER}>, {n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you today:")
+        where = f" ({MAX_SHOWN} here, {n - MAX_SHOWN} in the thread)" if n > MAX_SHOWN else ""
+        head.append(f"\n<@{dg.OWNER}>, {n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you today{where}:")
         head += [f"\n{_item_line(i, a, now)}" for i, a in enumerate(asks[:MAX_SHOWN], 1)]
     else:
         head.append("\nNothing needs you today.")
@@ -341,6 +342,7 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
             lists += ["", f"{i}. also, {_label(x)}: {_unlabel(x)}"
                       + (f" Do: {dg.cap(dg.plain(x['step']))}" if x.get("step") else "")]
             lists += [dg.plain(y) for y in dg.detail_lines(x, 3)]
+    items_part, lists = lists, []            # the facts and what broke are kept whole; only the items' lists are cut
     for i, a in enumerate(infos):
         rows = dg.bullets(a.get("detail"))
         if i or rows:
@@ -368,8 +370,11 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
         stand.append("What the words mean: " + "; ".join(f"{k.lower()} = {GROUP_MEANS[k]}" for k in TEAM_GROUPS) + ".")
         stand.append(f"Full lists: <{SHEET_URL}|the inbox sheet>.")
     parts = []
-    if lists:
-        parts.append("\n".join(_cap(["Today's items in full"] + lists)))
+    if items_part or lists:
+        # 21 Nov 2026: a long delete list pushed the second "For info" (which the post points to) past the reply's
+        # line cap. The items' lists give way; the short facts and what broke always fit.
+        room = max(PART_LINES - 1 - len(lists), 6)
+        parts.append("\n".join(["Today's items in full"] + _cap(items_part, room) + lists))
     if other:
         parts.append("\n".join(_cap(other)))
     if stand:

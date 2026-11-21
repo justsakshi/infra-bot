@@ -446,7 +446,7 @@ def test_the_top_post_is_at_most_8_lines():
     head, _ = dp.build(srcs, done, [], NOW, holds=_holds())
     lines = _lines(head)
     assert len(lines) <= 8, lines
-    assert lines[1] == f"<@{dg.OWNER}>, 9 things need you today:"
+    assert lines[1] == f"<@{dg.OWNER}>, 9 things need you today (4 here, 5 in the thread):"
     assert "In the thread: 5 more things for you, 60 things the bot did by itself." in lines[-1]
     assert "1 job failed or could not check: API keys. Being looked at; what broke is in the thread." in lines
 
@@ -601,7 +601,10 @@ def test_every_for_info_line_fits_in_the_thread_2026_11_21():
     other_info = _src("v2-weekly", [{"text": "1 result had not come in.", "kind": "info", "key": "v2-weekly:i"}])
     big = _src("dt-senders", [{"text": "Many inboxes.", "step": "Do it.", "key": "dt-senders:x",
                                "detail": [f"e{i}.example: 1 inbox" for i in range(12)]}])
-    head, parts = dp.build([long_info, other_info, big], [], [], NOW)
+    more = [_src(f"job{k}", [{"text": f"Item {k}.", "step": "Do it.", "key": f"job{k}:x",
+                              "detail": [f"f{k}-{i}.example: 1 inbox" for i in range(20)]}]) for k in range(3)]
+    head, parts = dp.build([long_info, other_info, big] + more, [], [], NOW)
+    assert len(parts[0].split("\n")) <= dp.PART_LINES + 1 and "more lines (the inbox sheet)" in parts[0]
     assert "(1 more in the thread.)" in "\n".join(head)
     assert "For info: 1 result had not come in." in parts[0]
     assert "• and 10 more" in parts[0]
