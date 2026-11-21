@@ -350,7 +350,8 @@ def ask(rows: list[dict], whole: set[str], check: list[dict] = ()):
         return None
     d, c = len(rows), len(check)
     k = d + c
-    head = f"{_n(k)} {'was' if k == 1 else 'were'} removed by {'its' if k == 1 else 'their'} provider"
+    head = (f"{_n(k)} {'was' if k == 1 else 'were'} removed by {'its' if k == 1 else 'their'} provider (cancelled "
+            f"or expired there), so {'it' if k == 1 else 'they'} can't send again")
     it = "it" if k == 1 else "them"
     if not check:
         text = f"{head}; delete {it} from Smartlead by hand ({_clients(rows)})."

@@ -13,6 +13,9 @@ HEAD = "Mailbox,Provider,Landed,Sent at,Send status\n"
 NOW = datetime(2026, 11, 10, 11, 0, tzinfo=v2.IST)
 
 
+NOFIN_A = 'no finished run of a weekly test was found, so those inboxes stay unproven. Do: check it has a weekly test in '
+
+
 def write_csv(folder: Path, name: str, inboxes: dict, sent="2026-11-09T14:31:00.000Z"):
     """inboxes: {email: (google_inbox_of_4, microsoft_inbox_of_4)}"""
     lines = [HEAD]
@@ -105,7 +108,7 @@ def test_one_broken_test_file_is_held_on_its_own(tmp_path):
     d = wk.plan(st)
     assert {e for e, x in d.items() if x["action"]} == {"real@y.com"}
     head, parts = wk.build_report(st, GOT, d, None, acted(), False, set())
-    assert any("Google results in dt-pl-1.csv (2026-11-09) held" in p for p in parts)
+    assert any("Google results of the test \"dt-pl-1\" (Mon 9 Nov) were not used" in p for p in parts)
 
 
 def test_an_unrecognised_v2_csv_is_found_once(tmp_path):
@@ -120,7 +123,7 @@ def test_an_unrecognised_v2_csv_is_found_once(tmp_path):
     again = []
     assert wk.scan(tmp_path, st, NOW, again) == [] and again == []          # reported once, not every hour
     head, parts = wk.build_report(st, {**GOT, "unrecognised": ["v2-new.csv"]}, {}, None, acted(), False, set())
-    assert "unrecognised v2 CSV format: v2-new.csv" in parts[0]
+    assert "The test results file v2-new.csv is in a format the job can't read" in parts[0]
 
 
 def test_results_stored_under_the_old_rules_are_judged_again(tmp_path):
@@ -155,7 +158,7 @@ def test_report_says_why_an_inbox_was_not_judged(tmp_path):
     text = "\n".join(parts)
     assert "x.com · p@x.com · Google 3/4, Microsoft 4/4 → a seed had not answered when the file was downloaded" in text
     assert "y.com · b@y.com · Google 4/4, Microsoft 3/4 → a seed bounced (a seed-side problem), so it was not judged" in text
-    assert "dt.csv: 1 seed result had not come in when it was downloaded" in parts[0]
+    assert '1 result of the test "dt" had not come in when it was read' in parts[0]
     assert all(d["action"] is None for d in wk.plan(st).values())
 
 
@@ -413,7 +416,7 @@ def test_report_says_what_was_done_and_what_needs_a_person(tmp_path):
     head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), a, True, set())
     assert head[0] == "v2 placement results, tests of Mon 9 Nov"
     assert "1 fail" in head[1] and head[-1] == "\n*Needs you: 2*"        # the campaign + ok@x.com untested
-    assert "PL | A (1) is live with only failed inboxes left (bad@x.com)" in parts[0]
+    assert "Campaign PL | A is live with only failed inboxes left (bad@x.com)" in parts[0]
     assert any("• fail · x.com · bad@x.com · Google 0/4, Microsoft 4/4 → last good sender of live PL | A" in p for p in parts)
 
 
@@ -424,7 +427,7 @@ def test_report_never_claims_a_held_inbox_was_tagged(tmp_path):
     head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
     line = next(p for p in parts if "bad@x.com" in p and p.startswith("*Precise"))
     assert "held as a test problem; still in its campaigns" in line and "tagged" not in line
-    assert "Microsoft results for 2026-11-09 held" in parts[0]
+    assert "Microsoft results of the Mon 9 Nov tests were not used" in parts[0]
 
 
 def test_report_splits_watch_groups_by_what_happened(tmp_path):
@@ -483,8 +486,8 @@ def test_an_inbox_smartlead_shows_connected_is_not_called_disconnected(tmp_path)
     head, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
     text = "\n".join(head + parts)
     assert "connected in Smartlead." not in text
-    assert ("1 inbox did not send in the test, and Smartlead can't log in to it (x.com 1). Reconnect it, or delete it "
-            "in Smartlead if it was cancelled.") in text
+    assert ("1 inbox sent nothing in this week's test because Smartlead can't log in to it (x.com 1), so it has no "
+            "result. Do: reconnect it in Smartlead, or delete it there if it was cancelled.") in text
     assert ("1 inbox did not send in the test although Smartlead shows it connected (x.com): the run came back "
             "short (Smartlead's test inboxes run low late in the day). If it misses next week's test too, look at "
             "it.") in text
@@ -504,7 +507,8 @@ def test_an_inbox_of_unknown_connection_keeps_the_old_advice(tmp_path):
     st["results"]["ok@x.com"] = [_not_sent()]
     st["results"]["bad@x.com"] = [_not_sent()]
     head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
-    assert "2 inboxes did not send in the test (x.com 2). Check they are connected in Smartlead." in "\n".join(parts)
+    assert ("2 inboxes sent nothing in this week's test (x.com 2), so they have no result. Do: check they are connected "
+            "in Smartlead.") in "\n".join(parts)
 
 
 def test_a_download_ask_is_dropped_48_hours_after_sending(tmp_path):
@@ -514,13 +518,32 @@ def test_a_download_ask_is_dropped_48_hours_after_sending(tmp_path):
     st["results"]["ok@x.com"] = [{**result(v2.INCOMPLETE, 4, 4), "file": sha[:12],
                                   "sent_last": "2026-11-09T14:31:00+00:00"}]             # 20:01 IST
     head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
-    assert "dt-run-1.csv: 2 seed results had not come in" in "\n".join(parts)
+    assert '2 results of the test "dt" (run 1) had not come in' in "\n".join(parts)
     wk.settle_pending(st, datetime(2026, 11, 11, 20, 0, tzinfo=v2.IST))                  # 47 h 59 min after
     assert st["files"][sha]["pending_seeds"] == 2
     wk.settle_pending(st, datetime(2026, 11, 11, 20, 1, tzinfo=v2.IST))
     assert st["files"][sha]["pending_seeds"] == 0
     head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
-    assert "seed results had not come in" not in "\n".join(parts)
+    assert "had not come in" not in "\n".join(parts)
+
+
+def test_a_partial_api_run_is_a_fact_not_a_download_step_2026_11_21():
+    """21 Nov 2026: "Download it again later today" for a run read from the API did nothing: the run is not fetched
+    again (already_read) and its CSV is a duplicate (csv_twin). It is a for-info line; the next weekly run judges them."""
+    import tempfile
+    from pathlib import Path
+    st = fresh_state(Path(tempfile.mkdtemp()))
+    sha = "d" * 64
+    st["files"][sha] = {"name": "dt-run-1.csv", "night": "2026-11-09", "status": "ingested", "pending_seeds": 1,
+                        "source": "api"}
+    st["results"]["ok@x.com"] = [{**result(v2.INCOMPLETE, 4, 4), "file": sha[:12],
+                                  "sent_last": "2026-11-09T14:31:00+00:00"}]
+    head, parts = wk.build_report(st, GOT, wk.plan(st), fleet(), acted(), True, set())
+    text = "\n".join(parts)
+    assert ('1 result of the test "dt" (run 1) had not come in when it was read, so its inboxes have no result this '
+            'week; the next weekly run judges them.') in text
+    assert "download" not in text.lower()
+    assert not any("had not come in" in x for x in wk._needs(parts))
 
 
 def test_a_short_test_is_reported_in_one_line_without_blaming_the_plan(tmp_path):
@@ -552,7 +575,7 @@ def test_inboxes_whose_dt_csv_is_missing_are_not_called_untested(tmp_path):
     f = fleet()
     f["PRECISE_LEADS"]["dt"] = {9: {"name": "DT PL #2", "status": "ACTIVE", "senders": {10}}}   # bad@x.com, no CSV
     _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
-    assert "No result this week from DT PL #2 (1 inbox): no finished v2 run found" in parts[0]
+    assert "No result this week from DT PL #2 (1 inbox): no finished run of" in parts[0]
     assert not any("in no DT test" in p for p in parts)
 
 
@@ -695,8 +718,8 @@ def test_a_bounced_seed_needs_a_person_and_never_says_nothing_needs_you(tmp_path
     head, parts = wk.build_report(st, got, wk.plan(st), None, acted(), False, set())
     assert head[1] == "12 inboxes · 0 pass · 0 watch · 0 fail · 12 no full result"
     assert head[-1] == "\n*Needs you: 1*" and "Nothing needs you." not in "\n".join(head + parts)
-    assert ("• dt-pl-1.csv: a seed bounced for 12 inboxes, so they were not judged. Check the test's seed list in "
-            "Smart Delivery and re-run it.") in parts[0]
+    assert ("• In the test \"dt-pl-1\", a seed bounced for 12 inboxes, so they were not judged. Do: check the test's "
+            "seed list in Smart Delivery and re-run it.") in parts[0]
 
 
 def test_a_provider_with_no_seed_rows_needs_a_person(tmp_path):
@@ -708,8 +731,8 @@ def test_a_provider_with_no_seed_rows_needs_a_person(tmp_path):
     wk.compute_holds(st, None)
     head, parts = wk.build_report(st, got, wk.plan(st), None, acted(), False, set())
     assert head[1] == "3 inboxes · 1 pass · 0 watch · 0 fail · 2 no full result"
-    assert ("• dt-pl-2.csv: no Microsoft seed results for 2 inboxes, so they were not judged. Check the test's seed "
-            "list in Smart Delivery (it needs 4 Google and 4 Microsoft seeds) and re-run it.") in parts[0]
+    assert ("• In the test \"dt-pl-2\", no Microsoft seed results for 2 inboxes, so they were not judged. Do: check "
+            "the test's seed list in Smart Delivery (it needs 4 Google and 4 Microsoft seeds) and re-run it.") in parts[0]
     assert "a provider has no result, so it was not judged; nothing done" in "\n".join(parts)
 
 
@@ -734,8 +757,9 @@ def test_report_only_lines_say_what_would_happen_to_each_inbox(tmp_path):
     assert ("• Melior is report-only until the job is proven on the other clients, so nothing changed in Smartlead for it. The job would leave 1 "
             "inbox in a live campaign where it is the last good sender and tag 1 inbox that is in no campaign. "
             "List under *Melior* above.") in parts[-1] and "is report-only until" not in parts[0].split("Solo")[0]
-    assert ("• Melior | Solo (5) is live with only failed inboxes left (last@y.com). Not changed, as Melior is "
-            "report-only until the job is proven on the other clients: pause it or add a good sender.") in parts[0]
+    assert ("• Campaign Melior | Solo is live with only failed inboxes left (last@y.com), so all its email risks "
+            "landing in spam; the job did not change it, as Melior is report-only until the job is proven on the other "
+            "clients. Do: pause it, or add an inbox that passed the weekly test.") in parts[0]
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert ("• fail · y.com · last@y.com · Google 0/4, Microsoft 4/4 → last good sender of live Melior | Solo, so it "
             "would stay there (Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in melior
@@ -1182,9 +1206,9 @@ def test_the_report_gives_the_email_its_own_verdict_per_sender_type(tmp_path):
     assert head == ["v2 copy check, test of Mon 9 Nov",
                     "Copy check · Precise Leads · Google inboxes fail · Outlook inboxes pass",
                     "\n*Needs you: 1*"]
-    assert parts[0] == ("*Needs you*\n\n• Precise Leads: the copy check failed from Google inboxes (3 of 20 emails in "
-                        "the Google inbox, from inboxes that pass the plain note). The email is the problem: rewrite it "
-                        "before it sends from Google inboxes.")
+    assert parts[0] == ("*Needs you*\n\n• The Precise Leads email failed the copy check from Google inboxes (3 of 20 "
+                        "emails in the Google inbox, sent from inboxes that pass their own test), so the email itself "
+                        "lands in spam. Do: rewrite it before it sends from Google inboxes.")
     assert parts[1].split("\n") == [
         "*Precise Leads*", "",
         "• copy check · Google inboxes · 3 of 20 emails in the Google inbox, from 5 inboxes that pass the plain note → "
@@ -1261,7 +1285,7 @@ def test_a_copy_check_campaign_has_a_result_once_its_clients_copy_check_arrived(
                                 8: {"name": "DT PL copy check", "status": "PAUSED", "senders": {11}}}
     report = lambda: "\n".join(wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())[1])   # noqa: E731
     # ok@x.com's inbox-test result is not the copy check's result
-    assert "No result this week from DT PL copy check (1 inbox): no finished v2 run found. Check it has a weekly test in Smart Delivery." in report()
+    assert ("No result this week from DT PL copy check (1 inbox): " + NOFIN_A + "Smart Delivery.") in report()
     st["copy_checks"]["Precise Leads|2026-11-01"] = {"client": "Precise Leads", "night": "2026-11-01"}
     assert "No result this week from DT PL copy check" in report()            # last week's does not count
     st["copy_checks"]["Melior|2026-11-08"] = {"client": "Melior", "night": "2026-11-08"}
@@ -1355,9 +1379,9 @@ def test_not_sent_inboxes_on_several_domains_make_one_line_each_kind(tmp_path):
         f["PRECISE_LEADS"]["inboxes"][e]["connected"] = False
     _, parts = wk.build_report(st, GOT, wk.plan(st), f, acted(), True, set())
     needs = parts[0]
-    assert ("• 3 inboxes did not send in the test, and Smartlead can't log in to them (x.com 2, z.com 1). Reconnect "
-            "them, or delete them in Smartlead if they were cancelled.") in needs
-    assert needs.count("did not send") == 1
+    assert ("• 3 inboxes sent nothing in this week's test because Smartlead can't log in to them (x.com 2, z.com 1), so "
+            "they have no result. Do: reconnect them in Smartlead, or delete them there if they were cancelled.") in needs
+    assert needs.count("sent nothing") == 1
 
 
 def _dt_no_result_report(tmp_path, files):
@@ -1384,8 +1408,7 @@ def test_a_re_run_still_coming_in_beats_an_earlier_run_that_sent_nothing(tmp_pat
 def test_one_sender_in_an_unrelated_pending_test_does_not_hide_a_missing_weekly_test(tmp_path):
     parts = _dt_no_result_report(tmp_path, {
         "a": {"name": "one-off-run-1.csv", "status": "pending", "night": "2026-11-09", "mailboxes": ["bad@x.com"]}})
-    assert ("No result this week from DT PL #2 (2 inboxes): no finished v2 run found. Check it has a weekly test in "
-            "Smart Delivery.") in parts[0]
+    assert ("No result this week from DT PL #2 (2 inboxes): " + NOFIN_A + "Smart Delivery.") in parts[0]
 
 
 def test_a_line_names_an_older_fail_only_when_every_inbox_on_it_shares_it(tmp_path):
@@ -1421,8 +1444,10 @@ def test_a_weekly_report_becomes_digest_asks_a_done_line_and_its_detail():
     assert [a.text for a in asks] == ["1 inbox did not send in the test. Reconnect it.",
                                       "PL | A (5) is live with only failed inboxes left (a@x.com). Pause it or add a good sender."]
     assert [a.urgent for a in asks] == [False, True]
-    assert done[0].text == ("v2 weekly test (tests of Mon 16 Nov): took 2 inboxes out of 1 live campaign · tagged 0 in "
-                            "no campaign · returned 0. Which inboxes: thread.")
+    assert done[0].text == "Weekly test results (tests of Mon 16 Nov): took 2 inboxes out of 1 live campaign."
+    assert v2w_done("Took 0 inboxes out of 0 live campaigns · tagged 15 in no campaign · returned 1") == (
+        "tagged 15 failed inboxes that are in no campaign DO NOT USE; returned 1 inbox that passed again to their "
+        "campaigns")
     assert detail[0].startswith("v2 placement results") and detail[2].startswith("*Precise Leads*")
 
 
@@ -1456,3 +1481,7 @@ def test_post_goes_to_the_digest_and_falls_back_to_slack_when_mongo_fails(monkey
     monkeypatch.setenv("DIGEST_MODE", "off")
     got.clear()
     assert wk.post(["v2 copy check, test of Sat 14 Nov"], []) and len(slack) == 2
+
+
+def v2w_done(x):
+    return wk._done_words(x)

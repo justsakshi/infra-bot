@@ -179,6 +179,7 @@ STEPS = {
                                "tracker sync, or add the rows by hand.",
 }
 PERSON_ACTS = {"held_back_not_sending"}       # a finding a person fixes in Smartlead, not a broken check
+PERSON_WHY = {"held_back_not_sending": "they can pull those campaigns into spam"}
 NOT_READ_STEP = ("The check runs again tomorrow; if it fails twice, look at the gate-selftest log on Render (search "
                  "[gate-selftest]).")
 
@@ -192,7 +193,10 @@ def digest_asks(results: list[dict], errors: list[str] | None = None) -> list:
             continue
         blocked = str(r.get("says") or "").startswith("not checked")
         person = r["name"] in PERSON_ACTS and not blocked     # the check worked; a person must act on what it found
-        asks.append(dg.Ask(f"Gate self-test: {r['says']}.", NOT_READ_STEP if blocked else STEPS.get(r["name"], ""),
+        # A person's finding reads without the check's name, with why it matters (21 Nov 2026).
+        text = (f"{r['says'][:1].upper()}{r['says'][1:]}, so {PERSON_WHY[r['name']]}." if person
+                else f"Gate self-test: {r['says']}.")
+        asks.append(dg.Ask(text, NOT_READ_STEP if blocked else STEPS.get(r["name"], ""),
                            key=f"gate-selftest:{r['name']}", kind="ask" if person else "broken",
                            detail=[] if blocked else dg.by_domain(r.get("bad") or [])))
     if errors and not asks:

@@ -44,6 +44,7 @@ MAX_SHOWN = 4                        # things in the post itself; the rest are i
 MAX_PARTS = 3                        # thread replies, at most
 PART_LINES = 38                      # lines per reply (notify._THREAD_CHUNK is 40: one part is one reply)
 LIST_LINES = 12                      # lines of one item's list in the thread
+INFO_LINES = 3                       # lines of a "For info" item's list in the thread
 
 PC_STALE = timedelta(hours=3)
 REPO = os.getenv("RENDER_GIT_REPO_SLUG") or "justsakshi/infra-bot"
@@ -62,6 +63,14 @@ LABELS = {"v2-weekly": "v2 weekly test (PC job)", "inbox-status": "Inboxes", "bi
           "smartlead-sync": "Daily sheet sync", "warmup-repair": "Warm-up repair",
           "inbox-evidence": "Inbox evidence", "volume-review": "Volume review",
           "provider-removed": "Inboxes removed by their provider"}
+
+
+# What each All Inboxes group means, in a few words (21 Nov 2026, Manveen: "i think this still is not readable";
+# the numbers reply gave the words with no meaning). usable.team_group decides the group; this only explains it.
+GROUP_MEANS = {"Safe to send": "cleared to send, warm-up fine",
+               "Not proven yet": "held back until a weekly test passes",
+               "Recovering": "warm-up under 90%, being repaired",
+               "Do not use": "tagged, failed a test or can't connect"}
 
 
 def _day(dt: datetime) -> str:
@@ -100,15 +109,28 @@ def _head(line: str) -> str:
 
 
 def _where(a: dict) -> str:
-    """Where an item is, in a few words: its one list line whole, or the first three things it lists and how many
-    more (the full list is in the thread). An item that says where in its own text carries "where" (t353)."""
+    """What an item is about, in a few words: the domains (or, without any, the heads of its list lines) of its list,
+    the first three and how many more. Never a whole list line (21 Nov 2026: "Drop: x.com (3 inboxes: tagged ...
+    (t235))" glued onto an item made it unreadable); the full list is in the thread. An item that says where in its
+    own text carries "where" (t353)."""
     if a.get("where") is not None:
         return dg.plain(a["where"])
     lines = [dg.plain(x.lstrip("•-– ").strip()) for x in dg.bullets(a.get("detail"))]
-    if len(lines) <= 1:
-        return lines[0] if lines else ""
-    heads = list(dict.fromkeys(_head(x) for x in lines))
+    if not lines:
+        return ""
+    heads = []
+    for x in lines:
+        inboxes, domains = dg.items_of({"text": x})
+        found = sorted(domains | {i.rsplit("@", 1)[1] for i in inboxes})
+        heads += found or [_head(x)]
+    heads = list(dict.fromkeys(heads))
     return ", ".join(heads[:3]) + (f" and {len(heads) - 3} more" if len(heads) > 3 else "")
+
+
+def _names_where(text: str, where: str) -> bool:
+    """True when the item's own text already names what its list is about (its first domain or name)."""
+    first = where.split(",")[0].split(" and ")[0].strip().lower()
+    return bool(first) and first in text.lower()
 
 
 def _tail(a: dict, now: datetime) -> str:
@@ -126,30 +148,29 @@ def _label(a: dict) -> str:
 
 
 def _what(a: dict) -> str:
-    """What an item is about and where, in one sentence."""
+    """What an item is about, in its own words, plus "Which: ..." when its text names none of what its list holds."""
     text = dg.plain(a.get("text")).strip()
-    where = _where(a)
-    if where:
-        text = text.rstrip(".") + f": {where}."
-    elif text and text[-1] not in ".!?)":
+    if text and text[-1] not in ".!?)":
         text += "."
+    where = _where(a)
+    if where and not _names_where(text, where):
+        text += f" Which: {where}."
     return text
 
 
 def _info_line(infos: list[dict]) -> str:
     """The one line for facts with no step (kind "info"): the first in full, how many more are in the thread."""
     k = len(infos) - 1
-    return f"For info, nothing to do: {_what(infos[0])}" + (f" ({k} more in the thread.)" if k else "")
+    text = dg.plain(infos[0].get("text")).strip()
+    text = text if not text or text[-1] in ".!?)" else text + "."
+    return f"For info, nothing to do: {text}" + (f" ({k} more in the thread.)" if k else "")
 
 
 def _item_line(i: int, a: dict, now: datetime) -> str:
     """One thing to do, in one paragraph: what, where, the one step. Items about the same inboxes say so."""
     text = _what(a)
-    step = f" Do: {dg.plain(a['step']).strip()}" if a.get("step") else ""
-    also = ""
-    if a.get("also"):
-        jobs = ", ".join(sorted({_label(x) for x in a["also"]}))
-        also = f" The same inboxes are also flagged by {jobs} (thread)."
+    step = f" Do: {dg.cap(dg.plain(a['step']).strip())}" if a.get("step") else ""
+    also = " Other checks flag the same inboxes too (thread)." if a.get("also") else ""
     return f"{i}. {text}{step}{also}{_tail(a, now)}"
 
 
@@ -314,16 +335,17 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
         rows = dg.bullets(a.get("detail"))
         if i > MAX_SHOWN:
             lists += ["", _item_line(i, a, now)] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
-        elif len(rows) > 1:
+        elif rows:
             lists += ["", f"{i}. {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, a.get("lines") or LIST_LINES)]
         for x in a.get("also") or []:
             lists += ["", f"{i}. also, {_label(x)}: {_unlabel(x)}"
-                      + (f" Do: {dg.plain(x['step'])}" if x.get("step") else "")]
+                      + (f" Do: {dg.cap(dg.plain(x['step']))}" if x.get("step") else "")]
             lists += [dg.plain(y) for y in dg.detail_lines(x, 3)]
     for i, a in enumerate(infos):
         rows = dg.bullets(a.get("detail"))
-        if i or len(rows) > 1:
-            lists += ["", f"For info: {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
+        if i or rows:
+            # a fact needs no full list: 3 lines, so every "For info" fits in the reply (21 Nov 2026)
+            lists += ["", f"For info: {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, INFO_LINES)]
     if broken:
         lists += ["", "What broke"]
         for b in broken:
@@ -343,6 +365,7 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
         stand = ["Where the inboxes stand (All Inboxes tab)"] + [
             f"• {c}: " + ", ".join(f"{int(g[k])} {k.lower()}" for k in TEAM_GROUPS if int(g.get(k) or 0))
             for c, g in sorted(numbers.items(), key=lambda x: -sum(int(v or 0) for v in x[1].values()))]
+        stand.append("What the words mean: " + "; ".join(f"{k.lower()} = {GROUP_MEANS[k]}" for k in TEAM_GROUPS) + ".")
         stand.append(f"Full lists: <{SHEET_URL}|the inbox sheet>.")
     parts = []
     if lists:

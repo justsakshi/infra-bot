@@ -182,8 +182,9 @@ def test_three_weeks_without_improvement_is_the_one_ask():
             doc("c@example.com")]
     asks, _, detail = wr.digest_items(docs, MON + timedelta(days=2))
     (a,) = asks
-    assert a.text == ("2 inboxes did not improve in 3 weeks of warm-up repair: cancel candidates, your call.")
-    assert "Say which of those listed to cancel" in a.step and "thread" not in a.step
+    assert a.text == ("2 inboxes on example.com still have a low warm-up score after 3 weeks of repair, so they are "
+                      "unlikely to recover and cost money each month.")
+    assert "which of them to cancel" in a.step and "thread" not in a.step
     assert [x.split(" · ")[0] for x in a.detail] == ["• a@example.com", "• b@example.com"]   # 17 Nov: named in the ask
     assert a.key == "warmup-repair:cancel-candidates" and a.kind == "ask"
     assert not a.urgent and "a@example.com" in "\n".join(detail)
@@ -362,7 +363,8 @@ def test_warm_up_repaired_but_still_tagged_by_a_person_is_ready_and_asks_for_the
     assert docs[0]["status"] == "ready" and docs[0]["reasons_at_start"] == ["low_rep", "do_not_use"]
     asks, _, detail = wr.digest_items(docs, MON + timedelta(days=1))
     (a,) = asks
-    assert a.key == "warmup-repair:ready-to-untag" and "untag is your call" in a.text and "never removes" in a.step
+    assert a.key == "warmup-repair:ready-to-untag" and "DO NOT USE tag still keeps it out" in a.text
+    assert "remove the DO NOT USE tag" in a.step and "never removes" in a.step
     assert "a@example.com" in a.detail[0] and detail
     docs, _ = wr.run(docs, [reading("a@example.com", rep=92)], MON, read=set(), roster=None, v2={}, listed=set())
     assert docs[0]["status"] == "recovered"
@@ -387,7 +389,9 @@ def test_under_ninety_and_not_on_the_repair_settings_is_an_ask():
     # plain words (20 Nov 2026): no "outlook_dense", no "80% → 80%"
     assert a.detail == ["• hi@example.com: Outlook, warm-up score 80% (good from 90%), now 16 warm-up emails a day "
                         "at 65% reply"]
-    assert a.text == "1 inbox with a warm-up score under 90% is not on the repair settings (at most 10 warm-up emails a day, 30-40% reply)."
+    assert a.text == ("1 inbox on example.com with a warm-up score under 90% is still on normal warm-up settings, which "
+                      "repair it more slowly.")
+    assert "10 warm-up emails a day, never higher than now, 30-40% reply" in a.step
     assert "never higher than now" in a.step
 
 
@@ -406,8 +410,9 @@ def test_a_blocked_login_is_its_own_step_and_the_repair_settings_ask_lists_only_
     asks = {a.key: a for a in wr.digest_items(docs, MON + timedelta(days=1))[0]}
     assert set(asks) == {"warmup-repair:login-blocked", "warmup-repair:not-on-repair-settings"}
     lock = asks["warmup-repair:login-blocked"]
-    assert lock.text.startswith("2 inboxes can't warm up: Smartlead blocked their warm-up because it can't log in")
-    assert lock.step.startswith("Fix the login first:")
+    assert lock.text == ("Smartlead can't log in to 2 inboxes on locked.example, so their warm-up is stopped and they "
+                         "can't recover.")
+    assert lock.step.startswith("in Smartlead, Email Accounts, reconnect each one listed")
     assert lock.detail == ["• locked.example (PL): 2 inboxes, custom mail server, warm-up score 88% "
                            "(good from 90%): a@, b@"]
     fix = asks["warmup-repair:not-on-repair-settings"]

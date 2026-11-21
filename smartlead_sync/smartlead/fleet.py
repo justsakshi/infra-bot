@@ -475,16 +475,34 @@ def backlog_post(cases: list[dict], today: date) -> tuple[list[str], list[str]]:
 # only new ones), so a fixed problem drops out of the digest when its case closes. Only the kinds the daily post
 # named (DAILY_KINDS); baseline cases were never posted and are left out here too. Never urgent: a live campaign
 # that lost half its inboxes is already posted at once from the daily inbox list.
-DIGEST_WORDS = {      # kind: (one, many) the rest of the sentence after the count
+DIGEST_WORDS = {      # kind: (one, many) the rest of the sentence after the count, with why it matters (21 Nov 2026)
     "listed_live": ("is on Spamhaus DBL or URIBL and still in live campaigns",
                     "are on Spamhaus DBL or URIBL and still in live campaigns"),
-    "warmup_off": ("has warm-up switched off", "have warm-up switched off"),
-    "bounce_high": ("bounces 4% or more", "bounce 4% or more"),
-    "kill": ("is on the kill list", "are on the kill list"),
-    "smtp_ip": ("has SMTP reputation under 50%", "have SMTP reputation under 50%"),
-    "early_campaign": ("is in a campaign before its ready date", "are in a campaign before their ready date"),
-    "over_limit": ("sends above the highest daily limit for its type", "send above the highest daily limit for their type"),
-    "hand_limit": ("had its daily limit changed by hand", "had their daily limit changed by hand"),
+    "warmup_off": ("has warm-up switched off, so its sending reputation will slip",
+                   "have warm-up switched off, so their sending reputation will slip"),
+    "bounce_high": ("bounces 4% or more, which hurts every inbox on it",
+                    "bounce 4% or more, which hurts every inbox on them"),
+    "kill": ("is on the kill list: it kept failing placement tests, so its email is likely to land in spam",
+             "are on the kill list: they kept failing placement tests, so their email is likely to land in spam"),
+    "smtp_ip": ("has an SMTP reputation under 50%, so its email is likely to land in spam",
+                "have an SMTP reputation under 50%, so their email is likely to land in spam"),
+    "early_campaign": ("is in a campaign before its ready date, while it is still warming up",
+                       "are in a campaign before their ready date, while they are still warming up"),
+    "over_limit": ("sends above the highest daily limit for its type, which risks spam",
+                   "send above the highest daily limit for their type, which risks spam"),
+    "hand_limit": ("had its daily limit changed by hand, not by the bot",
+                   "had their daily limit changed by hand, not by the bot"),
+}
+# The one step per kind for the digest, plain (the case actions are short notes: "Take it out of campaigns, do not
+# renew" read as "Take it out of campaigns, do not renew for each one listed").
+DIGEST_STEPS = {
+    "warmup_off": "In Smartlead, Email Accounts, turn warm-up back on for each inbox listed.",
+    "bounce_high": "Lower each listed domain's daily limit in Smartlead and check the lead list its campaigns use.",
+    "kill": "Take each inbox listed out of its campaigns (Smartlead, the campaign, Email Accounts tab) and don't renew "
+            "it at its next bill.",
+    "smtp_ip": "Ask ScaledMail to move each domain listed to a new IP.",
+    "early_campaign": "Take each inbox listed out of its campaign until its ready date.",
+    "hand_limit": "Confirm each change listed was meant; if not, set the limit back in Smartlead.",
 }
 
 
@@ -511,11 +529,12 @@ def digest_items(cases: list[dict], today: date, errors: list[str] | tuple = ())
         one, many = DIGEST_WORDS.get(kind, (f"is {KINDS[kind][0]}", f"are {KINDS[kind][0]}"))
         actions = [a for a, _ in per_kind[kind]]
         # The ask names each inbox or domain (17 Nov 2026); with more than one action, each line says its own.
-        step = actions[0] if len(actions) == 1 else KINDS[kind][1] + " (each line says its own step)"
+        step = DIGEST_STEPS.get(kind) or (f"{actions[0]} for each one listed." if len(actions) == 1 else
+                                          f"{KINDS[kind][1]} (each line says its own step).")
         lines = [c["line"] + ("" if len(actions) == 1 else f": {a}")
                  + (f" (open since {_day(c['opened_on'])})" if c.get("opened_on") else "")
                  for a, group in per_kind[kind] for c in group]
-        asks.append(dg.Ask(f"{what} {one if n == 1 else many}.", f"{step} for each one listed.",
+        asks.append(dg.Ask(f"{what} {one if n == 1 else many}.", step,
                            key=f"fleet-watch:{kind}", detail=lines))
     if errors:
         asks.append(dg.Ask(f"Fleet watch could not read {'; '.join(errors)}, so some problems may be missing today.",
