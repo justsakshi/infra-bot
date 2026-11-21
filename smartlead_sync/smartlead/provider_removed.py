@@ -350,7 +350,8 @@ def ask(rows: list[dict], whole: set[str], check: list[dict] = ()):
         return None
     d, c = len(rows), len(check)
     k = d + c
-    head = f"{_n(k)} {'was' if k == 1 else 'were'} removed by {'its' if k == 1 else 'their'} provider"
+    head = (f"{_n(k)} {'was' if k == 1 else 'were'} removed by {'its' if k == 1 else 'their'} provider (cancelled "
+            f"or expired there), so {'it' if k == 1 else 'they'} can't send again")
     it = "it" if k == 1 else "them"
     if not check:
         text = f"{head}; delete {it} from Smartlead by hand ({_clients(rows)})."
@@ -362,8 +363,8 @@ def ask(rows: list[dict], whole: set[str], check: list[dict] = ()):
     step = ("Delete the \"Delete now\" inboxes by hand in Smartlead, Email Accounts (the client's account): search "
             "each domain listed; a domain with a count goes whole, one with names only those. ") if rows else ""
     if check:
-        step += ("A \"Check first\" inbox has its reason beside it: settle that campaign or reply before deleting "
-                 "it. ")
+        step += ("A \"Check first\" inbox has its reason beside it: before deleting it, take it out of that campaign "
+                 "(or end the campaign), or make sure that lead's reply was answered. ")
     step += "The bot never deletes; an inbox leaves this list once it is gone."
     detail = ask_lines(rows, whole, "Delete now: " if check else "") + check_lines(check, "Check first: ")
     return dg.Ask(text, step, key=KEY, detail=detail)

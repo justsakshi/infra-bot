@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -531,50 +532,100 @@ def main() -> int:
 
 
 def _bill_step(r: dict, drop: int, check: int, today: date | None = None) -> str:
-    """Where to act on one bill, before its date (or now, when the date has passed and it is not renewed)."""
+    """The one step for a bill, plain (21 Nov 2026, Manveen: "i think this still is not readable"): when, where, what.
+    A bill whose date passed without a renewal is acted on today."""
     day = rr._day(r["bills_on"])
     zap = r["provider"] == "Zapmail"
-    where = "in Zapmail (/domains, Before the bill)" if zap else "on ScaledMail's billing page (single domains)"
+    where = "in Zapmail (Domains, Before the bill)" if zap else "on ScaledMail's billing page (single domains)"
+    today = today or datetime.now(timezone(timedelta(hours=5, minutes=30))).date()   # IST
+    when = (f"today (the {day} bill date has passed and it is not renewed yet)" if str(r["bills_on"]) < today.isoformat()
+            else f"before {day}")
+    n = len(r.get("rows") or [])
+    if drop and not check:
+        what = f"retire {'it' if drop == 1 else 'them'}" if drop == n else f"retire the {drop} listed as drop"
+        return f"{what} {where} {when}, so the bill does not renew {'it' if drop == 1 else 'them'}."
+    if check and not drop:
+        return (f"decide keep or cancel for {'it' if check == 1 else 'each one'} (the list says why), then cancel the "
+                f"ones you drop {where} {when}.")
+    return f"{where}, {when}: retire the {drop} listed as drop and decide keep or cancel for the {check} listed as check."
+
+
+_DATE = re.compile(r"\b(\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\b")
+
+
+def plain_why(why: str, short: bool = False) -> str:
+    """A bill row's reason in a reader's words: a person's DO NOT USE tag becomes "we stopped using them on 16 Nov"
+    (the tag's date, when it has one), without the tag's tracker key. Pure."""
+    why = dg.plain(str(why or "").replace(rr.V2_DROP, "failed the weekly tests of ")).strip()
+    if why.startswith('tagged "'):
+        m = _DATE.search(why)
+        return "we stopped using them" + (f" on {m.group(1)}" if m else "") + ("" if short else
+                                                                             " (tagged DO NOT USE in Smartlead)")
+    return why
+
+
+def _domains(rows: list[dict]) -> list[str]:
+    return sorted({x["email"].split("@")[1] for x in rows})
+
+
+def bill_text(r: dict, drop: int, check: int, untested: int) -> str:
+    """'Zapmail will charge BettrData $14.25 on 27 Nov for 3 Google inboxes on a.com that we stopped using on
+    16 Nov.' One sentence for what and why; no zero counts, no codes. Pure."""
+    rows = r.get("rows") or []
+    price = rr.price_of(r)
+    who = f"{', '.join(r['clients'])} " if r.get("clients") else ""
+    money = rr._money(price) if price is not None else "an unknown amount"
+    doms = _domains(rows)
+    on = (f" on {', '.join(doms)}" if len(doms) <= 2 else f" on {doms[0]}, {doms[1]} and {len(doms) - 2} more domain{'s' if len(doms) > 3 else ''}") \
+        if doms else ""
+    head = f"{r['provider']} will charge {who}{money} on {rr._day(r['bills_on'])} for {r['label']}{on}"
+    drops = [x for x in rows if x["verdict"] == "RETIRE"]
+    whys = sorted({plain_why(x["why"], short=True) for x in drops})
+    if drop and not check and drops and all(str(x["why"]).startswith('tagged "') for x in drops):
+        dates = {m.group(1) if (m := _DATE.search(str(x["why"]))) else "" for x in drops}
+        when = f" on {dates.pop()}" if len(dates) == 1 and "" not in dates else ""
+        return f"{head} that we stopped using{when}."
     bits = []
     if drop:
-        bits.append(f"retire the {drop} {rr._ib(drop)} listed as drop {where}")
+        bits.append(f"{'all' if drop == len(rows) else drop} should be dropped" + (f" ({whys[0]})" if len(whys) == 1 else ""))
     if check:
-        bits.append(f"decide keep or cancel for the {check} {rr._ib(check)} listed as check or untested"
-                    + ("" if drop else f", and cancel {where}"))
-    today = today or datetime.now(timezone(timedelta(hours=5, minutes=30))).date()   # IST
-    when = (f"The {day} bill date has passed and it is not renewed yet, so today" if str(r["bills_on"]) < today.isoformat()
-            else f"Before {day}")
-    return f"{when}: " + "; ".join(bits) + "."
+        bits.append(f"{check} need{'s' if check == 1 else ''} your keep-or-cancel call"
+                    + (f" ({untested} with no recent weekly test)" if untested else ""))
+    return f"{head}: " + " and ".join(bits) + "."
 
 
 def bill_lines(r: dict) -> list[str]:
     """The inboxes behind one bill's ask, by what to do: drop (with why and any live campaign), check (with why),
-    untested, paid for but not in Smartlead. Pure."""
+    untested, paid for but not in Smartlead. Each line starts with the domain or inbox. Pure."""
     rows = r.get("rows") or []
     k_rows = [x for x in rows if x["verdict"] == "RETIRE"]
     u_rows = [x for x in rows if x.get("kind") == "unused"]
     c_rows = [x for x in rows if x["verdict"] == "CHECK" and x.get("kind") != "unused"]
     t_rows = [x for x in rows if x["verdict"] == rr.UNTESTED]
     out = []
-    if k_rows:
-        out.append(f"Drop: {rr._doms_why(k_rows)}")
-        out += [f"Drop, still sending: {x['email']} is in {', '.join(x['campaigns'][:2])}" for x in k_rows
-                if x.get("campaigns")]
+    by: dict[str, list[dict]] = {}
+    for x in k_rows:
+        by.setdefault(x["email"].split("@")[1], []).append(x)
+    for dom, xs in sorted(by.items()):
+        out.append(f"{dom}: drop, {len(xs)} {rr._ib(len(xs))}, {'; '.join(sorted({plain_why(x['why']) for x in xs}))}")
+    out += [f"{x['email']}: drop, but it still sends in {', '.join(x['campaigns'][:2])}" for x in k_rows
+            if x.get("campaigns")]
     by_why: dict[str, list[dict]] = {}
     for x in c_rows:
-        by_why.setdefault(x["why"], []).append(x)
+        by_why.setdefault(plain_why(x["why"]), []).append(x)
     for why, xs in by_why.items():
-        out.append(f"Check: {xs[0]['email'] if len(xs) == 1 else rr._doms(xs)}: {why}")
+        out.append(f"{xs[0]['email'] if len(xs) == 1 else rr._doms(xs)}: check, {why}")
     if u_rows:
-        out.append(f"Check, paid for but not in Smartlead: {rr._doms(u_rows)}")
+        out.append(f"{rr._doms(u_rows)}: check, paid for but not in Smartlead")
     if t_rows:
-        out.append(f"Untested (no v2 result in the last {rr.V2_FRESH_DAYS} days): {rr._doms(t_rows)}")
+        out.append(f"{rr._doms(t_rows)}: check, no weekly test result in the last {rr.V2_FRESH_DAYS} days")
     return out
 
 
 def digest_asks(res: dict, today: date | None = None) -> list:
     """One ask per bill with inboxes to drop or check (keep-only bills say nothing), and a "broken" ask when a
-    source could not be read. Each bill's ask names the inboxes and domains and why (17 Nov 2026). Pure."""
+    source could not be read. Each bill's ask says who pays what, when, for which domains and why (21 Nov 2026), its
+    list names the inboxes. Pure."""
     asks = []
     for r in res.get("reviews") or []:
         c = r.get("counts") or {}
@@ -582,15 +633,8 @@ def digest_asks(res: dict, today: date | None = None) -> list:
         check = c.get("CHECK", 0) + untested
         if not (drop or check):
             continue
-        price = rr.price_of(r)
-        who = f" ({', '.join(r['clients'])})" if r.get("clients") else ""
         bill = r.get("subscription_id") or r.get("order_id") or r.get("label")
-        n = len(r.get("rows") or [])
-        text = (f"{r['provider']} bill on {rr._day(r['bills_on'])}, {r['label']}, "
-                f"{rr._money(price) if price is not None else 'price not known'}{who}: of {n} {rr._ib(n)}, "
-                f"{drop} to drop, {check} to check" + (f" ({untested} untested)" if untested else "")
-                + f", {c.get('KEEP', 0)} to keep.")
-        asks.append(dg.Ask(text, _bill_step(r, drop, check, today), detail=bill_lines(r),
+        asks.append(dg.Ask(bill_text(r, drop, check, untested), _bill_step(r, drop, check, today), detail=bill_lines(r),
                            key=f"{SOURCE}:{r['provider']}:{bill}:{r['bills_on']}"))
     if res.get("errors"):
         warn = rr.read_warning(res["errors"], res.get("days", 3), bool(res.get("reviews")))

@@ -406,30 +406,52 @@ def test_each_bill_with_inboxes_to_drop_or_check_is_one_ask_and_keep_only_bills_
     assert [a.key for a in asks] == ["renewal-review:Zapmail:sub_1:2026-10-15",
                                      "renewal-review:ScaledMail:rec3:2026-10-17"]
     z, s = asks
-    assert z.text == ("Zapmail bill on 15 Oct, 5 Outlook inboxes, $15.00 (Bettrdata): of 5 inboxes, 3 to drop, "
-                      "1 to check, 1 to keep.")
-    assert z.step == ("Before 15 Oct: retire the 3 inboxes listed as drop in Zapmail (/domains, Before "
-                      "the bill); decide keep or cancel for the 1 inbox listed as check or untested.")
-    assert s.text.endswith("of 6 inboxes, 2 to drop, 1 to check (1 untested), 3 to keep.")
+    # 21 Nov 2026 (Manveen: "i think this still is not readable"): who pays what, when, for which domains and why,
+    # then one step; no zero counts, no codes
+    assert z.text == ("Zapmail will charge Bettrdata $15.00 on 15 Oct for 5 Outlook inboxes on mixed.com, twofails.com: "
+                      "3 should be dropped (failed the weekly tests of 5 Oct and 12 Oct) and 1 needs your "
+                      "keep-or-cancel call.")
+    assert z.step == ("in Zapmail (Domains, Before the bill), before 15 Oct: retire the 3 listed as drop and decide keep "
+                      "or cancel for the 1 listed as check.")
+    assert s.text.endswith("on listed.com, plbad.com and 1 more domain: 2 should be dropped (we stopped using them) and "
+                           "1 needs your keep-or-cancel call (1 with no recent weekly test).")
+    assert " 0 " not in z.text + s.text and "to keep" not in z.text + s.text
     assert "ScaledMail's billing page" in s.step and not any(a.urgent for a in asks)
     assert not any(EMAIL.search(a.text + a.step) for a in asks)
     # 17 Nov 2026: the ask names the domains and inboxes, and why (a digest line or urgent post has no thread)
-    assert z.detail and all(x.startswith(("Drop", "Check", "Untested")) for x in z.detail)
-    assert any(x.startswith("Drop: ") for x in z.detail) and any(x.startswith("Check") for x in z.detail)
-    assert any(x.startswith("Untested") for x in s.detail)
+    assert z.detail and all(": drop" in x or ": check" in x for x in z.detail)
+    assert any(": drop, " in x for x in z.detail) and any(": check, " in x for x in z.detail)
+    assert any("no weekly test result" in x for x in s.detail)
     assert not any("thread" in a.step for a in asks)
     only_check = cli.digest_asks({"reviews": [dict(_reviews()[0], counts={"KEEP": 3, "CHECK": 2, "RETIRE": 0,
                                                                          "UNTESTED": 0})], "errors": []},
                                  today=date(2026, 10, 13))
-    assert only_check[0].step == ("Before 15 Oct: decide keep or cancel for the 2 inboxes listed as check or untested"
-                                  ", and cancel in Zapmail (/domains, Before the bill).")
+    assert only_check[0].step == ("decide keep or cancel for each one (the list says why), then cancel the ones you "
+                                  "drop in Zapmail (Domains, Before the bill) before 15 Oct.")
+
+
+def test_a_bill_of_inboxes_we_stopped_using_says_so_in_one_sentence():
+    """21 Nov 2026: 'of 3 inboxes, 3 to drop, 0 to check, 0 to keep: Drop: x.com (3 inboxes: tagged "DO NOT USE -
+    pulled from roundtable by Manveen 16 Nov (t235)")' was the whole item."""
+    import renewal_review as cli
+    why = 'tagged "DO NOT USE - pulled from a campaign by a teammate 16 Nov (t235)" in Smartlead'
+    r = {"provider": "Zapmail", "label": "3 Google inboxes", "bills_on": "2026-11-27", "price": 14.25,
+         "clients": ["Client B"], "subscription_id": "sub_x", "counts": {"RETIRE": 3, "KEEP": 0, "CHECK": 0},
+         "rows": [{"email": f"{u}@stopped.example", "verdict": "RETIRE", "why": why} for u in ("a", "b", "c")]}
+    (a,) = cli.digest_asks({"reviews": [r], "errors": []}, today=date(2026, 11, 21))
+    assert a.text == ("Zapmail will charge Client B $14.25 on 27 Nov for 3 Google inboxes on stopped.example that we "
+                      "stopped using on 16 Nov.")
+    assert a.step == "retire them in Zapmail (Domains, Before the bill) before 27 Nov, so the bill does not renew them."
+    assert a.detail == ["stopped.example: drop, 3 inboxes, we stopped using them on 16 Nov (tagged DO NOT USE in "
+                        "Smartlead)"]
+    assert "t235" not in a.text + a.step + " ".join(a.detail)
 
 
 def test_a_bill_whose_date_passed_says_so_instead_of_before():
     """14-16 Nov 2026: the 14 Nov Zapmail bill was asked about with 'Before 14 Nov' on 16 Nov."""
     import renewal_review as cli
     (z, _) = cli.digest_asks({"reviews": _reviews(), "errors": [], "days": 7}, today=date(2026, 10, 16))
-    assert z.step.startswith("The 15 Oct bill date has passed and it is not renewed yet, so today: retire")
+    assert "today (the 15 Oct bill date has passed and it is not renewed yet)" in z.step and "before" not in z.step
 
 
 def test_unread_sources_are_one_broken_ask():

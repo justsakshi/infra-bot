@@ -96,7 +96,7 @@ def test_the_ask_groups_by_provider_and_client_and_names_inboxes_only_on_part_do
                + [_inbox("a@half.example", "BettrData"), _inbox("b@half.example", "BettrData")])
     rows = pr.removed(facts, inboxes)
     a = pr.ask(rows, pr.whole_domains(rows, inboxes))
-    assert a.text == "6 inboxes were removed by their provider; delete them from Smartlead by hand (Precise Leads 5, " \
+    assert a.text == "6 inboxes were removed by their provider (cancelled or expired there), so they can't send again; delete them from Smartlead by hand (Precise Leads 5, " \
                      "BettrData 1)."
     assert a.key == pr.KEY
     assert a.detail == [
@@ -198,7 +198,7 @@ def test_the_digest_shows_removed_inboxes_only_in_the_delete_reminder():
     assert text.count("desk.example") == 1 and "• Precise Leads 4 at ScaledMail (order cancelled, no inboxes left, " \
                                                  "1 domain): desk.example 4" in text
     lines = [x for x in "\n".join(head).split("\n") if x.strip()]
-    assert any(x.endswith("5 inboxes were removed by their provider; delete them from Smartlead by hand (Precise Leads "
+    assert any(x.endswith("5 inboxes were removed by their provider (cancelled or expired there), so they can't send again; delete them from Smartlead by hand (Precise Leads "
                           "4, BettrData 1). Do: Delete the \"Delete now\" inboxes by hand in Smartlead, Email Accounts "
                           "(the client's account): search each domain listed; a domain with a count goes whole, one "
                           "with names only those. The bot never deletes; an inbox leaves this list once it is gone.")
@@ -206,7 +206,7 @@ def test_the_digest_shows_removed_inboxes_only_in_the_delete_reminder():
     assert "3 inboxes are sending with no weekly test result (some removed by their provider, left out: see the " \
            "delete reminder)" in text and "Precise Leads · live.example: 1 inbox" in text
     assert "2 inboxes are disconnected in live campaigns (1 of them removed by their provider" in text
-    assert ": Camp: a@live.example." in text                      # a mixed line loses only the removed address
+    assert "• Camp: a@live.example\n" in text + "\n"                     # a mixed line loses only the removed address
     assert "4 inboxes are not in the weekly test (2 of them removed" in text and ": 2 more." in text
 
 
@@ -299,7 +299,7 @@ def test_the_ask_says_how_many_to_delete_now_and_to_check_first_with_each_reason
     now, check = pr.split(rows, use)
     inboxes = [_inbox(f"{u}@desk.example") for u in "abcdefg"]
     a = pr.ask(now, pr.whole_domains(now, inboxes), check)
-    assert a.text == ("7 inboxes were removed by their provider: delete 2 from Smartlead by hand now (Precise Leads 2), "
+    assert a.text == ("7 inboxes were removed by their provider (cancelled or expired there), so they can't send again: delete 2 from Smartlead by hand now (Precise Leads 2), "
                       "check 5 first (Precise Leads 5): still in a real campaign or a lead replied in the last 30 days "
                       "or not fully checked.")
     assert a.detail == [
@@ -313,7 +313,7 @@ def test_the_ask_says_how_many_to_delete_now_and_to_check_first_with_each_reason
     for word in ("disconnect", "log in", "reconnect"):
         assert word not in (a.text + a.step).lower()
     only = pr.ask([], set(), check)
-    assert only.text.startswith("5 inboxes were removed by their provider; check them before deleting from Smartlead "
+    assert only.text.startswith("5 inboxes were removed by their provider (cancelled or expired there), so they can't send again; check them before deleting from Smartlead "
                                 "by hand (Precise Leads 5): ") and "Delete now" not in only.step
 
 
@@ -446,7 +446,7 @@ def test_the_digest_top_line_gives_both_counts_and_the_thread_both_lists():
     use["inboxes"]["b@desk.example"].update(replied=1)
     head, parts = dp.build([_removed_source(use)], [], [], NOW)
     top = "\n".join(head)
-    assert ("5 inboxes were removed by their provider: delete 3 from Smartlead by hand now (Precise Leads 2, "
+    assert ("5 inboxes were removed by their provider (cancelled or expired there), so they can't send again: delete 3 from Smartlead by hand now (Precise Leads 2, "
             "BettrData 1), check 2 first (Precise Leads 2): still in a real campaign or a lead replied in the last 30 "
             "days. Do: ") in top
     assert len([x for x in top.split("\n") if x.strip()]) <= 8

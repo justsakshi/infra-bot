@@ -334,6 +334,12 @@ def _n(k: int) -> str:
     return f"{k} inbox{'es' if k != 1 else ''}"
 
 
+def _on(docs: list[dict]) -> str:
+    """' on a.com' / ' on a.com and b.com' for an ask's sentence; '' for three or more (the list names them)."""
+    doms = sorted({str(d["email"]).split("@")[-1] for d in docs})
+    return f" on {' and '.join(doms)}" if 0 < len(doms) <= 2 else ""
+
+
 SHORT = {"v2_pulled": "v2 retest (the v2 job pulled them)", "failed_v2": "v2 fail", "do_not_use": "a person's DO NOT USE tag",
          "blocklisted": "listed domain"}
 OTHER_ORDER = ("v2_pulled", "failed_v2", "do_not_use", "blocklisted")
@@ -447,33 +453,44 @@ def digest_items(docs: list[dict], today: date, weekly: bool | None = None,
     ready = [d for d in docs if d.get("status") == "ready"]
     blocked = [d for d in docs if d.get("status") in IN_REPAIR and login_blocked(d)]
     off = [d for d in docs if d.get("status") in IN_REPAIR and off_repair_settings(d) and repair_would_help(d)]
+    # 21 Nov 2026 (Manveen: "i think this still is not readable"): each ask is what is wrong and why it matters in one
+    # short sentence, naming the domains when there are one or two, then one step. The list names every inbox.
     asks = []
     if stuck:
         n = len(stuck)
-        asks.append(dg.Ask(f"{_n(n)} did not improve in 3 weeks of warm-up repair: cancel candidates, your call.",
-                           "Say which of those listed to cancel; the bot never cancels or deletes an inbox.",
+        it = "it" if n == 1 else "them"
+        asks.append(dg.Ask(f"{_n(n)}{_on(stuck)} still {'has' if n == 1 else 'have'} a low warm-up score after 3 weeks of "
+                           f"repair, so {'it is' if n == 1 else 'they are'} unlikely to recover and cost money each "
+                           "month.",
+                           f"tell the bot which of {it} to cancel, or to keep repairing {it}; the bot never cancels or "
+                           "deletes an inbox.",
                            key="warmup-repair:cancel-candidates", detail=[_detail_line(d, today) for d in stuck]))
     if ready:
-        asks.append(dg.Ask(f"{_n(len(ready))} finished warm-up repair (90%+) and only a person's DO NOT USE tag keeps "
-                           "them out: untag is your call.",
-                           "Say which of those listed to untag; the bot never removes a tag.",
+        n = len(ready)
+        it = "it" if n == 1 else "them"
+        asks.append(dg.Ask(f"{_n(n)}{_on(ready)} finished warm-up repair (score {level()}%+), but a DO NOT USE tag "
+                           f"still keeps {it} out of campaigns.",
+                           f"if you want {it} back, remove the DO NOT USE tag in Smartlead (Email Accounts); the bot "
+                           "never removes a tag.",
                            key="warmup-repair:ready-to-untag", detail=[_detail_line(d, today) for d in ready]))
     if blocked:
         k = len(blocked)
-        asks.append(dg.Ask(f"{_n(k)} can't warm up: Smartlead blocked {'their' if k != 1 else 'its'} warm-up "
-                           f"because it can't log in to {'them' if k != 1 else 'it'} (credentials), so no warm-up "
-                           "setting helps until the login is fixed.",
-                           "Fix the login first: in Smartlead, Email Accounts, open each inbox listed and reconnect "
-                           "it with its current password (or app password); warm-up starts again once it connects. "
-                           "If one was cancelled, say so.",
+        it = "it" if k == 1 else "them"
+        asks.append(dg.Ask(f"Smartlead can't log in to {_n(k)}{_on(blocked)}, so {'its' if k == 1 else 'their'} "
+                           f"warm-up is stopped and {'it' if k == 1 else 'they'} can't recover.",
+                           f"in Smartlead, Email Accounts, reconnect {'it' if k == 1 else 'each one listed'} with "
+                           "its current password (or app password); if one was cancelled, say so and it leaves this "
+                           "list.",
                            key="warmup-repair:login-blocked", detail=_blocked_lines(blocked)))
     if off:
         k = len(off)
-        asks.append(dg.Ask(f"{_n(k)} with a warm-up score under {level()}% {'are' if k != 1 else 'is'} not on the "
-                           f"repair settings (at most {REPAIR_PER_DAY} warm-up emails a day, "
-                           f"{REPAIR_REPLY[0]}-{REPAIR_REPLY[1]}% reply).",
-                           f"A yes: set {REPAIR_PER_DAY} a day (never higher than now), ramp 5, 35% reply, read it "
-                           "back and record it (warmup_repair_cli.py changes). The bot changes no warm-up setting.",
+        it = "it" if k == 1 else "them"
+        asks.append(dg.Ask(f"{_n(k)}{_on(off)} with a warm-up score under {level()}% {'is' if k == 1 else 'are'} "
+                           f"still on normal warm-up settings, which repair {it} more slowly.",
+                           f"say yes and {it} {'goes' if k == 1 else 'go'} on the repair settings ({REPAIR_PER_DAY} "
+                           f"warm-up emails a day, never higher than now, {REPAIR_REPLY[0]}-{REPAIR_REPLY[1]}% reply); the "
+                           "bot changes "
+                           "no warm-up setting by itself.",
                            key="warmup-repair:not-on-repair-settings", detail=[_settings_line(d) for d in off]))
     live = [d for d in docs if d.get("status") in IN_REPAIR
             or (d.get("status") == "recovered" and _this_week(d.get("recovered_on"), today))

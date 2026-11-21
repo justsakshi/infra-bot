@@ -1155,8 +1155,9 @@ def copy_check_lines(rec: dict) -> tuple[str, list[str], list[str]]:
         lines.append(f"• copy check · {who} · {share}, from {n} inbox{'es that pass' if n != 1 else ' that passes'} the "
                      f"plain note{f' ({left} left out)' if left else ''} → {tail}")
         if verdict == v2.FAIL:
-            needs.append(f"{client}: the copy check failed from {who} ({share}, from inboxes that pass the plain "
-                         f"note). The email is the problem: rewrite it before it sends from {who}.")
+            needs.append(f"The {client} email failed the copy check from {who} ({share}, sent from inboxes that pass "
+                         f"their own test), so the email itself lands in spam. Do: rewrite it before it sends from "
+                         f"{who}.")
     if not lines:
         n = len(rec.get("senders") or {})
         lines.append(f"• copy check · none of its {_inboxes(n)} is a Google or Outlook inbox the job knows, so the "
@@ -1254,21 +1255,24 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
 
     needs, info = [], list(acted["notes"]) + list(acted["skipped"])
     for name in got.get("unrecognised") or []:
-        needs.append(f"unrecognised v2 CSV format: {name}. It has a Mailbox column but not the header the job reads "
-                     f"({', '.join(v2.HEADER)}), so nothing was read from it.")
+        needs.append(f"The test results file {name} is in a format the job can't read (it lacks the columns "
+                     f"{', '.join(v2.HEADER)}), so nothing in it was judged. Do: download it again from Smart Delivery; "
+                     f"if it stays, the reader needs a fix.")
     for night in nights:
         if state["holds"].get(night):
-            needs.append(f"{' and '.join(p.title() for p in state['holds'][night])} results for {night} held: nearly every "
-                         f"inbox was below 4/4 there, which looks like a test problem, so nothing was pulled for it. "
-                         f"Re-run that test in Smart Delivery today.")
+            needs.append(f"{' and '.join(p.title() for p in state['holds'][night])} results of the {_day(night)} tests "
+                         f"were not used: nearly every inbox scored below 4 of 4 there, which points to a broken test, "
+                         f"not bad inboxes, so no inbox was taken out. Do: re-run those tests in Smart Delivery today "
+                         f"(each uses one of the plan's test runs).")
     file_of = {sha[:12]: f for sha, f in state["files"].items()}
     for fid, provs in sorted(state.get("file_holds", {}).items()):
         f = file_of.get(fid) or {}
         extra = [p for p in provs if p not in (state["holds"].get(f.get("night")) or [])]
         if f.get("night") in got["nights"] and extra:
-            needs.append(f"{' and '.join(p.title() for p in extra)} results in {f.get('name', fid)} ({f['night']}) held: "
-                         f"nearly every inbox in that test was below 4/4 there, which looks like a test problem, so "
-                         f"nothing was pulled for it. Re-run that test in Smart Delivery today.")
+            needs.append(f"{' and '.join(p.title() for p in extra)} results of the test "
+                         f"{_test_word(f.get('name', fid), f['night'])} were not used: nearly every inbox in it scored "
+                         f"below 4 of 4 there, which points to a broken test, not bad inboxes, so no inbox was taken "
+                         f"out. Do: re-run the whole test in Smart Delivery today (it uses one of the plan's test runs).")
     ro_kinds: dict[tuple, Counter] = defaultdict(Counter)
     for e, rec in report_only.items():
         r = rec.get("reason") or {"name": client_of.get(e, "Not in Smartlead"), "client": client_of.get(e, "Not in Smartlead")}
@@ -1289,8 +1293,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         for cid in rec.get("blocked", []):
             ro_stuck[cid].append(e)
     for cid, es in sorted(stuck.items()):
-        needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
-                     f"Not changed: pause it or add a good sender.")
+        needs.append(f"Campaign {names.get(cid, cid)} is live with only failed inboxes left ({', '.join(sorted(es))}), "
+                     f"so all its email risks landing in spam. Do: pause it, or add an inbox that passed the weekly "
+                     f"test.")
     for cid, es in sorted(ro_stuck.items()):
         client = client_of.get(sorted(es)[0], "Not in Smartlead")
         r = report_only[sorted(es)[0]].get("reason") or {"name": client, "why": REPORT_ONLY_WHY.get(client, ""), "client": client}
@@ -1298,20 +1303,23 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         untrusted = report_only_types if report_only_types is not None else {*REPORT_ONLY_TYPES, *usable.REAL_SEND_RULE}
         if not r.get("client") or all(str(types.get(e) or "").upper() in untrusted for e in es):
             continue    # its senders failed only a test that is not trusted for their type: the campaign is fine
-        needs.append(f"{names.get(cid, cid)} ({cid}) is live with only failed inboxes left ({', '.join(sorted(es))}). "
-                     f"Not changed, as {r['name']} is report-only{' ' + r['why'] if r['why'] else ''}: "
-                     f"pause it or add a good sender.")
+        needs.append(f"Campaign {names.get(cid, cid)} is live with only failed inboxes left ({', '.join(sorted(es))}), "
+                     f"so all its email risks landing in spam; the job did not change it, as {r['name']} is "
+                     f"report-only{' ' + r['why'] if r['why'] else ''}. Do: pause it, or add an inbox that passed the "
+                     f"weekly test.")
     for name, (ok, waiting) in d8_status(state, report_only_clients or set()).items():
         if not waiting:
-            needs.append(f"All four agreed conditions for acting on {name} hold (D8). Switching it on is your call: "
-                         f"say yes and the job starts taking failing {name} inboxes out like the other clients'.")
+            needs.append(f"All four agreed conditions for letting the weekly job act on {name} now hold. Do: say yes "
+                         f"to switch it on, and the job starts taking failing {name} inboxes out like the other "
+                         f"clients'.")
         else:
             info.append(f"{name} stays report-only: {len(ok)} of 4 agreed conditions hold (D8). Waiting on: "
                         + "; ".join(waiting) + ".")
     needs += copy_needs
     needs += [f"Error: {err}" for err in acted["errors"]]
     if got["pending"]:
-        needs.append(f"Downloaded before the results were in (download again later): {', '.join(got['pending'])}")
+        needs.append(f"Some test results were read before they were in ({', '.join(_test_word(x) for x in got['pending'])}), "
+                     f"so those inboxes are not judged yet. Do: download them again later today.")
     dead, off, ok = Counter(), Counter(), Counter()
     for k, items in groups.items():
         {"not_sent": dead, "not_sent_off": off, "not_sent_ok": ok}.get(k[1], Counter())[k[3]] += len(items)
@@ -1319,14 +1327,15 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         return ", ".join(f"{dom} {n}" for dom, n in sorted(c.items()))
     if dead:
         n = sum(dead.values())
-        needs.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test ({_per_dom(dead)}). Check "
-                     f"{'they are' if n != 1 else 'it is'} connected in Smartlead.")
+        needs.append(f"{n} inbox{'es' if n != 1 else ''} sent nothing in this week's test ({_per_dom(dead)}), so "
+                     f"{'they have' if n != 1 else 'it has'} no result. Do: check {'they are' if n != 1 else 'it is'} "
+                     f"connected in Smartlead.")
     if off:
         n = sum(off.values())
         it = "them" if n != 1 else "it"
-        needs.append(f"{n} inbox{'es' if n != 1 else ''} did not send in the test, and Smartlead can't log in to {it} "
-                     f"({_per_dom(off)}). Reconnect {it}, or delete {it} in Smartlead if {'they were' if n != 1 else 'it was'} "
-                     f"cancelled.")
+        needs.append(f"{n} inbox{'es' if n != 1 else ''} sent nothing in this week's test because Smartlead can't log "
+                     f"in to {it} ({_per_dom(off)}), so {'they have' if n != 1 else 'it has'} no result. Do: reconnect "
+                     f"{it} in Smartlead, or delete {it} there if {'they were' if n != 1 else 'it was'} cancelled.")
     if ok:          # 16 Nov 2026: connected inboxes "did not send" in runs that came back short. Smartlead support:
                     # test emails come from a shared pool of seed inboxes that refills daily at 05:30 IST, so runs
                     # started late in that day (the Saturday 00:00 IST batch) get fewer
@@ -1355,12 +1364,19 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                      f"short, and a few minutes' gap does not help. Run {'them' if k != 1 else 'it'} again after "
                      f"05:30 IST, spread through the day.")
     current = {x.get("file") for rs in state["results"].values() for x in rs}
-    partial = sorted((f["name"], f["pending_seeds"]) for sha, f in state["files"].items()
+    partial = sorted((f["name"], f["pending_seeds"], f.get("source") == "api") for sha, f in state["files"].items()
                      if f.get("night") in got["nights"] and f.get("status") == "ingested" and f.get("pending_seeds")
                      and sha[:12] in current)
-    for name, n in partial:
-        needs.append(f"{name}: {n} seed result{'s' if n != 1 else ''} had not come in when it was downloaded, so "
-                     f"those inboxes were not judged. Download it again later today.")
+    for name, n, api in partial:
+        if api:
+            # 21 Nov 2026: a run read from the API is not fetched again (already_read) and its CSV download is a
+            # duplicate (csv_twin), so "download it again" did nothing. A fact, not a step: the next run judges them.
+            info.append(f"{n} result{'s' if n != 1 else ''} of the test {_test_word(name)} had not come in when it "
+                        f"was read, so its inboxes have no result this week; the next weekly run judges them.")
+            continue
+        needs.append(f"{n} result{'s' if n != 1 else ''} of the test {_test_word(name)} had not come in when it was "
+                     f"read, so its inboxes are not judged yet. Do: download its results file from Smart Delivery "
+                     f"again later today.")
     # A bounced seed, or a provider with no seed rows, leaves inboxes not judged at all: no fail is pulled and no
     # pulled inbox comes back until the test is fixed, so it always needs a person (review V2-S1).
     unjudged = defaultdict(set)
@@ -1374,9 +1390,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
         name, n = (file_of.get(fid) or {}).get("name") or "a test file", len(es)
         what = (f"a seed bounced for {_inboxes(n)}" if why == "bounced"
                 else f"no {why.title()} seed results for {_inboxes(n)}")
-        needs.append(f"{name}: {what}, so {'it was' if n == 1 else 'they were'} not judged. Check the test's seed list "
-                     f"in Smart Delivery{'' if why == 'bounced' else ' (it needs 4 Google and 4 Microsoft seeds)'} "
-                     f"and re-run it.")
+        needs.append(f"In the test {_test_word(name)}, {what}, so {'it was' if n == 1 else 'they were'} not judged. Do: "
+                     f"check the test's seed list in Smart Delivery"
+                     f"{'' if why == 'bounced' else ' (it needs 4 Google and 4 Microsoft seeds)'} and re-run it.")
     weekly = any(v2.is_weekly_night(n) for n in nights)
     if nights and not weekly:
         info.append("Not a weekly test (those start on a Saturday, Sunday or Monday), so the weekly checks "
@@ -1438,14 +1454,16 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                             f"hours after sending.")
             elif why == "nothing_sent":
                 needs.append(f"No result this week from {nm}: {'their runs' if they else 'its run'} sent no test "
-                             f"emails (the account had no test runs left, or the inboxes were disconnected). Run "
-                             f"{'them' if they else 'it'} again in Smart Delivery.")
+                             f"emails (the account had no test runs left, or the inboxes were disconnected), so those "
+                             f"inboxes stay unproven. Do: run {'them' if they else 'it'} again in Smart Delivery.")
             elif v2_tests is not None:              # the API shows each has a due test
-                needs.append(f"No result this week from {nm}: no finished v2 run found. Check "
-                             f"{'their tests' if they else 'its test'} ran in Smart Delivery v2.")
+                needs.append(f"No result this week from {nm}: no finished run of {'their' if they else 'its'} weekly "
+                             f"test was found, so those inboxes stay unproven. Do: check in Smart Delivery that "
+                             f"{'their tests' if they else 'its test'} ran.")
             else:
-                needs.append(f"No result this week from {nm}: no finished v2 run found. Check "
-                             f"{'they have' if they else 'it has'} a weekly test in Smart Delivery.")
+                needs.append(f"No result this week from {nm}: no finished run of a weekly test was found, so those "
+                             f"inboxes stay unproven. Do: check {'they have' if they else 'it has'} a weekly test in Smart "
+                             f"Delivery.")
     untested, missed = defaultdict(list), defaultdict(list)
     if weekly:
         newest = date.fromisoformat(max(nights))
@@ -1626,6 +1644,41 @@ def _needs(parts: list[str]) -> list[str]:
 STUCK_WORDS = "is live with only failed inboxes left"     # a live campaign with no good sender: posted at once
 
 
+def _done_words(changed: str) -> str:
+    """'Took 0 inboxes out of 0 live campaigns · tagged 15 in no campaign · returned 0' -> 'tagged 15 failed inboxes
+    that are in no campaign DO NOT USE': what the job did, without the parts that are zero (21 Nov 2026)."""
+    out = []
+    for part in changed.split(" · "):
+        nums = [int(x) for x in re.findall(r"\d+", part)]
+        if not nums or not nums[0]:
+            continue
+        p = part[:1].lower() + part[1:]
+        if m := re.match(r"tagged (\d+) left in paused/draft campaigns and (\d+) in no campaign", p):
+            p = f"tagged {m.group(1)} failed inboxes left in paused or draft campaigns and {m.group(2)} in no campaign"
+        elif m := re.match(r"tagged (\d+) in no campaign", p):
+            p = f"tagged {m.group(1)} failed inbox{'es' if m.group(1) != '1' else ''} that {'are' if m.group(1) != '1' else 'is'} in no campaign DO NOT USE"
+        elif m := re.match(r"returned (\d+)", p):
+            p = f"returned {m.group(1)} inbox{'es' if m.group(1) != '1' else ''} that passed again to their campaigns"
+        out.append(p)
+    return "; ".join(out) or changed
+
+
+def _need_ask(line: str, urgent: bool = False):
+    """A Needs-you line as a digest ask: what and why before " Do: ", the step after it (21 Nov 2026)."""
+    from smartlead import digest as dg
+    text, _, step = line.partition(" Do: ")
+    return dg.Ask(text.strip(), step.strip(), urgent=urgent)
+
+
+def _test_word(file_name, night: str | None = None) -> str:
+    """'pl-weekly-test-run-1.csv' -> '"pl-weekly-test" (run 1)', with ``night`` '"pl-weekly-test" (run 1, Sat 21 Nov)':
+    the test's name as Smartlead writes it in its download, without the file ending, so the reader can find it."""
+    m = re.match(r"(.+?)(?:-run-(\d+))?\.csv$", str(file_name or ""))
+    name, run = (m.group(1), m.group(2)) if m else (str(file_name), None)
+    bits = ([f"run {run}"] if run else []) + ([_day(night)] if night else [])
+    return f'"{name}"' + (f" ({', '.join(bits)})" if bits else "")
+
+
 def digest_items(head: list[str], parts: list[str]) -> list[tuple[str, list, list, list[str]]]:
     """What a post becomes in the daily digest (Manveen, 16 Nov 2026: one digest, not a post per run):
     [(source, asks, done, detail)]. The weekly report's Needs-you lines are its asks (a stuck live campaign is
@@ -1635,15 +1688,15 @@ def digest_items(head: list[str], parts: list[str]) -> list[tuple[str, list, lis
     detail = ["\n".join(h for h in head if h is not None).strip()] + [p for p in parts if isinstance(p, str)]
     words = lambda xs: " ".join(x.strip() for x in xs if x and x.strip())   # noqa: E731
     if title.startswith("v2 placement results"):
-        asks = [dg.Ask(x, urgent=STUCK_WORDS in x) for x in _needs(parts)]
+        asks = [_need_ask(x, urgent=STUCK_WORDS in x) for x in _needs(parts)]
         done = []
         changed = head[2] if len(head) > 2 else ""
         if changed.startswith("Took") and any(int(n) for n in re.findall(r"\d+", changed)):
-            done.append(dg.Done(f"v2 weekly test ({title.split(', ', 1)[-1]}): {changed[0].lower()}{changed[1:]}. "
-                                f"Which inboxes: thread.", key=f"v2-weekly:{title}:{changed}"))
+            done.append(dg.Done(f"Weekly test results ({title.split(', ', 1)[-1]}): {_done_words(changed)}.",
+                                key=f"v2-weekly:{title}:{changed}"))
         return [("v2-weekly", asks, done, detail), ("v2-reminder", [], [], [])]
     if title.startswith("v2 copy check"):
-        return [("v2-copy-check", [dg.Ask(x) for x in _needs(parts)], [], detail)]
+        return [("v2-copy-check", [_need_ask(x) for x in _needs(parts)], [], detail)]
     if title == "v2 weekly job failed":
         return [("v2-weekly-crash", [dg.Ask(f"The PC's v2 weekly job failed: {words(head[1:2])}", kind="broken",
                                             step="It retries every hour; the log path is in the thread.",

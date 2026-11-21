@@ -383,6 +383,17 @@ def cancelled_domains(tracker: dict[str, dict]) -> set[str]:
             and str(d.get("status") or "") != "Active"}
 
 
+def weekly_list(tests: list[dict], camp_names: dict) -> list[dict]:
+    """What the coverage record keeps of the ACTIVE scheduled weekly tests (``_weekly_tests``): [{name, campaign,
+    next_run, weekdays, time, senders, copy}]. The daily inbox list reads it (inbox_status.weekly_tests): only a sender
+    of one that is not the copy check (``copy``) is "in the weekly test", a campaign with none of them needs a new
+    test, and a test's next run comes from its schedule, never an assumed Saturday (21 Nov 2026). Pure."""
+    return [{"name": str(t.get("name") or ""), "campaign": str(camp_names.get(int(t.get("campaign_id") or 0)) or ""),
+             "next_run": t.get("next_run"), "weekdays": list(t.get("weekdays") or []), "time": t.get("time"),
+             "senders": sorted(t.get("senders") or ()), "copy": is_copy_test(t.get("name"))}
+            for t in tests]
+
+
 def coverage(members: dict[str, str], tests: list[dict]) -> dict[str, dict]:
     """The coverage rule (Manveen 16 Nov 2026: "make sure we have all inboxes in test except scaled mail canceld
     orders"): every connected inbox we use in exactly one ACTIVE weekly v2 test. ``members`` {email: client};
@@ -555,6 +566,7 @@ def _tab(client: str) -> str:
     return next((t for t in TABS if t.lower() == str(client).lower()), "the client's tab")
 
 
+SEEDS = 4                                  # emails per provider a weekly test sends (v2_results.PASS_SEEDS)
 SATURDAY = "Saturday after 05:30 IST"     # the seed pool refills 05:30 IST daily; new weekly tests start on Saturdays
 
 
@@ -643,8 +655,8 @@ def coverage_asks(results: dict, today: date | None = None) -> list:
         if not isinstance(r, dict) or "coverage" not in r:
             continue
         for name, k in sorted((r.get("twins") or {}).items()):
-            asks.append(dg.Ask(f"{k} active weekly v2 tests in {acc} are called \"{name}\", so the same inboxes are "
-                               "tested and paid for twice.",
+            asks.append(dg.Ask(f"{k} weekly tests in the {acc} account have the same name, \"{name}\", so the same "
+                               "inboxes are tested and paid for twice.",
                                "In Smart Delivery, stop the older one (its created date is in the test list).",
                                key=f"{SOURCE}:coverage-twins:{acc}:{name}"))
         if r["coverage"] is None:
@@ -658,10 +670,15 @@ def coverage_asks(results: dict, today: date | None = None) -> list:
             if none:
                 verb = "is" if len(none) == 1 else "are"
                 text = (f"{len(none)} {client} inbox{'es' if len(none) != 1 else ''} {verb} in no weekly test, "
-                        f"so nothing checks {'its' if len(none) == 1 else 'their'} placement.")
-                step = _gap_step(client, c, r.get("dt_tests") or {}, (r.get("untested_dts") or {}).get(client) or [],
-                                 lambda: next(pool, SATURDAY))
-                lines = _by_domain(none, c.get("on") or {})
+                        f"so nothing checks where {'its' if len(none) == 1 else 'their'} emails land.")
+                how = _gap_step(client, c, r.get("dt_tests") or {}, (r.get("untested_dts") or {}).get(client) or [],
+                                lambda: next(pool, SATURDAY))
+                # 21 Nov 2026 (Manveen: "i think this still is not readable"): the post gets one short step; the
+                # per-campaign how-to with its ready Claude-in-Chrome line is the first lines of the list (thread).
+                step = ("In Smart Delivery, add them to the weekly test the list names, or create the new weekly test "
+                        f"it names ({SEEDS} emails per provider, text-only ticked); the list has a ready "
+                        "Claude-in-Chrome line for each.")
+                lines = [f"How: {x.strip()}" for x in how.split(" · ")] + _by_domain(none, c.get("on") or {})
                 if friday:
                     asks.append(dg.Ask("Friday reminder: " + text, step, urgent=True, detail=lines,
                                        key=f"{SOURCE}:coverage:{client}:{today.isoformat()}"))
@@ -669,8 +686,8 @@ def coverage_asks(results: dict, today: date | None = None) -> list:
                     asks.append(dg.Ask(text, step, key=f"{SOURCE}:coverage:{client}", detail=lines))
             if dupes:
                 asks.append(dg.Ask(
-                    f"{_n(len(dupes))} of {client} {'is' if len(dupes) == 1 else 'are'} in 2 or more active weekly v2 "
-                    "tests, so their seed emails are paid twice.",
+                    f"{_n(len(dupes))} of {client} {'is' if len(dupes) == 1 else 'are'} in 2 or more weekly tests, so "
+                    f"{'its' if len(dupes) == 1 else 'their'} test emails are paid for twice.",
                     "For each inbox listed, stop one of its tests, or recreate one without it.",
                     key=f"{SOURCE}:coverage-dupes:{client}",
                     detail=[f"{e}: {', '.join(names)}" for e, names in sorted(dupes.items())]))
@@ -725,11 +742,11 @@ def digest_items(results: dict, known: set[str] | None, errors: list[str], dm_fa
                            detail=[f"{d} ({untracked[d]['client']}, {_n(untracked[d]['inboxes'])})" for d in new]))
     for client, k in sorted(_no_room(results).items()):
         asks.append(dg.Ask(
-            f"{k} {client} inbox{'es' if k != 1 else ''} taken out after a failed v2 test {'are' if k != 1 else 'is'} on "
-            f"no DT campaign: every DT campaign of the client holds {DT_CAP}, so the weekly test does not check "
-            f"{'them' if k != 1 else 'it'}.",
-            f"Make room on a DT campaign of {client}, or create the next DT campaign and its weekly test; the next run "
-            f"(06:00 IST) puts {'them' if k != 1 else 'it'} on.",
+            f"{k} {client} inbox{'es' if k != 1 else ''} taken out after failing the weekly test {'are' if k != 1 else 'is'} "
+            f"on no test campaign, because each of the client's test campaigns is full ({DT_CAP} inboxes), so no "
+            f"weekly test can clear {'them' if k != 1 else 'it'} to send again.",
+            f"Make room on one of {client}'s test campaigns, or create the next one with its weekly test; the next "
+            f"06:00 IST run puts {'them' if k != 1 else 'it'} on.",
             key=f"{SOURCE}:no-room:{client}"))
     asks += coverage_asks(results, today)
     if errors:
@@ -754,10 +771,15 @@ def coverage_record(results: dict, prev: dict | None, today: date) -> dict:
     clients: dict[str, dict] = {}
     read: dict[str, bool] = {}
     accounts: dict[str, list[str]] = {}
+    weekly: dict[str, list] = {}
     for acc, r in sorted(results.items()):
         if not isinstance(r, dict) or "coverage" not in r:
             continue
         read[acc] = r["coverage"] is not None
+        if r["coverage"] is not None and "weekly" in r:
+            weekly[acc] = r["weekly"]
+        elif acc in (prev.get("weekly") or {}):           # not read today: the last record's tests
+            weekly[acc] = prev["weekly"][acc]
         if r["coverage"] is None:
             for client in (prev.get("accounts") or {}).get(acc) or []:
                 old = pclients.get(client) or {}
@@ -782,7 +804,7 @@ def coverage_record(results: dict, prev: dict | None, today: date) -> dict:
             clients[client] = doc
     all_read = bool(read) and all(read.values())
     return {"_id": today.isoformat(), "date": today.isoformat(), "tests_read": read, "accounts": accounts,
-            "clients": clients,
+            "clients": clients, "weekly": weekly,
             "all_covered": (all(not c["missing"] for c in clients.values()) if all_read else None)}
 
 
@@ -827,8 +849,11 @@ def _weekly_tests(key: str) -> list[dict]:
             continue
         d = cl.test(str(t["id"]))
         snd = [x for x in d.get("senders") or [] if isinstance(x, dict)]
+        sched = d.get("schedule") or t.get("schedule") or {}
         out.append({"id": t["id"], "name": d.get("name") or t.get("name"),
-                    "time": str((d.get("schedule") or t.get("schedule") or {}).get("timeOfDay") or "") or None,
+                    "time": str(sched.get("timeOfDay") or "") or None,
+                    "next_run": d.get("nextRunAt") or t.get("nextRunAt"),
+                    "weekdays": [int(x) for x in sched.get("weekdays") or [] if str(x).isdigit()],
                     "campaign_id": int(d.get("campaignId") or t.get("campaignId") or 0),
                     "senders": {str(x.get("email") or "").strip().lower() for x in snd if x.get("email")},
                     "sender_ids": {int(x["emailAccountId"]) for x in snd if str(x.get("emailAccountId") or "").isdigit()}})
@@ -873,13 +898,17 @@ def _dm(text: str) -> bool:
         return False
 
 
-async def _campaigns(c, account: str) -> list[dict]:
+async def _campaigns(c, account: str, names: dict | None = None) -> list[dict]:
+    """The account's main and DT campaigns with their inboxes; ``names`` (when given) gets {id: name} of every
+    campaign, so a weekly test on any campaign can be named."""
     from copy_sync import DT_SOURCE_CLIENT, TARGETS
     from smartlead.report_sheet import client_label
     main = {int(cid): client_label(account, src) for cid, src in TARGETS.get(account, [])}
     out = []
     for x in await c.list_campaigns():
         cid, name = int(x["id"]), str(x.get("name", ""))
+        if names is not None:
+            names[cid] = name
         prefix = next((p for p in DT_SOURCE_CLIENT if name.startswith(p + " #")), None)
         if cid in main:
             client, role = main[cid], "main"
@@ -922,7 +951,8 @@ def main() -> int:
             boxes = [{"id": a["id"], "email": a.get("from_email"), "client": client_label(acc.name, a.get("client_id"))}
                      for a in listed
                      if not is_excluded_inbox({"email": a.get("from_email") or "", "tags": a.get("tags", [])})]
-            camps = await _campaigns(c, acc.name)
+            camp_names: dict = {}
+            camps = await _campaigns(c, acc.name, camp_names)
             pulled_ids = {int(a["id"]) for a in listed if is_pulled(a)}
             pulled = [b for b in boxes if int(b["id"]) in pulled_ids]
             from smartlead import v2_api
@@ -956,6 +986,7 @@ def main() -> int:
                 at = {int(i): x["name"] for x in camps if x["role"] == "dt" for i in x["attached"]}
                 by_email = {str(b["email"]).strip().lower(): int(b["id"]) for b in boxes if b.get("email")}
                 res["coverage"] = coverage(members, tests)
+                res["weekly"] = weekly_list(tests, camp_names)
                 res["twins"] = twins(tests)
                 res["slots"] = sorted({t["time"] for t in tests if t.get("time")})
                 for client, cv in res["coverage"].items():

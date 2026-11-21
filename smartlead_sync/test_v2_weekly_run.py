@@ -27,6 +27,9 @@ EXTRA_DT = {}       # more "DT ..." campaigns for one test, e.g. a copy-check ca
 WED11 = "2026-11-11T05:00:00.000Z"           # Wednesday 11 Nov, 10:30 IST
 
 
+NOFIN_A = 'no finished run of a weekly test was found, so those inboxes stay unproven. Do: check it has a weekly test in '
+
+
 def at(day, hour, minute=0):
     return datetime(2026, 11, day, hour, minute, tzinfo=v2.IST)
 
@@ -261,7 +264,7 @@ def test_watch_week_waits_for_the_night_to_settle_then_reports_without_changing_
             "would be tagged DO NOT USE") in text
     assert ("• fail · y.com · mel-bad@y.com · Google 4/4, Microsoft 0/4 → would be taken out of Melior | B "
             "(Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead") in text
-    assert "No result this week from DT PL #2 (1 inbox): no finished v2 run found" in parts[0]
+    assert "No result this week from DT PL #2 (1 inbox): no finished run of" in parts[0]
     assert "2 commits behind main" in text
     v = job.verdicts()
     assert set(v) == {f"{e}|2026-11-09" for e in DT_PL_1} | {f"{e}|2026-11-09" for e in DT_MELIOR_1}
@@ -364,10 +367,10 @@ def test_report_only_melior_is_reported_by_what_would_happen_and_never_touched(j
             "out of campaigns, leave 1 inbox in a live campaign where it is the last good sender and tag 1 inbox that is "
             "in no campaign. List under *Melior* above.") in parts[-1]
     assert parts[0].split("\n")[2:] == [
-        "• Melior | Solo (3) is live with only failed inboxes left (mel-solo@y.com). Not changed, as Melior is "
-        "report-only until the job is proven on the other clients: pause it or add a good sender.",
-        "• No result this week from DT PL #2 (1 inbox): no finished v2 run found. Check it has a weekly test in "
-        "Smart Delivery."]
+        "• Campaign Melior | Solo is live with only failed inboxes left (mel-solo@y.com), so all its email risks "
+        "landing in spam; the job did not change it, as Melior is report-only until the job is proven on the other "
+        "clients. Do: pause it, or add an inbox that passed the weekly test.",
+        "• No result this week from DT PL #2 (1 inbox): " + NOFIN_A + "Smart Delivery."]
     ro = " (Melior: report-only until the job is proven on the other clients); nothing changed in Smartlead"
     melior = next(p for p in parts if p.startswith("*Melior*"))
     assert melior.split("\n")[2:] == [
@@ -496,7 +499,7 @@ def test_a_pending_seed_never_pulls_a_working_inbox(job):
     job.clock = at(10, 10, 31)
     assert job.run() == 0
     assert job.sl.calls == [] and job.state()["pulled"] == {}
-    assert "1 seed result had not come in" in job.posts[-1][1][0]
+    assert "1 result of the test" in job.posts[-1][1][0] and "had not come in" in job.posts[-1][1][0]
 
 
 # --- the copy check (Manveen 11 Nov 2026): a result about the email, never about an inbox ---------
@@ -537,9 +540,9 @@ def test_a_copy_check_in_spam_blames_the_email_and_never_an_inbox(job, monkeypat
     assert head[1] == "5 inboxes · 3 pass · 0 watch · 2 fail"
     assert head[2] == "Took 1 inbox out of 1 live campaign · tagged 0 in no campaign · returned 0"
     assert head[3] == "Copy check · Precise Leads · Google inboxes fail"
-    assert ("• Precise Leads: the copy check failed from Google inboxes (0 of 8 emails in the Google inbox, from "
-            "inboxes that pass the plain note). The email is the problem: rewrite it before it sends from Google "
-            "inboxes.") in parts[0].split("\n")
+    assert ("• The Precise Leads email failed the copy check from Google inboxes (0 of 8 emails in the Google inbox, "
+            "sent from inboxes that pass their own test), so the email itself lands in spam. Do: rewrite it before it "
+            "sends from Google inboxes.") in parts[0].split("\n")
     assert COPY_FAIL_LINE in next(p for p in parts if p.startswith("*Precise Leads*")).split("\n")
     doc = job.db.cols[wk.COPY_CHECKS_COLLECTION].docs["Precise Leads|2026-11-09"]
     assert doc["client"] == "Precise Leads" and doc["night"] == "2026-11-09" and doc["file"] == "pl-copy-check-run-1.csv"
@@ -590,8 +593,7 @@ def test_a_copy_check_campaign_is_named_missing_until_its_csv_arrives(job, monke
     job.run()
     job.clock = at(10, 10, 31)
     job.run()
-    assert ("• No result this week from DT PL copy check (2 inboxes): no finished v2 run found. Check it has a weekly "
-            "test in Smart Delivery.") in \
+    assert ("• No result this week from DT PL copy check (2 inboxes): " + NOFIN_A + "Smart Delivery.") in \
         job.posts[-1][1][0].split("\n")                           # its senders' inbox tests are not its result
     job.clock = at(10, 12)
     assert job.run() == 0
@@ -1077,7 +1079,7 @@ def test_a_dt_test_whose_run_is_still_coming_in_is_not_called_missing(job):
     assert job.run() == 0
     head, parts = job.posts[-1]
     text = "\n".join(parts)
-    assert not any("DT PL #2" in x and "no finished v2 run found" in x for x in text.split("\n"))
+    assert not any("DT PL #2" in x and "no finished run" in x for x in text.split("\n"))
     assert ("• No result yet from DT PL #2 (1 inbox): its run is in, with results still coming in. The job reads it "
             "by itself, at the latest 48 hours after sending.") in parts[-1]
 
@@ -1092,9 +1094,10 @@ def test_a_dt_test_whose_run_sent_nothing_says_so(job):
     job.clock = at(10, 10, 31)
     assert job.run() == 0
     head, parts = job.posts[-1]
-    assert not any("DT PL #2" in x and "no finished v2 run found" in x for x in "\n".join(parts).split("\n"))
+    assert not any("DT PL #2" in x and "no finished run" in x for x in "\n".join(parts).split("\n"))
     assert ("• No result this week from DT PL #2 (1 inbox): its run sent no test emails (the account had no test "
-            "runs left, or the inboxes were disconnected). Run it again in Smart Delivery.") in parts[0]
+            "runs left, or the inboxes were disconnected), so those inboxes stay unproven. Do: run it again in Smart "
+            "Delivery.") in parts[0]
 
 
 def test_the_watch_week_line_is_gone_after_its_date(job):
@@ -1120,8 +1123,8 @@ def test_with_the_api_read_the_reminder_never_asks_for_a_csv_and_skips_a_campaig
     job.run()                                                     # the weekly report
     report = "\n".join(job.posts[-1][1])
     assert "DT PL #2" not in report
-    assert ("No result this week from DT Melior #1 (2 inboxes): no finished v2 run found. Check its test ran in "
-            "Smart Delivery v2.") in report
+    assert ("No result this week from DT Melior #1 (2 inboxes): no finished run of its weekly test was found, so "
+            "those inboxes stay unproven. Do: check in Smart Delivery that its test ran.") in report
     job.clock = at(10, 12)
     assert job.run() == 0
     head, _ = job.posts[-1]

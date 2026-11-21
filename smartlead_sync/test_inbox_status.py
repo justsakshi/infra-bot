@@ -249,9 +249,11 @@ def test_with_the_digest_on_the_day_goes_to_the_digest_with_steps_not_to_slack(m
     (src, asks, detail), = got
     assert src == "inbox-status"
     assert [(a.key, a.urgent) for a in asks] == [("inbox-status:campaign_short", True), ("inbox-status:disconnected", False)]
-    assert asks[0].text == "1 live campaign has lost half or more of its inboxes."
-    assert asks[1].text == "2 inboxes in live campaigns are disconnected in Smartlead."
-    assert asks[1].step.startswith("Smartlead, Email Accounts, filter Disconnected, Reconnect")
+    assert asks[0].text == ("1 live campaign has lost half or more of its inboxes, so the rest carry its sending alone "
+                            "and may go to spam or stall.")
+    assert asks[1].text == ("2 inboxes in live campaigns are disconnected in Smartlead, so their share of those "
+                            "campaigns is not being sent.")
+    assert asks[1].step.startswith("In Smartlead, Email Accounts, filter Disconnected and reconnect")
     assert detail[0].startswith("⚠️ Inboxes, 11 Nov: 2 things need you")
     monkeypatch.setattr(dg, "report", lambda *a, **k: False)              # Mongo down: the old post goes out
     assert st.run(rows, T, True, post=True, db=FakeDb())["posted"] and len(sent) == 1
@@ -317,8 +319,8 @@ def test_an_untested_inbox_already_on_a_test_campaign_is_not_an_ask():
     head, parts = st.format_post(recs, [], items, T)
     # 20 Nov 2026: they are one info line, never a thing to do (not counted in the headline)
     assert head[0].endswith("1 thing needs you")
-    assert ("For info: 2 inboxes sending with no weekly test result in the last 10 days are on a test campaign, so "
-            "the next weekly run (Sat 14 Nov) checks them.") in head
+    # no assumed Saturday (21 Nov 2026): without the tests' schedules, no date at all
+    assert "For info: 2 inboxes in a weekly test have no result yet; the next run checks them." in head
     (info,) = [a for a in st.digest_asks(items) if a.key == "inbox-status:sending_test_short"]
     assert info.kind == "info" and info.step == "" and info.doc("inbox-status")["kind"] == "info"
 
@@ -366,8 +368,8 @@ def test_untested_inboxes_are_split_by_why_they_have_no_result():
 
     info = items["sending_test_short"]
     assert info["info"] is True
-    assert info["text"] == ("2 inboxes sending with no weekly test result in the last 10 days are in the weekly test, "
-                            "but the last Smart Delivery runs sent too few emails to judge them; next run Sat 14 Nov")
+    assert info["text"] == ("2 inboxes in a weekly test have no result in the last 10 days because their last test "
+                            "runs sent too few emails to judge")          # no schedule known: no "next run" date
     assert info["detail"] == ["• Precise Leads · short.example: 2 inboxes, in the weekly test of DT PL #1; last runs "
                               "7 Nov and 9 Nov sent 1 email per provider (4 needed)"]
 
@@ -387,10 +389,90 @@ def test_without_a_coverage_record_an_inbox_on_a_test_campaign_is_never_told_to_
     assert it["detail"] == ["• Precise Leads · x.example: 1 inbox, on DT PL #1; the next weekly run checks them"]
 
 
-def test_next_weekly_run_is_the_coming_saturday_or_today():
-    assert st.next_weekly_run(date(2026, 11, 20)) == date(2026, 11, 21)      # Fri -> Sat
-    assert st.next_weekly_run(date(2026, 11, 21)) == date(2026, 11, 21)      # Sat
-    assert st.next_weekly_run(date(2026, 11, 22)) == date(2026, 11, 28)      # Sun
+# --- 21 Nov 2026 (Manveen: "i think this still is not readable") -------------------------------------------------
+# The weekly tests' own schedules decide: only a sender of an ACTIVE scheduled test is "in the weekly test", the next
+# run is that test's nextRunAt, and on the test day the line says today's tests are being read.
+
+SAT = date(2026, 11, 21)
+WEEKLY = [{"name": "PL weekly 1", "campaign": "DT PL #1", "next_run": "2026-11-28T00:30:00.000Z", "weekdays": [6],
+           "time": "06:00", "senders": ["s1@short.example", "s2@short.example"]},
+          {"name": "PL weekly 2", "campaign": "DT PL #2", "next_run": "2026-11-28T05:30:00.000Z", "weekdays": [6],
+           "time": "11:00", "senders": []}]
+
+
+def _items(rows, today, weekly, v2=()):
+    recs = st.add_test_facts(st.states(rows, today), set(), list(v2), today, weekly=weekly)
+    return {i["key"]: i for i in st.needs_you(recs, today, require_pass=True)}, {r["email"]: r for r in recs}
+
+
+def test_a_campaign_with_only_a_one_off_test_is_an_ask_to_create_a_weekly_test():
+    """21 Nov 2026: 24 inboxes on a campaign with only a finished one-off test were told as "in the weekly test"."""
+    rows = (_unproven_on_test("a@oneoff.example", "Client | One-off deliverability test")
+            + _unproven_on_test("b@oneoff.example", "Client | One-off deliverability test"))
+    items, by = _items(rows, SAT, WEEKLY)
+    assert by["a@oneoff.example"]["weekly_test"] == "missing" and by["a@oneoff.example"]["no_weekly_test"]
+    assert "sending_test_short" not in items and "sending_not_in_test" not in items
+    it = items["test_campaign_no_weekly_test"]
+    assert it["detail"] == ["• Precise Leads · oneoff.example: 2 inboxes, on Client | One-off deliverability test, "
+                            "PL Deliverability Test - all PL inboxes"]
+    (ask,) = [a for a in st.digest_asks(list(items.values())) if a.key == "inbox-status:test_campaign_no_weekly_test"]
+    assert ask.kind == "ask" and ask.text.startswith("2 inboxes are in no weekly test")
+    assert ask.step == ("In Smart Delivery, create a weekly test on each campaign listed now (Saturday, after 11:00 "
+                        "IST, 4 emails per provider, text-only ticked); its first run is the next such Saturday.")
+
+
+def test_one_campaign_named_in_the_step():
+    rows = [_row("a@oneoff.example", "Camp C", "ACTIVE"), _row("a@oneoff.example", "Vendor test DT", "PAUSED")]
+    items, _ = _items(rows, SAT, WEEKLY)
+    assert items["test_campaign_no_weekly_test"]["step"].startswith(
+        "In Smart Delivery, create a weekly test on campaign Vendor test DT now (Saturday, after 11:00 IST")
+
+
+def test_on_the_test_day_the_line_says_results_come_tomorrow_never_a_run_of_today():
+    """21 Nov 2026 at 11:00 IST the digest said "next run Sat 21 Nov" after those runs had gone out."""
+    rows = _unproven_on_test("s1@short.example") + _unproven_on_test("s2@short.example")
+    v2 = [{"email": "s1@short.example", "night": "2026-11-14", "verdict": "INCOMPLETE", "google": {"sent": 1},
+           "microsoft": {"sent": 1}}]
+    for weekly in (WEEKLY,                                                          # read after the run: next week
+                   [{**WEEKLY[0], "next_run": "2026-11-21T00:30:00.000Z"}]):        # read before it: today
+        items, by = _items(rows, SAT, weekly, v2)
+        assert by["s1@short.example"]["runs_today"]
+        text = items["sending_test_short"]["text"]
+        assert text == ("Today's weekly tests are being read (2 inboxes with no recent pass are in them); results in "
+                        "tomorrow's digest")
+        assert "21 Nov" not in text and "next run" not in text
+        assert all("next run" not in x for x in items["sending_test_short"]["detail"])
+
+
+def test_other_days_name_the_next_run_from_the_tests_schedule():
+    rows = _unproven_on_test("s1@short.example") + _unproven_on_test("s2@short.example")
+    v2 = [{"email": "s1@short.example", "night": "2026-11-21", "verdict": "INCOMPLETE", "google": {"sent": 1},
+           "microsoft": {"sent": 1}},
+          {"email": "s2@short.example", "night": "2026-11-21", "verdict": "INCOMPLETE", "google": {"sent": 2},
+           "microsoft": {"sent": 2}}]
+    tue = date(2026, 11, 24)
+    items, by = _items(rows, tue, WEEKLY, v2)
+    assert not by["s1@short.example"]["runs_today"] and by["s1@short.example"]["next_run"] == "2026-11-28"
+    assert items["sending_test_short"]["text"] == (
+        "2 inboxes in a weekly test have no result in the last 10 days because their last test runs sent too few "
+        "emails to judge; next run Sat 28 Nov")
+    # a schedule that says today (Saturday) but a run of today: never printed as "next run"
+    items, _ = _items(rows, SAT, [{**WEEKLY[0], "next_run": "2026-11-21T00:30:00.000Z"}], ())
+    assert "next run" not in items["sending_test_short"]["text"]
+
+
+def test_weekly_tests_are_read_from_a_fresh_coverage_record_only():
+    class Db:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def __getitem__(self, k):
+            return _Col(self.docs)
+    fresh = {"_id": "2026-11-21", "weekly": {"PRECISE_LEADS": WEEKLY}}
+    assert st.weekly_tests(Db([fresh]), SAT) == WEEKLY
+    assert st.weekly_tests(Db([{"_id": "2026-11-18", "weekly": {"PRECISE_LEADS": WEEKLY}}]), SAT) is None   # old
+    assert st.weekly_tests(Db([{"_id": "2026-11-21", "weekly": {}}]), SAT) is None          # nothing read
+    assert st.weekly_tests(Db([{"_id": "2026-11-21"}]), SAT) is None                        # before 21 Nov
 
 
 class _Col:

@@ -238,7 +238,7 @@ def test_the_digest_shows_each_asks_list_under_it():
                                       "step": "Add inboxes to each campaign listed.", "detail": SHORT}])]
     head, parts = dp.build(sources, [], [], T0 + timedelta(hours=1))
     text = "\n".join(head)
-    assert ("\n1. 2 live campaigns have lost half or more of their inboxes: Client A · Campaign One, "
+    assert ("\n1. 2 live campaigns have lost half or more of their inboxes. Which: Client A · Campaign One, "
             "Client A · Campaign Two. Do: Add inboxes to each campaign listed.") in text
     assert "\n".join(SHORT) in parts[0]                  # the full list, in the thread
 
@@ -248,7 +248,7 @@ def test_the_digest_caps_each_list_and_says_the_rest_is_in_the_thread():
     head, parts = dp.build([_src("inbox-intake", [{"text": "15 inboxes drifted.", "step": "Fix them.",
                                                    "detail": lines}])], [], [], T0)
     text = "\n".join(head)
-    assert "15 inboxes drifted: inbox0@example.com, inbox1@example.com, inbox2@example.com and 12 more." in text
+    assert "15 inboxes drifted. Which: example.com. Do: Fix them." in text    # never the whole list in the post
     assert "inbox11@example.com" in parts[0] and "inbox12@example.com" not in parts[0]
     assert "• and 3 more" in parts[0]
 
@@ -298,8 +298,9 @@ def test_the_kill_list_from_several_jobs_is_one_item_with_the_job_count():
     text, parts = _text(dp.build(_kill_sources(), [], [], NOW))
     assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text
     assert "\n2." not in text
-    assert ("Kill list: 6 inboxes and 3 domains, reported by 2 jobs (Fleet watch, Kill warnings): alpha.test, "
-            "bravo.test, charlie.test.") in text
+    assert ("6 inboxes and 3 domains are on the kill list: they kept failing placement tests, so email sent from "
+            "them is likely to land in spam. Which: alpha.test, bravo.test, charlie.test.") in text
+    assert "Fleet watch" not in text and "reported by" not in text           # no job names in the post
     # one line per domain in the thread, saying what each job found there
     assert "• alpha.test: 2 inboxes still sending (a1@, a2@); domain landing in spam on the classic tests" in parts[0]
     assert "• charlie.test: 1 inbox in switched-on campaigns that are not sending (c1@)" in parts[0]
@@ -323,7 +324,7 @@ def test_a_recorded_decision_holds_items_back_and_says_so_in_one_line():
                              "key": "v2-weekly:short"}])
     text, parts = _text(dp.build(_kill_sources() + [v2], [], [], NOW, holds=_holds()))
     assert f"<@{dg.OWNER}>, 2 things need you today:" in text
-    assert "Kill list: 1 inbox and 1 domain, reported by 1 job (Kill warnings): charlie.test: 1 inbox" in text  # only charlie left
+    assert "1 inbox and 1 domain are on the kill list" in text and "Which: charlie.test." in text  # only charlie left
     assert "alpha.test" not in text and "bravo.test" not in text and "delta.test" not in text
     assert "2 test runs sent fewer" in text                                                   # not decided: shown
     assert "4 decided items left out on purpose" in text
@@ -354,8 +355,9 @@ def test_a_partly_held_ask_shows_only_what_is_left_and_counts_the_rest():
     src = _src("inbox-status", [{"text": "3 inboxes are disconnected.", "step": "Reconnect each one listed.",
                                  "key": "inbox-status:disc",
                                  "detail": ["x1@alpha.test", "y1@golf.test", "y2@golf.test"]}])
-    text, _ = _text(dp.build([src], [], [], NOW, holds=_holds()))
-    assert "y1@golf.test" in text and "x1@alpha.test" not in text
+    text, parts = _text(dp.build([src], [], [], NOW, holds=_holds()))
+    assert "Which: golf.test." in text and "alpha.test" not in text
+    assert "y1@golf.test" in parts[0] and "x1@alpha.test" not in parts[0]     # the list, in the thread
     assert "(1 of them held back, decided)" in text
 
 
@@ -444,7 +446,7 @@ def test_the_top_post_is_at_most_8_lines():
     head, _ = dp.build(srcs, done, [], NOW, holds=_holds())
     lines = _lines(head)
     assert len(lines) <= 8, lines
-    assert lines[1] == f"<@{dg.OWNER}>, 9 things need you today:"
+    assert lines[1] == f"<@{dg.OWNER}>, 9 things need you today (4 here, 5 in the thread):"
     assert "In the thread: 5 more things for you, 60 things the bot did by itself." in lines[-1]
     assert "1 job failed or could not check: API keys. Being looked at; what broke is in the thread." in lines
 
@@ -476,7 +478,7 @@ def test_asks_about_the_same_inboxes_are_one_item():
     head, parts = dp.build([sheet, gate, other], [], [], NOW)
     text = "\n".join(head)
     assert f"<@{dg.OWNER}>, 2 things need you today:" in text
-    assert "The same inboxes are also flagged by Gate self-test (thread)." in text
+    assert "Other checks flag the same inboxes too (thread)." in text
     assert "failed or could not check" not in text                     # the gate line is not a second item
     assert text.count("kilo.test") == 1
     assert "also, Gate self-test: 9 inboxes have no row" in parts[0]
@@ -558,9 +560,9 @@ def test_an_info_item_is_one_line_not_a_thing_to_do():
     head, parts = dp.build([info, ask], [], [], NOW)
     lines = _lines(head)
     assert lines[1] == f"<@{dg.OWNER}>, 1 thing needs you today:"
-    assert lines[2].startswith("1. 1 domain is not in the deliverability sheet: kilo.test")
+    assert lines[2].startswith("1. 1 domain is not in the deliverability sheet. Which: kilo.test. Do: Add it")
     assert lines[3] == ("For info, nothing to do: 3 inboxes are in the weekly test, but the last runs sent too few "
-                        "emails to judge them; next run Sat 21 Nov: Client A · kilo.test, Client A · lima.test.")
+                        "emails to judge them; next run Sat 21 Nov.")             # the list is in the thread only
     assert "also flagged" not in "\n".join(head)                          # not merged with the ask on kilo.test
     assert "Do:" not in lines[3]
     assert "For info: 3 inboxes are in the weekly test" in parts[0] and "lima.test: 1 inbox" in parts[0]
@@ -573,3 +575,36 @@ def test_an_info_item_alone_still_posts_and_says_nothing_needs_you():
     lines = _lines(head)
     assert lines[1] == "Nothing needs you today."
     assert lines[2].startswith("For info, nothing to do: 1 inbox is in the weekly test")
+
+
+def test_tracker_keys_never_reach_the_reader_2026_11_21():
+    """21 Nov 2026: a person's Smartlead tag carried "(t235)" into the bill item."""
+    assert dg.plain('tagged "DO NOT USE - pulled by a teammate 16 Nov (t235)"') == 'tagged "DO NOT USE - pulled by a teammate 16 Nov"'
+    assert dg.plain("see (t268/t269) here") == "see here"
+    assert dg.plain("a weekly v2 test") == "a weekly test"
+
+
+def test_the_numbers_reply_says_what_each_word_means_2026_11_21():
+    src = {**_src("inbox-status", [{"text": "x.", "step": "y.", "detail": ["a.example: 1"]}]),
+           "numbers": {"Client A": {"Safe to send": 30, "Not proven yet": 2}}}
+    head, parts = dp.build([src], [], [], T0)
+    stand = next(p for p in parts if p.startswith("Where the inboxes stand"))
+    assert "• Client A: 30 safe to send, 2 not proven yet" in stand
+    assert "What the words mean: safe to send = cleared to send, warm-up fine; not proven yet = held back until a " \
+           "weekly test passes;" in stand
+
+
+def test_every_for_info_line_fits_in_the_thread_2026_11_21():
+    """21 Nov 2026: the reply's line cap cut off the second "For info" item the post pointed to."""
+    long_info = _src("inbox-status", [{"text": "39 inboxes are being read.", "kind": "info", "key": "inbox-status:i",
+                                       "detail": [f"Client A · d{i}.example: 3 inboxes" for i in range(13)]}])
+    other_info = _src("v2-weekly", [{"text": "1 result had not come in.", "kind": "info", "key": "v2-weekly:i"}])
+    big = _src("dt-senders", [{"text": "Many inboxes.", "step": "Do it.", "key": "dt-senders:x",
+                               "detail": [f"e{i}.example: 1 inbox" for i in range(12)]}])
+    more = [_src(f"job{k}", [{"text": f"Item {k}.", "step": "Do it.", "key": f"job{k}:x",
+                              "detail": [f"f{k}-{i}.example: 1 inbox" for i in range(20)]}]) for k in range(3)]
+    head, parts = dp.build([long_info, other_info, big] + more, [], [], NOW)
+    assert len(parts[0].split("\n")) <= dp.PART_LINES + 1 and "more lines (the inbox sheet)" in parts[0]
+    assert "(1 more in the thread.)" in "\n".join(head)
+    assert "For info: 1 result had not come in." in parts[0]
+    assert "• and 10 more" in parts[0]

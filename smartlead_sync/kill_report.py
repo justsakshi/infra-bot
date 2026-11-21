@@ -264,8 +264,8 @@ def digest_asks(res: dict, errors: list[str]) -> list:
                            detail=[f"{r['email']} ({cl}): in {', '.join(_idle(r))}" for cl, r in idle]))
     if doms:
         k = len(doms)
-        asks.append(dg.Ask(f"{_n(k, 'domain', 'domains')} {'is' if k == 1 else 'are'} landing in spam on the classic "
-                           "tests and should not be used.",
+        asks.append(dg.Ask(f"{_n(k, 'domain', 'domains')} {'lands' if k == 1 else 'land'} in spam on the placement "
+                           f"tests, so new campaigns should not use {'it' if k == 1 else 'them'}.",
                            "Don't add inboxes on the domains listed to campaigns; retire or replace each domain at its "
                            "next bill.", key="kill-report:domains",
                            detail=[f"{cl} · {dom} ({_n(len(rows), 'inbox', 'inboxes')}): {_pct(rows)} reached the inbox"

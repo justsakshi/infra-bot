@@ -182,7 +182,11 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
             detail = [f"• {k[0]} · {k[1]}: " + "; ".join(
                 f"{_names(sorted(r['email'] for r in rs if r['state'] == s))} ({LABEL[s]})"
                 for s in HELD if any(r["state"] == s for r in rs)) for k, rs in group]
-            items.append({"key": "held_but_sending" + ("_report_only" if who else ""), "text": text, "detail": detail})
+            ask = (f"{_n(len(emails))} that failed the weekly test or {'is' if one else 'are'} tagged DO NOT USE still "
+                   f"{'sends' if one else 'send'} in {where}, so {'it' if one else 'they'} can pull "
+                   f"{'that campaign' if len(group) == 1 else 'those campaigns'} into spam")
+            items.append({"key": "held_but_sending" + ("_report_only" if who else ""), "text": text, "ask": ask,
+                          "detail": detail})
 
     short, short_clients = [], set()
     for (client, camp), rs in sorted(by_campaign.items()):
@@ -205,7 +209,10 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
         items.append({"key": "campaign_short", "detail": short,
                       "text": f"{_n(n_short, 'live campaign')} {'has' if one else 'have'} lost half or more of "
                               f"{'its' if one else 'their'} inboxes. Add inboxes that passed the weekly test, or lower "
-                              f"{'its' if one else 'their'} daily sending"})
+                              f"{'its' if one else 'their'} daily sending",
+                      "ask": f"{_n(n_short, 'live campaign')} {'has' if one else 'have'} lost half or more of "
+                             f"{'its' if one else 'their'} inboxes, so the rest carry {'its' if one else 'their'} "
+                             f"sending alone and may go to spam or stall"})
 
     off = [r for r in records if r["state"] == "disconnected" and r["campaigns"]]
     if off:
@@ -214,14 +221,19 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
         for r in off:
             for c in r["campaigns"]:
                 by_camp[(r["client"], c)].append(r["email"])
+        one = len(off) == 1
         items.append({"key": "disconnected",
-                      "text": f"{_n(len(off))} in live campaigns {'is' if len(off) == 1 else 'are'} disconnected in "
-                              f"Smartlead. Reconnect {'it' if len(off) == 1 else 'them'}",
+                      "text": f"{_n(len(off))} in live campaigns {'is' if one else 'are'} disconnected in "
+                              f"Smartlead. Reconnect {'it' if one else 'them'}",
+                      "ask": f"{_n(len(off))} in live campaigns {'is' if one else 'are'} disconnected in Smartlead, so "
+                             f"{'its' if one else 'their'} share of those campaigns is not being sent",
                       "detail": [f"• {c} · {camp}: {_names(sorted(es), 12)}" for (c, camp), es in sorted(by_camp.items())]})
 
     unproven = [r for r in records if r["state"] == "sending_unproven" and not r.get("in_test")]
     left_out = [r for r in records if r["state"] == "sending_unproven" and r.get("in_test")
-                and r.get("weekly_test") == "missing"]
+                and r.get("weekly_test") == "missing" and not r.get("no_weekly_test")]
+    no_weekly = [r for r in records if r["state"] == "sending_unproven" and r.get("in_test")
+                 and r.get("weekly_test") == "missing" and r.get("no_weekly_test")]
     waiting = [r for r in records if r["state"] == "sending_unproven" and r.get("in_test")
                and r.get("weekly_test") != "missing"]
     if unproven and require_pass:
@@ -236,7 +248,13 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
                       "detail": [f"• {c} · {d}: {_n(len(rs))}, in {', '.join(sorted({x for r in rs for x in r['campaigns']}))}"
                                  + (f"; last test {max(r['v2_date'] for r in rs)[:10]}"
                                     if any(r["v2_date"] for r in rs) else "; never tested")
-                                 for (c, d), rs in sorted(by_dom.items())]})
+                                 for (c, d), rs in sorted(by_dom.items())],
+                      "ask": f"{_n(len(unproven))} {'is' if len(unproven) == 1 else 'are'} sending with no weekly test "
+                             f"in the last {usable.V2_FRESH_DAYS} days and {'is' if len(unproven) == 1 else 'are'} on no "
+                             f"test campaign, so nothing checks where {'its' if len(unproven) == 1 else 'their'} emails "
+                             f"land"})
+    if no_weekly and require_pass:
+        items.append(_no_weekly_item(no_weekly))
     if left_out and require_pass:
         k = len(left_out)
         items.append({"key": "sending_not_in_test",
@@ -244,7 +262,10 @@ def needs_you(records: list[dict], today: date, require_pass: bool | None = None
                               f"{'sits' if k == 1 else 'sit'} on a test campaign, but its weekly test leaves "
                               f"{'it' if k == 1 else 'them'} out (a test keeps the inboxes it was created with)",
                       "detail": [f"• {c} · {d}: {_n(len(rs))}, on {_test_names(rs)}"
-                                 for (c, d), rs in _by_client_domain(left_out)]})
+                                 for (c, d), rs in _by_client_domain(left_out)],
+                      "ask": f"{_n(k)} {'sits' if k == 1 else 'sit'} on a test campaign whose weekly test leaves "
+                             f"{'it' if k == 1 else 'them'} out (a test keeps the inboxes it was made with), so nothing "
+                             f"checks where {'its' if k == 1 else 'their'} emails land"})
     if waiting and require_pass:
         items.append(_waiting_item(waiting, today))
     return items
@@ -263,12 +284,6 @@ def _by_client_domain(records: list[dict]) -> list[tuple[tuple[str, str], list[d
     for r in records:
         out[(r["client"], r["domain"])].append(r)
     return sorted(out.items())
-
-
-def next_weekly_run(today: date) -> date:
-    """The next day the weekly v2 tests run: Saturday (dt_senders.SATURDAY: the weekly tests are set up to start on
-    Saturdays after the 05:30 IST seed refill), today when today is a Saturday."""
-    return today + timedelta(days=(5 - today.weekday()) % 7)
 
 
 def _day(d: date) -> str:
@@ -292,50 +307,160 @@ def _seeds_needed() -> int:
     return int(v2_results.PASS_SEEDS)
 
 
+def _no_weekly_item(rs: list[dict]) -> dict:
+    """An ask for inboxes on a test campaign that no ACTIVE scheduled weekly test covers (21 Nov 2026: 24 inboxes on a
+    campaign with only a one-off, finished test were told as "in the weekly test"). The step names the campaign and
+    the settings of the weekly tests: Saturday, after the last start time in use, 4 emails per provider, text only."""
+    k = len(rs)
+    camps = sorted({t for r in rs for t in r.get("untested_camps") or r.get("tests") or []})
+    after = max((r.get("new_test_after") or "" for r in rs), default="")
+    when = f"Saturday, after {after} IST" if after else "Saturday"
+    on = f"campaign {camps[0]}" if len(camps) == 1 else "each campaign listed"
+    return {"key": "test_campaign_no_weekly_test",
+            "text": f"{_n(k)} {'is' if k == 1 else 'are'} in no weekly test: {'its' if k == 1 else 'their'} test "
+                    f"campaign has no active weekly test (a one-off test does not repeat)",
+            "ask": f"{_n(k)} {'is' if k == 1 else 'are'} in no weekly test (their test campaign had only a one-off test "
+                   f"or none), so nothing checks where {'its' if k == 1 else 'their'} emails land",
+            "step": f"In Smart Delivery, create a weekly test on {on} now ({when}, {_seeds_needed()} emails per "
+                    "provider, text-only ticked); its first run is the next such Saturday.",
+            "detail": [f"• {c} · {d}: {_n(len(xs))}, on "
+                       f"{', '.join(sorted({t for x in xs for t in x.get('untested_camps') or x.get('tests') or []}))}"
+                       for (c, d), xs in _by_client_domain(rs)]}
+
+
 def _waiting_item(waiting: list[dict], today: date) -> dict:
-    """One info line for inboxes in the weekly test that have no result to judge (c. in ``needs_you``)."""
-    k = len(waiting)
-    nxt = _day(next_weekly_run(today))
-    short = [r for r in waiting if r.get("short_runs")]
-    few = all(0 < x["sent"] < _seeds_needed() for r in short for x in r["short_runs"])
-    if len(short) == k:
-        what = "sent too few emails to judge" if few else "came back short or incomplete, too little to judge"
-        text = (f"{_n(k)} sending with no weekly test result in the last {usable.V2_FRESH_DAYS} days "
-                f"{'is' if k == 1 else 'are'} in the weekly test, but the last Smart Delivery runs {what} "
-                f"{'it' if k == 1 else 'them'}; next run {nxt}")
-    else:
-        text = (f"{_n(k)} sending with no weekly test result in the last {usable.V2_FRESH_DAYS} days "
-                f"{'is' if k == 1 else 'are'} on a test campaign, so the next weekly run ({nxt}) checks "
-                f"{'it' if k == 1 else 'them'}")
+    """One info line for inboxes in an active weekly test that have no result to judge (c. in ``needs_you``). It never
+    names a run that already happened or a "next run" of today or earlier (21 Nov 2026: on the test day at 11:00 it
+    said "next run Sat 21 Nov" after the runs had gone out): inboxes whose test runs today are "being read, results
+    in tomorrow's digest"; the others name their test's next run from its schedule (Smart Delivery nextRunAt)."""
+    today_rs = [r for r in waiting if r.get("runs_today")]
+    later = [r for r in waiting if not r.get("runs_today")]
+    bits = []
+    if today_rs:
+        k = len(today_rs)
+        bits.append(f"today's weekly tests are being read ({_n(k)} with no recent pass {'is' if k == 1 else 'are'} in "
+                    f"them); results in tomorrow's digest")
+    if later:
+        k = len(later)
+        nxt = sorted({r["next_run"] for r in later if r.get("next_run") and r["next_run"] > today.isoformat()})
+        when = f"; next run {_day(date.fromisoformat(nxt[0]))}" if nxt else ""
+        short = [r for r in later if r.get("short_runs")]
+        few = bool(short) and all(0 < x["sent"] < _seeds_needed() for r in short for x in r["short_runs"])
+        if len(short) == k:
+            why = ("its last test runs sent too few emails to judge" if k == 1 else
+                   "their last test runs sent too few emails to judge") if few else \
+                  ("its last test runs came back incomplete" if k == 1 else "their last test runs came back incomplete")
+            bits.append(f"{_n(k)} in a weekly test {'has' if k == 1 else 'have'} no result in the last "
+                        f"{usable.V2_FRESH_DAYS} days because {why}{when}")
+        else:
+            bits.append(f"{_n(k)} in a weekly test {'has' if k == 1 else 'have'} no result yet{when or '; the next run checks them'}")
+    text = "; ".join(bits)
+    text = text[:1].upper() + text[1:]
     detail = []
     for (c, d), rs in _by_client_domain(waiting):
         runs = [x for r in rs for x in r.get("short_runs") or []]
         on = _test_names(rs)
-        if runs:
+        if any(r.get("runs_today") for r in rs):
+            why = "tested today, result due tomorrow"
+        elif runs:
             why = _runs_text(runs)
         elif any(r.get("weekly_test") == "in" for r in rs):
             why = f"no run in the last {usable.V2_FRESH_DAYS} days"
         else:
             why = "the next weekly run checks them"
+        nxt = sorted({r["next_run"] for r in rs if r.get("next_run") and r["next_run"] > today.isoformat()})
+        if nxt and not any(r.get("runs_today") for r in rs):
+            why += f"; next run {_day(date.fromisoformat(nxt[0]))}"
         where = "in the weekly test of" if any(r.get("weekly_test") == "in" for r in rs) else "on"
         detail.append(f"• {c} · {d}: {_n(len(rs))}, {where} {on}; {why}")
     return {"key": "sending_test_short", "info": True, "text": text, "detail": detail}
 
 
-def add_test_facts(records: list[dict], missing: set[str] | None, v2_rows, today: date) -> list[dict]:
+def weekly_tests(db, today: date) -> list[dict] | None:
+    """The ACTIVE scheduled weekly tests from dt_senders' coverage record of today or yesterday (its "weekly": per
+    account [{name, campaign, next_run, weekdays, time, senders}]), or None when there is no such record, it carries
+    none (a record from before 21 Nov 2026, or no account's tests were read) or Mongo is not read. Never raises."""
+    try:
+        doc = next(iter(db["test_coverage"].find({"_id": {"$gte": (today - timedelta(days=1)).isoformat()}},
+                                                 {"weekly": 1}).sort("_id", -1).limit(1)), None)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Status] weekly tests not read: {str(exc)[:120]}")
+        return None
+    if not doc or not isinstance(doc.get("weekly"), dict) or not doc["weekly"]:
+        return None
+    return [t for ts in doc["weekly"].values() for t in ts or [] if isinstance(t, dict)]
+
+
+def _ist_date(iso) -> str | None:
+    """'2026-11-28T00:30:00.000Z' -> '2026-11-28' in IST; None when unreadable."""
+    from datetime import datetime, timezone
+    try:
+        d = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    d = d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    return d.astimezone(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+
+
+def _copy_check_campaign(name: str) -> bool:
+    """A "DT <client> copy check" campaign (v2_results.is_copy_check_campaign)."""
+    n = str(name or "").strip().lower()
+    return n.startswith("dt ") and n.endswith(" copy check")
+
+
+def _runs_on(t: dict, today: date) -> bool:
+    """True when this weekly test runs today: its next run is today (later today), or today is one of its schedule's
+    weekdays (Smart Delivery counts 0 = Sunday ... 6 = Saturday), so today's run may already have gone out."""
+    if _ist_date(t.get("next_run")) == today.isoformat():
+        return True
+    return (today.weekday() + 1) % 7 in {int(x) for x in t.get("weekdays") or [] if str(x).lstrip("-").isdigit()}
+
+
+def add_test_facts(records: list[dict], missing: set[str] | None, v2_rows, today: date,
+                   weekly: list[dict] | None = None) -> list[dict]:
     """``records`` with, for each inbox sending without a fresh pass, ``weekly_test`` ("missing": in no active
     weekly test per dt_senders' coverage record; "in": in one; None: not known, ``missing`` None) and
     ``short_runs`` ([{night, verdict, sent}]: its v2 rows in the last V2_FRESH_DAYS days that are no verdict,
-    newest last; ``sent`` = fewest emails a seed provider got). ``v2_rows`` = Mongo v2_verdicts rows. Pure."""
+    newest last; ``sent`` = fewest emails a seed provider got). ``v2_rows`` = Mongo v2_verdicts rows.
+
+    ``weekly`` (``weekly_tests``: the ACTIVE scheduled weekly tests and their senders), when known, decides "in": only
+    a sender of such a test is in the weekly test; any other inbox on a test campaign is "missing", and
+    ``no_weekly_test`` when none of its test campaigns has an active weekly test (21 Nov 2026: a campaign with only a
+    one-off test was counted as weekly). It also gives ``runs_today`` (its test runs today, or it has a weekly test
+    row of today), ``next_run`` (IST date of its test's next run) and ``new_test_after`` (the last start time in use,
+    for a new test's slot). Pure."""
     rows: dict[str, list[dict]] = defaultdict(list)
     for x in v2_rows or []:
         rows[str(x.get("email") or "").lower()].append(x)
+    covered: dict[str, list[dict]] = defaultdict(list)
+    for t in weekly or []:
+        if t.get("copy"):                   # the copy check tests the email, not its senders
+            continue
+        for e in t.get("senders") or []:
+            covered[str(e).lower()].append(t)
+    tested_camps = {str(t.get("campaign") or "") for t in weekly or []}
+    after = max((str(t.get("time") or "") for t in weekly or []), default="")
     out = []
     for r in records:
         if r.get("state") != "sending_unproven":
             out.append(r)
             continue
-        weekly = None if missing is None else ("missing" if r["email"] in missing else "in")
+        mine = covered.get(r["email"]) or []
+        if weekly is not None:
+            state = "in" if mine else "missing"
+        else:
+            state = None if missing is None else ("missing" if r["email"] in missing else "in")
+        nights = {str(x.get("night") or "")[:10] for x in rows.get(r["email"]) or []}
+        runs_today = today.isoformat() in nights or any(_runs_on(t, today) for t in mine)
+        nxt = sorted(d for d in (_ist_date(t.get("next_run")) for t in mine) if d and d > today.isoformat())
+        facts = {"runs_today": runs_today, "next_run": nxt[0] if nxt else None}
+        if weekly is not None and state == "missing" and r.get("in_test"):
+            # test campaigns with no active weekly test at all (a copy-check campaign is never one to test inboxes on)
+            camps = [c for c in r.get("tests") or [] if c not in tested_camps and not _copy_check_campaign(c)]
+            facts["no_weekly_test"] = bool(camps) and not any(c in tested_camps for c in r.get("tests") or []
+                                                               if not _copy_check_campaign(c))
+            facts["untested_camps"] = camps
+            facts["new_test_after"] = after
         short = []
         for x in sorted(rows.get(r["email"]) or [], key=lambda x: str(x.get("night") or "")):
             night = str(x.get("night") or "")[:10]
@@ -348,7 +473,7 @@ def add_test_facts(records: list[dict], missing: set[str] | None, v2_rows, today
             sent = [int((x.get(p) or {}).get("sent") or 0) for p in ("google", "microsoft") if x.get(p)]
             short.append({"night": night, "verdict": str(x.get("verdict") or ""),
                           "sent": min((s for s in sent if s), default=0)})
-        out.append({**r, "weekly_test": weekly, "short_runs": short})
+        out.append({**r, "weekly_test": state, "short_runs": short, **facts})
     return out
 
 
@@ -495,19 +620,19 @@ def _mark_posted(db, today: date) -> None:
 # its inboxes is posted at once as well.
 # Each step works without a thread: the ask carries its list (17 Nov 2026; an urgent post has no thread).
 DIGEST_STEPS = {
-    "held_but_sending": "In Smartlead, open each campaign listed and remove those inboxes (Email Accounts tab). "
-                        "The weekly job also takes out the failed ones once the week's results are in.",
+    "held_but_sending": "In Smartlead, open each campaign listed and remove those inboxes (Email Accounts tab); the "
+                        "weekly job also takes out the failed ones once the week's results are in.",
     "held_but_sending_report_only": "In Smartlead, open each campaign listed and remove those inboxes.",
     "campaign_short": "In Smartlead, open each campaign listed and add free inboxes that passed the weekly test "
                       "(campaign, Email Accounts), or lower its daily sending (campaign, Settings) until it has "
                       "enough. If the campaign should not be sending at all, pause it.",
-    "disconnected": "Smartlead, Email Accounts, filter Disconnected, Reconnect each inbox listed (or delete it "
+    "disconnected": "In Smartlead, Email Accounts, filter Disconnected and reconnect each inbox listed (or delete it "
                     "if it was cancelled).",
     "sending_unproven": "Add each domain listed to the deliverability sheet (its client's tab, column A); the 06:00 "
                         "IST test-campaign job then puts its inboxes on the weekly test.",
     "sending_not_in_test": "In Smart Delivery, open the weekly test of each test campaign listed and add those inboxes "
-                           "to it (or re-create the test from its campaign). The sheet is not the fix: they are on "
-                           "the test campaign already.",
+                           "(or re-create the test from its campaign); they are on the test campaign already, so the "
+                           "sheet is not the fix.",
 }
 
 
@@ -528,8 +653,11 @@ def digest_asks(items: list[dict]) -> list:
             asks.append(dg.Ask(it["text"] + ".", "", key=f"inbox-status:{it['key']}", kind="info",
                                detail=it.get("detail") or []))
             continue
-        text = it["text"].split(". ")[0] + "." if it["key"] in DIGEST_STEPS else it["text"] + "."
-        asks.append(dg.Ask(text, DIGEST_STEPS.get(it["key"], ""), key=f"inbox-status:{it['key']}",
+        if it.get("ask"):            # the digest's sentence: what is wrong and why it matters (21 Nov 2026)
+            text = it["ask"] + "."
+        else:
+            text = it["text"].split(". ")[0] + "." if it["key"] in DIGEST_STEPS else it["text"] + "."
+        asks.append(dg.Ask(text, it.get("step") or DIGEST_STEPS.get(it["key"], ""), key=f"inbox-status:{it['key']}",
                            urgent=it["key"] == "campaign_short", detail=it.get("detail") or []))
     return asks
 
@@ -548,7 +676,7 @@ def run(rows: list[dict], today: date, complete: bool, post: bool, db=None) -> d
     if db is not None:
         unproven = {r["email"] for r in records if r["state"] == "sending_unproven"}
         if unproven:
-            records = add_test_facts(records, *test_facts(db, today, unproven), today)
+            records = add_test_facts(records, *test_facts(db, today, unproven), today, weekly=weekly_tests(db, today))
     # the first run records every inbox as new: that is the baseline, not a day's news
     changes = [] if res["changes"] and all(c.get("from") is None for c in res["changes"]) else res["changes"]
     items = needs_you(records, today)

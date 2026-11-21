@@ -182,7 +182,7 @@ def urgent_text(source: str, a: dict) -> str:
     """What is wrong, what it is about (its list), the step, and that it stays in the digest. Each part apart."""
     lines = [plain(x) for x in detail_lines(a, URGENT_LINES)]
     return "\n".join([f"🚨 {plain(a['text'])}", ""] + (lines + [""] if lines else [])
-                     + [f"<@{OWNER}> {plain(a['step'])}" if a.get("step") else f"<@{OWNER}>",
+                     + [f"<@{OWNER}> {cap(plain(a['step']))}" if a.get("step") else f"<@{OWNER}>",
                         "", "It stays in the daily digest until it is fixed."])
 
 
@@ -471,7 +471,6 @@ def merge_kill_list(asks: list[dict], labels: dict | None = None) -> tuple[list[
                 parts.append(f"{_n(len(users), 'inbox', 'inboxes')} {reason} ({shown})")
         parts += sorted(dom_reasons.get(dom, ()))
         lines.append(f"• {dom}: {'; '.join(parts)}")
-    jobs = sorted({labels.get(a["source"], a["source"]) for a in members if a.get("source")})
     what = " and ".join(x for x in (_n(len(inbox_reason), "inbox", "inboxes") if inbox_reason else "",
                                     _n(len(dom_reasons), "domain", "domains") if dom_reasons else "") if x)
     reasons = set(inbox_reason.values())
@@ -484,8 +483,11 @@ def merge_kill_list(asks: list[dict], labels: dict | None = None) -> tuple[list[
         do.append("don't add inboxes on the domains listed to campaigns, and don't renew those domains at their "
                   "next bill")
     step = "; ".join(do)
-    step = step[:1].upper() + step[1:] + ". Campaign names and bill dates: thread, part \"Kill list\"."
-    merged = {"text": f"Kill list: {what}, reported by {_n(len(jobs), 'job', 'jobs')} ({', '.join(jobs)}).",
+    step = step[:1].upper() + step[1:] + "."
+    one = len(inbox_reason) + len(dom_reasons) == 1
+    merged = {"text": f"{what[:1].upper()}{what[1:]} {'is' if one else 'are'} on the kill list: "
+                      f"{'it' if one else 'they'} kept failing placement tests, so email sent from "
+                      f"{'it' if one else 'them'} is likely to land in spam.",
               "step": step, "key": "digest:kill-list", "kind": "ask", "detail": lines, "source": "kill-list",
               "urgent": any(a.get("urgent") for a in members),
               "since": min((str(a.get("since")) for a in members if a.get("since")), default=None),
@@ -516,6 +518,7 @@ _NOT_WORD = r"(?<![\w.@/-])"          # never inside a domain, an address, a fil
 _PLAIN = [(re.compile(_NOT_WORD + p + r"(?![\w.@/-])"), w) for p, w in (
     (r"dt_senders", "the test-campaign job"),
     (r"v2 weekly(?: test)? job", "weekly test job"),
+    (r"weekly v2 test(s?)", r"weekly test\1"),
     (r"DT (?:test )?campaign(s?)", r"test campaign\1"),
     (r"DT test(s?)", r"weekly test\1"),
     (r"(?:Smart Delivery )?v2 (?:weekly )?test(s?)", r"weekly test\1"),
@@ -529,10 +532,14 @@ _PLAIN = [(re.compile(_NOT_WORD + p + r"(?![\w.@/-])"), w) for p, w in (
        "not acted on yet: Google results wait until real replies agree")]
 
 
+_TRACKER_KEY = re.compile(r"\s*\((?:t\d{1,4})(?:[,/ ]+t\d{1,4})*\)")     # "(t235)", "(t268/t269)": tracker keys
+
+
 def plain(text) -> str:
     """The bot's own words in plain ones ('v2 test' -> 'weekly test', 'dt_senders' -> 'the test-campaign job'),
-    never inside a domain, an inbox or a name like 'Campaign | V2'."""
-    out = str(text or "")
+    never inside a domain, an inbox or a name like 'Campaign | V2'. Tracker keys ("(t235)", copied from a person's
+    Smartlead tag) are left out: they mean nothing to the reader (21 Nov 2026)."""
+    out = _TRACKER_KEY.sub("", str(text or ""))
     for rx, word in _PLAIN:
         out = rx.sub(word, out)
     return out
@@ -560,6 +567,11 @@ def merge_same(asks: list[dict], broken: list[dict]) -> tuple[list[dict], list[d
         hosts.append({"item": a, "_reach": r})
         out.append(a)
     return out_asks, out_broken
+
+
+def cap(text: str) -> str:
+    """The first letter upper case (a step reads after "Do:")."""
+    return text[:1].upper() + text[1:]
 
 
 def _post_now(text: str) -> bool:

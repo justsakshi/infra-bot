@@ -220,7 +220,7 @@ def test_each_kind_of_kill_is_one_ask_and_nothing_to_kill_asks_nothing():
                                                           ("kill-report:domains", "ask", False)]
     assert asks[0].text == "1 inbox on the kill list is still sending."
     assert asks[1].text == "1 inbox on the kill list sits in switched-on campaigns that are not sending."
-    assert asks[2].text == "6 domains are landing in spam on the classic tests and should not be used."
+    assert asks[2].text == "6 domains land in spam on the placement tests, so new campaigns should not use them."
     assert all(a.step for a in asks) and not any(EMAIL.search(a.text) for a in asks)
     # 17 Nov 2026: the inboxes and domains travel with the ask (the digest shows them under it), never "in the thread"
     assert all(a.detail for a in asks) and not any("thread" in a.step for a in asks)

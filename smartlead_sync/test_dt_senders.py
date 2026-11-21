@@ -454,9 +454,10 @@ def test_pulled_inboxes_with_no_room_are_an_ask():
                                                   "weekly test keeps checking them until they are back in use.")]
     (a,) = asks
     assert a.key == "dt-senders:no-room:Melior" and a.kind == "ask"
-    assert a.text == ("3 Melior inboxes taken out after a failed v2 test are on no DT campaign: every DT campaign "
-                      "of the client holds 50, so the weekly test does not check them.")
-    assert a.step.startswith("Make room on a DT campaign")
+    assert a.text == ("3 Melior inboxes taken out after failing the weekly test are on no test campaign, because each "
+                      "of the client's test campaigns is full (50 inboxes), so no weekly test can clear them to send "
+                      "again.")
+    assert a.step.startswith("Make room on one of Melior's test campaigns")
     head, thread, _ = ts.infra_report(res, set(), [], False, date(2026, 11, 17))
     assert head[0].endswith(": 3 pulled inboxes with no room on a DT campaign")
 
@@ -512,7 +513,9 @@ def test_coverage_gaps_and_duplicates_are_digest_asks_and_full_coverage_is_quiet
     keys = {a.key: a for a in asks}
     gap = keys["dt-senders:coverage:Melior"]
     assert gap.text.startswith("1 Melior inbox is in no weekly test")
-    assert "DT Melior #3" in gap.step and "needs a new test at Sat 21 Nov 06:00 IST" in gap.step and "50" in gap.step
+    how = " ".join(gap.detail)                  # the per-campaign how-to is the list's first lines (21 Nov 2026)
+    assert "DT Melior #3" in how and "needs a new test at Sat 21 Nov 06:00 IST" in how and "50" in how
+    assert gap.step.startswith("In Smart Delivery, add them to the weekly test the list names")
     assert "2 or more" in keys["dt-senders:coverage-dupes:Precise Leads"].text
     assert not any("Bettrdata" in k for k in keys)
 
@@ -635,11 +638,13 @@ def test_the_reminder_names_the_test_with_room_and_a_chrome_line_that_never_runs
                tests={"DT Melior #3": {"test": "Melior weekly spam test v2 synced 3", "senders": 30}})
     asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))           # a Wednesday
     (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
-    assert a.text == "2 Melior inboxes are in no weekly test, so nothing checks their placement."
+    assert a.text == "2 Melior inboxes are in no weekly test, so nothing checks where their emails land."
     assert a.key == "dt-senders:coverage:Melior" and not a.urgent
-    assert "\"Melior weekly spam test v2 synced 3\" on DT Melior #3 has room (30 of 50 senders)" in a.step
-    assert "Claude in Chrome:" in a.step and "never click Run now" in a.step
-    assert "If its senders cannot be edited" in a.step and "Saturday after 05:30 IST" in a.step
+    how = " ".join(a.detail)
+    assert "\"Melior weekly spam test v2 synced 3\" on DT Melior #3 has room (30 of 50 senders)" in how
+    assert "Claude in Chrome:" in how and "never click Run now" in how
+    assert "If its senders cannot be edited" in how and "Saturday after 05:30 IST" in how
+    assert len(a.step) < 220                    # the post's step stays short; the how-to is in the list
 
 
 def test_a_campaign_without_a_test_with_room_gets_a_new_test_on_saturday():
@@ -648,10 +653,11 @@ def test_a_campaign_without_a_test_with_room_gets_a_new_test_on_saturday():
                tests={"DT Melior #5": {"test": "M5", "senders": 50}}, untested={"Melior": ["DT Melior #6"]})
     asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))
     (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
-    assert "1 on DT Melior #5 (its test \"M5\" is full)" in a.step
-    assert "1 on no DT campaign: needs a new test at Sat 21 Nov 06:30 IST; put it on DT Melior #6 first" in a.step
-    assert "needs a new test at Sat 21 Nov 06:00 IST, on DT Melior #6" in a.step
-    assert a.step.count("create a new weekly v2 test") == 2 and "first run Sat 21 Nov 06:00 IST" in a.step
+    how = " ".join(a.detail)
+    assert "1 on DT Melior #5 (its test \"M5\" is full)" in how
+    assert "1 on no DT campaign: needs a new test at Sat 21 Nov 06:30 IST; put it on DT Melior #6 first" in how
+    assert "needs a new test at Sat 21 Nov 06:00 IST, on DT Melior #6" in how
+    assert how.count("create a new weekly v2 test") == 2 and "first run Sat 21 Nov 06:00 IST" in how
 
 
 def test_on_fridays_the_reminder_posts_at_once_once_per_friday():
@@ -748,7 +754,8 @@ def test_a_group_with_no_test_room_needs_a_new_test_at_a_free_slot():
     res["BETTRDATA"] = {"slots": ["07:00"]}
     asks, _ = ts.digest_items(res, set(), [], False, date(2026, 11, 18))
     (a,) = [a for a in asks if a.key.startswith("dt-senders:coverage:")]
-    assert "needs a new test at Sat 21 Nov 07:30 IST" in a.step and "needs a new test at Sat 21 Nov 08:00 IST" in a.step
+    how = " ".join(a.detail)
+    assert "needs a new test at Sat 21 Nov 07:30 IST" in how and "needs a new test at Sat 21 Nov 08:00 IST" in how
 
 
 def test_each_coverage_entry_says_whether_it_was_resolved():
@@ -778,8 +785,36 @@ def test_every_test_campaign_ask_names_its_inboxes_or_domains_2026_11_17():
     keys = {a.key.rsplit(":", 1)[0] if a.key.endswith("2026-11-20") else a.key: a for a in asks}
     assert keys["dt-senders:untracked"].detail == ["x.com (Precise Leads, 3 inboxes)"]
     gap = keys["dt-senders:coverage:Melior"]
-    assert gap.urgent and gap.detail == ["x.com: b@ (on DT Melior #3)", "x.com: c@ (on no DT campaign)"]
-    assert "with this inbox: b@x.com" in gap.step and "with this inbox: c@x.com" in gap.step   # the Chrome prompt names them
+    assert gap.urgent and gap.detail[-2:] == ["x.com: b@ (on DT Melior #3)", "x.com: c@ (on no DT campaign)"]
+    how = " ".join(gap.detail[:-2])
+    assert "with this inbox: b@x.com" in how and "with this inbox: c@x.com" in how   # the Chrome prompt names them
+    assert len(gap.detail) <= dg_urgent_lines()     # an urgent post (no thread) shows the how-to and the inboxes
     assert keys["dt-senders:coverage-dupes:Precise Leads"].detail == ["d@y.com: P1, P2"]
     assert keys["dt-senders:errors"].detail == ["BETTRDATA: 402 plan expired"]
     assert not any("thread" in a.step for a in asks)
+
+
+def dg_urgent_lines() -> int:
+    from smartlead import digest as dg
+    return dg.URGENT_LINES
+
+
+def test_the_coverage_record_keeps_each_weekly_tests_schedule_2026_11_21():
+    """21 Nov 2026: the inbox list needs which inboxes an ACTIVE scheduled test covers and when it runs next, so a
+    one-off test never counts as weekly and "next run" comes from the test's own schedule."""
+    from datetime import date
+    tests = [{"id": "t1", "name": "PL weekly 1", "campaign_id": 11, "time": "06:00", "weekdays": [6],
+              "next_run": "2026-11-28T00:30:00.000Z", "senders": {"a@x.example"}},
+             {"id": "t2", "name": "DT PL copy check", "campaign_id": 12, "time": "06:30", "weekdays": [6],
+              "next_run": "2026-11-28T01:00:00.000Z", "senders": {"a@x.example"}}]
+    weekly = ts.weekly_list(tests, {11: "DT PL #1", 12: "DT PL copy check"})
+    assert weekly == [{"name": "PL weekly 1", "campaign": "DT PL #1", "next_run": "2026-11-28T00:30:00.000Z",
+                       "weekdays": [6], "time": "06:00", "senders": ["a@x.example"], "copy": False},
+                      {"name": "DT PL copy check", "campaign": "DT PL copy check", "next_run": "2026-11-28T01:00:00.000Z",
+                       "weekdays": [6], "time": "06:30", "senders": ["a@x.example"], "copy": True}]
+    cov = {"Precise Leads": {"inboxes": 1, "none": [], "dupes": {}, "all": ["a@x.example"]}}
+    rec = ts.coverage_record({"PRECISE_LEADS": {"coverage": cov, "weekly": weekly},
+                              "BETTRDATA": {"coverage": None}},
+                             {"weekly": {"BETTRDATA": [{"name": "old"}]}, "accounts": {"BETTRDATA": []}},
+                             date(2026, 11, 21))
+    assert rec["weekly"] == {"PRECISE_LEADS": weekly, "BETTRDATA": [{"name": "old"}]}   # unread: the last record's

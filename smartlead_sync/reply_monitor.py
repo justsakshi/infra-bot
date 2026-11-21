@@ -312,8 +312,9 @@ def run(today: date, fleet: dict[str, dict], unread: dict[str, str], history: li
     return verdicts, posts
 
 
-ALERT_STEP = ("Check each domain's weekly test result; if it failed there too, take its inboxes out of their "
-              "campaigns. Nothing was paused.")
+ALERT_STEP = ("Look up each domain's latest weekly test result (All Inboxes tab); if it failed there too, take its "
+              "inboxes out of their campaigns; if it passed, leave it, and the item goes once its replies recover. "
+              "Nothing was paused.")
 RETRY_STEP = "It runs again tomorrow at 13:00; if it fails twice, check that account's Smartlead API key."
 
 
@@ -327,8 +328,14 @@ def digest_items(verdicts: dict[str, dict], unread: dict[str, str], history_miss
     alerts = sorted(d for d, v in verdicts.items() if v["verdict"] == rs.ALERT)
     if alerts:
         n = len(alerts)
-        asks.append(dg.Ask(f"{_n(n, 'sending domain gets', 'sending domains get')} far fewer replies than expected "
-                           f"over {rs.WINDOW_DAYS} days.", ALERT_STEP, key="reply-monitor:alert",
+        who = (" and ".join(f"{d} ({verdicts[d]['client']})" if verdicts[d].get("client") else d for d in alerts)
+               if n <= 2 else _n(n, "sending domain", "sending domains"))
+        one = n == 1
+        asks.append(dg.Ask(f"{who} {'gets' if one else 'get'} far fewer replies than {'its' if one else 'their'} "
+                           f"campaigns' other domains over {rs.WINDOW_DAYS} days, a sign {'its' if one else 'their'} "
+                           "emails may be landing in spam.",
+                           ALERT_STEP.replace("each domain's", "its").replace("take its inboxes", "take the inboxes")
+                           if one else ALERT_STEP, key="reply-monitor:alert",
                            detail=[_alert_line(d, verdicts[d].get("client", ""), verdict_text(verdicts[d])).replace("*", "")
                                    for d in alerts]))
     if unread:

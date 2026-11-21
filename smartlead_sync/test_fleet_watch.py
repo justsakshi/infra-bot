@@ -332,15 +332,16 @@ def test_with_the_digest_on_every_open_case_is_one_ask_per_kind_and_nothing_is_p
     (src, asks, done, detail), = got
     assert src == "fleet-watch" and done == []
     assert [(a.key, a.text, a.urgent, a.kind) for a in asks] == [
-        ("fleet-watch:warmup_off", "2 inboxes have warm-up switched off.", False, "ask")]   # disconnected: not a daily kind
-    assert asks[0].step == "Turn warmup back on for each one listed."
+        ("fleet-watch:warmup_off", "2 inboxes have warm-up switched off, so their sending reputation will slip.",
+         False, "ask")]   # disconnected: not a daily kind
+    assert asks[0].step == "In Smartlead, Email Accounts, turn warm-up back on for each inbox listed."
     assert asks[0].detail == ["a@d.com (open since 13 Nov)", "b@d.com (open since 13 Nov)"]   # 17 Nov: named in the ask
     assert detail[0] == "Fleet watch, 13 Nov: 2 open problems (suggestions only, the bot changed nothing)"
     assert "• a@d.com, open since 13 Nov" in detail[1] and "• b@d.com" in detail[1]
     assert all(c["announced"] for c in s.cases.docs)              # told: a later switch-off does not post them again
     # the next day the case is still open (not new): it stays in the digest; once fixed it drops out
     day(s, [rec(warmup_on=False), rec("b@d.com")], date(2026, 11, 14), p)
-    assert [a.text for a in got[-1][1]] == ["1 inbox has warm-up switched off."]
+    assert [a.text for a in got[-1][1]] == ["1 inbox has warm-up switched off, so its sending reputation will slip."]
     day(s, [rec(), rec("b@d.com")], date(2026, 11, 15), p)
     assert got[-1][1] == [] and got[-1][3] == [] and p.calls == []
 
@@ -362,7 +363,7 @@ def test_a_domain_case_counts_domains_and_baseline_cases_stay_out(monkeypatch):
              {"key": "kill:z@e.com", "kind": "kill", "target": "z@e.com", "line": "z@e.com", "opened_on": "2026-11-01",
               "baseline": True}]
     asks, _ = fl.digest_items(cases, date(2026, 11, 13))
-    assert [a.text for a in asks] == ["1 domain bounces 4% or more."]
+    assert [a.text for a in asks] == ["1 domain bounces 4% or more, which hurts every inbox on it."]
 
 
 def test_the_old_post_goes_out_when_the_digest_is_not_written(monkeypatch):
