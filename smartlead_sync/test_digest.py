@@ -385,6 +385,13 @@ def test_items_of_reads_inboxes_and_domains_but_not_file_names():
     assert inboxes == {"a@india.test"} and domains == {"hotel.test", "juliet.test"}
 
 
+def test_a_shortened_inbox_name_is_not_read_as_a_domain():
+    # 23 Nov 2026: a kill-list line listing inboxes as "a-b@, a.b@, a_b@" put "a.b" in the digest as a domain.
+    a = {"text": "25 inboxes on the kill list", "detail": ["• kilo.test: 25 inboxes (m-ryan@, m.ryan@, m_ryan@ and 22 more)"]}
+    inboxes, domains = dg.items_of(a)
+    assert inboxes == set() and domains == {"kilo.test"}
+
+
 def test_holds_are_read_from_mongo_and_an_urgent_held_ask_is_not_posted():
     db, posted = DB(), []
     db[dg.HOLDS].replace_one({"_id": "alpha"}, _holds()[0], upsert=True)
