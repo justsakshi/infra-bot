@@ -228,7 +228,7 @@ def channel() -> str:
 HOLDS = "digest_holds"
 
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+", re.I)
-_DOMAIN = re.compile(r"(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?![\w.-]*\w)", re.I)
+_DOMAIN = re.compile(r"(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?![\w.-]*\w)(?!@)", re.I)   # "m.ryan@" is part of an inbox, not a domain
 _FILES = ("csv", "json", "py", "txt", "md", "png", "js", "log", "html", "pdf", "xlsx")
 
 # Asks that are one kill list, told by different jobs (fleet watch daily, the kill report weekly). Value: what the
