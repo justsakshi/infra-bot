@@ -71,8 +71,8 @@ def checks(inboxes: list[dict], campaigns: list[dict], rows: list[dict], v2: dic
            or "failed_v2" not in _reasons(by_email[e])]
     add("list_marks_failed_v2", len(on_list), bad,
         f"all {_n(len(on_list))} whose newest v2 test failed are BUSY on the list with the reason failed_v2",
-        f"{len(bad)} of {_n(len(on_list))} that failed v2 are not marked failed_v2 on the list (it may be a day behind "
-        "the verdicts)",
+        f"All Inboxes does not yet give \"failed the weekly test\" as the reason for {len(bad)} of the {_n(len(on_list))} "
+        "that failed it (they can still be marked do not use for another reason; the sync may be a day behind)",
         blocked=unread("v2 verdicts", "the list"))
 
     # 3. FREE means proven, once that rule is on. A Google inbox is proven by real sends and warm-up instead
@@ -168,13 +168,14 @@ def format_post(results: list[dict], today: date, errors: list[str] | None = Non
 STEPS = {
     "list_marks_tagged": "Look again after tomorrow's 10:00 sync; if the inboxes listed are still not marked "
                          "do_not_use on the All Inboxes tab, the sync is not reading their Smartlead tags and needs a fix.",
-    "list_marks_failed_v2": "It is often a day behind: look again after tomorrow's 10:00 sync, and if the inboxes "
-                            "listed are still not marked failed_v2, the sync is not reading the v2 verdicts.",
+    "list_marks_failed_v2": "Nothing today: look again after tomorrow's 10:00 sync; if the inboxes listed still lack "
+                            "that reason, the sync is not reading the v2 verdicts and needs a fix.",
     "free_means_v2_pass": "Make sure the FREE inboxes listed are in a DT test campaign (deliverability sheet), so "
                           "the next weekly v2 test covers them.",
     "held_back_not_sending": "In Smartlead, open each campaign named and remove those inboxes (Email Accounts tab).",
-    "v2_job_alive": "Check the PC is on and the task 'InfraBot v2 weekly' is enabled (Task Scheduler) and runs in act "
-                    "mode.",
+    # "Manveen:" makes it a thing for him in the digest (the PC is his), not a line under "What broke" (t386)
+    "v2_job_alive": "Manveen: check the PC is on and the task 'InfraBot v2 weekly' is enabled (Task Scheduler) and runs "
+                    "in act mode.",
     "tracker_has_every_inbox": "Add the inboxes listed to the asset tracker: run the Zapmail or ScaledMail "
                                "tracker sync, or add the rows by hand.",
 }
@@ -198,7 +199,7 @@ def digest_asks(results: list[dict], errors: list[str] | None = None) -> list:
                 else f"Gate self-test: {r['says']}.")
         asks.append(dg.Ask(text, NOT_READ_STEP if blocked else STEPS.get(r["name"], ""),
                            key=f"gate-selftest:{r['name']}", kind="ask" if person else "broken",
-                           detail=[] if blocked else dg.by_domain(r.get("bad") or [])))
+                           detail=[] if blocked or r["name"] == "v2_job_alive" else dg.by_domain(r.get("bad") or [])))
     if errors and not asks:
         asks.append(dg.Ask(f"Gate self-test could not read {'; '.join(errors)}.", NOT_READ_STEP,
                            key="gate-selftest:read", kind="broken"))

@@ -419,7 +419,8 @@ def test_each_bill_with_inboxes_to_drop_or_check_is_one_ask_and_keep_only_bills_
     assert "ScaledMail's billing page" in s.step and not any(a.urgent for a in asks)
     assert not any(EMAIL.search(a.text + a.step) for a in asks)
     # 17 Nov 2026: the ask names the domains and inboxes, and why (a digest line or urgent post has no thread)
-    assert z.detail and all(": drop" in x or ": check" in x for x in z.detail)
+    assert z.detail and all(": drop" in x or ": check" in x or ": keep" in x for x in z.detail)
+    assert z.detail[-1] == "mixed.com: keep, 1 inbox still in use"         # t386: no inbox on the bill unexplained
     assert any(": drop, " in x for x in z.detail) and any(": check, " in x for x in z.detail)
     assert any("no weekly test result" in x for x in s.detail)
     assert not any("thread" in a.step for a in asks)

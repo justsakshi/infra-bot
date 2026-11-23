@@ -65,6 +65,12 @@ async def _probe(account) -> dict:
         n = len(payload) if isinstance(payload, list) else 0
         return {"client": account.name, "state": "OK", "detail": f"{n} account(s) visible",
                 "latency_ms": int((datetime.now(timezone.utc) - started).total_seconds() * 1000)}
+    if resp.status_code == 429:
+        # 23 Nov 2026 (t386): the 09:45 probe met a 429 while the 09:40 delete-reminder check was using the PL key, and
+        # the digest said "Smartlead could not be reached with the PRECISE_LEADS key". A 429 is Smartlead counting
+        # calls on this key: it knows the key, so the key works. Not a dead key and not an outage.
+        return {"client": account.name, "state": "BUSY", "detail": "HTTP 429: the key works, its 200-a-minute limit "
+                                                                  "was in use by other jobs"}
     if resp.status_code in (401, 403):
         return {"client": account.name, "state": "DEAD_KEY",
                 "detail": f"HTTP {resp.status_code}: {resp.text[:120]}",
@@ -158,8 +164,8 @@ async def main() -> None:
     print(f"[KeyHealth] probing {len(accounts)} account key(s) at {checked_at}")
     results = await asyncio.gather(*(_probe(a) for a in accounts))
 
-    for r in sorted(results, key=lambda r: r["state"] != "OK", reverse=True):
-        icon = {"OK": "✅", "DEAD_KEY": "🚨", "UNREACHABLE": "⚠", "API_ERROR": "⚠"}[r["state"]]
+    for r in sorted(results, key=lambda r: r["state"] not in ("OK", "BUSY"), reverse=True):
+        icon = {"OK": "✅", "BUSY": "✅", "DEAD_KEY": "🚨", "UNREACHABLE": "⚠", "API_ERROR": "⚠"}[r["state"]]
         print(f"  {icon} {r['client']:16} {r['state']:12} {r['detail']}")
 
     _save(results, checked_at)

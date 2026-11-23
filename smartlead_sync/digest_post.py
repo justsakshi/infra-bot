@@ -23,6 +23,10 @@ among them, with its list in the thread.
 (smartlead/provider_removed.py: ScaledMail or Zapmail data, never a login failure alone) are one delete reminder,
 and every other item is shown without them. Since t353 the reminder is in two lists, "delete now" and "check first"
 (still in a real campaign, or a lead replied in the last 30 days), and says where in its own text.
+23 Nov 2026 (t386, "why does it fail to be readable again and again"): every round was judged on one good day's data.
+Now every stored ask is worded at post time from its facts (smartlead/digest_render.py), an item that All Inboxes
+overrules is folded into the item that agrees with it, and the final text goes through hard limits
+(smartlead/digest_guard.py) that tests built from a bad day's shape hold the build to (test_digest_guard.py).
 """
 from __future__ import annotations
 
@@ -34,6 +38,8 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from smartlead import digest as dg
+from smartlead import digest_guard as guard
+from smartlead import digest_render as render
 from smartlead.config import DEFAULT_SHEET_ID
 from smartlead.usable import TEAM_GROUPS
 
@@ -44,7 +50,8 @@ MAX_SHOWN = 4                        # things in the post itself; the rest are i
 MAX_PARTS = 3                        # thread replies, at most
 PART_LINES = 38                      # lines per reply (notify._THREAD_CHUNK is 40: one part is one reply)
 LIST_LINES = 12                      # lines of one item's list in the thread
-INFO_LINES = 3                       # lines of a "For info" item's list in the thread
+INFO_LINES = 8                       # lines of a "For info" item's list in the thread (3 until t386, when the
+                                     # short facts got a reply of their own and readers asked for the whole list)
 
 PC_STALE = timedelta(hours=3)
 REPO = os.getenv("RENDER_GIT_REPO_SLUG") or "justsakshi/infra-bot"
@@ -134,12 +141,14 @@ def _names_where(text: str, where: str) -> bool:
 
 
 def _tail(a: dict, now: datetime) -> str:
+    """'Open since Sat 21 Nov.', and when its job has not looked again since a later day than that, 'Not checked again
+    since Sun 22 Nov.' (23 Nov 2026: "Open since Sat 21 Nov. (last checked Sat 21 Nov)" said one day twice)."""
     since, checked = _parse(a.get("since")), a.get("checked")
     tail = []
     if since and now - since > timedelta(hours=20):
         tail.append(f"Open since {_day(since)}.")
-    if checked and now - checked > STALE:
-        tail.append(f"(last checked {_day(checked)})")
+    if checked and now - checked > STALE and not (since and _day(since) == _day(checked)):
+        tail.append(f"Not checked again since {_day(checked)}.")
     return (" " + " ".join(tail)) if tail else ""
 
 
@@ -167,11 +176,43 @@ def _info_line(infos: list[dict]) -> str:
 
 
 def _item_line(i: int, a: dict, now: datetime) -> str:
-    """One thing to do, in one paragraph: what, where, the one step. Items about the same inboxes say so."""
+    """One thing to do, in one paragraph: what, where, the one step. Items about the same inboxes say so. When the
+    item is over guard.ITEM_CHARS only because of its "Open since", that goes (t386: two Slack lines first)."""
     text = _what(a)
     step = f" Do: {dg.cap(dg.plain(a['step']).strip())}" if a.get("step") else ""
-    also = " Other checks flag the same inboxes too (thread)." if a.get("also") else ""
-    return f"{i}. {text}{step}{also}{_tail(a, now)}"
+    also = " More in the thread." if a.get("also") or a.get("clauses") else ""     # other checks on these inboxes
+    line = f"{i}. {text}{step}{also}"
+    with_tail = line + _tail(a, now)
+    return line if len(with_tail) > guard.ITEM_CHARS >= len(guard.clean(line)) else with_tail
+
+
+RANK_KILL, RANK_ASK, RANK_WEAK = 0, 1, 2
+
+
+def _rank(a: dict) -> int:
+    """Most severe first, so the item that hosts the others on the same domains is the strongest (t386): the kill list,
+    then other asks, then items that say the inboxes are fine (a held test)."""
+    if a.get("key") == "digest:kill-list":
+        return RANK_KILL
+    return RANK_WEAK if (a.get("facts") or {}).get("type") in render.WEAK else RANK_ASK
+
+
+def _rest(line: str) -> str:
+    """What the post cut off an item that was over guard.ITEM_CHARS ('' when nothing was cut), so the thread goes on
+    where the post stopped instead of saying the item again."""
+    short = guard.fit(line, guard.ITEM_CHARS)
+    if short == line:
+        return ""
+    kept = short[:-len(" … (the rest is in the thread)")]
+    return line[len(kept):].lstrip(" ;,.:")
+
+
+def _extra(a: dict) -> list[str]:
+    """What the thread adds under an item: how to do the step (``more``), the facts other items gave about the same
+    domains (``clauses``)."""
+    out = [f"{dg.cap(dg.plain(a['more']).strip())}"] if a.get("more") else []
+    out += [f"Also: {dg.cap(c)}." for c in a.get("clauses") or []]
+    return out
 
 
 def _unlabel(a: dict) -> str:
@@ -255,6 +296,28 @@ def _cap(lines: list[str], n: int = 0) -> list[str]:
     return lines if len(lines) <= n else lines[:n - 1] + [f"… and {len(lines) - n + 1} more lines (the inbox sheet)"]
 
 
+def _split(lines: list[str], k: int) -> list[str]:
+    """``lines`` as at most ``k`` replies, each at most PART_LINES lines and well under Slack's size (guard), broken at
+    a blank line (between items) where one is near. The last reply takes what is left (the guard cuts it)."""
+    out, cur, size = [], [], 0
+    for x in lines:
+        full = len(cur) >= PART_LINES or size + len(x) + 1 > guard.REPLY_CHARS - 200
+        if full and len(out) < k - 1:
+            cut = max((i for i, y in enumerate(cur) if not y.strip()), default=0)
+            if cut < len(cur) // 2:
+                cut = len(cur)
+            out.append("\n".join(cur[:cut]).strip("\n"))
+            cur = cur[cut:]
+            while cur and not cur[0].strip():
+                cur.pop(0)
+            size = sum(len(y) + 1 for y in cur)
+        cur.append(x)
+        size += len(x) + 1
+    if cur:
+        out.append("\n".join(cur).strip("\n"))
+    return [p for p in out if p.strip()]
+
+
 def _held_part(held: list[dict]) -> list[str]:
     """Each decision once, short: what, why (its first sentence), owner, until when."""
     lines, order = [], {}
@@ -272,7 +335,7 @@ def _held_part(held: list[dict]) -> list[str]:
     return lines
 
 
-def build(sources: list[dict], done: list[dict], checks: list[dict], now: datetime, holds=(), runs=()
+def build(sources: list[dict], done: list[dict], checks: list[dict], now: datetime, holds=(), runs=(), ctx=None
           ) -> tuple[list[str], list[str]] | None:
     """(headline lines, thread parts), or None when there is nothing to say. ``checks``: the digest's own findings,
     as asks of kind 'broken' or 'ask'. ``holds``: the recorded decisions (Mongo digest_holds). ``runs``: recent
@@ -282,8 +345,16 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
     about 8 lines: the things to do, one line each (what, where, the one step); one line for jobs that failed; one
     line saying what else is in the thread. The thread is at most 3 short replies: the full lists, what was left
     out on purpose and what the bot did, and where the inboxes stand. Each job's own report is no longer posted."""
+    ctx = ctx or {}
     asks, broken = collect(sources + [{"_id": "digest", "at": now.isoformat(), "asks": checks}], now)
+    asks = [render.render(a, ctx.get("v2") or ()) for a in asks]        # today's words, whenever it was stored
+    broken = [render.render(b, ctx.get("v2") or ()) for b in broken]
     broken = one_per_job([b for b in broken if not recovered(b.get("key"), runs, now)])
+    # A job that says itself what broke is not also reported by bot health as failed (t386: "API keys" and "API-key
+    # check" were one 429, said twice).
+    told = {b.get("source") for b in broken if not str(b.get("key") or "").startswith("bot-health:")}
+    broken = [b for b in broken if not re.match(r"bot-health:failed:(.+)$", str(b.get("key") or ""))
+              or re.match(r"bot-health:failed:(.+)$", b["key"]).group(1) not in told]
     # A broken check whose step is Manveen's (deploy Render, switch the PC on) is a thing for him to do.
     his = [b for b in broken if str(b.get("step") or "").startswith("Manveen:")]
     broken = [b for b in broken if b not in his]
@@ -299,7 +370,11 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
     infos = [a for a in asks if a.get("kind") == "info"]      # a fact, no step: never merged into a thing to do
     asks = [a for a in asks if a.get("kind") != "info"]
     delete = [a for a in asks if a.get("key") == dg.REMOVED_KEY]    # never merged: other items name other inboxes
-    asks, broken = dg.merge_same([a for a in asks if a.get("key") != dg.REMOVED_KEY], broken)
+    asks = [a for a in asks if a.get("key") != dg.REMOVED_KEY]
+    # One item per domain (t386): an item All Inboxes overrules goes into the item that agrees with it.
+    asks, superseded = render.resolve(asks, ctx.get("verdicts") or {})
+    asks = sorted(asks, key=lambda a: (not a.get("urgent"), _rank(a)))          # stable: else in the order collected
+    asks, broken = dg.merge_same(asks, broken)
     asks += delete
     if bare:
         jobs = ", ".join(sorted({_label(a) for a in bare}))
@@ -313,52 +388,90 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
     if not asks and not broken and not done and not numbers and not infos:
         return None
     n = len(asks)
-    head = [f"Inbox digest, {_day(now)}"]
-    if n:
-        where = f" ({MAX_SHOWN} here, {n - MAX_SHOWN} in the thread)" if n > MAX_SHOWN else ""
-        head.append(f"\n<@{dg.OWNER}>, {n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you today{where}:")
-        head += [f"\n{_item_line(i, a, now)}" for i, a in enumerate(asks[:MAX_SHOWN], 1)]
-    else:
-        head.append("\nNothing needs you today.")
-        if numbers:
-            head.append(f"\n{_quiet_line(numbers)}")
+    lines = [_item_line(i, a, now) for i, a in enumerate(asks, 1)]
+    tail = []
     if infos:
-        head.append(f"\n{_info_line(infos)}")
+        tail.append(f"\n{guard.fit(_info_line(infos), guard.ITEM_CHARS, ' … (thread)')}")
     if broken:
         names = list(dict.fromkeys(_job_name(b) for b in broken))
         k = len(names)
-        head.append(f"\n{k} job{'s' if k != 1 else ''} failed or could not check: {', '.join(names)}. "
-                    f"Being looked at; what broke is in the thread.")
+        tail.append(f"\n{k} job{'s' if k != 1 else ''} failed or could not check: {', '.join(names)}. "
+                    f"What broke is in the thread.")
+    def compose(shown: int) -> list[str]:
+        """The post with ``shown`` items, its last line included, as the guard will measure it."""
+        if n:
+            where = f" ({shown} here, {n - shown} in the thread)" if n > shown else ""
+            out = [f"Inbox digest, {_day(now)}. <@{dg.OWNER}>, {n} thing{'s' if n != 1 else ''} "
+                   f"need{'s' if n == 1 else ''} you today{where}:"]
+            out += [f"\n{guard.fit(x, guard.ITEM_CHARS)}" for x in lines[:shown]]
+        else:
+            out = [f"Inbox digest, {_day(now)}. Nothing needs you today."]
+            if numbers:
+                out.append(f"\n{_quiet_line(numbers)}")
+        more = []
+        if n > shown:
+            more.append(f"{n - shown} more thing{'s' if n - shown != 1 else ''} for you")
+        if held:
+            k = len({id(x["ask"]) for x in held})
+            more.append(f"{k} decided item{'s' if k != 1 else ''} left out on purpose")
+        if done:
+            more.append(f"{len(done)} thing{'s' if len(done) != 1 else ''} the bot did by itself")
+        return out + tail + ["\nIn the thread: " + (", ".join(more) if more else "the full lists") + "."]
 
-    # thread, part 1: the full lists of today's items and what broke
+    # As many items as fit the post's limits (at most MAX_SHOWN), measured on the post itself, so the guard never has
+    # to drop one; the rest are in the thread in full (t386).
+    shown = min(n, MAX_SHOWN)
+    while shown > 1 and guard.too_big(compose(shown)):
+        shown -= 1
+    head = compose(shown)
+
+    # thread, part 1: what the post does not say about today's items (their lists), and what broke
     lists = []
     for i, a in enumerate(asks, 1):
-        rows = dg.bullets(a.get("detail"))
-        if i > MAX_SHOWN:
-            lists += ["", _item_line(i, a, now)] + [dg.plain(x) for x in dg.detail_lines(a, LIST_LINES)]
-        elif rows:
-            lists += ["", f"{i}. {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, a.get("lines") or LIST_LINES)]
+        rows = [dg.plain(x) for x in dg.detail_lines(a, a.get("lines") or LIST_LINES)]
+        if i > shown:                       # said in the thread: its "in the thread" is "below"
+            lists += ["", lines[i - 1].replace("are in the thread", "are below")] + _extra(a) + rows
+        elif rows or _extra(a) or len(lines[i - 1]) > guard.ITEM_CHARS:
+            rest = _rest(lines[i - 1])
+            lists += ["", f"{i} above" + (f", continued: …{rest}" if rest else ":")] + _extra(a) + rows
         for x in a.get("also") or []:
-            lists += ["", f"{i}. also, {_label(x)}: {_unlabel(x)}"
-                      + (f" Do: {dg.cap(dg.plain(x['step']))}" if x.get("step") else "")]
+            # never numbered like an item (t386: "1. also" read as a second item 1)
+            step = dg.plain(x.get("step") or "").strip()
+            idle = step.startswith("Nothing today")       # a bot check with nothing for a person: no second "Do:"
+            who = f"a bot check ({_label(x)})" if x.get("kind") == "broken" else f"the {_label(x)}"
+            lists += ["", f"Also on these inboxes, from {who}" + (", nothing for you to do" if idle else "")
+                      + f": {_unlabel(x)}"
+                      + (f" Do: {dg.cap(step)}" if step and not idle else "")]
             lists += [dg.plain(y) for y in dg.detail_lines(x, 3)]
     items_part, lists = lists, []            # the facts and what broke are kept whole; only the items' lists are cut
     for i, a in enumerate(infos):
         rows = dg.bullets(a.get("detail"))
         if i or rows:
-            # a fact needs no full list: 3 lines, so every "For info" fits in the reply (21 Nov 2026)
-            lists += ["", f"For info: {dg.plain(a['text'])}"] + [dg.plain(x) for x in dg.detail_lines(a, INFO_LINES)]
+            # a fact needs no full list: 3 lines, so every "For info" fits in the reply (21 Nov 2026); the first is
+            # said in the post, so here it is only its list (t386: it was said twice)
+            lists += ["", "For info above, the list:" if not i else f"For info: {dg.plain(a['text'])}"] \
+                + [dg.plain(x) for x in dg.detail_lines(a, INFO_LINES)]
     if broken:
         lists += ["", "What broke"]
         for b in broken:
-            lists.append(f"• {dg.plain(b['text'])}" + (f" {dg.plain(b['step'])}" if b.get("step") else ""))
-            lists += [f"   {dg.plain(x)}" for x in dg.detail_lines(b, 3)]
+            said = f"{dg.plain(b['text'])}" + (f" {dg.plain(b['step'])}" if b.get("step") else "")
+            lists.append(f"• {said}")
+            # a list line that only repeats words of the sentence ('• v2 job') adds nothing (t386)
+            lists += [f"   {dg.plain(x)}" for x in dg.detail_lines(b, 3)
+                      if dg.plain(x).lstrip("•-– ").strip().lower() not in said.lower()]
             for x in b.get("also") or []:
                 lists.append(f"   also, {_label(x)}: {_unlabel(x)}")
     # part 2: left out on purpose, and what the bot did by itself
     other = []
     if held:
         other += ["Left out on purpose (decided earlier)"] + _held_part(held)
+    lone = [x for x in superseded if not x.get("_folded")]
+    if lone:
+        doms = sorted({d for x in lone for d in x["_domains"]})
+        other += ([""] if other else []) + [
+            f"Left out: {len(lone)} older item{'s' if len(lone) != 1 else ''} about {', '.join(doms[:3])}"
+            f"{' and more' if len(doms) > 3 else ''} that All Inboxes has since overruled (it marks those inboxes do "
+            f"not use)."]
     if done:
         other += ([""] if other else []) + ["Done by the bot since the last digest"] + [f"• {dg.plain(d['text'])}" for d in done]
     # part 3: where the inboxes stand
@@ -369,28 +482,26 @@ def build(sources: list[dict], done: list[dict], checks: list[dict], now: dateti
             for c, g in sorted(numbers.items(), key=lambda x: -sum(int(v or 0) for v in x[1].values()))]
         stand.append("What the words mean: " + "; ".join(f"{k.lower()} = {GROUP_MEANS[k]}" for k in TEAM_GROUPS) + ".")
         stand.append(f"Full lists: <{SHEET_URL}|the inbox sheet>.")
+    # The short replies (left out, done, where the inboxes stand) share one reply, so today's items can use the other
+    # two (t386: on 23 Nov the items' 38 lines cut the delete list). 21 Nov 2026: a long delete list pushed the second
+    # "For info" (which the post points to) past the reply's line cap. The items' lists give way; the short facts and
+    # what broke always fit.
+    # The short facts (the For info lists, what broke) go with them, so a long delete list keeps its room.
+    small = [x for x in (lists[1:] if lists[:1] == [""] else lists)]
+    for block in (other, stand):
+        if block:
+            small += ([""] if small else []) + block
+    tail_parts = ["\n".join(_cap(small))] if small else []
     parts = []
-    if items_part or lists:
-        # 21 Nov 2026: a long delete list pushed the second "For info" (which the post points to) past the reply's
-        # line cap. The items' lists give way; the short facts and what broke always fit.
-        room = max(PART_LINES - 1 - len(lists), 6)
-        parts.append("\n".join(["Today's items in full"] + _cap(items_part, room) + lists))
-    if other:
-        parts.append("\n".join(_cap(other)))
-    if stand:
-        parts.append("\n".join(_cap(stand)))
+    if items_part:
+        k = MAX_PARTS - len(tail_parts)
+        room = max(PART_LINES * k - 1 - 2 * k, 6)
+        parts = _split(["Today's items: their lists and details"] + _cap(items_part, room), k)
+    parts += tail_parts
 
-    more = []
-    if n > MAX_SHOWN:
-        more.append(f"{n - MAX_SHOWN} more thing{'s' if n - MAX_SHOWN != 1 else ''} for you")
-    if held:
-        k = len({id(x["ask"]) for x in held})
-        more.append(f"{k} decided item{'s' if k != 1 else ''} left out on purpose")
-    if done:
-        more.append(f"{len(done)} thing{'s' if len(done) != 1 else ''} the bot did by itself")
-    if parts:
-        head.append("\nIn the thread: " + (", ".join(more) if more else "the full lists") + ".")
-    return head, parts[:MAX_PARTS]
+    if not parts:
+        head = head[:-1]                    # no thread: no "In the thread" line
+    return guard.enforce(head, parts[:MAX_PARTS])
 
 
 # --- the digest's own checks ------------------------------------------------------------
@@ -473,6 +584,25 @@ def removed_source(db, now: datetime) -> list[dict]:
         return []
 
 
+def load_ctx(db, now: datetime) -> dict:
+    """What the digest judges items by (t386): each domain's All Inboxes verdict (Mongo inbox_status, written by the
+    sync from the tab) and the weekly test verdicts of the last 14 days (Mongo v2_verdicts), to tell which domains an
+    older held test was about. Empty when Mongo can't be read: then nothing is folded, nothing is lost."""
+    out = {}
+    try:
+        out["verdicts"] = render.verdicts(db.inbox_status.find({}, {"_id": 0, "email": 1, "domain": 1, "busy_reason": 1,
+                                                                    "provider": 1, "state": 1}))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Digest] All Inboxes verdicts not read ({type(exc).__name__})")
+    try:
+        since = f"{(now - timedelta(days=14)).astimezone(IST):%Y-%m-%d}"
+        out["v2"] = list(db.v2_verdicts.find({"night": {"$gte": since}}, {"_id": 0, "domain": 1, "client": 1, "night": 1,
+                                                                         "google": 1, "microsoft": 1, "verdict": 1}))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Digest] weekly test verdicts not read ({type(exc).__name__})")
+    return out
+
+
 def wait_for_jobs(db, now_fn=lambda: datetime.now(timezone.utc), sleep=time.sleep, max_s: int = WAIT_MAX_S) -> None:
     """Wait (up to 30 minutes) for a morning job that is still running, so its asks are in today's digest."""
     waited = 0
@@ -525,7 +655,7 @@ def main(argv=None) -> int:
         runs = list(db.cron_runs.find({"started": {"$gte": now - timedelta(days=4)}}))
     except Exception:  # noqa: BLE001 - without runs every broken line stays, nothing is lost
         runs = []
-    built = build(sources, done, checks, now, dg.load_holds(db), runs)
+    built = build(sources, done, checks, now, dg.load_holds(db), runs, load_ctx(db, now))
     if not built:
         print("Nothing needs anyone and nothing was done: no digest today")
         db[dg.META].replace_one({"_id": "last"}, {"_id": "last", "at": now.isoformat(), "posted": False}, upsert=True)
@@ -534,6 +664,8 @@ def main(argv=None) -> int:
     print("\n".join(head))
     for p in parts:
         print("\n--- thread ---\n" + p)
+    for x in guard.problems(head, parts):          # the guard keeps the limits; this only says if one still slips
+        print(f"  [Digest] readability limit: {x}")
     if not args.post:
         print("\n(dry run: nothing posted)")
         return 0

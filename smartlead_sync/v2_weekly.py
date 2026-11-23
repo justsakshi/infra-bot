@@ -1708,8 +1708,11 @@ def _done_words(changed: str) -> str:
 def _need_ask(line: str, urgent: bool = False):
     """A Needs-you line as a digest ask: what and why before " Do: ", the step after it (21 Nov 2026)."""
     from smartlead import digest as dg
+    from smartlead.digest_render import facts_of
     text, _, step = line.partition(" Do: ")
-    return dg.Ask(text.strip(), step.strip(), urgent=urgent)
+    # t386: the facts go with the words, so the digest words a held or not-yet-in test in today's words even when the
+    # ask was stored by older code (this job runs once a week, on the PC).
+    return dg.Ask(text.strip(), step.strip(), urgent=urgent, facts=facts_of(text))
 
 
 def _test_word(file_name, night: str | None = None) -> str:

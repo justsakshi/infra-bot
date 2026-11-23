@@ -340,8 +340,10 @@ def _on(docs: list[dict]) -> str:
     return f" on {' and '.join(doms)}" if 0 < len(doms) <= 2 else ""
 
 
-SHORT = {"v2_pulled": "v2 retest (the v2 job pulled them)", "failed_v2": "v2 fail", "do_not_use": "a person's DO NOT USE tag",
-         "blocklisted": "listed domain"}
+# What keeps an inbox out besides warm-up, in the reader's words (23 Nov 2026, t386: "Other recovery: 14 weekly test
+# retest (the weekly test job pulled them), 100 listed domain" was the bot's own shorthand in the digest).
+SHORT = {"v2_pulled": "waiting for a weekly test re-run", "failed_v2": "failed the weekly test",
+         "do_not_use": "a person's DO NOT USE tag", "blocklisted": "on a blocklisted domain"}
 OTHER_ORDER = ("v2_pulled", "failed_v2", "do_not_use", "blocklisted")
 
 
@@ -382,7 +384,8 @@ def week_line(client: str, docs: list[dict], today: date) -> str | None:
     line = f"Warm-up repair, {CLIENTS.get(client, client)}: {', '.join(parts)}."
     if other:
         by = Counter(other_path(d) for d in other)
-        line += " Other recovery: " + ", ".join(f"{by[k]} {SHORT[k]}" for k in OTHER_ORDER if by[k]) + "."
+        line += " Also out of campaigns for other reasons: " + ", ".join(f"{by[k]} {SHORT[k]}" for k in OTHER_ORDER
+                                                                         if by[k]) + "."
     if ready:
         line += f" {_n(len(ready))} repaired, waiting on your untag."
     return line
@@ -406,11 +409,13 @@ def _detail_line(d: dict, today: date) -> str:
         flags.append(f"not on repair settings ({d.get('warmup_per_day')}/day, {d.get('reply_rate')}% reply)")
     if d.get("live"):
         flags.append(f"in {d['live']} live campaign{'s' if d['live'] != 1 else ''}")
-    b, a = d.get("settings_before") or {}, d.get("settings_after")
-    setting = (f"warm-up {b.get('warmup_max_count')}→{a.get('warmup_max_count')}/day, reply "
-               f"{b.get('reply_rate')}→{a.get('reply_rate')}%" if a else (d.get("why_not_changed") or "settings unchanged"))
-    return (f"• {d['email']} · {d.get('kind')} · {d.get('rep_at_start')}% → {rep if rep is not None else '?'}% "
-            f"(good from {level(d.get('kind'))}%) · day {days} · {', '.join(flags)} · {setting}")
+    # 23 Nov 2026 (t386): the warm-up settings the bot changed ("warm-up 20→10/day, reply 20→35%") are the bot's own
+    # business, not the reader's: the line says the inbox, its score then and now, and how long it has been repairing.
+    if d.get("status") == "ready":
+        flags = flags[1:]                     # the ask's own sentence already says only the tag keeps it out
+    return (f"• {d['email']}: {kind_word(d.get('kind'))}, warm-up score {d.get('rep_at_start')}% at the start, "
+            f"{rep if rep is not None else 'not read'}{'%' if rep is not None else ''} now (good from "
+            f"{level(d.get('kind'))}%), day {days} of repair" + (f", {', '.join(flags)}" if flags else ""))
 
 
 def _other_lines(docs: list[dict]) -> list[str]:

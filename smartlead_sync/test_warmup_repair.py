@@ -173,7 +173,7 @@ def test_monday_weekly_line_per_client_is_a_done_line():
                                       "Warm-up repair, BettrData: 3 recovering, 1 recovered this week, 1 worse."]
     assert all(d.key.startswith("warmup-repair:week:") and d.key.endswith("2026-11-23") for d in done)
     text = "\n".join(detail)
-    assert "c@example.com" in text and "71% → 60%" in text and "worse" in text
+    assert "c@example.com" in text and "71% at the start, 60% now" in text and "worse" in text
     assert wr.digest_items(docs, MON + timedelta(days=1))[1] == []          # Tuesday: no weekly line
 
 
@@ -185,7 +185,7 @@ def test_three_weeks_without_improvement_is_the_one_ask():
     assert a.text == ("2 inboxes on example.com still have a low warm-up score after 3 weeks of repair, so they are "
                       "unlikely to recover and cost money each month.")
     assert "which of them to cancel" in a.step and "thread" not in a.step
-    assert [x.split(" · ")[0] for x in a.detail] == ["• a@example.com", "• b@example.com"]   # 17 Nov: named in the ask
+    assert [x.split(":")[0] for x in a.detail] == ["• a@example.com", "• b@example.com"]   # 17 Nov: named in the ask
     assert a.key == "warmup-repair:cancel-candidates" and a.kind == "ask"
     assert not a.urgent and "a@example.com" in "\n".join(detail)
 
@@ -290,7 +290,7 @@ def test_seed_dry_run_writes_nothing_and_prints_the_lines(monkeypatch, tmp_path,
     assert cli.main(["seed", *files, "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert db["warmup_repair"].docs == [] and "3 to write" in out and "(dry run: nothing written)" in out
-    assert "Warm-up repair, BettrData: 1 recovering." in out and "71% → 78%" in out
+    assert "Warm-up repair, BettrData: 1 recovering." in out and "71% at the start, 78% now" in out
     assert cli.main(["seed", *files]) == 0 and len(db["warmup_repair"].docs) == 3
     assert cli.main(["seed", *files]) == 0 and "0 to write" in capsys.readouterr().out
 
@@ -436,9 +436,11 @@ def test_the_weekly_line_and_thread_show_other_recovery_per_domain():
     recs += [reading("w@example.com", rep=70, client="Melior", account="PRECISE_LEADS")]
     docs, _ = wr.run([], recs, MON, read=set(), roster=None, v2={}, listed={"listed.example"})
     _, done, detail = wr.digest_items(docs, MON)
-    assert [d.text for d in done] == ["Warm-up repair, Melior: 1 recovering. Other recovery: 3 listed domain."]
+    # t386: the reader's words, not the bot's shorthand ("Other recovery: 3 listed domain")
+    assert [d.text for d in done] == ["Warm-up repair, Melior: 1 recovering. Also out of campaigns for other reasons: "
+                                      "3 on a blocklisted domain."]
     text = "\n".join(detail)
-    assert "• listed.example · 3 inboxes outlook · listed domain · back when its domain is off Spamhaus DBL / URIBL" in text
+    assert "• listed.example · 3 inboxes outlook · on a blocklisted domain · back when its domain is off Spamhaus DBL / URIBL" in text
     assert "2 still in live campaigns" in text and "w@example.com" in text
 
 
@@ -467,7 +469,7 @@ def test_preview_judges_with_the_v2_verdicts_and_blocklist_fleet_watch_reads(mon
     monkeypatch.setattr(zapmail_asset_sync, "_db", lambda: db)
     assert cli.main(["preview"]) == 0
     out = capsys.readouterr().out
-    assert "enrolled by the bot today (report-only): 1" in out and "Other recovery: 1 v2 fail." in out
+    assert "enrolled by the bot today (report-only): 1" in out and "Also out of campaigns for other reasons: 1 failed the weekly test." in out
     assert db["warmup_repair"].docs == []                        # preview writes nothing
 
 
