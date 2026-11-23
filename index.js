@@ -1623,6 +1623,11 @@ async function start() {
           await col.updateMany({ _id: { $in: lost.map(r => r._id) } }, { $set: { lost: true, lost_seen: new Date() } });
           console.log(`[restart] ${lost.length} run(s) the previous process left open marked lost: ${lost.map(r => r.job).join(', ')}`);
         }
+        const statsSlot = catchUp.statsRerun(new Date(), PROCESS_START, recent, process.env);
+        if (statsSlot && (await takeLock(`campaign-stats-post-rerun-${health.istDay(new Date())}`))) {
+          console.log('[campaign-stats-post] a restart cut off the 10:15 post: running it again');
+          runJob('campaign-stats-post', ['campaign_stats_post.py', '--post'], { slot: statsSlot, label: 'rerun' });
+        }
         const owed = catchUp.syncCatchUp(new Date(), PROCESS_START, recent);
         if (!owed) return;
         const lock = owed.kind === 'lost' ? takeLock(`smartleadSync-rerun-${health.istDay(new Date())}`) : onceToday('smartleadSync');

@@ -79,4 +79,16 @@ function syncCatchUp(now, processStart, runs) {
   return { kind: 'lost', slot: today[0].slot || slot };
 }
 
-module.exports = { missedStatsPost, missedRuns, CATCH_UPS, lostRuns, syncCatchUp };
+// 23 Nov 2026: the bot restarted at 10:22 IST while the 10:15 stats post ran. The catch-up above found the day's lock
+// already taken by the dead run, so #pl_daily got no post. A stats post that a restart cut off is run again, once, while
+// it can still land before the standup (missedStatsPost's window).
+/** Today's 10:15 slot when its stats post started before this process and never finished, else null. */
+function statsRerun(now, processStart, runs, env = {}) {
+  if (!missedStatsPost(now, env)) return null;
+  const date = istDate(now);
+  const today = runs.filter(r => r.job === 'campaign-stats-post' && r.started && istDate(new Date(r.started)) === date);
+  if (!today.length || today.some(r => r.ended || +new Date(r.started) >= +processStart)) return null;
+  return today[0].slot || `${date}T10:15+05:30`;
+}
+
+module.exports = { missedStatsPost, missedRuns, CATCH_UPS, lostRuns, syncCatchUp, statsRerun };
