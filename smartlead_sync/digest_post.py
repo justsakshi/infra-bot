@@ -480,7 +480,7 @@ def load_ctx(db, now: datetime) -> dict:
     out = {}
     try:
         status = list(db.inbox_status.find({}, {"_id": 0, "email": 1, "domain": 1, "busy_reason": 1, "provider": 1,
-                                                "state": 1, "client": 1, "account": 1}))
+                                                "state": 1, "client": 1, "account": 1, "campaigns": 1}))
         out["verdicts"] = render.verdicts(status)
         out["status"] = status
     except Exception as exc:  # noqa: BLE001

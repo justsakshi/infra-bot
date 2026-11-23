@@ -51,6 +51,8 @@ def prompt(facts: dict) -> str:
     """What headless Claude gets: the job, the approved sentences as a style guide, the hard rules, the day's facts."""
     from smartlead import digest_sentences as ds
     guide = "\n".join(f"  {k}: {v}" for k, v in ds.TEMPLATES.items() if k != "2-")
+    guide += "\n  P5's {question} is one of (f.question names which): " + "; ".join(
+        f"{k}: \"{many}\"" for k, (many, _) in ds.QUESTIONS.items())
     data = {k: facts.get(k) for k in ("day", "n", "items", "watch", "thread")}
     return f"""You write one Slack message: today's inbox digest for Manveen, who runs cold-email infrastructure for
 three clients. He reads it on his phone and must know at a glance what to do, for which client, by when.

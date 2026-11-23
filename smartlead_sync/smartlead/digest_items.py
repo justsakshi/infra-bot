@@ -3,15 +3,17 @@
 Manveen's daily post holds only what a person must do, each item one approved sentence (smartlead/digest_sentences.py).
 This module decides, for every ask a job hands the digest, where it goes:
 
-  * a sentence (1-7) in the post (the first MAX_ITEMS; the rest in the thread, oldest first), its list in the thread;
+  * a sentence (1-7, P1-P6, P8) in the post (the first MAX_ITEMS; the rest in the thread, oldest first), its list in
+    the thread;
   * "W": a "Watching" line under the items (nothing to do yet);
   * the bot itself: a read-only lookup (the domain's latest weekly test verdict, Mongo v2_verdicts; the domain's next
     weekly test, Mongo test_coverage) that turns the ask into a sentence, a Watching line, a dev line or nothing;
   * dev: a bot or job problem, posted to the bot-health channel (BOT_HEALTH_CHANNEL, else the infra channel) as its own
     message, never in Manveen's digest;
   * info / sheet: a fact with no step, or a count All Inboxes already shows: never in the post;
-  * thread: a person-only ask no approved sentence fits. It goes to the thread in the closest sentence's shape and
-    its sentence waits for Manveen's OK (the "proposal" column of KINDS; each proposal is a parked tracker task).
+  * thread: a person-only ask no approved sentence fits (kind "fix"; P7, the open "[Client]: [what]. [step]", was
+    rejected 23 Nov 2026), or one whose brackets the data can't fill. It goes to the thread as the job wrote it,
+    marked "(wording not approved yet)", and gets its own sentence proposed when it first shows up in a real digest.
 
 Never: a test run started, an inbox tagged, untagged, pulled or deleted, a limit changed. The lookups only read.
 
@@ -30,25 +32,13 @@ from smartlead import digest_sentences as ds
 IST = timezone(timedelta(hours=5, minutes=30))
 OWN = {"OUTLOOK": "microsoft", "GMAIL": "google", "GOOGLE": "google"}
 PROVIDER_WORD = {"microsoft": "Outlook", "google": "Gmail"}
-PRIORITY = {"1": 0, "6": 1, "2": 2, "3": 3, "4": 4, "7": 5, "5": 6}      # after the dated items (bills), in this order
+# After the dated items (bills, failed bills, expiring domains), in this order: inboxes sending that must not, then
+# inboxes not sending, a lead waiting, the other steps, decisions last.
+PRIORITY = {"1": 0, "P6": 1, "6": 2, "P1": 3, "P8": 4, "2": 5, "3": 6, "4": 7, "P4": 8, "7": 9, "5": 10, "P5": 11}
+REJECTED = "P7"           # "[Client]: [what]. [step]": rejected 23 Nov 2026; the thread's "(wording not approved yet)"
 
-# Proposed sentences for person-only kinds with no approved one (each a parked tracker task, t409). The thread uses
-# them meanwhile, marked "(wording not approved yet)".
-PROPOSALS = {
-    "P1": "[Client]: Smartlead can't log in to [k] inboxes on [domain]. Reconnect them, or delete them if they were "
-          "cancelled (list in thread).",
-    "P2": "[Client]: the [provider] bill of [$] on [date] failed. Pay it, or let it go on purpose (steps in thread).",
-    "P3": "[Client]: [k] domains expire at [provider] before [date]. Renew them or let them go (list in thread).",
-    "P4": "[Client]: the weekly test [test] looks broken. Re-run it in Smart Delivery (it uses one test run).",
-    "P5": "[Client]: [k] inboxes need your call: [question] (list in thread).",
-    "P6": "[Client]: [k] inboxes that may not send are still in [campaign]. Take them out (list in thread).",
-    "P7": "[Client]: [what]. [step] (steps in thread).",
-    "P8": "[Client]: [k] removed inboxes had a lead reply in the last 30 days. Answer the lead, then delete them "
-          "(list in thread).",
-}
-
-# kind -> (destination, what it is, proposal). Destination: "1".."7" | "W" | "bot" | "dev" | "info" | "sheet" |
-# "thread" | "done". The PR's mapping table is this table (mapping_table()).
+# kind -> (destination, what it is, proposal). Destination: "1".."7" | "P1".."P8" | "W" | "bot" | "dev" | "info" |
+# "sheet" | "thread". The PR's mapping table is this table (mapping_table()).
 KINDS: dict[str, tuple[str, str, str]] = {
     # sentences
     "kill-list": ("1", "kill list (fleet watch, kill report): the domain's weekly test verdict is read; FAIL -> "
@@ -69,20 +59,24 @@ KINDS: dict[str, tuple[str, str, str]] = {
                          "none -> sentence 7", ""),
     "seeds-pending": ("dev", "a test was read before all results were in: the weekly job reads it again itself", ""),
     "removed-unchecked": ("dev", "removed inboxes whose campaign and reply check did not finish", ""),
-    # person-only, no approved sentence yet: thread, closest shape, proposal parked
-    "test-held": ("thread", "a weekly test looks broken (nearly every inbox below 4 of 4): re-run it", "P4"),
-    "disconnected": ("thread", "Smartlead can't log in to inboxes (inbox list, fleet watch, warm-up repair, weekly "
-                               "test): reconnect or delete", "P1"),
-    "removed-replied": ("thread", "removed inboxes a lead replied to in the last 30 days", "P8"),
-    "bill-check": ("thread", "renewal review: inboxes on a bill need a keep-or-cancel call", "P5"),
-    "bill-failed": ("thread", "billing watch: a payment failed, a subscription not renewed or cancelled", "P2"),
-    "domains-expiring": ("thread", "Zapmail: client domains expire soon", "P3"),
-    "decide": ("thread", "a call only Manveen makes (cancel candidates, repair settings, act mode, volume pilot, "
-                         "real-send trust)", "P5"),
-    "take-out": ("thread", "inboxes that may not send are in live campaigns (gate self-test, weekly test stuck "
-                           "campaign, fleet watch sending-while-held)", "P6"),
+    # approved 23 Nov 2026 (t414-t419, P8)
+    "test-held": ("P4", "a weekly test looks broken (nearly every inbox below 4 of 4): re-run it", ""),
+    "disconnected": ("P1", "Smartlead can't log in to inboxes (inbox list, warm-up repair, weekly test): reconnect "
+                           "them; inboxes their provider removed are never here (sentences 3, 4, P8)", ""),
+    "removed-replied": ("P8", "removed inboxes a lead replied to in the last 30 days", ""),
+    "bill-check": ("P5", "renewal review: inboxes on a bill need a keep-or-cancel call (question bill-check)", ""),
+    "bill-failed": ("P2", "billing watch: a payment failed or a bill was not renewed (a status change alone: thread)",
+                    ""),
+    "domains-expiring": ("P3", "Zapmail: client domains expire soon ([date] = the first to expire)", ""),
+    "decide": ("P5", "a call only Manveen makes, one approved question per kind (cancel candidates, repair settings, "
+                     "act mode, volume pilot); a kind with no question (volume limits not changed) -> thread", ""),
+    "take-out": ("P6", "inboxes that may not send are in live campaigns (inbox list, gate self-test, weekly test stuck "
+                       "campaign, fleet watch early campaign, kill list with no weekly fail): the campaign named, or "
+                       "looked up in All Inboxes (only inboxes it says may not send); none found -> thread", ""),
+    # person-only, no approved sentence (P7 rejected): the thread, "(wording not approved yet)"
     "fix": ("thread", "a set-up fix by hand (untracked domains, no room on a test campaign, two tests with one name, "
-                      "test copy, new-inbox problems, Zapmail wallet, purchase batches, ScaledMail orders)", "P7"),
+                      "test copy, new-inbox problems, Zapmail wallet, purchase batches, ScaledMail orders, warm-up off, "
+                      "bounces, bills bought outside the bot, a test run that sent nothing)", REJECTED),
     # off the post
     "broken": ("dev", "a job or check that failed, could not read, or never finished (bot health, every job's "
                       "errors, the digest's own checks: PC job, Render behind, sync not finished)", ""),
@@ -103,10 +97,9 @@ KEYMAP = [
      "repair settings"),
     (r"^reply-monitor:alert$", "reply-alert", "reply check: replies low on a domain"),
     (r"^renewal-review:", "bill", "renewal review: a bill with inboxes to drop or check"),
-    (r"^billing-watch:(payment|not_renewed|status):", "bill-failed", "billing watch: payment failed, not renewed, "
-     "status not active"),
-    (r"^billing-watch:(new|gone|bill_day):", "fix", "billing watch: bought outside the bot, no longer listed, card "
-     "bill today"),
+    (r"^billing-watch:(payment|not_renewed):", "bill-failed", "billing watch: payment failed, not renewed"),
+    (r"^billing-watch:(status|new|gone|bill_day):", "fix", "billing watch: status not active, bought outside the bot, "
+     "no longer listed, card bill today"),
     (r"^dt-senders:coverage:", "no-weekly-test", "test-campaign job: a client's inboxes in no weekly test"),
     (r"^inbox-status:(sending_unproven|sending_not_in_test|test_campaign_no_weekly_test)$", "no-weekly-test",
      "inbox list: sending or on a test campaign with no weekly test"),
@@ -136,8 +129,8 @@ TEXTMAP = [
     (r"seed results? had not come in|had not come in when it was read|read before (all its results|they) were in",
      "seeds-pending", "weekly test: read before all results were in"),
     (r"^No (weekly test )?result this week", "no-result", "weekly test: no result for a test campaign"),
-    (r"sent nothing in this week's test|can't log in|cannot log in|reconnect", "disconnected",
-     "weekly test: inboxes sent nothing, Smartlead can't log in"),
+    (r"can't log in|cannot log in", "disconnected", "weekly test: Smartlead can't log in to inboxes"),
+    (r"sent nothing in this week's test", "fix", "weekly test: inboxes sent nothing (connected or not unknown)"),
     (r"is live with only failed inboxes", "take-out", "weekly test: a live campaign has only failed inboxes (urgent)"),
     (r"missing from its (v2|weekly) test results|send in live campaigns but", "no-weekly-test",
      "weekly test: inboxes left out of their test, sending with no test"),
@@ -180,11 +173,11 @@ def mapping_table() -> str:
     """Every ask kind and where it goes, as markdown (the PR and the report print it): one row per key pattern
     (KEYMAP) and per weekly-test wording (TEXTMAP), then the kinds every job shares."""
     where = {"bot": "bot looks it up itself", "dev": "dev channel", "info": "off the post (thread, For info)",
-             "sheet": "All Inboxes sheet", "thread": "thread, closest shape (sentence parked)", "W": "Watching line"}
+             "sheet": "All Inboxes sheet", "thread": "thread, (wording not approved yet)", "W": "Watching line"}
 
     def dest(kind: str) -> str:
         d, _, prop = KINDS[kind]
-        return (f"sentence {d}" if d.isdigit() else where.get(d, d)) + (f" ({prop})" if prop else "")
+        return (f"sentence {d}" if d in ds.TEMPLATES else where.get(d, d)) + (f" ({prop} rejected)" if prop else "")
     rows = ["| Ask (key or wording) | What it is | Goes to |", "|---|---|---|"]
     for p, k, what in KEYMAP:
         rows.append(f"| `{p}` | {what} | {dest(k)} |")
@@ -193,11 +186,16 @@ def mapping_table() -> str:
     rows += [f"| any key, kind broken | {KINDS['broken'][1]} | dev channel |",
              f"| any key, kind info | {KINDS['info'][1]} | {where['info']} |",
              "| inbox counts (inbox-status numbers) | where the inboxes stand | All Inboxes sheet (not posted) |",
-             "| anything else | a person-only ask with no row here | thread, closest shape (P7) |"]
+             f"| anything else | a person-only ask with no row here | {dest('fix')} |"]
     rows += ["", "| Kind | Goes to | How |", "|---|---|---|"]
     rows += [f"| {k} | {dest(k)} | {what} |" for k, (d, what, prop) in KINDS.items()]
-    rows += ["", "Proposed sentences (parked for Manveen's OK; the thread uses them meanwhile):", ""]
-    rows += [f"- {k}: \"{v}\"" for k, v in PROPOSALS.items()]
+    br = lambda t: t.replace("{client}", "[Client]").replace("{cost}", "[$]").replace("{", "[").replace("}", "]")  # noqa: E731
+    rows += ["", "Sentences approved 23 Nov 2026 (\"approve with your changes\"):", ""]
+    rows += [f"- {k}: \"{br(v)}\"" for k, v in ds.TEMPLATES.items() if k.startswith("P")]
+    rows += ["", "P5's questions (drafted, one per decision kind; [question] is never a job's words):", ""]
+    rows += [f"- {k}: \"{many}\" (one inbox: \"{one}\")" for k, (many, one) in ds.QUESTIONS.items()]
+    rows += ["", f"{REJECTED} (\"[Client]: [what]. [step]\") was rejected: those kinds stay in the thread marked "
+             "\"(wording not approved yet)\" and get their own sentence when one shows up in a real digest."]
     return "\n".join(rows)
 
 
@@ -263,6 +261,20 @@ class Ctx:
 
     def inboxes(self, dom: str) -> int:
         return len(self.by_dom.get(dom.lower(), []))
+
+    def held_in_campaigns(self, emails=(), dom: str = "") -> list[dict]:
+        """The inboxes (by address, or every inbox on ``dom``) that All Inboxes says may not send
+        (usable.send_verdict is not "send") and that are still in a live campaign (inbox_status.campaigns). Used only
+        to fill P6's [campaign]: the may-send answer is the tab's, never this module's."""
+        from smartlead.usable import send_verdict
+        rows = [self.by_email[e.lower()] for e in emails if e.lower() in self.by_email] if emails else \
+            list(self.by_dom.get(dom.lower(), []))
+        return [r for r in rows if r.get("campaigns") and send_verdict(r.get("busy_reason"), r.get("provider"))[0]
+                != "send"]
+
+    def client_inboxes(self, client: str) -> int:
+        """How many inboxes All Inboxes files under ``client``."""
+        return sum(1 for r in self.status if ds.client_name(r.get("client")) == client)
 
     def latest(self, dom: str) -> dict | None:
         """The domain's latest weekly test: {verdict, night, provider, n, m, failed, judged} (n of m test emails in
@@ -378,7 +390,17 @@ REMOVED_HOW = {
     "campaign": "In {account}: open each campaign named, remove these inboxes from it (its Email "
                 "Accounts tab), then delete them in Email Accounts. {provider} already removed them. Deleting is "
                 "permanent.",
+    "replied": "In {account}: answer each lead's reply (Master Inbox) from an inbox that still works, then delete "
+               "these inboxes in Email Accounts. {provider} already removed them, so they can't send the answer. "
+               "Deleting is permanent.",
 }
+LOGIN_HOW = ("In {account}, Email Accounts: filter Disconnected and reconnect each inbox listed with its current "
+             "password (or app password).")
+OUT_HOW = "In {account}: open each campaign named and remove the inboxes listed (the campaign's Email Accounts tab)."
+EXPIRE_HOW = ("In Zapmail (the account named), Domains: set each domain listed to renew before its date; the first "
+              "expires on {first}. Let one go only if nobody needs it any more.")
+BILL_CHECK_HOW = ("Keep or cancel each inbox listed before the {provider} bill of {day}; the bot never cancels an "
+                  "inbox.")
 
 _KILL_LINE = re.compile(r"^•\s*(?:(?P<client>[A-Z][\w ]*?) · )?(?P<dom>[a-z0-9.-]+\.[a-z]{2,24})\b(?:[: ]|$)", re.I)
 
@@ -409,8 +431,16 @@ def _kill(a: dict, c: Ctx, plan: dict) -> None:
             plan["items"].append(_item("1", {"client": client, "domain": dom, "n": v["n"], "m": v["m"],
                                              "provider": v["provider"], "k": k}, a, detail=dl,
                                        steps=[FAILED_HOW.format(account=c.account(dom, client), domain=dom)], kind="kill-list"))
+        elif (rows := c.held_in_campaigns(dom=dom)):
+            # no failed weekly test, but All Inboxes says these may not send and they are still in live campaigns: P6
+            acc = _acc(plan, "_out", client or c.client(dom), a)
+            for r in rows:
+                acc["emails"].add(str(r.get("email") or "").lower())
+                acc["camps"].update(r.get("campaigns") or [])
+            acc["lines"] += dl
+            acc["steps"].append(OUT_HOW.format(account=c.account(dom, client)))
         else:
-            plan["thread"].append(_thread("take-out", a, client, f"{_n(k)} on {dom} {'is' if k == 1 else 'are'} on "
+            plan["thread"].append(_thread("fix", a, client, f"{_n(k)} on {dom} {'is' if k == 1 else 'are'} on "
                                           "the kill list from older placement tests, with no failed weekly test",
                                           detail=dl))
 
@@ -448,7 +478,7 @@ _V2FAIL = re.compile(r"(\d+) of (\d+) inbox(?:es)? on ([a-z0-9.-]+\.[a-z]{2,24})
 def _v2_fail(a: dict, c: Ctx, plan: dict) -> None:
     m = _V2FAIL.search(str(a.get("text") or ""))
     if not m:
-        plan["thread"].append(_thread("take-out", a))
+        plan["thread"].append(_thread("fix", a))
         return
     dom = m.group(3).lower()
     prov = PROVIDER_WORD.get(m.group(4).lower(), m.group(4).title())
@@ -480,7 +510,7 @@ def _bill(a: dict, c: Ctx, plan: dict) -> None:
             drops[dom] = drops.get(dom, 0) + 1
     checks = [x for x in lines if _CHECK.search(x)]
     if not m:
-        plan["thread"].append(_thread("bill-check" if checks or not drops else "bill-check", a))
+        plan["thread"].append(_thread("fix", a))
         return
     by = _date_of(m.group("day"), c.today)
     who = ds.client_name(m.group("who").strip().rstrip(","))
@@ -502,8 +532,12 @@ def _bill(a: dict, c: Ctx, plan: dict) -> None:
                                    steps=[plain(a.get("step") or "")], kind="bill-drop"))
     if checks:
         k = sum(int(x) for x in re.findall(r"(\d+) inbox", " ".join(checks))) or len(checks)
-        plan["thread"].append(_thread("bill-check", a, who, f"decide keep or cancel for {_n(k)} on the "
-                                      f"{m.group('prov')} bill of {m.group('day')}", detail=checks))
+        client = who or c.client((_doms(" ".join(checks)) or [""])[0])
+        bill = f"The bill: {m.group('money')} on {m.group('day')} for {label}."
+        plan["items"].append(_item("P5", {"client": client, "k": k, "question": "bill-check"}, a, by=by,
+                                   detail=[bill] + checks, steps=[BILL_CHECK_HOW.format(provider=m.group("prov"),
+                                                                                       day=m.group("day"))],
+                                   kind="bill-check"))
 
 
 def _removed(a: dict, c: Ctx, plan: dict) -> None:
@@ -512,8 +546,8 @@ def _removed(a: dict, c: Ctx, plan: dict) -> None:
     for those whose check did not finish."""
     f = a.get("facts") or {}
     groups = f.get("groups")
-    if groups is None:          # stored before t409: words only
-        plan["thread"].append(_thread("disconnected", a, what=a.get("text")))
+    if groups is None:          # stored before t409: words only (never P1: these inboxes were removed, not locked out)
+        plan["thread"].append(_thread("fix", a, what=a.get("text")))
         return
     for g in groups:
         prov = g.get("provider") or " and ".join(g.get("providers") or []) or "Their provider"
@@ -527,9 +561,8 @@ def _removed(a: dict, c: Ctx, plan: dict) -> None:
             plan["items"].append(_item("4", {"client": g["client"], "k": g["k"], "campaign": where}, a,
                                        detail=g["lines"], steps=[how], kind="removed-in-campaign"))
         elif g["kind"] == "replied":
-            plan["thread"].append(_thread("removed-replied", a, g["client"],
-                                          f"{_n(g['k'])} their provider removed had a lead reply in the last 30 days",
-                                          step="answer the lead, then delete them in Smartlead", detail=g["lines"]))
+            plan["items"].append(_item("P8", {"client": g["client"], "k": g["k"]}, a, detail=g["lines"],
+                                       steps=[how], kind="removed-replied"))
         elif g["kind"] == "unchecked":
             plan["dev"].append(f"Removed inboxes: the campaign and reply check did not finish for {g['k']} "
                                f"{g['client']} inboxes, so they are on no delete list yet; the next morning's check "
@@ -667,11 +700,296 @@ def _seeds(a: dict, c: Ctx, plan: dict) -> None:
                        f"file needs downloading again.")
 
 
+# --- the sentences approved 23 Nov 2026 (P1-P6, P8) -----------------------------------------------------------------
+
+def _full_key(a: dict) -> str:
+    key, src = str(a.get("key") or ""), str(a.get("source") or "")
+    return key if not src or key.startswith(src + ":") else f"{src}:{key}"
+
+
+def _acc(plan: dict, name: str, client: str, a: dict) -> dict:
+    """One client's P1 or P6 item, gathered from every job that reports it (inbox list, warm-up repair, weekly test,
+    gate self-test, fleet watch): the same inboxes from two jobs are one item."""
+    x = plan.setdefault(name, {}).setdefault(client, {"emails": set(), "doms": Counter(), "more": 0, "total": 0,
+                                                       "camps": set(), "lines": [], "steps": [], "asks": []})
+    x["asks"].append(a)
+    return x
+
+
+def _dom_words(doms: list[str]) -> str:
+    """'a.test', 'a.test and b.test', 'a.test, b.test and c.test'; over MAX_NAMED: '5 domains' (list in thread)."""
+    doms = sorted(set(doms))
+    if len(doms) > ds.MAX_NAMED:
+        return f"{len(doms)} domains"
+    return doms[0] if len(doms) == 1 else ", ".join(doms[:-1]) + " and " + doms[-1]
+
+
+_CAMP_LINE = re.compile(r"^•\s*(?P<client>[^·]+?) · (?P<camp>.+): (?P<rest>[^:]*@[^:]*)$")
+_BLOCKED = re.compile(r"^•\s*(?P<dom>[a-z0-9.-]+\.[a-z]{2,24}) \((?P<client>[^)]*)\): \d+ inbox(?:es)?, .*: "
+                      r"(?P<users>[^:]+)$", re.I)
+_DOM_COUNTS = re.compile(r"\(((?:[a-z0-9.-]+\.[a-z]{2,24} \d+)(?:, [a-z0-9.-]+\.[a-z]{2,24} \d+)*)\)", re.I)
+_MORE = re.compile(r" and (\d+) more")
+
+
+def _login(a: dict, c: Ctx, plan: dict, removed: tuple[set[str], set[str]] = (set(), set())) -> None:
+    """P1, per client: the inbox list's disconnected inboxes in live campaigns, warm-up repair's login-blocked ones,
+    the weekly test's "Smartlead can't log in" ones. An inbox or domain their provider removed is never here (they are
+    in sentences 3, 4 and P8): a line about one goes to the thread as the job wrote it."""
+    found, unsure = [], False
+    for x in _lines(a):
+        if m := _BLOCKED.match(x):
+            dom = m.group("dom").lower()
+            emails = [u.strip().rstrip("@").lower() + "@" + dom for u in re.split(r",| and ", _MORE.sub("", m.group("users")))
+                      if u.strip()]
+            found.append((ds.client_name(m.group("client")) or c.client(dom), emails, {}, x))   # every inbox named
+        elif m := _CAMP_LINE.match(x):
+            if _MORE.search(m.group("rest")):
+                unsure = True                     # inboxes not named: their domains are not known
+                continue
+            emails = [e.lower() for e in _EMAIL.findall(m.group("rest"))]
+            found.append((ds.client_name(m.group("client")), emails, {}, x))
+    if not found:
+        m = _DOM_COUNTS.search(str(a.get("text") or ""))
+        for part in (m.group(1).split(", ") if m else []):
+            dom, n = part.rsplit(" ", 1)
+            found.append((c.client(dom.lower()), [], {dom.lower(): int(n)}, f"• {dom}: {n} inbox{'es' if n != '1' else ''}"))
+    if not found or unsure:
+        plan["thread"].append(_thread("fix", a))
+        return
+    gone_e, gone_d = removed
+    for client, emails, counts, line in found:
+        emails = [e for e in emails if e not in gone_e and e.rsplit("@", 1)[1] not in gone_d]
+        if not emails and not counts:
+            continue                              # only inboxes their provider removed: the delete reminder has them
+        doms = {e.rsplit("@", 1)[1] for e in emails} | set(counts)
+        if not client or (counts and (doms & gone_d or any(e.rsplit("@", 1)[1] in doms for e in gone_e))):
+            plan["thread"].append(_thread("fix", a, client, detail=[line]))     # counted only: can't tell them apart
+            continue
+        acc = _acc(plan, "_login", client, a)
+        acc["emails"].update(emails)
+        for d, n in counts.items():
+            acc["doms"][d] = max(acc["doms"][d], n)
+        acc["lines"].append(line)
+        acc["steps"].append(LOGIN_HOW.format(account=c.account(sorted(doms)[0], client)))
+
+
+_PAYFAIL = re.compile(r"^(?:Payment failed \([^)]*\)|Not renewed, the bill date [^:]+ passed): (?P<prov>[A-Z]\w*), ")
+_BILL_LINE = re.compile(r"^•?\s*(?P<prov>[A-Z]\w*) · .*?: bill date (?P<date>\d{1,2} \w{3}), (?P<cost>\$[\d,]+(?:\.\d\d)?)")
+
+
+def _bill_failed(a: dict, c: Ctx, plan: dict) -> None:
+    """P2: a failed or not-renewed bill (billing watch), with its amount and date from its list. No amount or date:
+    the thread."""
+    from smartlead.digest import plain
+    text = str(a.get("text") or "").strip()
+    m = _PAYFAIL.match(text)
+    lines = _lines(a)
+    b = next((x for x in (_BILL_LINE.match(y) for y in lines) if x), None)
+    who = text.rstrip(".").rsplit(" for ", 1)[1] if m and " for " in text[m.end():] else ""
+    client = " and ".join(ds.client_name(x.strip()) for x in who.split(",") if x.strip()) or \
+        c.client((_doms(" ".join(lines)) or [""])[0])
+    if not m or not b or not client:
+        plan["thread"].append(_thread("fix", a))
+        return
+    plan["items"].append(_item("P2", {"client": client, "provider": m.group("prov"), "cost": b.group("cost"),
+                                      "date": b.group("date")}, a, by=_date_of(b.group("date"), c.today),
+                               detail=[plain(text)] + lines, steps=[plain(a.get("step") or "")], kind="bill-failed"))
+
+
+_EXPIRES = re.compile(r"^•?\s*(?P<dom>[a-z0-9.-]+\.[a-z]{2,24}): expires (?:\w{3} )?(?P<day>\d{1,2} \w{3})"
+                      r"(?:, (?P<client>(?!Zapmail account)[^,]+))?, Zapmail account", re.I)
+
+
+def _expiring(a: dict, c: Ctx, plan: dict) -> None:
+    """P3, per client: Zapmail client domains that expire soon."""
+    from smartlead.digest import plain
+    by: dict[str, list[tuple[date, str]]] = defaultdict(list)
+    for x in _lines(a):
+        m = _EXPIRES.match(x)
+        d = _date_of(m.group("day"), c.today) if m else None
+        client = (ds.client_name(m.group("client")) if m.group("client") else c.client(m.group("dom"))) if m else ""
+        if not m or not d or not client:
+            plan["thread"].append(_thread("fix", a, client, detail=[x]))
+            continue
+        by[client].append((d, x))
+    for client, rows in by.items():
+        # [date]: the day after the last one expires, so "expire before [date]" is true of every domain (a cold reader,
+        # 23 Nov 2026: "before 27 Nov" read wrong for a domain expiring on 27 Nov); the item sorts by the first.
+        first, last = min(d for d, _ in rows), max(d for d, _ in rows)
+        plan["items"].append(_item("P3", {"client": client, "k": len(rows), "provider": "Zapmail",
+                                          "date": _short(last + timedelta(days=1))}, a, by=first,
+                                   detail=[x for _, x in sorted(rows)],
+                                   steps=[EXPIRE_HOW.format(first=_short(first))], kind="domains-expiring"))
+
+
+def _held(a: dict, c: Ctx, plan: dict) -> None:
+    """P4: a weekly test that looks broken (digest_render worded it from its facts: test, client, domains)."""
+    from smartlead.digest import plain
+    f = a.get("facts") or {}
+    doms = f.get("domains") or []
+    client = ds.client_name(f.get("client")) or (c.client(doms[0]) if doms else "")
+    if not f.get("test") or not client:
+        plan["thread"].append(_thread("fix", a, client))
+        return
+    detail = [plain(a.get("text") or "")] + ([f"Domains in the test: {a['where']}"] if a.get("where") else [])
+    plan["items"].append(_item("P4", {"client": client, "test": f["test"]}, a, detail=detail,
+                               steps=[plain(a.get("step") or "")], kind="test-held"))
+
+
+DECISIONS = {"warmup-repair:cancel-candidates": "cancel-candidates", "warmup-repair:not-on-repair-settings":
+             "repair-settings", "volume-review:suggested": "volume-step-back"}
+_ACT = re.compile(r"agreed conditions for letting the weekly job act on (?P<name>.+?) now hold", re.I)
+_VOL = re.compile(r"^•?\s*(?:(?P<client>[A-Z][\w ]*?) · )?(?P<dom>[a-z0-9.-]+\.[a-z]{2,24}): .* on (?P<k>\d+) inbox", re.I)
+
+
+def _decide(a: dict, c: Ctx, plan: dict) -> None:
+    """P5, per client: a call only Manveen makes, asked with the approved question of its kind (QUESTIONS). A decision
+    kind with no question there (volume limits not changed) stays in the thread."""
+    from smartlead.digest import plain
+    q = DECISIONS.get(_full_key(a))
+    act = _ACT.search(str(a.get("text") or ""))
+    if act:
+        q = "act-mode"
+    if q not in ds.QUESTIONS:
+        plan["thread"].append(_thread("fix", a))
+        return
+    steps = [plain(a.get("step") or "")]
+    if q == "act-mode":
+        client = ds.client_name(act.group("name"))
+        k = c.client_inboxes(client)
+        if not k:
+            plan["thread"].append(_thread("fix", a, client))
+            return
+        plan["items"].append(_item("P5", {"client": client, "k": k, "question": q}, a,
+                                   detail=[plain(a.get("text") or "")], steps=steps, kind="decide"))
+        return
+    by: dict[str, list[str]] = defaultdict(list)
+    n_by: Counter = Counter()
+    for x in _lines(a):
+        if q == "volume-step-back":
+            m = _VOL.match(x)
+            if not m:
+                continue
+            client = ds.client_name(m.group("client")) if m.group("client") else c.client(m.group("dom"))
+            n_by[client] += int(m.group("k"))
+        else:
+            m = _REPAIRED.match(x)
+            if not m:
+                continue
+            client = c.client(email=m.group("e").lower())
+            n_by[client] += 1
+        by[client].append(x)
+    if not by or "" in by:
+        plan["thread"].append(_thread("fix", a))
+        return
+    for client, xs in by.items():
+        plan["items"].append(_item("P5", {"client": client, "k": n_by[client], "question": q}, a, detail=xs,
+                                   steps=steps, kind="decide"))
+
+
+_STUCK = re.compile(r"Campaign (?P<camp>.+?) is live with only failed inboxes left \((?P<es>[^)]*)\)")
+_FROM_LINE = re.compile(r"^•?\s*(?P<dom>[a-z0-9.-]+\.[a-z]{2,24}): (?P<users>.+)$", re.I)
+
+
+def _take_out(a: dict, c: Ctx, plan: dict) -> None:
+    """P6, per client: inboxes All Inboxes says may not send, still in live campaigns. The campaign comes from the job
+    (inbox list, gate self-test, weekly test) or, when the job names none (fleet watch), from All Inboxes."""
+    from smartlead.digest import plain
+    key, text, lines = _full_key(a), str(a.get("text") or ""), _lines(a)
+    total = re.match(r"(\d+) inbox", text)
+    got: list[tuple[str, set, int, set, list]] = []          # (client, emails, unnamed, campaigns, lines)
+    if key.startswith("inbox-status:"):
+        per: dict[str, list] = defaultdict(lambda: [set(), 0, set(), []])
+        for x in lines:
+            m = _CAMP_LINE.match(x)
+            if not m:
+                continue
+            p = per[ds.client_name(m.group("client"))]
+            p[0].update(e.lower() for e in _EMAIL.findall(m.group("rest")))
+            p[1] += sum(int(n) for n in _MORE.findall(m.group("rest")))
+            p[2].add(m.group("camp").strip())
+            p[3].append(x)
+        if len(per) == 1 and total:          # one client: the job's own count, never more than it said
+            (cl, p), = per.items()
+            p[1] = max(int(total.group(1)) - len(p[0]), 0)
+        got = [(cl, *p) for cl, p in per.items()]
+    elif key.startswith("gate-selftest:"):
+        seg = text.split("campaigns: ", 1)[1].split(", so ")[0] if "campaigns: " in text else ""
+        per = defaultdict(lambda: [0, set()])
+        for part in seg.split("; "):
+            if " · " in part and part.endswith(")") and " (" in part:
+                cl, rest = part.split(" · ", 1)
+                camp, n = rest.rsplit(" (", 1)
+                per[ds.client_name(cl.strip())][0] += int(n.rstrip(")") or 0)
+                per[ds.client_name(cl.strip())][1].add(camp.strip())
+        emails, more = set(), 0
+        for x in lines:
+            if m := _FROM_LINE.match(x):
+                more += sum(int(n) for n in _MORE.findall(m.group("users")))
+                emails |= {u.strip().lower() + m.group("dom").lower() for u in re.split(r",", _MORE.sub("", m.group("users")))
+                           if u.strip().endswith("@")}
+        if len(per) == 1:
+            (cl, (n, camps)), = per.items()
+            got = [(cl, emails, max((int(total.group(1)) if total else n) - len(emails), more, 0), camps, lines)]
+        else:
+            got = [(cl, set(), n, camps, []) for cl, (n, camps) in per.items()]
+            if got:
+                got[0] = (got[0][0], set(), got[0][2], got[0][3], lines)
+    elif (m := _STUCK.search(text)):
+        es = {e.strip().lower() for e in m.group("es").split(",") if "@" in e}
+        got = [(c.client(email=next(iter(sorted(es)))) if es else "", es, 0, {m.group("camp").strip()}, [plain(text)])]
+    else:                                                    # fleet watch: the campaigns from All Inboxes
+        es = [e.lower() for x in lines for e in _EMAIL.findall(x)]
+        per = defaultdict(lambda: [set(), 0, set(), []])
+        for r in c.held_in_campaigns(emails=es):
+            e = str(r.get("email") or "").lower()
+            p = per[c.client(email=e)]
+            p[0].add(e)
+            p[2].update(r.get("campaigns") or [])
+            p[3] += [x for x in lines if e in x.lower() and x not in p[3]]
+        got = [(cl, *p) for cl, p in per.items()]
+    if not got or any(not cl or not camps or not (emails or n) for cl, emails, n, camps, _ in got):
+        plan["thread"].append(_thread("fix", a))
+        return
+    for cl, emails, n, camps, xs in got:
+        acc = _acc(plan, "_out", cl, a)
+        acc["emails"] |= emails
+        acc["more"] = max(acc["more"], n)
+        acc["camps"] |= camps
+        acc["lines"] += [x for x in xs if x not in acc["lines"]]
+        # one plain step naming the account (the inbox list's own step promised the weekly job would take failed
+        # inboxes out, which it does not while it runs in warn mode: a cold reader, 23 Nov 2026)
+        e0 = sorted(emails)[0] if emails else ""
+        acc["steps"].append(OUT_HOW.format(account=c.account(e0.rsplit("@", 1)[-1], cl) if e0 else _account([], cl)))
+
+
+def _finish(plan: dict, c: Ctx) -> None:
+    """The gathered P1 and P6 items, one per client."""
+    for client, x in plan.pop("_login", {}).items():
+        per = Counter(e.rsplit("@", 1)[1] for e in x["emails"])
+        for d, n in x["doms"].items():
+            per[d] = max(per[d], n)
+        k = sum(per.values())
+        a = min(x["asks"], key=lambda y: str(y.get("since") or "9999"))
+        plan["items"].append(_item("P1", {"client": client, "k": k, "domain": _dom_words(list(per))}, a,
+                                   detail=x["lines"], steps=list(dict.fromkeys(x["steps"])), kind="disconnected"))
+    for client, x in plan.pop("_out", {}).items():
+        k = len(x["emails"]) + x["more"]
+        camps = sorted(x["camps"])
+        a = min(x["asks"], key=lambda y: str(y.get("since") or "9999"))
+        plan["items"].append(_item("P6", {"client": client, "k": k, "campaign": camps[0] if len(camps) == 1 else
+                                          f"{len(camps)} campaigns"}, a, detail=x["lines"],
+                                   steps=list(dict.fromkeys(x["steps"])), kind="take-out"))
+
+
 def route(asks: list[dict], broken: list[dict], infos: list[dict], ctx: dict | None, now: datetime) -> dict:
     """Where every ask goes (see the module doc). ``asks`` are the person asks after holds, the delete reminder's
     split and the folding of older items (digest_post.build), ``broken`` the job problems, ``infos`` the facts."""
     c = Ctx(ctx, now)
     plan = {"items": [], "watch": [], "thread": [], "dev": [], "info": list(infos), "kinds": Counter()}
+    from smartlead.digest import REMOVED_KEY
+    gone = next((a for a in asks if a.get("key") == REMOVED_KEY), None) or {}
+    removed = ({str(x).lower() for x in gone.get("inboxes") or ()}, {str(x).lower() for x in gone.get("domains") or ()})
     for b in broken:
         plan["dev"].append(_dev(b))
         plan["kinds"]["broken"] += 1
@@ -697,6 +1015,18 @@ def route(asks: list[dict], broken: list[dict], infos: list[dict], ctx: dict | N
                 _no_test(a, c, plan)
             elif k == "seeds-pending":
                 _seeds(a, c, plan)
+            elif k == "disconnected":
+                _login(a, c, plan, removed)
+            elif k == "bill-failed":
+                _bill_failed(a, c, plan)
+            elif k == "domains-expiring":
+                _expiring(a, c, plan)
+            elif k == "test-held":
+                _held(a, c, plan)
+            elif k == "decide":
+                _decide(a, c, plan)
+            elif k == "take-out":
+                _take_out(a, c, plan)
             elif k == "broken":
                 plan["dev"].append(_dev(a))
             elif k == "info":
@@ -704,11 +1034,12 @@ def route(asks: list[dict], broken: list[dict], infos: list[dict], ctx: dict | N
             else:
                 doms = sorted({d for d in _doms(" ".join([str(a.get("text") or "")] + _lines(a)))})
                 client = c.client(doms[0]) if doms else ""
-                plan["thread"].append(_thread(k if KINDS.get(k, ("",))[0] == "thread" else "fix", a, client))
+                plan["thread"].append(_thread("fix", a, client))
         except Exception as exc:  # noqa: BLE001 - an ask is never lost to its routing: it goes to the thread as it is
             plan["dev"].append(f"Digest: an ask could not be routed ({type(exc).__name__}); it is in the thread as "
                                f"the job wrote it.")
             plan["thread"].append(_thread("fix", a))
+    _finish(plan, c)
     _dedupe(plan)
     _order(plan)
     return plan
@@ -722,7 +1053,9 @@ def _dedupe(plan: dict) -> None:
     for it in plan["items"]:
         f = it["f"]
         key = (it["s"], str(f.get("domain") or f.get("inbox") or ""), str(f.get("client") or ""),
-               "" if (f.get("domain") or f.get("inbox")) else str(f.get("provider") or f.get("campaign") or it["key"]))
+               "" if (f.get("domain") or f.get("inbox")) else
+               "|".join(str(f.get(x) or "") for x in ("provider", "campaign", "date", "test", "question")).strip("|")
+               or str(it["key"]))
         if key in seen:
             seen[key]["detail"] += [x for x in it["detail"] if x not in seen[key]["detail"]]
             seen[key]["steps"] += [x for x in it["steps"] if x not in seen[key]["steps"]]
