@@ -21,7 +21,11 @@ result that is not complete):
     tests (Sat/Sun/Mon start) from new files, 6+ days apart; a one-off or history result never counts.
   * a pulled inbox comes back after two passes, at least 6 days apart, both after the pull.
   * if nearly every inbox in one night's tests, or in one test file, is below 4 of 4 at one provider, the
-    test is suspect: hold (inboxes already known bad are left out of that count).
+    test is suspect: hold (inboxes already known bad are left out of that count). Only when those inboxes are on
+    two or more sending domains, though: a broken seed panel hits every domain alike. When every inbox below
+    4 of 4 there is on one domain (a test that holds one domain's senders), it is a domain failure and is judged
+    like any other result (Manveen 23 Nov 2026: "it should say failed we will rerun but test results should be
+    recorded"); domain_failures names it so the report can ask for a re-run to confirm.
 
 The copy check (Manveen 11 Nov 2026, after one Google inbox delivered a plain note to the inbox and its
 campaign email to spam): a test on a "DT <client> copy check" campaign sends the client's real first email
@@ -243,17 +247,33 @@ def summarise(rows: list[dict]) -> dict[str, dict]:
     return out
 
 
+def _near_total(night: dict[str, dict], exclude: set[str]) -> dict[str, set[str]]:
+    """{provider: sending domains of the inboxes below 4 of 4 there} for each provider where at least 80% of the
+    judged inboxes (10+), ``exclude`` left out, were below 4 of 4."""
+    out = {}
+    for p in ("google", "microsoft"):
+        judged = {mb: s[p]["verdict"] for mb, s in night.items()
+                  if mb not in exclude and (s.get(p) or {}).get("verdict") in JUDGED}
+        below = [mb for mb, v in judged.items() if v != PASS]
+        if len(judged) >= HOLD_MIN and len(below) / len(judged) >= HOLD_SHARE:
+            out[p] = {mb.rsplit("@", 1)[-1] for mb in below}
+    return out
+
+
 def held_providers(night: dict[str, dict], exclude: set[str] = frozenset()) -> set[str]:
     """Providers where at least 80% of one night's (or one test file's) judged inboxes (10+) were below
-    4 of 4: a seed or test problem (one dead seed costs every sender a seed) is likelier than every sender
-    going bad at once. ``exclude``: inboxes already known bad, which would push a good night toward a hold."""
-    held = set()
-    for p in ("google", "microsoft"):
-        judged = [s[p]["verdict"] for mb, s in night.items()
-                  if mb not in exclude and (s.get(p) or {}).get("verdict") in JUDGED]
-        if len(judged) >= HOLD_MIN and (len(judged) - judged.count(PASS)) / len(judged) >= HOLD_SHARE:
-            held.add(p)
-    return held
+    4 of 4, on two or more sending domains: a seed or test problem (one dead seed costs every sender a seed) is
+    likelier than every sender going bad at once. When all of them are on one domain the provider is not held
+    (see domain_failures). ``exclude``: inboxes already known bad, which would push a good night toward a hold."""
+    return {p for p, doms in _near_total(night, set(exclude)).items() if len(doms) >= 2}
+
+
+def domain_failures(night: dict[str, dict], exclude: set[str] = frozenset()) -> dict[str, str]:
+    """{provider: domain} where nearly every judged inbox of a night (or test file) was below 4 of 4, as for a
+    hold, but every one of them is on that one sending domain: a real domain failure looks just like a broken test
+    when the test holds one domain's senders, so it is judged, not held, and the report asks for a re-run to
+    confirm it."""
+    return {p: next(iter(doms)) for p, doms in _near_total(night, set(exclude)).items() if len(doms) == 1}
 
 
 def apply_hold(summary: dict, held: set[str]) -> str:

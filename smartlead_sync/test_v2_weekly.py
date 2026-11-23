@@ -86,7 +86,7 @@ def test_history_files_are_kept_but_never_acted_on(tmp_path):
 # --- decisions ---------------------------------------------------------------------
 
 def test_a_suspect_provider_is_held_and_nothing_is_pulled(tmp_path):
-    write_csv(tmp_path, "a.csv", {f"g{n}@x.com": (0, 4) for n in range(12)})
+    write_csv(tmp_path, "a.csv", {f"g{n}@d{n % 3}.test": (0, 4) for n in range(12)})
     st = fresh_state(tmp_path)
     read(tmp_path, st)
     wk.compute_holds(st, None)
@@ -96,7 +96,7 @@ def test_a_suspect_provider_is_held_and_nothing_is_pulled(tmp_path):
 
 def test_one_broken_test_file_is_held_on_its_own(tmp_path):
     # audit PLACEMENT-10: the hold worked per night only, so one broken DT test among good ones pulled its inboxes
-    write_csv(tmp_path, "dt-pl-1.csv", {f"g{n}@x.com": (0, 4) for n in range(12)})
+    write_csv(tmp_path, "dt-pl-1.csv", {f"g{n}@d{n % 3}.test": (0, 4) for n in range(12)})
     good = {f"ok{n}@y.com": (4, 4) for n in range(40)}
     good["real@y.com"] = (0, 4)
     write_csv(tmp_path, "dt-pl-2.csv", good)
@@ -109,6 +109,66 @@ def test_one_broken_test_file_is_held_on_its_own(tmp_path):
     assert {e for e, x in d.items() if x["action"]} == {"real@y.com"}
     head, parts = wk.build_report(st, GOT, d, None, acted(), False, set())
     assert any("Google results of the test \"dt-pl-1\" (Mon 9 Nov) were not used" in p for p in parts)
+
+
+def _one_domain_test(tmp_path):
+    """A weekly test of one domain's 25 Outlook senders beside a good multi-domain test: Microsoft put
+    every test email from the one domain in spam, Google most in the inbox."""
+    write_csv(tmp_path, "client-weekly-test-4-run-1.csv", {f"o{n}@one.test": (3, 0) for n in range(25)})
+    write_csv(tmp_path, "client-weekly-test-1-run-1.csv", {f"ok{n}@d{n % 4}.test": (4, 4) for n in range(40)})
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    st["types"] = {**{f"o{n}@one.test": "OUTLOOK" for n in range(25)}, **{f"ok{n}@d{n % 4}.test": "OUTLOOK" for n in range(40)}}
+    st["clients"] = {e: "Client" for e in st["types"]}
+    wk.compute_holds(st, None)
+    return st, got
+
+
+def test_a_one_domain_test_that_fails_is_recorded_as_failed_not_held(tmp_path):
+    """23 Nov 2026: a real one-domain failure looked like a broken test and was thrown away. Manveen: "it should say
+    failed we will rerun but test results should be recorded"."""
+    st, got = _one_domain_test(tmp_path)
+    assert st["file_holds"] == {} and st["holds"]["2026-11-09"] == []
+    assert {k: v["microsoft"] for k, v in st["domain_fails"].items()} == {next(iter(st["domain_fails"])): "one.test"}
+    docs = wk.verdict_docs(st, NOW + timedelta(days=1)).values()
+    one = [d for d in docs if d["domain"] == "one.test"]
+    assert len(one) == 25 and {d["verdict"] for d in one} == {v2.FAIL} and all(d["held"] == [] for d in one)
+    d = wk.plan(st, got["nights"])
+    assert {e for e, x in d.items() if x["action"] == v2.PULL} == {f"o{n}@one.test" for n in range(25)}
+    head, parts = wk.build_report(st, {**GOT, "nights": got["nights"]}, d, None, acted(), False, set())
+    text = "\n".join(parts)
+    assert "points to a broken test" not in text and "were not used" not in text
+    line = ('25 of 25 inboxes on one.test failed the weekly test "client-weekly-test-4" (run 1, Mon 9 Nov) at their '
+            'own provider (Microsoft: 0 of 100 test emails in the inbox). Nearly every inbox in the test was below 4 '
+            'of 4, but all on this one domain, so the result is recorded as a fail, not set aside as a broken test. '
+            'Do: keep them out of campaigns; re-run the test in Smart Delivery to confirm.')
+    assert wk._needs(parts).count(line) == 1
+    (src, asks, _, _), _ = wk.digest_items(head, parts)
+    ask = next(a for a in asks if "one.test" in a.text)
+    assert ask.step == "keep them out of campaigns; re-run the test in Smart Delivery to confirm."
+    assert ask.text.startswith("25 of 25 inboxes on one.test failed the weekly test")
+
+
+def test_a_one_domain_fail_at_the_other_provider_only_asks_nothing(tmp_path):
+    """Google inboxes low at Microsoft only: not held either, but none failed at its own provider, so no line."""
+    st, got = _one_domain_test(tmp_path)
+    st["types"].update({f"o{n}@one.test": "GMAIL" for n in range(25)})
+    d = wk.plan(st, got["nights"])
+    head, parts = wk.build_report(st, {**GOT, "nights": got["nights"]}, d, None, acted(), False, set())
+    assert not [x for x in wk._needs(parts) if "one.test" in x]
+
+
+def test_a_multi_domain_test_that_fails_is_still_held(tmp_path):
+    write_csv(tmp_path, "client-weekly-test-4-run-1.csv", {f"o{n}@d{n % 3}.test": (4, 0) for n in range(24)})
+    st = fresh_state(tmp_path)
+    got = read(tmp_path, st)
+    st["types"] = {f"o{n}@d{n % 3}.test": "OUTLOOK" for n in range(24)}
+    wk.compute_holds(st, None)
+    assert st["holds"]["2026-11-09"] == ["microsoft"] and st["domain_fails"] == {}
+    assert {d["verdict"] for d in wk.verdict_docs(st, NOW + timedelta(days=1)).values()} == {v2.INCOMPLETE}
+    head, parts = wk.build_report(st, {**GOT, "nights": got["nights"]}, wk.plan(st, got["nights"]), None, acted(),
+                                  False, set())
+    assert any("which points to a broken test" in x for x in wk._needs(parts))
 
 
 def test_an_unrecognised_v2_csv_is_found_once(tmp_path):
