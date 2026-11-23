@@ -17,7 +17,7 @@ import re
 from datetime import date
 
 # --- the limits ------------------------------------------------------------------------------------------------------
-TOP_LINES = 8          # non-blank lines in the top post: what fits one phone screen without scrolling
+TOP_LINES = 10         # non-blank lines in the top post: header, 5 items, 3 Watching lines, the 'more' line (t409)
 TOP_CHARS = 1400       # characters in the top post: about one laptop screen of Slack
 ITEM_CHARS = 280       # one numbered item in the top post: two lines in Slack's message pane on a laptop
 MAX_NAMES = 6          # addresses or domains named on one line; the rest are "and N more" (a list, not a dump)
