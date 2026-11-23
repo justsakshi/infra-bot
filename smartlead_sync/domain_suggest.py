@@ -26,6 +26,20 @@ if sys.platform == "win32":
         pass
 
 
+SOURCE_LABELS = {"ai": "Zapmail AI", "generator": "generator", "scaledmail": "ScaledMail"}
+
+
+def price_label(s: dict) -> str:
+    """Price column for one suggestion. ScaledMail-only names carry no Zapmail
+    price (``price`` is None) and keep theirs under ``scaledmail``."""
+    if s.get("price") is not None:
+        return f"${float(s['price']):.2f}"
+    sm = s.get("scaledmail") or {}
+    if sm.get("price") is not None:
+        return f"${float(sm['price']):.2f} ScaledMail"
+    return "price unknown"
+
+
 async def main() -> int:
     from smartlead.domain_suggest import load_profiles, suggest
 
@@ -63,9 +77,9 @@ async def main() -> int:
     print(f"  Zapmail AI: {res['ai_usable']} usable of {res['ai_found']} · "
           f"our generator: {res['generator_usable']} usable")
     for s in res["suggestions"]:
-        src = "Zapmail AI" if s["source"] == "ai" else "generator"
+        src = SOURCE_LABELS.get(s["source"], s["source"])
         words = " + ".join(s.get("words") or [])
-        print(f"    {s['domain']:24} ${s['price']:.2f}  {words:26} ({src})")
+        print(f"    {s['domain']:24} {price_label(s):18} {words:26} ({src})")
     if res.get("ai_dropped"):
         print(f"  Dropped {len(res['ai_dropped'])} Zapmail AI name(s) that don't read as this business:")
         for d in res["ai_dropped"][:8]:
