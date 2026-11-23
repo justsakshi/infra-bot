@@ -163,8 +163,8 @@ def _inbox(g, m):
 
 
 def test_a_near_total_fail_on_one_domain_is_a_domain_failure_not_a_held_test():
-    """23 Nov 2026: a weekly test holding one domain's 25 Outlook senders came back 0 of 100 at Microsoft and was set
-    aside as a broken test. Manveen: "it should say failed we will rerun but test results should be recorded"."""
+    """23 Nov 2026: a weekly test holding one domain's senders failed at their own provider and was set aside as a
+    broken test. Manveen: "it should say failed we will rerun but test results should be recorded"."""
     night = {f"o{n}@one.test": _inbox(v2.WATCH, v2.FAIL) for n in range(25)}
     assert v2.held_providers(night) == set()
     assert v2.domain_failures(night) == {"google": "one.test", "microsoft": "one.test"}

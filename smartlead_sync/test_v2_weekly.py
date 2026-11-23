@@ -112,7 +112,7 @@ def test_one_broken_test_file_is_held_on_its_own(tmp_path):
 
 
 def _one_domain_test(tmp_path):
-    """A weekly test of one domain's 25 Outlook senders (Melior-style) beside a good multi-domain test: Microsoft put
+    """A weekly test of one domain's 25 Outlook senders beside a good multi-domain test: Microsoft put
     every test email from the one domain in spam, Google most in the inbox."""
     write_csv(tmp_path, "client-weekly-test-4-run-1.csv", {f"o{n}@one.test": (3, 0) for n in range(25)})
     write_csv(tmp_path, "client-weekly-test-1-run-1.csv", {f"ok{n}@d{n % 4}.test": (4, 4) for n in range(40)})
