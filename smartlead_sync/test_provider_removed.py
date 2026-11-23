@@ -459,14 +459,15 @@ def test_the_digest_top_line_gives_both_counts_and_the_thread_both_lists():
     use["inboxes"]["b@desk.example"].update(replied=1)
     head, parts = dp.build([_removed_source(use)], [], [], NOW)
     top, text = "\n".join(head), "\n".join(parts)
-    assert top == ("Inbox digest · Fri 20 Nov · 4 things to do\n\n"
-                   "1. Precise Leads: delete 2 inboxes in Smartlead that ScaledMail already removed (list in thread).\n"
-                   "2. BettrData: delete 1 inbox in Smartlead that Zapmail already removed (list in thread).\n"
-                   "3. Precise Leads: 1 removed inbox is still in Client push. Take it out, then delete it (list in "
-                   "thread).\n\n1 more in the thread.")
-    assert "4. Precise Leads: 1 inbox their provider removed had a lead reply in the last 30 days. Answer the lead, " \
-           "then delete them in Smartlead. (wording not approved yet)" in text
-    assert "1 above:\n• Precise Leads 2, removed by ScaledMail (order cancelled, no inboxes left):\n– desk.example: c@, d@" in text
+    assert top == ("Inbox digest · Fri 20 Nov · 4 things to do\n\n"          # P8 approved 23 Nov 2026 (a lead waits)
+                   "1. Precise Leads: 1 removed inbox had a lead reply in the last 30 days. Answer the lead, then "
+                   "delete it (list in thread).\n"
+                   "2. Precise Leads: delete 2 inboxes in Smartlead that ScaledMail already removed (list in thread).\n"
+                   "3. BettrData: delete 1 inbox in Smartlead that Zapmail already removed (list in thread).\n"
+                   "4. Precise Leads: 1 removed inbox is still in Client push. Take it out, then delete it (list in "
+                   "thread).")
+    assert "(wording not approved yet)" not in text
+    assert "2 above:\n• Precise Leads 2, removed by ScaledMail (order cancelled, no inboxes left):\n– desk.example: c@, d@" in text
     assert "• BettrData 1, removed by Zapmail (every inbox on the domain deleted there):\n– all inboxes on these domains: co-one.example (1)" in text
     assert "• Precise Leads 1 in Client push (paused):\n– desk.example: a@" in text
     assert "• Precise Leads 1 in no real campaign, a lead replied in the last 30 days:\n– desk.example: b@" in text

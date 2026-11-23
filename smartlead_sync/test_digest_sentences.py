@@ -27,6 +27,15 @@ APPROVED = {   # as Manveen approved them, brackets and all (decision 5)
     "6": "[Client]: [domain] is on Spamhaus and in [campaign]. Take its [k] inboxes out.",
     "7": "[Client]: [k] inboxes have no weekly test. Add them to a test in Smart Delivery (steps in thread).",
     "W": "Watching: [domain] replies are low ([a] vs [b] expected); the next weekly test on [date] decides.",
+    # 23 Nov 2026, "approve with your changes" (P1 without "or delete them if they were cancelled"; P7 rejected)
+    "P1": "[Client]: Smartlead can't log in to [k] inboxes on [domain]. Reconnect them (list in thread).",
+    "P2": "[Client]: the [provider] bill of [$] on [date] failed. Pay it, or let it go on purpose (steps in thread).",
+    "P3": "[Client]: [k] domains expire at [provider] before [date]. Renew them or let them go (list in thread).",
+    "P4": "[Client]: the weekly test [test] looks broken. Re-run it in Smart Delivery (it uses one test run).",
+    "P5": "[Client]: [k] inboxes need your call: [question] (list in thread).",
+    "P6": "[Client]: [k] inboxes that may not send are still in [campaign]. Take them out (list in thread).",
+    "P8": "[Client]: [k] removed inboxes had a lead reply in the last 30 days. Answer the lead, then delete them "
+          "(list in thread).",
 }
 
 
@@ -39,6 +48,11 @@ def _as_brackets(t: str) -> str:
 @pytest.mark.parametrize("s", list(APPROVED))
 def test_the_wording_is_exactly_what_manveen_approved(s):
     assert _as_brackets(ds.TEMPLATES[s]) == APPROVED[s]
+
+
+def test_no_sentence_is_used_that_manveen_did_not_approve():
+    assert set(ds.TEMPLATES) - {"2-"} == set(APPROVED)          # "2-" is sentence 2 without its [$] (approved mock)
+    assert "P7" not in ds.TEMPLATES                              # rejected 23 Nov 2026
 
 
 def test_the_approved_mock_renders_word_for_word():
@@ -65,7 +79,8 @@ def test_the_approved_mock_renders_word_for_word():
 
 def test_every_sentence_type_fills_only_its_brackets():
     f = {"client": "pl", "domain": "a.test", "n": 3, "m": 40, "provider": "Gmail", "k": 4, "date": "1 Dec",
-         "cost": "$9.00", "campaign": "Camp One", "inbox": "x@a.test", "a": 2, "b": 9}
+         "cost": "$9.00", "campaign": "Camp One", "inbox": "x@a.test", "a": 2, "b": 9, "test": "pl-weekly-1",
+         "question": "bill-check"}
     out = {s: ds.sentence({"s": s, "f": f}) for s in APPROVED}
     assert out["1"] == ("Precise Leads: a.test failed its weekly test (3 of 40 reached the inbox at Gmail). Keep its 4 "
                         "inboxes out of campaigns and don't renew the domain.")
@@ -231,10 +246,10 @@ def test_every_key_pattern_has_a_destination_and_the_table_lists_it():
     for p, k, _ in items.KEYMAP + items.TEXTMAP:
         assert k in items.KINDS, k
         assert p[:30].replace("|", "\\|")[:10] in table or p[:10] in table
-    assert all(dest in ("1", "2", "3", "4", "5", "6", "7", "W", "bot", "dev", "info", "sheet", "thread")
+    assert all(dest in set(ds.TEMPLATES) | {"bot", "dev", "info", "sheet", "thread"}
                for dest, _, _ in items.KINDS.values())
-    for dest, _, prop in items.KINDS.values():
-        assert (dest == "thread") == bool(prop)              # every thread kind has a proposed sentence parked
+    assert [k for k, (dest, _, _) in items.KINDS.items() if dest == "thread"] == ["fix"]    # P7 rejected: one kind
+    assert items.KINDS["fix"][2] == "P7" and "P7 (\"[Client]: [what]. [step]\") was rejected" in table
     assert items.kind_of({"key": "renewal-review:Zapmail:x:2026-11-27"}) == "bill"
     assert items.kind_of({"key": "rr:1", "source": "renewal-review"}) == "bill"
     assert items.kind_of({"key": "key-health:dead:PL", "kind": "ask"}) == "broken"
