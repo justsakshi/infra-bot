@@ -138,7 +138,7 @@ def test_only_a_never_arrived_seed_becomes_final_with_time():
 # --- test-side problems ------------------------------------------------------------
 
 def test_a_provider_where_nearly_every_inbox_fails_is_held_as_a_test_problem():
-    night = {f"i{n}@x.com": {"google": {"verdict": v2.FAIL}, "microsoft": {"verdict": v2.PASS}} for n in range(12)}
+    night = {f"i{n}@d{n % 3}.test": {"google": {"verdict": v2.FAIL}, "microsoft": {"verdict": v2.PASS}} for n in range(12)}
     assert v2.held_providers(night) == {"google"}
     night["ok@y.com"] = {"google": {"verdict": v2.PASS}, "microsoft": {"verdict": v2.PASS}}
     night.update({f"ok{n}@y.com": {"google": {"verdict": v2.PASS}, "microsoft": {"verdict": v2.PASS}} for n in range(3)})
@@ -146,7 +146,7 @@ def test_a_provider_where_nearly_every_inbox_fails_is_held_as_a_test_problem():
 
 
 def test_one_dead_seed_making_everyone_watch_is_held_too():
-    night = {f"i{n}@x.com": {"google": {"verdict": v2.WATCH}, "microsoft": {"verdict": v2.PASS}} for n in range(12)}
+    night = {f"i{n}@d{n % 3}.test": {"google": {"verdict": v2.WATCH}, "microsoft": {"verdict": v2.PASS}} for n in range(12)}
     assert v2.held_providers(night) == {"google"}
 
 
@@ -156,6 +156,43 @@ def test_inboxes_already_known_bad_do_not_push_a_night_into_a_hold():
     night["new@z.com"] = {"google": {"verdict": v2.FAIL}, "microsoft": {"verdict": v2.PASS}}
     assert v2.held_providers(night) == {"google"}                              # 55 of 65 below 4/4
     assert v2.held_providers(night, exclude={f"bad{n}@x.com" for n in range(54)}) == set()
+
+
+def _inbox(g, m):
+    return {"google": {"verdict": g}, "microsoft": {"verdict": m}}
+
+
+def test_a_near_total_fail_on_one_domain_is_a_domain_failure_not_a_held_test():
+    """23 Nov 2026: a weekly test holding one domain's 25 Outlook senders came back 0 of 100 at Microsoft and was set
+    aside as a broken test. Manveen: "it should say failed we will rerun but test results should be recorded"."""
+    night = {f"o{n}@one.test": _inbox(v2.WATCH, v2.FAIL) for n in range(25)}
+    assert v2.held_providers(night) == set()
+    assert v2.domain_failures(night) == {"google": "one.test", "microsoft": "one.test"}
+    night.update({f"ok{n}@two.test": _inbox(v2.PASS, v2.PASS) for n in range(3)})      # others in the file pass
+    assert v2.held_providers(night) == set() and v2.domain_failures(night)["microsoft"] == "one.test"
+
+
+def test_a_near_total_fail_across_domains_is_still_held():
+    night = {f"o{n}@one.test": _inbox(v2.PASS, v2.FAIL) for n in range(12)}
+    night.update({f"o{n}@two.test": _inbox(v2.PASS, v2.FAIL) for n in range(12)})
+    assert v2.held_providers(night) == {"microsoft"} and v2.domain_failures(night) == {}
+    night["ok@three.test"] = _inbox(v2.PASS, v2.PASS)                                  # 24 of 25 below: still held
+    assert v2.held_providers(night) == {"microsoft"} and v2.domain_failures(night) == {}
+
+
+def test_a_mixed_night_is_neither_held_nor_a_domain_failure():
+    night = {f"o{n}@one.test": _inbox(v2.PASS, v2.FAIL) for n in range(12)}
+    night.update({f"ok{n}@two.test": _inbox(v2.PASS, v2.PASS) for n in range(8)})     # 12 of 20 below: act as usual
+    assert v2.held_providers(night) == set() and v2.domain_failures(night) == {}
+
+
+def test_known_bad_inboxes_on_another_domain_do_not_make_a_hold():
+    night = {f"o{n}@one.test": _inbox(v2.PASS, v2.FAIL) for n in range(12)}
+    night.update({f"bad{n}@two.test": _inbox(v2.PASS, v2.FAIL) for n in range(5)})
+    assert v2.held_providers(night) == {"microsoft"}
+    left_out = {f"bad{n}@two.test" for n in range(5)}
+    assert v2.held_providers(night, exclude=left_out) == set()
+    assert v2.domain_failures(night, exclude=left_out) == {"microsoft": "one.test"}
 
 
 def test_a_small_test_is_never_held():

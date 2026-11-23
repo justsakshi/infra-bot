@@ -25,8 +25,10 @@ What it does (rules in smartlead/v2_results.py):
     PL's and BettrData's; its Google inboxes stay report-only under the rule above);
   * a campaign left with no good sender is not touched (sending or scheduled: the post asks a person);
   * an inbox the job pulled comes back (same campaigns, tag removed) after two passes 6+ days apart;
-  * if nearly every inbox in a night, or in one test file, is below 4/4 at one provider, that provider is
-    held (test problem);
+  * if nearly every inbox in a night, or in one test file, is below 4/4 at one provider, on two or more sending
+    domains, that provider is held (test problem); when they are all on one domain (a test of one domain's senders)
+    the result is judged and recorded like any other, and the post says those inboxes failed and asks for a re-run
+    to confirm (Manveen 23 Nov 2026: "it should say failed we will rerun but test results should be recorded");
   * it acts on a night only once its files stopped arriving for 90 minutes;
   * state is saved after every change, half-done moves are retried, a crash posts once a day;
   * from Tuesday 12:00 IST it posts one reminder naming each DT test whose results are not in. With the API's
@@ -179,7 +181,7 @@ def load_state(d: Path) -> dict:
     p = d / "state.json"
     s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     for k, empty in (("files", {}), ("results", {}), ("holds", {}), ("pulled", {}), ("returned", []),
-                     ("reminded", []), ("log", []), ("overrides", {}), ("repair", []), ("file_holds", {}),
+                     ("reminded", []), ("log", []), ("overrides", {}), ("repair", []), ("file_holds", {}), ("domain_fails", {}),
                      ("clients", {}), ("types", {}), ("dt_tests", {}), ("dt_ids", {}), ("synced", {}),
                      ("copy_checks", {})):
         s.setdefault(k, empty)
@@ -492,7 +494,8 @@ def rejudge(state: dict, state_dir: Path) -> int:
 def compute_holds(state: dict, fleet: dict | None) -> None:
     """Held providers per night and per test file, leaving out inboxes already known bad that night
     (pulled before it, or carrying a person's DO NOT USE tag). Per file too, so one broken test among a
-    night's good ones is held on its own (audit PLACEMENT-10)."""
+    night's good ones is held on its own (audit PLACEMENT-10). A night or file whose inboxes below 4/4 are all on
+    one domain is not held: it goes to state["domain_fails"] for the report (v2.domain_failures)."""
     tags = {e: i["tags"] for f in (fleet or {}).values() for e, i in f["inboxes"].items()}
     nights: dict[str, dict] = defaultdict(dict)
     files: dict[str, dict] = defaultdict(dict)
@@ -506,13 +509,18 @@ def compute_holds(state: dict, fleet: dict | None) -> None:
         return {mb for mb, x in results.items()
                 if str((state["pulled"].get(mb) or {}).get("on") or "9999") < x["night"] or other_dnu(tags.get(mb, []))}
 
+    state["domain_fails"] = {}          # {night or file id: {provider: domain}}: judged, not held (one domain)
     for night, results in nights.items():
         state["holds"][night] = sorted(v2.held_providers(results, exclude=known_bad(results)))
+        if dom := v2.domain_failures(results, exclude=known_bad(results)):
+            state["domain_fails"][night] = dom
     state["file_holds"] = {}
     for fid, results in files.items():
         held = v2.held_providers(results, exclude=known_bad(results))
         if held:
             state["file_holds"][fid] = sorted(held)
+        if dom := v2.domain_failures(results, exclude=known_bad(results)):
+            state["domain_fails"][fid] = dom
 
 
 def held_for(state: dict, x: dict) -> set[str]:
@@ -970,6 +978,39 @@ def _names(cids, names: dict) -> str:
     return ", ".join(names.get(int(c), str(c)) for c in cids)
 
 
+def domain_fail_lines(state: dict, nights) -> list[str]:
+    """Needs-you lines for a test of the acted-on nights in which nearly every inbox was below 4 of 4, all on one
+    domain (state["domain_fails"]): those inboxes are judged, not held, so the line says how many failed at their own
+    provider and asks for a re-run to confirm. A test file is named once per domain; a night only when none of its
+    files was. No line when none of them failed at its own provider (e.g. Google inboxes low at Microsoft only)."""
+    types, out, told = state.get("types") or {}, [], set()
+    file_of = {sha[:12]: f for sha, f in state["files"].items()}
+    keys = [(fid, f["night"], f.get("name", fid)) for fid, f in ((k, file_of.get(k) or {}) for k in sorted(
+        state.get("domain_fails") or {})) if f.get("night") in nights]
+    keys += [(n, n, None) for n in sorted(nights) if n in (state.get("domain_fails") or {})]
+    for key, night, name in keys:
+        for prov, dom in sorted(state["domain_fails"][key].items()):
+            if (night, dom) in told:
+                continue
+            mine = [(mb, x) for mb, rs in state["results"].items() if mb.rsplit("@", 1)[-1] == dom
+                    for x in rs if x["night"] == night and (name is None or x.get("file") == key)]
+            failed = [(mb, x) for mb, x in mine if v2.own_verdict(x, types.get(mb), held_for(state, x)) == v2.FAIL]
+            if not failed:
+                continue
+            told.add((night, dom))
+            own = Counter(v2.OWN_PROVIDER.get(str(types.get(mb) or "").upper(), prov) for mb, _ in failed)
+            at = max(own, key=lambda p: (own[p], p == prov))
+            inbox = sum(int((x.get(at) or {}).get("inbox") or 0) for _, x in failed)
+            seeds = sum(int((x.get(at) or {}).get("sent") or 0) for _, x in failed)
+            test = _test_word(name, night) if name else f"of {_day(night)}"
+            out.append(f"{len(failed)} of {_inboxes(len(mine))} on {dom} failed the weekly test {test} at their own "
+                       f"provider ({at.title()}: {inbox} of {seeds} test emails in the inbox). Nearly every inbox in "
+                       f"the test was below 4 of 4, but all on this one domain, so the result is recorded as a fail, "
+                       f"not set aside as a broken test. Do: keep them out of campaigns; re-run the test in Smart "
+                       f"Delivery to confirm.")
+    return out
+
+
 def status_of(mb: str, x: dict, eff: str, decision: dict, acted: dict, pulled_before: set, in_fleet: bool) -> str:
     """What happened to this inbox in this run, for the report."""
     if mb in acted.get("report_only", {}):
@@ -1273,6 +1314,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
                          f"{_test_word(f.get('name', fid), f['night'])} were not used: nearly every inbox in it scored "
                          f"below 4 of 4 there, which points to a broken test, not bad inboxes, so no inbox was taken "
                          f"out. Do: re-run the whole test in Smart Delivery today (it uses one of the plan's test runs).")
+    needs += domain_fail_lines(state, got["nights"])
     ro_kinds: dict[tuple, Counter] = defaultdict(Counter)
     for e, rec in report_only.items():
         r = rec.get("reason") or {"name": client_of.get(e, "Not in Smartlead"), "client": client_of.get(e, "Not in Smartlead")}
