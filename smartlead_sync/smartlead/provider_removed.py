@@ -428,6 +428,34 @@ def _clients(rows: list[dict]) -> str:
     return ", ".join(f"{c} {n}" for c, n in sorted(k.items(), key=lambda x: (-x[1], x[0])))
 
 
+def groups(rows: list[dict], check: list[dict] = (), whole: set[str] = frozenset(),
+           whole_all: set[str] = frozenset()) -> list[dict]:
+    """The reminder as data, for the digest's sentences (t409): [{kind, client, k, lines, provider | campaigns}].
+    kind "delete" per client and provider (``rows``, delete now); "campaign" per client for check-first inboxes still
+    in a real campaign (``campaigns``: the campaign names, without status); "replied" per client for those a lead
+    replied to that are in no campaign; "unchecked" per client for those whose check did not finish. Pure."""
+    out = []
+    by: dict[tuple, list[dict]] = defaultdict(list)
+    for r in rows:
+        by[(r["client"], r["provider"])].append(r)
+    for (client, provider), rs in sorted(by.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        out.append({"kind": "delete", "client": client, "provider": provider, "k": len(rs),
+                    "accounts": sorted({r.get("account") or "" for r in rs} - {""}), "lines": ask_lines(rs, whole)})
+    kinds: dict[tuple, list[dict]] = defaultdict(list)
+    for r in check or ():
+        kind = "campaign" if r.get("campaigns") else ("replied" if REPLIED in r.get("notes", ()) else "unchecked")
+        kinds[(kind, r["client"])].append(r)
+    order = {"campaign": 0, "replied": 1, "unchecked": 2}
+    for (kind, client), rs in sorted(kinds.items(), key=lambda kv: (order[kv[0][0]], -len(kv[1]), kv[0][1])):
+        g = {"kind": kind, "client": client, "k": len(rs), "providers": sorted({r["provider"] for r in rs}),
+             "accounts": sorted({r.get("account") or "" for r in rs} - {""})}
+        if kind == "campaign":
+            g["campaigns"] = sorted({c.rsplit(" (", 1)[0] for r in rs for c in r["campaigns"]})
+        g["lines"] = check_lines(rs, "", set(whole_all), rows) if kind != "unchecked" else []
+        out.append(g)
+    return out
+
+
 def ask(rows: list[dict], whole: set[str], check: list[dict] = (), errors: dict | None = None,
         whole_all: set[str] = frozenset()):
     """The one delete reminder, or None: ``rows`` to delete now, ``check`` to check first (split), ``whole``: domains
@@ -545,7 +573,9 @@ def source(db, now: datetime | None = None) -> dict | None:
                delete_now=len(now_rows), check_first=sum(1 for r in check if not unchecked(r)),
                not_checked=sum(1 for r in check if unchecked(r)),
                where="",                     # the text says where (digest_post._where): no list heads after it
-               lines=LIST_LINES)             # a working list: up to 20 lines in the thread, not 12
+               lines=LIST_LINES,             # a working list: up to 20 lines in the thread, not 12
+               facts={"type": "removed",     # the groups as data: the digest's sentences 3 and 4 (t409)
+                      "groups": groups(now_rows, check, whole_domains(now_rows, inboxes), whole_domains(rows, inboxes))})
     return {"_id": SOURCE, "at": facts.get("at") or now.isoformat(), "asks": [doc]}
 
 

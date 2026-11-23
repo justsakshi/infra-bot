@@ -181,7 +181,8 @@ def _removed_source(use=None):
 
 def test_the_digest_shows_removed_inboxes_only_in_the_delete_reminder():
     """The 20 Nov digest: 'reconnect the login' on 3 inboxes of a cancelled ScaledMail order. Now: one delete reminder,
-    and the login, weekly-test and kill-list asks leave them out (an ask about nothing else goes)."""
+    and the login, weekly-test and kill-list asks leave them out (an ask about nothing else goes). t409: the reminder
+    is sentence 3 per client and provider; its lists are in the thread."""
     login = _src("warmup-repair", [{"text": "3 inboxes can't warm up: Smartlead blocked their warm-up because it can't "
                                             "log in to them (credentials).", "step": "Fix the login first.",
                                     "key": "warmup-repair:login-blocked",
@@ -194,20 +195,20 @@ def test_the_digest_shows_removed_inboxes_only_in_the_delete_reminder():
     hidden = _src("dt-senders", [{"text": "4 inboxes are not in the weekly test.", "step": "Add them.",
                                   "key": "dt-senders:cover", "detail": ["• a@desk.example, b@desk.example and 2 more"]}])
     head, parts = dp.build([login, mixed, named, hidden, _removed_source()], [], [], NOW)
-    text = "\n".join(head + parts)
-    assert "can't warm up" not in text and "Fix the login" not in text
+    top, thread = "\n".join(head), "\n".join(parts)
+    assert "can't warm up" not in top + thread and "Fix the login" not in top + thread
+    assert "1. Precise Leads: delete 4 inboxes in Smartlead that ScaledMail already removed (list in thread)." in top
+    assert "BettrData: delete 1 inbox in Smartlead that Zapmail already removed (list in thread)." in top
+    assert "Precise Leads: 1 inbox has no weekly test. Add it to a test in Smart Delivery (steps in thread)." in top
     # desk.example is named once in the whole digest: in the delete reminder's list
-    assert text.count("desk.example") == 1 and "• Delete now: Precise Leads 4, removed by ScaledMail (order cancelled, no " \
-                                                 "inboxes left):\n– all inboxes on these domains: desk.example (4)" in text
-    lines = [x for x in "\n".join(head).split("\n") if x.strip()]
-    assert any(x.endswith("5 inboxes were removed by their provider and can't send again: delete 5 now (Precise Leads "
-                          "4, BettrData 1). Do: Delete them by hand in Smartlead (Email Accounts); the list is in the thread.") for x in lines)
-    assert "The bot never deletes; an inbox leaves this list once it is gone." in text     # in the thread (``more``)
-    assert "3 inboxes are sending with no weekly test result (some removed by their provider, left out: see the " \
-           "delete reminder)" in text and "Precise Leads · live.example: 1 inbox" in text
-    assert "2 inboxes are disconnected in live campaigns (1 of them removed by their provider" in text
-    assert "• Camp: a@live.example\n" in text + "\n"                     # a mixed line loses only the removed address
-    assert "4 inboxes are not in the weekly test (2 of them removed" in text and ": 2 more." in text
+    assert (top + thread).count("desk.example") == 1
+    assert "• Precise Leads 4, removed by ScaledMail (order cancelled, no inboxes left):\n– all inboxes on these " \
+           "domains: desk.example (4)" in thread
+    assert "ScaledMail already removed them, so they can't send again. Deleting is permanent." in thread
+    assert "Precise Leads · live.example: 1 inbox" in thread
+    assert "2 inboxes are disconnected in live campaigns (1 of them removed by their provider" in thread
+    assert "• Camp: a@live.example\n" in thread + "\n"                   # a mixed line loses only the removed address
+    assert "4 inboxes are not in the weekly test (2 of them removed" in thread and "\n• 2 more" in thread
 
 
 def test_the_delete_reminder_is_left_alone_by_a_login_hold_and_held_items_never_show_twice():
@@ -457,23 +458,38 @@ def test_the_digest_top_line_gives_both_counts_and_the_thread_both_lists():
     use["inboxes"]["a@desk.example"].update(campaigns=[{"name": "Client push", "status": "PAUSED"}])
     use["inboxes"]["b@desk.example"].update(replied=1)
     head, parts = dp.build([_removed_source(use)], [], [], NOW)
-    top = "\n".join(head)
-    assert ("5 inboxes were removed by their provider and can't send again: delete 3 now (Precise Leads 2, "
-            "BettrData 1), check 2 first (Precise Leads 2). Do: ") in top
-    assert len([x for x in top.split("\n") if x.strip()]) <= 8
-    text = "\n".join(parts)
-    assert "• Delete now: Precise Leads 2, removed by ScaledMail (order cancelled, no inboxes left):\n– desk.example: c@, d@" in text
-    assert "• Delete now: BettrData 1, removed by Zapmail (every inbox on the domain deleted there):\n– all inboxes on these domains: co-one.example (1)" in text
-    assert "• Check first: Precise Leads 1 in Client push (paused):\n– desk.example: a@" in text
-    assert "• Check first: Precise Leads 1 in no real campaign, a lead replied in the last 30 days:\n– desk.example: b@" in text
+    top, text = "\n".join(head), "\n".join(parts)
+    assert top == ("Inbox digest · Fri 20 Nov · 4 things to do\n\n"
+                   "1. Precise Leads: delete 2 inboxes in Smartlead that ScaledMail already removed (list in thread).\n"
+                   "2. BettrData: delete 1 inbox in Smartlead that Zapmail already removed (list in thread).\n"
+                   "3. Precise Leads: 1 removed inbox is still in Client push. Take it out, then delete it (list in "
+                   "thread).\n\n1 more in the thread.")
+    assert "4. Precise Leads: 1 inbox their provider removed had a lead reply in the last 30 days. Answer the lead, " \
+           "then delete them in Smartlead. (wording not approved yet)" in text
+    assert "1 above:\n• Precise Leads 2, removed by ScaledMail (order cancelled, no inboxes left):\n– desk.example: c@, d@" in text
+    assert "• BettrData 1, removed by Zapmail (every inbox on the domain deleted there):\n– all inboxes on these domains: co-one.example (1)" in text
+    assert "• Precise Leads 1 in Client push (paused):\n– desk.example: a@" in text
+    assert "• Precise Leads 1 in no real campaign, a lead replied in the last 30 days:\n– desk.example: b@" in text
 
 
 def test_the_reminder_shows_up_to_30_list_lines_in_the_thread():
-    """20 Nov dry run: 18 lines (3 delete now, 15 check first); the usual 12 cut the last 3 groups off. 23 Nov (t386):
-    a heading and a line per domain group took 29 lines; 20 cut 9 of them."""
+    """A long group list is cut at the digest's list length with "and N more"; the post line never grows."""
     use = _clean([f"{u}@desk.example" for u in "abcd"] + ["x@co-one.example", "a@live.example"])
     src = _removed_source(use)
-    src["asks"][0]["detail"] = [f"• Check first: Precise Leads 1 in Camp {i}: a{i}@desk.example" for i in range(35)]
+    src["asks"][0]["facts"]["groups"][0]["lines"] = [f"– d{i}.example: a@" for i in range(35)]
     head, parts = dp.build([src], [], [], NOW)
     text = "\n".join(parts)
-    assert "Camp 29:" in text and "Camp 30:" not in text and "• and 5 more" in text
+    assert "d28.example" in text and "d29.example" not in text           # its own 30 lines, not the usual 12
+    assert "• and 6 more (the inbox sheet)" in text
+    assert "1. Precise Leads: delete 4 inboxes" in "\n".join(head)
+
+
+def test_the_reminder_carries_its_groups_as_data():
+    """t409: the digest's sentences 3 and 4 are filled from the groups, never parsed back from words."""
+    use = _clean([f"{u}@desk.example" for u in "abcd"] + ["x@co-one.example", "a@live.example"])
+    use["inboxes"]["a@desk.example"].update(campaigns=[{"name": "Client push", "status": "PAUSED"}])
+    use["inboxes"]["b@desk.example"].update(replied=1)
+    (a,) = _removed_source(use)["asks"]
+    got = [(g["kind"], g["client"], g["k"], g.get("provider"), g.get("campaigns")) for g in a["facts"]["groups"]]
+    assert got == [("delete", "Precise Leads", 2, "ScaledMail", None), ("delete", "BettrData", 1, "Zapmail", None),
+                   ("campaign", "Precise Leads", 1, None, ["Client push"]), ("replied", "Precise Leads", 1, None, None)]
