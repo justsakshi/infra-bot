@@ -180,3 +180,17 @@ def test_scrape_drops_site_chrome_words():
                            "and dedupe data pipeline records")
     assert "home" not in words and "skip" not in words and "content" not in words
     assert {"ingest", "dedupe", "pipeline", "records"} <= set(words)
+
+
+def test_cli_price_label_handles_scaledmail_only_rows():
+    # 23 Nov 2026: a ScaledMail-only suggestion (price None) crashed the CLI print.
+    import importlib.util
+    import pathlib
+    spec = importlib.util.spec_from_file_location(
+        "domain_suggest_cli", pathlib.Path(__file__).with_name("domain_suggest.py"))
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    assert cli.price_label({"price": 12.99}) == "$12.99"
+    assert cli.price_label({"price": None, "scaledmail": {"price": 11.5}}) == "$11.50 ScaledMail"
+    assert cli.price_label({"price": None}) == "price unknown"
+    assert cli.SOURCE_LABELS["scaledmail"] == "ScaledMail"
