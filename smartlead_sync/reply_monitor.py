@@ -312,9 +312,9 @@ def run(today: date, fleet: dict[str, dict], unread: dict[str, str], history: li
     return verdicts, posts
 
 
-ALERT_STEP = ("Look up each domain's latest weekly test result (All Inboxes tab); if it failed there too, take its "
-              "inboxes out of their campaigns; if it passed, leave it, and the item goes once its replies recover. "
-              "Nothing was paused.")
+# The step is short (two Slack lines with the sentence, t386); what happens next is ALERT_MORE, in the digest's thread.
+# Both live in the digest's renderer, which words a stored alert with them at post time too.
+from smartlead.digest_render import REPLY_ALERT_MORE as ALERT_MORE, REPLY_ALERT_STEP as ALERT_STEP  # noqa: E402
 RETRY_STEP = "It runs again tomorrow at 13:00; if it fails twice, check that account's Smartlead API key."
 
 
@@ -335,7 +335,7 @@ def digest_items(verdicts: dict[str, dict], unread: dict[str, str], history_miss
                            f"campaigns' other domains over {rs.WINDOW_DAYS} days, a sign {'its' if one else 'their'} "
                            "emails may be landing in spam.",
                            ALERT_STEP.replace("each domain's", "its").replace("take its inboxes", "take the inboxes")
-                           if one else ALERT_STEP, key="reply-monitor:alert",
+                           if one else ALERT_STEP, key="reply-monitor:alert", more=ALERT_MORE,
                            detail=[_alert_line(d, verdicts[d].get("client", ""), verdict_text(verdicts[d])).replace("*", "")
                                    for d in alerts]))
     if unread:

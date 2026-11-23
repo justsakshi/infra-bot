@@ -96,14 +96,16 @@ def test_the_ask_groups_by_provider_and_client_and_names_inboxes_only_on_part_do
                + [_inbox("a@half.example", "BettrData"), _inbox("b@half.example", "BettrData")])
     rows = pr.removed(facts, inboxes)
     a = pr.ask(rows, pr.whole_domains(rows, inboxes))
-    assert a.text == "6 inboxes were removed by their provider (cancelled or expired there), so they can't send again; delete them from Smartlead by hand (Precise Leads 5, " \
+    assert a.text == "6 inboxes were removed by their provider and can't send again: delete 6 now (Precise Leads 5, " \
                      "BettrData 1)."
     assert a.key == pr.KEY
+    # t386: a heading per group, then short lines: whole domains with their counts, a part domain with its names
     assert a.detail == [
-        "• Precise Leads 5 at ScaledMail (order cancelled, no inboxes left, 2 domains): calendar.example 1 (1 still in "
-        "a sending campaign), desk.example 4",
-        "• BettrData 1 at Zapmail (inbox gone from the domain, 1 domain): half.example b@"]
-    assert "never deletes" in a.step and "by hand" in a.text
+        "• Delete now: Precise Leads 5, removed by ScaledMail (order cancelled, no inboxes left; 1 still in a sending campaign):",
+        "– all inboxes on these domains: calendar.example (1), desk.example (4)",
+        "• Delete now: BettrData 1, removed by Zapmail (the inbox deleted there):",
+        "– half.example: b@"]
+    assert "never deletes" in a.more and "by hand" in a.step
     for word in ("disconnect", "log in", "reconnect"):            # no hold or reader takes it for a login ask
         assert word not in (a.text + a.step).lower()
     assert pr.ask([], set()) is None
@@ -195,14 +197,12 @@ def test_the_digest_shows_removed_inboxes_only_in_the_delete_reminder():
     text = "\n".join(head + parts)
     assert "can't warm up" not in text and "Fix the login" not in text
     # desk.example is named once in the whole digest: in the delete reminder's list
-    assert text.count("desk.example") == 1 and "• Precise Leads 4 at ScaledMail (order cancelled, no inboxes left, " \
-                                                 "1 domain): desk.example 4" in text
+    assert text.count("desk.example") == 1 and "• Delete now: Precise Leads 4, removed by ScaledMail (order cancelled, no " \
+                                                 "inboxes left):\n– all inboxes on these domains: desk.example (4)" in text
     lines = [x for x in "\n".join(head).split("\n") if x.strip()]
-    assert any(x.endswith("5 inboxes were removed by their provider (cancelled or expired there), so they can't send again; delete them from Smartlead by hand (Precise Leads "
-                          "4, BettrData 1). Do: Delete the \"Delete now\" inboxes by hand in Smartlead, Email Accounts "
-                          "(the client's account): search each domain listed; a domain with a count goes whole, one "
-                          "with names only those. The bot never deletes; an inbox leaves this list once it is gone.")
-               for x in lines)
+    assert any(x.endswith("5 inboxes were removed by their provider and can't send again: delete 5 now (Precise Leads "
+                          "4, BettrData 1). Do: Delete them by hand in Smartlead (Email Accounts); the list is in the thread.") for x in lines)
+    assert "The bot never deletes; an inbox leaves this list once it is gone." in text     # in the thread (``more``)
     assert "3 inboxes are sending with no weekly test result (some removed by their provider, left out: see the " \
            "delete reminder)" in text and "Precise Leads · live.example: 1 inbox" in text
     assert "2 inboxes are disconnected in live campaigns (1 of them removed by their provider" in text
@@ -220,7 +220,7 @@ def test_the_delete_reminder_is_left_alone_by_a_login_hold_and_held_items_never_
     head, parts = dp.build([disc, _removed_source()], [], [], NOW, [hold])
     text = "\n".join(head + parts)
     assert "disconnected in Smartlead" not in text and "Left out on purpose" not in text
-    assert "BettrData 1 at Zapmail (no inboxes left on the domain, 1 domain): co-one.example 1" in text
+    assert "BettrData 1, removed by Zapmail (every inbox on the domain deleted there):\n– all inboxes on these domains: co-one.example (1)" in text
 
 
 def test_warm_up_repair_leaves_removed_inboxes_out_of_its_asks_and_counts():
@@ -278,6 +278,7 @@ def test_split_delete_now_only_when_in_no_real_campaign_and_no_lead_reply():
     now, check = pr.split(_rows(), use)
     assert [r["email"] for r in now] == ["a@desk.example", "c@desk.example"]      # a test campaign is no reason
     why = {r["email"]: (r["campaigns"], r["notes"]) for r in check}
+    assert not any("as_of" in r for r in check)                                    # today's check: no "as of"
     assert why == {"b@desk.example": (["Client push (paused)"], []),
                    "d@desk.example": ([], [pr.REPLIED]),
                    "e@desk.example": ([], [pr.NO_REPLY_CHECK]),
@@ -286,8 +287,12 @@ def test_split_delete_now_only_when_in_no_real_campaign_and_no_lead_reply():
     # no check today (missing, failed or too old): nothing is "delete now"
     now, check = pr.split(_rows(), None)
     assert now == [] and {tuple(r["notes"]) for r in check} == {(pr.NOT_CHECKED,)}
+    # t386: an older check is still the last good one (up to KEEP_USE), and each inbox placed by it says "as of"
     old = {"use": use, "use_at": (NOW - timedelta(hours=40)).isoformat()}
-    assert pr.use_fresh(old, NOW) is None and pr.use_fresh({**old, "use_at": NOW.isoformat()}, NOW) == use
+    assert pr.use_fresh(old, NOW)["inboxes"] == use["inboxes"]
+    now, check = pr.split(_rows(), pr.use_fresh(old, NOW), NOW)
+    assert [r["email"] for r in now] == ["a@desk.example", "c@desk.example"] and all(r["as_of"] for r in now + check)
+    assert pr.use_fresh({**old, "use_at": (NOW - timedelta(days=9)).isoformat()}, NOW) is None
     assert pr.use_fresh({"use": {"read": False}, "use_at": NOW.isoformat()}, NOW) is None
 
 
@@ -299,22 +304,29 @@ def test_the_ask_says_how_many_to_delete_now_and_to_check_first_with_each_reason
     now, check = pr.split(rows, use)
     inboxes = [_inbox(f"{u}@desk.example") for u in "abcdefg"]
     a = pr.ask(now, pr.whole_domains(now, inboxes), check)
-    assert a.text == ("7 inboxes were removed by their provider (cancelled or expired there), so they can't send again: delete 2 from Smartlead by hand now (Precise Leads 2), "
-                      "check 5 first (Precise Leads 5): still in a real campaign or a lead replied in the last 30 days "
-                      "or not fully checked.")
+    assert a.text == ("7 inboxes were removed by their provider and can't send again: delete 2 now (Precise Leads 2), "
+                      "check 4 first (Precise Leads 4); 1 not checked yet (Precise Leads 1).")
+    # t386: each reason once per group (never after each address), inboxes by domain, unchecked ones counted only
     assert a.detail == [
-        "• Delete now: Precise Leads 2 at ScaledMail (order cancelled, no inboxes left, 1 domain): desk.example a@, f@",
-        "• Check first: Precise Leads 2 in Client push (paused): b@desk.example (lead reply in the last 30 days), "
-        "c@desk.example",
-        "• Check first: Precise Leads 2 in no real campaign: d@desk.example (lead reply in the last 30 days), "
-        "e@desk.example (could not check replies)",
-        "• Check first: Precise Leads 1 in Client push (active): g@desk.example"]   # the sync's name once
-    assert "Check first" in a.step and "never deletes" in a.step
+        "• Delete now: Precise Leads 2, removed by ScaledMail (order cancelled, no inboxes left):",
+        "– desk.example: a@, f@",
+        "• Check first: Precise Leads 1 in Client push (active):",
+        "– desk.example: g@",
+        "• Check first: Precise Leads 1 in Client push (paused):",
+        "– desk.example: c@",
+        "• Check first: Precise Leads 1 in Client push (paused), a lead replied in the last 30 days:",
+        "– desk.example: b@",
+        "• Check first: Precise Leads 1 in no real campaign, a lead replied in the last 30 days:",
+        "– desk.example: d@",
+        "• Not checked yet, Precise Leads 1: the campaign and reply check did not finish and no earlier check of these "
+        "inboxes is kept, so none is on a list to delete yet. Nothing to do for them today; the next morning's check "
+        "places them."]
+    assert "check first" in a.step and "then delete it" in a.step and "never deletes" in a.more
     for word in ("disconnect", "log in", "reconnect"):
-        assert word not in (a.text + a.step).lower()
+        assert word not in (a.text + a.step + a.more).lower()
     only = pr.ask([], set(), check)
-    assert only.text.startswith("5 inboxes were removed by their provider (cancelled or expired there), so they can't send again; check them before deleting from Smartlead "
-                                "by hand (Precise Leads 5): ") and "Delete now" not in only.step
+    assert only.text.startswith("5 inboxes were removed by their provider and can't send again: check 4 first "
+                                "(Precise Leads 4); 1 not checked yet") and "Delete now" not in only.more
 
 
 class Fake:
@@ -383,7 +395,7 @@ def test_any_read_that_fails_marks_every_inbox_of_the_account_never_delete_now()
     assert all(v["replies_unread"] for v in out.values())
     f, counts = Fake(), {}
     f.stats[3][1]["lead_email"] = "gone@lead.example"          # Smartlead: no such lead any more, no thread to lose
-    cache = pr.sender_index([{"_id": "PL:3:9", "sids": {"s1": "a@desk.example"}}])
+    cache = pr.sender_index([{"_id": "PL:3:9", "sids": {"s1": "e@other.example"}}])
     out = _run(pr.account_use(f.get, "PL", want, cut, cache, counts))
     assert not any(v["replies_unread"] for v in out.values()) and counts == {"lead_gone": 1}
     out = _run(pr.account_use(Fake(fail=["/campaigns"]).get, "PL", want, cut, {}))
@@ -429,7 +441,7 @@ def test_the_check_is_kept_by_the_next_facts_save_and_runs_once_a_day(monkeypatc
     pr.save_facts(db, {"scaledmail": _sm(registered=["desk.example"]), "zapmail": _zap()}, NOW - timedelta(hours=2))
     seen = []
 
-    async def fake_read(rows, now, senders, budget_s):
+    async def fake_read(rows, now, senders, budget_s, threads=None):
         seen.append([r["email"] for r in rows])
         return _clean([r["email"] for r in rows])
     monkeypatch.setattr(pr, "read_use", fake_read)
@@ -446,22 +458,22 @@ def test_the_digest_top_line_gives_both_counts_and_the_thread_both_lists():
     use["inboxes"]["b@desk.example"].update(replied=1)
     head, parts = dp.build([_removed_source(use)], [], [], NOW)
     top = "\n".join(head)
-    assert ("5 inboxes were removed by their provider (cancelled or expired there), so they can't send again: delete 3 from Smartlead by hand now (Precise Leads 2, "
-            "BettrData 1), check 2 first (Precise Leads 2): still in a real campaign or a lead replied in the last 30 "
-            "days. Do: ") in top
+    assert ("5 inboxes were removed by their provider and can't send again: delete 3 now (Precise Leads 2, "
+            "BettrData 1), check 2 first (Precise Leads 2). Do: ") in top
     assert len([x for x in top.split("\n") if x.strip()]) <= 8
     text = "\n".join(parts)
-    assert "• Delete now: Precise Leads 2 at ScaledMail (order cancelled, no inboxes left, 1 domain): desk.example c@, d@" in text
-    assert "• Delete now: BettrData 1 at Zapmail (no inboxes left on the domain, 1 domain): co-one.example 1" in text
-    assert "• Check first: Precise Leads 1 in Client push (paused): a@desk.example" in text
-    assert "• Check first: Precise Leads 1 in no real campaign: b@desk.example (lead reply in the last 30 days)" in text
+    assert "• Delete now: Precise Leads 2, removed by ScaledMail (order cancelled, no inboxes left):\n– desk.example: c@, d@" in text
+    assert "• Delete now: BettrData 1, removed by Zapmail (every inbox on the domain deleted there):\n– all inboxes on these domains: co-one.example (1)" in text
+    assert "• Check first: Precise Leads 1 in Client push (paused):\n– desk.example: a@" in text
+    assert "• Check first: Precise Leads 1 in no real campaign, a lead replied in the last 30 days:\n– desk.example: b@" in text
 
 
-def test_the_reminder_shows_up_to_20_list_lines_in_the_thread():
-    """20 Nov dry run: 18 lines (3 delete now, 15 check first); the usual 12 cut the last 3 groups off."""
+def test_the_reminder_shows_up_to_30_list_lines_in_the_thread():
+    """20 Nov dry run: 18 lines (3 delete now, 15 check first); the usual 12 cut the last 3 groups off. 23 Nov (t386):
+    a heading and a line per domain group took 29 lines; 20 cut 9 of them."""
     use = _clean([f"{u}@desk.example" for u in "abcd"] + ["x@co-one.example", "a@live.example"])
     src = _removed_source(use)
-    src["asks"][0]["detail"] = [f"• Check first: Precise Leads 1 in Camp {i}: a{i}@desk.example" for i in range(25)]
+    src["asks"][0]["detail"] = [f"• Check first: Precise Leads 1 in Camp {i}: a{i}@desk.example" for i in range(35)]
     head, parts = dp.build([src], [], [], NOW)
     text = "\n".join(parts)
-    assert "Camp 19:" in text and "Camp 20:" not in text and "• and 5 more" in text
+    assert "Camp 29:" in text and "Camp 30:" not in text and "• and 5 more" in text

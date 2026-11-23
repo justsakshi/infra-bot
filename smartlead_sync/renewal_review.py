@@ -584,6 +584,12 @@ def bill_text(r: dict, drop: int, check: int, untested: int) -> str:
     if drop and not check and drops and all(str(x["why"]).startswith('tagged "') for x in drops):
         dates = {m.group(1) if (m := _DATE.search(str(x["why"]))) else "" for x in drops}
         when = f" on {dates.pop()}" if len(dates) == 1 and "" not in dates else ""
+        if drop < len(rows):
+            # 23 Nov 2026 (t386): "6 inboxes on a.com, b.com that we stopped using" when only the 3 on a.com were
+            # dropped; both readers asked what happens to the other 3. Say which ones and that the rest stay.
+            gone = _domains(drops)
+            return (f"{head}: we stopped using the {drop} on {', '.join(gone)}{when}; the other {len(rows) - drop} "
+                    f"stay in use.")
         return f"{head} that we stopped using{when}."
     bits = []
     if drop:
@@ -619,6 +625,9 @@ def bill_lines(r: dict) -> list[str]:
         out.append(f"{rr._doms(u_rows)}: check, paid for but not in Smartlead")
     if t_rows:
         out.append(f"{rr._doms(t_rows)}: check, no weekly test result in the last {rr.V2_FRESH_DAYS} days")
+    keep = [x for x in rows if x["verdict"] not in ("RETIRE", "CHECK", rr.UNTESTED) and x.get("kind") != "unused"]
+    if keep and out:                       # what the bill also covers, so no inbox on it is left unexplained (t386)
+        out.append(f"{', '.join(_domains(keep))}: keep, {len(keep)} {rr._ib(len(keep))} still in use")
     return out
 
 

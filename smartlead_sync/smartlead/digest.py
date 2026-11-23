@@ -54,11 +54,20 @@ class Ask:
                                  # fact with no step: shown once, not counted as a thing to do; 20 Nov 2026)
     urgent: bool = False         # also post at once, one time per key
     detail: list = field(default_factory=list)   # what it is about, one line each (campaign, inbox, domain, bill)
+    more: str = ""               # how to do the step and its caveats: shown in the digest's thread, not the post (t386)
+    facts: dict = field(default_factory=dict)    # what the ask says, as data ({"type": ..., ...}): the digest words it
+                                                 # at post time (smartlead/digest_render.py), so an ask stored before a
+                                                 # wording fix is shown in today's words (t386)
 
     def doc(self, source: str) -> dict:
-        return {"text": self.text, "step": self.step, "key": self.key or default_key(source, self.text),
-                "kind": self.kind if self.kind in ("ask", "broken", "info") else "ask", "urgent": bool(self.urgent),
-                "detail": bullets(self.detail)[:KEEP_LINES]}
+        d = {"text": self.text, "step": self.step, "key": self.key or default_key(source, self.text),
+             "kind": self.kind if self.kind in ("ask", "broken", "info") else "ask", "urgent": bool(self.urgent),
+             "detail": bullets(self.detail)[:KEEP_LINES]}
+        if self.more:
+            d["more"] = self.more
+        if self.facts:
+            d["facts"] = dict(self.facts)
+        return d
 
 
 KEEP_LINES = 60                  # lines kept per ask in Mongo
@@ -228,7 +237,9 @@ def channel() -> str:
 HOLDS = "digest_holds"
 
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+", re.I)
-_DOMAIN = re.compile(r"(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?![\w.-]*\w)", re.I)
+# Never a user name: 'j.doe@' (an inbox named by its user, its domain said before it) is not the domain 'j.doe'
+# (23 Nov 2026, t386: the post said "Which: forum.test, j.doe").
+_DOMAIN = re.compile(r"(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?![\w.-]*\w)(?!@)", re.I)
 _FILES = ("csv", "json", "py", "txt", "md", "png", "js", "log", "html", "pdf", "xlsx")
 
 # Asks that are one kill list, told by different jobs (fleet watch daily, the kill report weekly). Value: what the
@@ -471,23 +482,25 @@ def merge_kill_list(asks: list[dict], labels: dict | None = None) -> tuple[list[
                 parts.append(f"{_n(len(users), 'inbox', 'inboxes')} {reason} ({shown})")
         parts += sorted(dom_reasons.get(dom, ()))
         lines.append(f"• {dom}: {'; '.join(parts)}")
-    what = " and ".join(x for x in (_n(len(inbox_reason), "inbox", "inboxes") if inbox_reason else "",
-                                    _n(len(dom_reasons), "domain", "domains") if dom_reasons else "") if x)
+    # 23 Nov 2026 (t386): one short sentence that names where (up to 3 domains), and one short step, so the item is
+    # two lines in the post; which inboxes on each domain are in the thread.
+    doms = sorted({i.rsplit("@", 1)[1] for i in inbox_reason} | set(dom_reasons))
+    where = ", ".join(doms[:3]) + (f" and {len(doms) - 3} more" if len(doms) > 3 else "")
+    what = (_n(len(inbox_reason), "inbox", "inboxes") + f" on {_n(len(doms), 'domain', 'domains')}" if inbox_reason
+            else _n(len(dom_reasons), "domain", "domains"))
     reasons = set(inbox_reason.values())
+    one = (len(inbox_reason) or len(dom_reasons)) == 1
     do = []
     if reasons & {"still sending", "on the kill list"}:
-        do.append("take each inbox listed out of its campaigns (Smartlead, the campaign, Email Accounts tab)")
+        do.append("take " + ("it" if len(inbox_reason) == 1 else "each inbox") + " out of its campaigns "
+                  + ("(search the domain in Smartlead)" if len(doms) == 1 else "in Smartlead"))
     if "in switched-on campaigns that are not sending" in reasons:
-        do.append("pause the switched-on campaigns that still hold one, or take it out of them")
+        do.append("pause switched-on campaigns holding one")
     if dom_reasons:
-        do.append("don't add inboxes on the domains listed to campaigns, and don't renew those domains at their "
-                  "next bill")
-    step = "; ".join(do)
-    step = step[:1].upper() + step[1:] + "."
-    one = len(inbox_reason) + len(dom_reasons) == 1
-    merged = {"text": f"{what[:1].upper()}{what[1:]} {'is' if one else 'are'} on the kill list: "
-                      f"{'it' if one else 'they'} kept failing placement tests, so email sent from "
-                      f"{'it' if one else 'them'} is likely to land in spam.",
+        do.append("don't renew " + ("the domain at its provider" if len(dom_reasons) == 1 else "the domains"))
+    step = (", ".join(do[:-1]) + ", and " + do[-1] if len(do) > 2 else " and ".join(do)) + "."
+    merged = {"text": f"{what} {'is' if one else 'are'} on the kill list ({where}): {'it' if one else 'they'} kept "
+                      f"landing in spam in placement tests.",
               "step": step, "key": "digest:kill-list", "kind": "ask", "detail": lines, "source": "kill-list",
               "urgent": any(a.get("urgent") for a in members),
               "since": min((str(a.get("since")) for a in members if a.get("since")), default=None),
@@ -529,7 +542,21 @@ _PLAIN = [(re.compile(_NOT_WORD + p + r"(?![\w.@/-])"), w) for p, w in (
     (r"BUSY", "held back"),
     (r"FREE", "free"),
 )] + [(re.compile(r"report-only until real replies agree with the seed test"),
-       "not acted on yet: Google results wait until real replies agree")]
+       "not acted on yet: Google results wait until real replies agree"),
+      (re.compile(r"Smart Delivery v2\b"), "Smart Delivery"),                    # the product, not a test (t386)
+      (re.compile(r"\bBettrdata\b"), "BettrData")]                             # one spelling of the client
+
+# Whole phrases of stored asks, before the word rules above (t386): the gate self-test's words before t386 read as if
+# All Inboxes did not mark those inboxes at all, next to an item saying it marks them "do not use".
+_FIRST = [(re.compile(r"(\d+) of (\d+ inbox(?:es)?) that failed v2 are not marked failed_v2 on the list"
+                      r"(?: \(it may be a day behind the verdicts\))?"),
+           r'All Inboxes does not yet give "failed the weekly test" as the reason for \1 of the \2 that failed it '
+           r"(they can still be marked do not use for another reason; the sync may be a day behind)"),
+          (re.compile(r"It is often a day behind: look again after tomorrow's 10:00 sync, and if the inboxes listed "
+                      r"(?:are )?still not marked failed_v2, the sync is not reading the v2 verdicts\."),
+           "Nothing today: look again after tomorrow's 10:00 sync."),
+          (re.compile(r"\b(?:are )?still not marked failed_v2\b"), "still lack that reason"),
+          (re.compile(r"\bmarked failed_v2\b"), "marked as failed")]
 
 
 _TRACKER_KEY = re.compile(r"\s*\((?:t\d{1,4})(?:[,/ ]+t\d{1,4})*\)")     # "(t235)", "(t268/t269)": tracker keys
@@ -540,9 +567,15 @@ def plain(text) -> str:
     never inside a domain, an inbox or a name like 'Campaign | V2'. Tracker keys ("(t235)", copied from a person's
     Smartlead tag) are left out: they mean nothing to the reader (21 Nov 2026)."""
     out = _TRACKER_KEY.sub("", str(text or ""))
-    for rx, word in _PLAIN:
+    for rx, word in _FIRST:
         out = rx.sub(word, out)
-    return out
+    # a quoted name (a Task Scheduler task, a test, a campaign) is kept as written (t386: 'InfraBot v2 weekly' read
+    # 'InfraBot weekly test weekly', so the reader could not find the task)
+    pieces = re.split(r"((?<!\w)'[^'\n]{1,80}'(?!\w)|\"[^\"\n]{1,120}\")", out)
+    for i in range(0, len(pieces), 2):
+        for rx, word in _PLAIN:
+            pieces[i] = rx.sub(word, pieces[i])
+    return "".join(pieces)
 
 
 def reach(a: dict) -> set[str]:

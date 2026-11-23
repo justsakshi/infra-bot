@@ -94,8 +94,7 @@ def test_the_digest_lists_asks_with_steps_done_items_and_broken_checks():
     done = [{"_id": "d1", "text": "Took 3 inboxes out of 2 live campaigns (failed the v2 test)."}]
     head, parts = dp.build(sources, done, [], T0 + timedelta(hours=1))
     text = "\n".join(head)
-    assert head[0] == "Inbox digest, Tue 17 Nov"
-    assert f"<@{dg.OWNER}>, 2 things need you today:" in text
+    assert head[0] == f"Inbox digest, Tue 17 Nov. <@{dg.OWNER}>, 2 things need you today:"   # one line (t386)
     assert "\n1. Zapmail declined the card. Do: Pay the invoice." in text            # urgent first
     assert "\n2. 7 inboxes are disconnected. Do: Reconnect them. Open since Sun 15 Nov." in text
     assert "1 job failed or could not check: Campaign stats job." in text
@@ -115,7 +114,8 @@ def test_asks_of_a_job_silent_for_over_8_days_are_dropped_and_old_ones_say_when_
     tue = _src("reply-monitor", [{"text": "Replies fell on one domain."}], at=T0 - timedelta(days=2))
     head, _ = dp.build([old, tue], [], [], T0)
     text = "\n".join(head)
-    assert "Kill 2 inboxes" not in text and "(last checked Sun 15 Nov)" in text
+    # t386: "(last checked ...)" is gone; the item's own day says how old it is
+    assert "Kill 2 inboxes" not in text and "Replies fell on one domain. Open since Sun 15 Nov." in text
 
 
 def test_pc_and_render_checks():
@@ -298,13 +298,16 @@ def test_the_kill_list_from_several_jobs_is_one_item_with_the_job_count():
     text, parts = _text(dp.build(_kill_sources(), [], [], NOW))
     assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text
     assert "\n2." not in text
-    assert ("6 inboxes and 3 domains are on the kill list: they kept failing placement tests, so email sent from "
-            "them is likely to land in spam. Which: alpha.test, bravo.test, charlie.test.") in text
+    assert ("1. 6 inboxes on 3 domains are on the kill list (alpha.test, bravo.test, charlie.test): they kept landing "
+            "in spam in placement tests. Do: Take each inbox out of its campaigns in Smartlead, pause switched-on "
+            "campaigns holding one, and don't renew the domains.") in text
+    assert "Which:" not in text                                       # the sentence names the domains itself
     assert "Fleet watch" not in text and "reported by" not in text           # no job names in the post
     # one line per domain in the thread, saying what each job found there
-    assert "• alpha.test: 2 inboxes still sending (a1@, a2@); domain landing in spam on the classic tests" in parts[0]
+    # t386: a reason every line shares is said once, above the lines
+    assert "Each: domain landing in spam on the classic tests\n• alpha.test: 2 inboxes still sending (a1@, a2@)" in parts[0]
     assert "• charlie.test: 1 inbox in switched-on campaigns that are not sending (c1@)" in parts[0]
-    assert "Do: " in text and "Email Accounts tab" in text and "don't renew" in text
+    assert "Do: " in text and "in Smartlead" in text and "don't renew" in text
 
 
 def _holds():
@@ -324,7 +327,7 @@ def test_a_recorded_decision_holds_items_back_and_says_so_in_one_line():
                              "key": "v2-weekly:short"}])
     text, parts = _text(dp.build(_kill_sources() + [v2], [], [], NOW, holds=_holds()))
     assert f"<@{dg.OWNER}>, 2 things need you today:" in text
-    assert "1 inbox and 1 domain are on the kill list" in text and "Which: charlie.test." in text  # only charlie left
+    assert "1 inbox on 1 domain is on the kill list (charlie.test)" in text               # only charlie left
     assert "alpha.test" not in text and "bravo.test" not in text and "delta.test" not in text
     assert "2 test runs sent fewer" in text                                                   # not decided: shown
     assert "4 decided items left out on purpose" in text
@@ -371,7 +374,7 @@ def test_an_ask_that_says_listed_but_carries_no_list_is_left_out_and_counted():
     text, parts = _text(dp.build([src, ok], [], [], NOW))
     assert f"<@{dg.OWNER}>, 1 thing needs you today:" in text and "far fewer replies" not in text
     assert "could not check: Reply check (an ask without its list)." in text
-    assert "1 ask came without its list, so it was left out (Reply check)" in parts[0]
+    assert "1 ask came without its list, so it was left out (Reply check)" in "\n".join(parts)
 
 
 def test_an_ask_naming_its_domains_in_its_own_text_is_not_listless():
@@ -446,9 +449,9 @@ def test_the_top_post_is_at_most_8_lines():
     head, _ = dp.build(srcs, done, [], NOW, holds=_holds())
     lines = _lines(head)
     assert len(lines) <= 8, lines
-    assert lines[1] == f"<@{dg.OWNER}>, 9 things need you today (4 here, 5 in the thread):"
+    assert lines[0] == f"Inbox digest, Wed 18 Nov. <@{dg.OWNER}>, 9 things need you today (4 here, 5 in the thread):"
     assert "In the thread: 5 more things for you, 60 things the bot did by itself." in lines[-1]
-    assert "1 job failed or could not check: API keys. Being looked at; what broke is in the thread." in lines
+    assert "1 job failed or could not check: API keys. What broke is in the thread." in lines
 
 
 def test_the_thread_is_at_most_3_short_replies():
@@ -478,10 +481,11 @@ def test_asks_about_the_same_inboxes_are_one_item():
     head, parts = dp.build([sheet, gate, other], [], [], NOW)
     text = "\n".join(head)
     assert f"<@{dg.OWNER}>, 2 things need you today:" in text
-    assert "Other checks flag the same inboxes too (thread)." in text
+    assert "More in the thread." in text                                  # t386: the short hint
     assert "failed or could not check" not in text                     # the gate line is not a second item
     assert text.count("kilo.test") == 1
-    assert "also, Gate self-test: 9 inboxes have no row" in parts[0]
+    # never "1. also"; a broken check says it is the bot's own check (t386)
+    assert "Also on these inboxes, from a bot check (Gate self-test): 9 inboxes have no row" in parts[0]
     assert "Do: Add the inboxes listed to the asset tracker." in parts[0]
 
 
@@ -529,8 +533,8 @@ def test_a_quiet_day_says_so_with_the_numbers_and_pings_nobody():
                                                    "Client B": {"Safe to send": 5, "Do not use": 7}}}
     head, parts = dp.build([src], [], [], NOW)
     lines = _lines(head)
-    assert lines[1] == "Nothing needs you today."
-    assert lines[2] == ("Inboxes safe to send: Client A 30, Client B 5. Also recovering 4, waiting for a test 2, "
+    assert lines[0] == "Inbox digest, Wed 18 Nov. Nothing needs you today."
+    assert lines[1] == ("Inboxes safe to send: Client A 30, Client B 5. Also recovering 4, waiting for a test 2, "
                         "not usable 7.")
     assert "<@" not in "\n".join(head)
     assert parts[0].startswith("Where the inboxes stand (All Inboxes tab)\n• Client A: 30 safe to send, 2 not proven yet, 4 recovering")
@@ -559,13 +563,16 @@ def test_an_info_item_is_one_line_not_a_thing_to_do():
                                "step": "Add it to the sheet.", "detail": ["kilo.test (Client A, 3 inboxes)"]}])
     head, parts = dp.build([info, ask], [], [], NOW)
     lines = _lines(head)
-    assert lines[1] == f"<@{dg.OWNER}>, 1 thing needs you today:"
-    assert lines[2].startswith("1. 1 domain is not in the deliverability sheet. Which: kilo.test. Do: Add it")
-    assert lines[3] == ("For info, nothing to do: 3 inboxes are in the weekly test, but the last runs sent too few "
+    assert lines[0].endswith(f"<@{dg.OWNER}>, 1 thing needs you today:")
+    assert lines[1].startswith("1. 1 domain is not in the deliverability sheet. Which: kilo.test. Do: Add it")
+    assert lines[2] == ("For info, nothing to do: 3 inboxes are in the weekly test, but the last runs sent too few "
                         "emails to judge them; next run Sat 21 Nov.")             # the list is in the thread only
     assert "also flagged" not in "\n".join(head)                          # not merged with the ask on kilo.test
-    assert "Do:" not in lines[3]
-    assert "For info: 3 inboxes are in the weekly test" in parts[0] and "lima.test: 1 inbox" in parts[0]
+    assert "Do:" not in lines[2]
+    # t386: the thread gives the list under a short heading; the sentence is in the post only (it was said twice)
+    thread = "\n".join(parts)        # t386: the short facts share the last reply, the items keep the first ones
+    assert "For info above, the list:" in thread and "lima.test: 1 inbox" in thread
+    assert "3 inboxes are in the weekly test" not in thread
 
 
 def test_an_info_item_alone_still_posts_and_says_nothing_needs_you():
@@ -573,8 +580,8 @@ def test_an_info_item_alone_still_posts_and_says_nothing_needs_you():
                                   "key": "inbox-status:sending_test_short", "detail": ["Client A · kilo.test: 1 inbox"]}])
     head, _ = dp.build([info], [], [], NOW)
     lines = _lines(head)
-    assert lines[1] == "Nothing needs you today."
-    assert lines[2].startswith("For info, nothing to do: 1 inbox is in the weekly test")
+    assert lines[0] == "Inbox digest, Wed 18 Nov. Nothing needs you today."
+    assert lines[1].startswith("For info, nothing to do: 1 inbox is in the weekly test")
 
 
 def test_tracker_keys_never_reach_the_reader_2026_11_21():
@@ -604,7 +611,9 @@ def test_every_for_info_line_fits_in_the_thread_2026_11_21():
     more = [_src(f"job{k}", [{"text": f"Item {k}.", "step": "Do it.", "key": f"job{k}:x",
                               "detail": [f"f{k}-{i}.example: 1 inbox" for i in range(20)]}]) for k in range(3)]
     head, parts = dp.build([long_info, other_info, big] + more, [], [], NOW)
-    assert len(parts[0].split("\n")) <= dp.PART_LINES + 1 and "more lines (the inbox sheet)" in parts[0]
+    # t386: today's items may use two replies (the short ones share the third); each stays under the line cap
+    assert all(len(p.split("\n")) <= dp.PART_LINES + 1 for p in parts) and len(parts) <= dp.MAX_PARTS
+    items = "\n".join(p for p in parts if not p.startswith("Where the inboxes stand"))
     assert "(1 more in the thread.)" in "\n".join(head)
-    assert "For info: 1 result had not come in." in parts[0]
-    assert "• and 10 more" in parts[0]
+    assert "For info: 1 result had not come in." in items
+    assert "• and 5 more" in items                                    # t386: 8 lines of a "For info" list

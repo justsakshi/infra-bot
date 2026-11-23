@@ -41,9 +41,19 @@ paused client campaign, and some had lead replies in the last 30 days. So the as
     ARCHIVED cannot send again), "lead reply in the last 30 days", or "could not check replies" / "campaigns not
     read" when the check did not complete. An inbox is never put under "delete now" on an incomplete check.
 The check (read_use) runs once a day in zapmail_digest after the provider facts, only for the removed inboxes' accounts:
-GET campaigns, each unfinished campaign's email-accounts, each non-test campaign's replied statistics, and the message
-history of each reply in the window that Mongo lead_senders (inbox_evidence's cache) cannot place. Paced under
-Smartlead's shared 200 a minute, with a time limit.
+GET campaigns, each unfinished campaign's email-accounts, and, only when an inbox is in no real campaign, each non-test
+campaign's replied statistics and the message history of each reply in the window that Mongo lead_senders
+(inbox_evidence's cache) or this check's own cache (REPLY_CACHE) cannot place. Paced at half of Smartlead's shared 200
+a minute, with a time limit.
+
+A check that could not finish never moves an inbox (t386, 23 Nov 2026). On 23 Nov the check ran out of its 15 minutes
+on the PL account after 921 calls (it read every reply of the last 30 days twice over, at up to 171 calls a minute on
+the key every job shares, so the 09:45 key check met a 429), marked all 97 PL inboxes "not read", and the digest moved
+them from "delete now" to "check first": 68/44 on 20 Nov became 8/104, with 63 full addresses each followed by "(could
+not check replies)". Now: an inbox already in a real campaign needs no reply check (it is "check first" either way),
+each reply's thread is looked up once and kept, the pace leaves half the limit to other jobs, and an inbox today's check
+could not finish keeps its last complete result (up to KEEP_USE old) with its date; one with none is counted in one
+"not checked" line, never listed address by address.
 
 The bot never deletes an inbox: a Smartlead delete is immediate and permanent, so it is done by hand only.
 """
@@ -63,22 +73,31 @@ MAX_AGE = timedelta(days=8)          # older provider facts are not used (digest
 
 SM_NO_PLAN = "order cancelled, no inboxes left"          # why, in the ask's list ('at ScaledMail (...)')
 SM_CANCELLED = "order cancelled"
-ZAP_EMPTY = "no inboxes left on the domain"
-ZAP_GONE = "inbox gone from the domain"
+ZAP_EMPTY = "every inbox on the domain deleted there"     # t386: readers took "no inboxes left on the domain" for
+ZAP_GONE = "the inbox deleted there"                      # Smartlead's view, where the domain still had inboxes
 ZAP_EXPIRED = "domain expired"                        # t353: with Smartlead showing the inbox disconnected
 ZAP_LEFT = "domain no longer at Zapmail"              # tracker says Zapmail, no Zapmail account has it
 
 # Delete now or check first (t353)
 FINISHED = {"COMPLETED", "STOPPED", "ARCHIVED"}       # campaigns that cannot send again: membership not read
 REPLY_DAYS = 30
-USE_MAX_AGE = timedelta(hours=36)                     # the campaign/reply check is daily; older is "not checked"
-PACE_S = 0.35                                         # at least this between Smartlead calls (200 a minute shared)
+USE_MAX_AGE = timedelta(hours=36)                     # the campaign/reply check is daily; older says "as of <day>"
+KEEP_USE = timedelta(days=8)                          # an inbox's last complete check is used this long (t386)
+PACE_S = 0.6                                          # at most 100 calls a minute: half of Smartlead's shared 200, so
+                                                      # the 09:45 key check, 09:50 jobs and the PC keep the other half
 BUDGET_S = 15 * 60                                    # 09:40 job: done before the 10:00 sync shares the limit
+REPLY_CACHE = "removed_reply_threads"                 # {_id: account:campaign:stats_id, who: [inbox], at}: each reply's
+REPLY_CACHE_DAYS = 40                                 # thread is read once, not every morning (t386)
 REPLIED = "lead reply in the last 30 days"
 NO_REPLY_CHECK = "could not check replies"
 NO_CAMPAIGNS = "campaigns not read"
 NOT_CHECKED = "campaigns and replies not checked"
-LIST_LINES = 20                                       # lines of this ask's list in the digest thread (digest_post)
+UNCHECKED = (NOT_CHECKED, NO_CAMPAIGNS, NO_REPLY_CHECK)
+LIST_LINES = 30                                       # lines of this ask's list in the digest thread (digest_post):
+                                                      # a working list, in a reply of its own on a long day (t386)
+PER_LINE = 6                                          # domains or addresses named on one list line (digest_guard)
+WHY_WORDS = {"rate limit": "Smartlead's rate limit", "out of time": "out of time",
+             "error": "a Smartlead error", "not configured": "no key for the account"}
 
 CLIENT_SPELLING = {"Bettrdata": "BettrData", "BETTRDATA": "BettrData", "PRECISE_LEADS": "Precise Leads",
                    "MELIOR": "Melior"}                 # the sync's labels -> the digest's
@@ -230,48 +249,69 @@ def _n(k: int, one: str = "inbox", many: str = "inboxes") -> str:
     return f"{k} {one if k == 1 else many}"
 
 
+def domain_lines(rows: list[dict], whole: set[str]) -> list[str]:
+    """The inboxes of one list group as short lines (t386): domains that go whole as 'a.co (3), b.co (2)', at most
+    PER_LINE a line; a domain that goes only in part names its inboxes, at most PER_LINE a line. Never a whole list of
+    full addresses on one line (23 Nov 2026: 63 of them in one line, split by Slack across 3 posts)."""
+    by_dom: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_dom[r["domain"]].append(r)
+    out, wholes = [], [f"{d} ({len(ds)})" for d, ds in sorted(by_dom.items()) if d in whole]
+    for i in range(0, len(wholes), PER_LINE):
+        out.append(("– all inboxes on these domains: " if i == 0 else "– ") + ", ".join(wholes[i:i + PER_LINE]))
+    for dom, ds in sorted(by_dom.items()):
+        if dom in whole:
+            continue
+        users = sorted(d["email"].split("@")[0] + "@" for d in ds)
+        for i in range(0, len(users), PER_LINE):
+            out.append(f"– {dom}: " + ", ".join(users[i:i + PER_LINE]))
+    return out
+
+
 def ask_lines(rows: list[dict], whole: set[str], prefix: str = "") -> list[str]:
-    """One line per provider and client, its domains with how many inboxes each (whole domain: search the domain and
-    delete what it shows; otherwise the inboxes are named), and those still in a sending campaign."""
+    """One heading per provider, client and reason, then its domains (domain_lines): a whole domain is searched and
+    deleted at once; otherwise the inboxes are named. Inboxes still in a sending campaign are counted in the heading."""
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
         groups[(r["provider"], r["client"], r["why"])].append(r)
     out = []
     for (provider, client, why), rs in sorted(groups.items(), key=lambda kv: (kv[0][0], -len(kv[1]), kv[0][1])):
-        by_dom: dict[str, list[dict]] = defaultdict(list)
-        for r in rs:
-            by_dom[r["domain"]].append(r)
-        parts = []
-        for dom, ds in sorted(by_dom.items()):
-            part = f"{dom} {len(ds)}" if dom in whole else f"{dom} {', '.join(sorted(d['email'].split('@')[0] + '@' for d in ds))}"
-            live = sum(1 for d in ds if d["live"])
-            if live:
-                part += f" ({live} still in a sending campaign)"
-            parts.append(part)
-        out.append(f"• {prefix}{client} {len(rs)} at {provider} ({why}, {_n(len(by_dom), 'domain', 'domains')}): "
-                   + ", ".join(parts))
+        live = sum(1 for d in rs if d["live"])
+        out.append(f"• {prefix}{client} {len(rs)}, removed by {provider} ({why}"
+                   + (f"; {live} still in a sending campaign" if live else "") + "):")
+        out += domain_lines(rs, whole)
     return out
 
 
 def use_fresh(facts: dict | None, now: datetime) -> dict | None:
-    """Today's campaign and reply check (read_use), or None when it is missing, failed or older than USE_MAX_AGE."""
+    """The campaign and reply check (read_use, merged by save_use), or None when it is missing, failed or older than
+    KEEP_USE. Each inbox's own "at" says how old its part is (split marks an older one with "as_of")."""
     use = (facts or {}).get("use") or {}
     at = _parse((facts or {}).get("use_at"))
-    if use.get("read") is not True or not at or now - at > USE_MAX_AGE:
+    if use.get("read") is not True or not at or now - at > KEEP_USE:
         return None
-    return use
+    return {**use, "_at": use.get("_at") or (facts or {}).get("use_at")}
 
 
-def split(rows: list[dict], use: dict | None) -> tuple[list[dict], list[dict]]:
+def complete(u: dict | None) -> bool:
+    """True when an inbox's check finished (its campaigns and, where needed, its replies were read)."""
+    return bool(u) and not u.get("campaigns_unread") and not u.get("replies_unread")
+
+
+def split(rows: list[dict], use: dict | None, now: datetime | None = None) -> tuple[list[dict], list[dict]]:
     """(delete now, check first) of the removed inboxes (t353). ``use``: read_use's facts (None: not checked). A
     check-first row carries "campaigns" (the real campaigns it is still in, 'name (status)') and "notes" (a lead reply
     in the last 30 days, or what could not be checked). Delete now only when everything was checked and nothing was
-    found. Pure."""
+    found. An inbox whose last complete check is older than USE_MAX_AGE (today's could not finish) carries "as_of",
+    the day of that check. Pure."""
     from smartlead.v2_results import is_test_campaign
     seen = (use or {}).get("inboxes") or {}
     now_rows, check = [], []
     for r in rows:
         u = seen.get(r["email"]) if use else None
+        at = _parse((u or {}).get("at") or (use or {}).get("_at"))
+        if u and now and at and now - at > USE_MAX_AGE:
+            r = {**r, "as_of": at.isoformat()}
         camps: dict[str, str] = {}
         for c in (u or {}).get("campaigns") or []:
             name = str(c.get("name") or "").strip()
@@ -299,6 +339,10 @@ def split(rows: list[dict], use: dict | None) -> tuple[list[dict], list[dict]]:
 
 def _where_check(r: dict) -> str:
     if r["campaigns"]:
+        st = {c.rsplit(" (", 1)[-1] for c in r["campaigns"]}
+        if len(st) == 1 and len(r["campaigns"]) > 1:      # 'in A, B and C (paused)': the status said once (t386)
+            names = [c.rsplit(" (", 1)[0] for c in r["campaigns"]]
+            return "in " + ", ".join(names[:-1]) + " and " + names[-1] + " (" + st.pop()
         return "in " + ", ".join(r["campaigns"])
     if NOT_CHECKED in r["notes"]:
         return "with campaigns and replies not checked"
@@ -307,20 +351,74 @@ def _where_check(r: dict) -> str:
     return "in no real campaign"
 
 
-def check_lines(rows: list[dict], prefix: str = "") -> list[str]:
-    """One line per client and where the inboxes are (their campaigns), each inbox with its own note (a lead reply in
-    the last 30 days, replies not checked)."""
+def unchecked(r: dict) -> bool:
+    """A check-first row whose only reason is that its check did not finish (no campaign, no reply found)."""
+    return not r["campaigns"] and REPLIED not in r["notes"]
+
+
+def check_lines(rows: list[dict], prefix: str = "", whole: set[str] = frozenset(), others=()) -> list[str]:
+    """One heading per client, where the inboxes are (their campaigns) and why, then their inboxes by domain
+    (domain_lines). A reason is said once per group, never after each address (t386). A domain whose every Smartlead
+    inbox is removed (``whole``) and all in this one group (none in ``others``, the delete-now rows) goes as 'a.co (3)'.
+    Rows that are "check first" only because their check did not finish are left to unchecked_lines."""
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
-        groups[(r["client"], _where_check(r))].append(r)
+        if unchecked(r):
+            continue
+        why = "a lead replied in the last 30 days" if REPLIED in r["notes"] else ""
+        groups[(r["client"], _where_check(r), why)].append(r)
     out = []
-    for (client, where), rs in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        names = []
-        for r in sorted(rs, key=lambda x: x["email"]):
-            own = [n for n in r["notes"] if n in (REPLIED, NO_REPLY_CHECK) or (n == NO_CAMPAIGNS and r["campaigns"])]
-            names.append(r["email"] + (f" ({'; '.join(own)})" if own else ""))
-        out.append(f"• {prefix}{client} {len(rs)} {where}: " + ", ".join(names))
+    for (client, where, why), rs in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        out.append(f"• {prefix}{client} {len(rs)} {where}" + (f", {why}" if why else "") + ":")
+        mine = {r["email"] for r in rs}
+        alone = {d for d in whole if all(r["email"] in mine for r in list(rows) + list(others) if r["domain"] == d)}
+        out += domain_lines(rs, alone)
     return out
+
+
+def _day(ts) -> str:
+    d = _parse(ts)
+    if not d:
+        return ""
+    d = d.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    return f"{d:%a} {d.day} {d:%b}"
+
+
+def _client_why(rows: list[dict], errors: dict | None) -> dict[str, str]:
+    """{client: why its check did not finish} from read_use's per-account errors (WHY_WORDS; "" when not known)."""
+    out: dict[str, str] = {}
+    for r in rows:
+        why = (errors or {}).get(r.get("account") or "")
+        out.setdefault(r["client"], WHY_WORDS.get(why, "") if why else "")
+    return out
+
+
+def unchecked_lines(check: list[dict], errors: dict | None = None) -> list[str]:
+    """One line per client for inboxes with no complete check to go by (counted, never listed), and one per client
+    whose lists use an earlier day's check because today's could not finish."""
+    out = []
+    rows = [r for r in check if unchecked(r)]
+    why = _client_why(rows, errors)
+    by: dict[str, int] = defaultdict(int)
+    for r in rows:
+        by[r["client"]] += 1
+    for c, n in sorted(by.items(), key=lambda x: (-x[1], x[0])):
+        out.append(f"• Not checked yet, {c} {n}: the campaign and reply check did not finish"
+                   + (f" ({why[c]})" if why[c] else "") + " and no earlier check of these inboxes is kept, so none is "
+                   "on a list to delete yet. Nothing to do for them today; the next morning's check places them.")
+    return out
+
+
+def stale_lines(rows: list[dict], errors: dict | None = None) -> list[str]:
+    """'Precise Leads: today's check could not finish (Smartlead's rate limit); these lists use its check of Fri 20
+    Nov.' once per client whose rows carry "as_of"."""
+    old: dict[str, str] = {}
+    for r in rows:
+        if r.get("as_of"):
+            old[r["client"]] = min(old.get(r["client"], r["as_of"]), r["as_of"])
+    why = _client_why([r for r in rows if r.get("as_of")], errors)
+    return [f"• {c}: today's check did not finish" + (f" ({why[c]})" if why[c] else "") + ", so its inboxes are "
+            f"placed by its check of {_day(at)}." for c, at in sorted(old.items())]
 
 
 def _clients(rows: list[dict]) -> str:
@@ -330,44 +428,51 @@ def _clients(rows: list[dict]) -> str:
     return ", ".join(f"{c} {n}" for c, n in sorted(k.items(), key=lambda x: (-x[1], x[0])))
 
 
-def _why_check(rows: list[dict]) -> str:
-    why = []
-    if any(r["campaigns"] for r in rows):
-        why.append("still in a real campaign")
-    if any(REPLIED in r["notes"] for r in rows):
-        why.append("a lead replied in the last 30 days")
-    if any(n in r["notes"] for r in rows for n in (NOT_CHECKED, NO_CAMPAIGNS, NO_REPLY_CHECK)):
-        why.append("not fully checked")
-    return " or ".join(why)
-
-
-def ask(rows: list[dict], whole: set[str], check: list[dict] = ()):
+def ask(rows: list[dict], whole: set[str], check: list[dict] = (), errors: dict | None = None,
+        whole_all: set[str] = frozenset()):
     """The one delete reminder, or None: ``rows`` to delete now, ``check`` to check first (split), ``whole``: domains
-    every Smartlead inbox of which is to be deleted now. Never words that read as a login or disconnect ask."""
+    every Smartlead inbox of which is to be deleted now; ``errors``: read_use's per-account reasons a check did not
+    finish. Never words that read as a login or disconnect ask. The sentence and the step are short (two Slack lines
+    in the post, t386); how to delete and what each list means are in ``more``, shown in the thread."""
     from smartlead import digest as dg
     check = list(check or ())
     if not rows and not check:
         return None
-    d, c = len(rows), len(check)
-    k = d + c
-    head = (f"{_n(k)} {'was' if k == 1 else 'were'} removed by {'its' if k == 1 else 'their'} provider (cancelled "
-            f"or expired there), so {'it' if k == 1 else 'they'} can't send again")
-    it = "it" if k == 1 else "them"
-    if not check:
-        text = f"{head}; delete {it} from Smartlead by hand ({_clients(rows)})."
-    elif not rows:
-        text = f"{head}; check {it} before deleting from Smartlead by hand ({_clients(check)}): {_why_check(check)}."
+    later = [r for r in check if unchecked(r)]
+    check = [r for r in check if not unchecked(r)]
+    d, c, u = len(rows), len(check), len(later)
+    k = d + c + u
+    head = f"{_n(k)} {'was' if k == 1 else 'were'} removed by {'its' if k == 1 else 'their'} provider and can't send again"
+    todo = []
+    if d:
+        todo.append(f"delete {d} now ({_clients(rows)})")
+    if c:
+        todo.append(f"check {c} first ({_clients(check)})")
+    text = f"{head}: {', '.join(todo)}" if todo else head
+    if u:
+        why = sorted({w for w in _client_why(later, errors).values() if w})
+        text += f"{'; ' if todo else ': '}{u} not checked yet ({_clients(later)}" + (f"; {', '.join(why)}" if why else "") + ")"
+    text += "."
+    if d and c:
+        step = ("delete the \"delete now\" ones by hand in Smartlead (Email Accounts); take each \"check first\" one "
+                "out of the campaign named, then delete it.")
+    elif d:
+        step = "delete them by hand in Smartlead (Email Accounts); the list is in the thread."
+    elif c:
+        step = "take each one out of the campaign named in the thread, then delete it by hand in Smartlead."
     else:
-        text = (f"{head}: delete {d} from Smartlead by hand now ({_clients(rows)}), check {c} first "
-                f"({_clients(check)}): {_why_check(check)}.")
-    step = ("Delete the \"Delete now\" inboxes by hand in Smartlead, Email Accounts (the client's account): search "
-            "each domain listed; a domain with a count goes whole, one with names only those. ") if rows else ""
-    if check:
-        step += ("A \"Check first\" inbox has its reason beside it: before deleting it, take it out of that campaign "
-                 "(or end the campaign), or make sure that lead's reply was answered. ")
-    step += "The bot never deletes; an inbox leaves this list once it is gone."
-    detail = ask_lines(rows, whole, "Delete now: " if check else "") + check_lines(check, "Check first: ")
-    return dg.Ask(text, step, key=KEY, detail=detail)
+        step = "nothing to delete yet: the next morning's check places them."
+    more = []
+    if d:
+        more.append("Search each domain in the client's Smartlead account: under \"all inboxes on these domains\" "
+                    "every inbox of the domain goes, otherwise only the inboxes named.")
+    if c:
+        if any(REPLIED in r["notes"] for r in check):
+            more.append("A \"check first\" inbox a lead replied to: answer that lead before deleting it.")
+    more.append("The bot never deletes; an inbox leaves this list once it is gone.")
+    detail = (stale_lines(rows + check, errors) + ask_lines(rows, whole, "Delete now: ")
+              + check_lines(check + later, "Check first: ", set(whole_all), rows) + unchecked_lines(later, errors))
+    return dg.Ask(text, step, key=KEY, detail=detail, more=" ".join(more))
 
 
 # --- Mongo and the providers (I/O) -----------------------------------------------------------------------------------
@@ -428,15 +533,17 @@ def source(db, now: datetime | None = None) -> dict | None:
     now = now or datetime.now(timezone.utc)
     facts, inboxes = load(db, now)
     rows = removed(facts, inboxes)
-    now_rows, check = split(rows, use_fresh(facts, now))
-    a = ask(now_rows, whole_domains(now_rows, inboxes), check)
+    use = use_fresh(facts, now)
+    now_rows, check = split(rows, use, now)
+    a = ask(now_rows, whole_domains(now_rows, inboxes), check, (use or {}).get("errors"), whole_domains(rows, inboxes))
     if a is None:
         return None
     doc = a.doc(SOURCE)
     doc.update(since=facts.get("at"), inboxes=sorted(r["email"] for r in rows),
                domains=sorted(whole_domains(rows, inboxes)),
                clients={c: sum(1 for r in rows if r["client"] == c) for c in sorted({r["client"] for r in rows})},
-               delete_now=len(now_rows), check_first=len(check),
+               delete_now=len(now_rows), check_first=sum(1 for r in check if not unchecked(r)),
+               not_checked=sum(1 for r in check if unchecked(r)),
                where="",                     # the text says where (digest_post._where): no list heads after it
                lines=LIST_LINES)             # a working list: up to 20 lines in the thread, not 12
     return {"_id": SOURCE, "at": facts.get("at") or now.isoformat(), "asks": [doc]}
@@ -537,21 +644,34 @@ def _when(ts) -> datetime | None:
     return _parse(str(ts).replace("Z", "+00:00")) if ts else None
 
 
+def why_failed(exc: BaseException) -> str:
+    """A short reason a read failed, for the digest (WHY_WORDS): never the exception text (it can hold a URL)."""
+    if isinstance(exc, OutOfTime):
+        return "out of time"
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    return "rate limit" if code == 429 else "error"
+
+
 async def account_use(get, account: str, want: set[str], cut: datetime, senders: dict,
-                      counts: dict | None = None) -> dict:
+                      counts: dict | None = None, threads: dict | None = None) -> dict:
     """{inbox: {campaigns: [{name, status}], replied, campaigns_unread, replies_unread}} for the removed inboxes of
     one Smartlead account. ``get(path, params)``: a paced GET that raises on failure (OutOfTime past the budget).
-    Campaigns: every non-test campaign not finished. Replies: every non-test campaign's replied statistics with a
-    reply since ``cut``; the thread's inboxes from ``senders`` or the lead's message history. Any read that fails
-    marks every inbox of the account (a pulled inbox can't be told apart), so none is called clean on a guess.
+    Campaigns: every non-test campaign not finished. Replies, only when an inbox is in no real campaign (one in a
+    campaign is "check first" either way, t386): every non-test campaign's replied statistics with a reply since
+    ``cut``; the thread's inboxes from ``senders`` (inbox_evidence's cache), ``threads`` (this check's own cache, filled
+    here with each new lookup) or the lead's message history. Any read that fails marks every inbox of the account (a
+    pulled inbox can't be told apart), so none is called clean on a guess; ``counts["why"]`` says why (why_failed).
     A reply whose lead Smartlead answers it no longer has (an empty lead lookup: 3 BettrData leads of completed
     campaigns on 20 Nov, in no campaign's lead list either) has no thread left to lose: counted in ``counts``
     ("lead_gone"), not a failure."""
     counts = counts if counts is not None else {}
+    threads = threads if threads is not None else {}
     from smartlead.v2_results import is_test_campaign
     out = {e: {"campaigns": [], "replied": 0, "campaigns_unread": False, "replies_unread": False} for e in want}
 
-    def mark(*fields):
+    def mark(*fields, exc: BaseException | None = None):
+        if exc is not None:
+            counts.setdefault("why", why_failed(exc))
         for e in want:
             for f in fields:
                 out[e][f] = True
@@ -566,13 +686,17 @@ async def account_use(get, account: str, want: set[str], cut: datetime, senders:
                 accs = await get(f"/campaigns/{c['id']}/email-accounts")
             except OutOfTime:
                 raise
-            except Exception:  # noqa: BLE001 - no URL or key in any text kept
-                mark("campaigns_unread")
+            except Exception as exc:  # noqa: BLE001 - no URL or key in any text kept
+                mark("campaigns_unread", exc=exc)
                 continue
             for a in accs if isinstance(accs, list) else []:
                 e = _low(a.get("from_email"))
                 if e in out:
                     out[e]["campaigns"].append({"name": str(c.get("name") or ""), "status": str(c.get("status") or "")})
+        need = {e for e in want if not out[e]["campaigns"]}
+        if not need:
+            counts["replies_skipped"] = counts.get("replies_skipped", 0) + 1
+            return out                     # every inbox is in a real campaign: "check first" without a reply check
         hits = []
         for c in camps:
             off = 0
@@ -582,8 +706,8 @@ async def account_use(get, account: str, want: set[str], cut: datetime, senders:
                                                                       "offset": off})
                 except OutOfTime:
                     raise
-                except Exception:  # noqa: BLE001
-                    mark("replies_unread")
+                except Exception as exc:  # noqa: BLE001
+                    mark("replies_unread", exc=exc)
                     break
                 data = (b.get("data") if isinstance(b, dict) else b) or []
                 for r in data:
@@ -594,7 +718,11 @@ async def account_use(get, account: str, want: set[str], cut: datetime, senders:
                     break
                 off += 100
         for cid, lead, sid in hits:
+            if all(out[e]["replied"] for e in need):
+                break                      # every inbox that needed it has a reply found: nothing more to learn
             who = senders.get((account, cid, sid))
+            if who is None:
+                who = threads.get((account, cid, sid))
             if who is None:
                 try:
                     found = await get("/leads/", {"email": lead})
@@ -605,20 +733,51 @@ async def account_use(get, account: str, want: set[str], cut: datetime, senders:
                         if found:
                             raise LookupError("lead answer without an id")
                         counts["lead_gone"] = counts.get("lead_gone", 0) + 1      # deleted from Smartlead
+                        threads[(account, cid, sid)] = set()                     # not looked up again (t386)
                         continue
                     who = senders_of(await get(f"/campaigns/{cid}/leads/{lid}/message-history"))
+                    threads[(account, cid, sid)] = set(who)
+                    counts["new_threads"] = counts.get("new_threads", 0) + 1
                 except OutOfTime:
                     raise
-                except Exception:  # noqa: BLE001
-                    mark("replies_unread")
+                except Exception as exc:  # noqa: BLE001
+                    mark("replies_unread", exc=exc)
                     continue
             for e in who & want:
                 out[e]["replied"] += 1
-    except OutOfTime:
-        mark("campaigns_unread", "replies_unread")
-    except Exception:  # noqa: BLE001 - the campaign list itself
-        mark("campaigns_unread", "replies_unread")
+    except OutOfTime as exc:
+        mark("campaigns_unread", "replies_unread", exc=exc)
+    except Exception as exc:  # noqa: BLE001 - the campaign list itself
+        mark("campaigns_unread", "replies_unread", exc=exc)
     return out
+
+
+def load_threads(db, now: datetime) -> dict[tuple, set[str]]:
+    """{(account, campaign id, stats_id): inboxes in that lead's thread} from REPLY_CACHE (the replies this check has
+    placed before, up to REPLY_CACHE_DAYS old). Empty when it can't be read. Never raises."""
+    out: dict[tuple, set[str]] = {}
+    try:
+        for d in db[REPLY_CACHE].find({}):
+            parts = str(d.get("_id") or "").rsplit(":", 2)
+            at = _parse(d.get("at"))
+            if len(parts) == 3 and at and now - at <= timedelta(days=REPLY_CACHE_DAYS):
+                out[tuple(parts)] = {_low(x) for x in d.get("who") or [] if _low(x)}
+    except Exception:  # noqa: BLE001 - no cache: every reply's history is read
+        return {}
+    return out
+
+
+def save_threads(db, new: dict, now: datetime) -> None:
+    """Keep the replies placed today (REPLY_CACHE) and drop those older than REPLY_CACHE_DAYS. Never raises."""
+    stamp = now.isoformat(timespec="seconds")
+    try:
+        for (acc, cid, sid), who in new.items():
+            db[REPLY_CACHE].replace_one({"_id": f"{acc}:{cid}:{sid}"}, {"_id": f"{acc}:{cid}:{sid}", "who": sorted(who),
+                                                                        "at": stamp}, upsert=True)
+        cut = (now - timedelta(days=REPLY_CACHE_DAYS)).isoformat(timespec="seconds")
+        db[REPLY_CACHE].delete_many({"at": {"$lt": cut}})
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [Removed inboxes] reply cache not saved ({type(exc).__name__})")
 
 
 class _Pace:
@@ -636,17 +795,18 @@ class _Pace:
 
 
 async def read_use(rows: list[dict], now: datetime | None = None, senders: dict | None = None,
-                   budget_s: float = BUDGET_S) -> dict:
-    """{"read": True, "inboxes": {inbox: account_use's facts}, "calls": n} for the removed inboxes (``rows``, each with
-    its Smartlead account). An inbox whose account is not configured is left out (split: not checked). GETs only, the
-    key-safe client (no URL or key in any error). Never raises."""
+                   budget_s: float = BUDGET_S, threads: dict | None = None) -> dict:
+    """{"read": True, "inboxes": {inbox: account_use's facts}, "calls": n, "errors": {account: why}} for the removed
+    inboxes (``rows``, each with its Smartlead account). An inbox whose account is not configured is left out (split:
+    not checked). ``threads``: the reply cache (load_threads), filled with each new lookup. GETs only, the key-safe
+    client (no URL or key in any error). Never raises."""
     now = now or datetime.now(timezone.utc)
     cut = now - timedelta(days=REPLY_DAYS)
     want: dict[str, set] = defaultdict(set)
     for r in rows or []:
         if r.get("account"):
             want[r["account"]].add(r["email"])
-    out = {"read": True, "inboxes": {}, "calls": 0, "lead_gone": 0}
+    out = {"read": True, "inboxes": {}, "calls": 0, "lead_gone": 0, "errors": {}}
     if not want:
         return out
     try:
@@ -669,18 +829,51 @@ async def read_use(rows: list[dict], now: datetime | None = None, senders: dict 
                     await pace.wait()
                     out["calls"] += 1
                     return await c._get(path, params)
-                out["inboxes"].update(await account_use(get, acc.name, mine, cut, senders or {}, out))
-        except Exception:  # noqa: BLE001 - the account's inboxes stay "not checked"
+                counts: dict = {}
+                out["inboxes"].update(await account_use(get, acc.name, mine, cut, senders or {}, counts, threads))
+                out["lead_gone"] += counts.get("lead_gone", 0)
+                if counts.get("why"):
+                    out["errors"][acc.name] = counts["why"]
+        except Exception as exc:  # noqa: BLE001 - the account's inboxes stay "not checked"
+            out["errors"][acc.name] = why_failed(exc)
             continue
     return out
 
 
+def merge_use(old: dict | None, new: dict, now: datetime) -> dict:
+    """Today's check with, for each inbox it could not finish, the last complete result (up to KEEP_USE old, with its
+    own "at"), so a failed read never moves an inbox between the lists (t386). A check that failed as a whole keeps
+    the old one and says why. Pure."""
+    stamp = now.isoformat(timespec="seconds")
+    old = old if (old or {}).get("read") is True else None
+    old_at = (old or {}).get("_at")
+    if new.get("read") is not True:
+        return {**old, "failed": new.get("why") or "not read", "failed_at": stamp} if old else new
+    kept, prev = {}, (old or {}).get("inboxes") or {}
+    for e, p in prev.items():                  # an account whose read failed as a whole is not in today's check
+        p_at = _parse(p.get("at") or old_at)
+        if e not in (new.get("inboxes") or {}) and complete(p) and p_at and now - p_at <= KEEP_USE:
+            kept[e] = dict(p, at=p_at.isoformat())
+    for e, u in (new.get("inboxes") or {}).items():
+        p = prev.get(e)
+        p_at = _parse((p or {}).get("at") or old_at)
+        if complete(u) or not (complete(p) and p_at and now - p_at <= KEEP_USE):
+            kept[e] = {**u, "at": stamp}
+        else:
+            kept[e] = dict(p, at=p_at.isoformat())
+    return {**new, "inboxes": kept, "_at": stamp}
+
+
 def save_use(db, use: dict, now: datetime | None = None) -> bool:
-    """Keep today's campaign/reply check beside the provider facts. Never raises."""
+    """Keep today's campaign/reply check beside the provider facts, merged with the last one (merge_use): an inbox
+    today's check could not finish keeps its last complete result. Never raises."""
     now = now or datetime.now(timezone.utc)
     try:
         doc = db[COLLECTION].find_one({"_id": DOC_ID}) or {"_id": DOC_ID}
-        doc.update(use=use, use_at=now.isoformat(timespec="seconds"))
+        old = doc.get("use")
+        if old and not old.get("_at"):
+            old = {**old, "_at": doc.get("use_at")}
+        doc.update(use=merge_use(old, use, now), use_at=now.isoformat(timespec="seconds"))
         db[COLLECTION].replace_one({"_id": DOC_ID}, doc, upsert=True)
         return True
     except Exception as exc:  # noqa: BLE001
@@ -704,12 +897,17 @@ async def check_use(db, now: datetime | None = None, budget_s: float = BUDGET_S)
             senders = sender_index(db["lead_senders"].find({}, {"sids": 1}))
         except Exception:  # noqa: BLE001 - every reply then needs its history read
             senders = {}
+        threads = load_threads(db, now)
+        known = set(threads)
         t0 = time.monotonic()
-        use = await read_use(rows, now, senders, budget_s)
+        use = await read_use(rows, now, senders, budget_s, threads)
+        save_threads(db, {k: v for k, v in threads.items() if k not in known}, now)
         save_use(db, use, now)
-        now_rows, check = split(rows, use if use.get("read") else None)
+        merged = use_fresh(db[COLLECTION].find_one({"_id": DOC_ID}), now)
+        now_rows, check = split(rows, merged, now)
         print(f"  [Removed inboxes] {len(rows)} removed: {len(now_rows)} delete now, {len(check)} check first "
-              f"({use.get('calls', 0)} Smartlead calls, {time.monotonic() - t0:.0f} s)")
+              f"({use.get('calls', 0)} Smartlead calls, {time.monotonic() - t0:.0f} s"
+              + (f"; not finished for {', '.join(sorted(use.get('errors') or {}))}" if use.get("errors") else "") + ")")
         return use
     except Exception as exc:  # noqa: BLE001
         print(f"  [Removed inboxes] campaigns and replies not checked ({type(exc).__name__})")
