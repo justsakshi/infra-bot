@@ -1586,6 +1586,13 @@ async function start() {
       if (digestOn()) return console.log('[v2-watch] the daily digest is on: it checks the PC job every morning');
       if (await onceToday('v2-watch')) return track('v2-watch', runV2Watch, { slot });
     });
+    // Mondays 10:00 IST: the weekly test results post (t420), results only, in the digest's channel. It reads Mongo
+    // only (the PC job's v2 verdicts, the sync's inbox list), so it does not share Smartlead's 200/min with the 10:00
+    // jobs. Once a day (lock) and once a week (the script's own record); a bot that starts late catches it up by 13:00.
+    const runWeeklyTestsPost = async ({ slot }) => {
+      if (await onceToday('weekly-tests-post')) return runJob('weekly-tests-post', ['weekly_tests_post.py', '--post'], { slot });
+    };
+    at('weekly-tests-post', runWeeklyTestsPost);
     // 11:00 IST every day: the one daily digest (bot_health.JOBS 'digest').
     at('digest', async ({ slot }) => {
       if (digestOn() && (await onceToday('digest'))) return runDigest(slot);
@@ -1597,7 +1604,8 @@ async function start() {
       'campaign-stats-post': runStatsPost,
       'kill-report': runKillReport,
       'placement-report-final': s => runPlacementReport(true, s),
-      'copy-sync': runCopySync
+      'copy-sync': runCopySync,
+      'weekly-tests-post': runWeeklyTestsPost
     };
     const missedAtStart = require('./stats_catch_up').missedRuns(new Date(), process.env);
     if (missedAtStart.length) {

@@ -107,6 +107,24 @@ Not in the digest, on purpose: campaign stats and the Microsoft/Proofpoint watch
 not the inbox channel. Capacity, placement summary/batch/collector, bounce protect, auto retest and the tracker
 syncs post nothing themselves.
 
+## Weekly test results post: Mondays 10:00 IST (t420, 23 Nov 2026)
+
+Manveen: "usually on the monday there should be a message for deliverbility tests". The PC job's weekly report went
+into this digest from 16 Nov, and by 22 Nov it was one line. Now it has its own post, every Monday at 10:00 IST in the
+digest's channel. The post gives results only: one paragraph per client, then "What the bot did", "Not judged yet",
+and one line saying any step for a person is in this digest. One thread reply carries the lists: at most 6 names a
+line, and the full lists are on the sheet.
+- It reads Mongo only: v2_verdicts, inbox_status, provider_inventory, external_warmup, test_coverage, and the v2
+  job's own report line. It makes no Smartlead calls.
+- It counts what the v2 job recorded at each inbox's own provider and adds no rule of its own.
+- A week with no weekly results gets a one-line post, and the reason goes to the bot-health channel.
+
+Code:
+- `smartlead_sync/smartlead/weekly_results.py`: the wording and the limits.
+- `smartlead_sync/weekly_tests_post.py`: `--post`; without it, a dry run. It posts once a week; `--again` posts again.
+
+Schedule: `bot_health.JOBS` `weekly-tests-post`. After a restart, the bot catches up a missed post until 13:00.
+
 ## Classic seed test: retired as a signal (16 Nov 2026)
 
 The v2 weekly test is the one the pipeline acts on. The October Google batch passed the classic test and warm-up
