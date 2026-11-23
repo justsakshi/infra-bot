@@ -19,6 +19,7 @@ function missedStatsPost(now, env) {
 //   kill-report: Tue 13:30 Kill warnings; still useful the same afternoon.
 //   placement-report-final: Mon/Tue 13:00 final run; the next day's runs only look at
 //     that day's tests, so a missed final run is never reported otherwise.
+//   weekly-tests-post: Mon 10:00 weekly test results post (t420); still worth posting until 13:00.
 //   copy-sync: Sun 18:30, Mon 05:00, Tue 05:00; only before that morning's scheduled
 //     tests start (Mon 06:00, Tue 06:30), never while they run.
 // These windows are safe only because the day's lock lasts all day: cronlocks has no TTL
@@ -29,7 +30,8 @@ const CATCH_UPS = [
   { job: 'placement-report-final', days: [1, 2], from: '13:00', until: '18:00' },
   { job: 'copy-sync', days: [0], from: '18:30', until: '24:00' },
   { job: 'copy-sync', days: [1], from: '05:00', until: '06:00' },
-  { job: 'copy-sync', days: [2], from: '05:00', until: '06:30' }
+  { job: 'copy-sync', days: [2], from: '05:00', until: '06:30' },
+  { job: 'weekly-tests-post', days: [1], from: '10:00', until: '13:00' }
 ];
 
 const toMins = hhmm => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };

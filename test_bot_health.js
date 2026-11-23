@@ -33,7 +33,8 @@ const BEFORE = {
   'gate-selftest': ['30 11 * * *'],    // 11 Nov 2026: daily, after the sync has written the inbox list
   'real-recipients': ['0 7 * * 0'],    // 13 Nov 2026: weekly real-recipient reply check, Sunday morning
   'inbox-evidence': ['0 9 * * 0'],     // 17 Nov 2026: weekly per-inbox evidence from real sends (t17)
-  digest: ['0 11 * * *']               // 16 Nov 2026: the one daily digest
+  digest: ['0 11 * * *'],              // 16 Nov 2026: the one daily digest
+  'weekly-tests-post': ['0 10 * * 1']  // 23 Nov 2026: the Monday weekly test results post (t420)
 };
 const jobNames = [...new Set(h.JOBS.map(j => j.job))].sort();
 eq(jobNames, Object.keys(BEFORE).sort(), 'JOBS has exactly the scheduled jobs');
@@ -47,7 +48,7 @@ for (const m of src.matchAll(/runJob\((?:final \? )?'([a-z0-9-]+)'/g)) ok(jobNam
 eq([...src.matchAll(/cron\.schedule\('([^']+)'/g)].map(m => m[1]), ['*/10 * * * *'], 'only the 10-minute inbox-jobs tick is scheduled outside JOBS');
 ok(!/runBilling/.test(src), 'runBilling is gone (runJob records every run)');
 for (const f of ['warmup_executor', 'rotation_executor', 'eg_test_executor', 'nc_test_executor']) ok(!src.includes(`${f}.py`), `${f} not in index.js`);
-for (const job of ['fleet-watch', 'fleet-scorecard', 'dt-senders', 'kill-report', 'copy-sync', 'placement-report-final', 'bot-health', 'v2-watch', 'digest']) {
+for (const job of ['fleet-watch', 'fleet-scorecard', 'dt-senders', 'kill-report', 'copy-sync', 'placement-report-final', 'bot-health', 'v2-watch', 'digest', 'weekly-tests-post']) {
   ok(src.includes(`onceToday('${job}')`), `${job} runs once a day (lock)`);
 }
 ok(/for \(const account of \['PRECISE_LEADS', 'BETTRDATA'\]\)[\s\S]{0,600}await runJob\(/.test(src), 'placement-report accounts run one after the other');
