@@ -87,14 +87,22 @@ def funds_problem(error: str) -> bool:
     return any(k in e for k in _FUNDS)
 
 
+_REG_PRICE = re.compile(r"registration\s+price:\s*([\d,]+(?:\.\d+)?)\s*in\s*([A-Za-z]{3})", re.I)
+_NOT_PREMIUM = re.compile(r"\bnot\s+(?:a\s+)?premium\b", re.I)
+
+
 def parse_price(raw: Any) -> tuple[float | None, str | None, bool]:
-    """'2.60 in USD and domain is not premium' -> (2.6, 'USD', False)."""
+    """First-year price, currency and premium flag from search's Price text.
+
+    Docs example: '2.60 in USD and domain is not premium'.
+    Live sandbox (24 Nov 2026): 'Registration Price: 88.00 in USD and Renewal
+    price: 16.00 in USD and Domain is not a Premium Domain' (the first version
+    of this parser read that as premium and skipped every name)."""
     text = str(raw or "")
-    m = _PRICE.search(text)
+    m = _REG_PRICE.search(text) or _PRICE.search(text)
     if not m:
         return None, None, False
-    low = text.lower()
-    premium = "premium" in low and "not premium" not in low
+    premium = "premium" in text.lower() and not _NOT_PREMIUM.search(text)
     return float(m.group(1).replace(",", "")), m.group(2).upper(), premium
 
 

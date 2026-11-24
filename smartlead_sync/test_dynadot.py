@@ -103,6 +103,11 @@ def test_parse_price():
     assert parse_price("2.60 in USD and domain is not premium") == (2.6, "USD", False)
     assert parse_price("1,200.00 in USD and domain is premium") == (1200.0, "USD", True)
     assert parse_price("") == (None, None, False)
+    live = ("Registration Price: 88.00 in USD and Renewal price: 16.00 in USD and "
+            "Domain is not a Premium Domain")                     # sandbox, 24 Nov 2026
+    assert parse_price(live) == (88.0, "USD", False)
+    assert parse_price("Registration Price: 950.00 in USD and Renewal price: 16.00 in USD and "
+                       "Domain is a Premium Domain")[2] is True
 
 
 def test_register_gates(monkeypatch):
