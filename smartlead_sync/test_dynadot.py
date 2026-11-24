@@ -86,9 +86,10 @@ class Clock:
 
 def run(fake, names, tmp_path, *, target, sandbox=False, monkeypatch=None, **kw):
     clock = kw.pop("clock", Clock())
+    log = kw.pop("log", lambda s: None)
     with client(fake, sandbox=sandbox) as dd:
         return orders.buy(dd, names, target=target, ledger=orders.Ledger(tmp_path / "ledger.json"),
-                          approve=True, sleep=clock.sleep, clock=clock, log=lambda s: None, **kw)
+                          approve=True, sleep=clock.sleep, clock=clock, log=log, **kw)
 
 
 @pytest.fixture(autouse=True)
@@ -138,6 +139,14 @@ def test_buys_to_target_and_skips_taken_and_premium(tmp_path):
     led = orders.Ledger(tmp_path / "ledger.json")
     assert led.domains[NAMES[0]]["status"] == "skipped"
     assert led.domains[NAMES[1]]["reason"] == "premium"
+
+
+def test_skips_are_logged(tmp_path):
+    """buy.log is what a person reads on Friday: every skipped name says why."""
+    lines = []
+    run(FakeDynadot(taken={NAMES[0]}, premium={NAMES[1]}), NAMES, tmp_path, target=1, log=lines.append)
+    assert f"skipped {NAMES[0]}: not available" in lines
+    assert f"skipped {NAMES[1]}: premium" in lines
 
 
 def test_second_run_never_buys_twice(tmp_path):
