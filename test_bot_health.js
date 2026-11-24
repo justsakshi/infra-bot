@@ -30,7 +30,7 @@ const BEFORE = {
   'provider-watch': ['40 10 * * 1'], 'volume-review': ['45 13 * * 2'], 'reply-monitor': ['0 13 * * *'],
   reminder: ['0 16 * * 1-5'],
   'bot-health': ['5 10 * * 1-5'], 'v2-watch': ['0 14 * * 2', '0 10 * * 3'],
-  'gate-selftest': ['30 11 * * *'],    // 11 Nov 2026: daily, after the sync has written the inbox list
+  'gate-selftest': ['45 10 * * *'],    // 24 Nov 2026 (t403): daily, after the sync and before the digest
   'real-recipients': ['0 7 * * 0'],    // 13 Nov 2026: weekly real-recipient reply check, Sunday morning
   'inbox-evidence': ['0 9 * * 0'],     // 17 Nov 2026: weekly per-inbox evidence from real sends (t17)
   digest: ['0 11 * * *'],              // 16 Nov 2026: the one daily digest
@@ -41,6 +41,11 @@ const jobNames = [...new Set(h.JOBS.map(j => j.job))].sort();
 eq(jobNames, Object.keys(BEFORE).sort(), 'JOBS has exactly the scheduled jobs');
 for (const [job, crons] of Object.entries(BEFORE)) eq(h.cronsOf(job).sort(), crons.slice().sort(), `${job} cron unchanged`);
 for (const j of h.JOBS) ok(j.title && !/[&<>]/.test(j.title), `${j.job} has a plain title`);
+// t403, 24 Nov 2026: the 11:00 digest posted the 11:30 self-test of the day before as today's problems. The self-test
+// runs after the sheet sync it compares and before the digest that reports it.
+const minute = (job) => { const [m, hr] = h.cronsOf(job)[0].split(' ').map(Number); return hr * 60 + m; };
+ok(minute('smartlead-sync') < minute('gate-selftest') && minute('gate-selftest') < minute('digest'),
+  'the gate self-test runs after the sheet sync and before the digest');
 
 const src = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 const atNames = [...src.matchAll(/\bat\('([a-z0-9-]+)'/g)].map(m => m[1]);

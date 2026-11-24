@@ -10,6 +10,14 @@ day breaks one.
 
     enforce(head, parts) -> (head, parts)     what is posted
     problems(head, parts) -> [str]            every limit the text breaks (empty = fine); the tests assert on it
+    pack(blocks, k) -> [str]                  items (one block each) as at most k replies, never one item in two
+
+24 Nov 2026 (t403): the digest sent three replies inside these limits and Slack showed four, one of them a lone
+"How:" line cut off from its item. Slack turns every address and bare domain into a link (<mailto:a@x|a@x>,
+<http://x|x>) before it counts a message's 4,000 characters, so a 3,195-character reply naming ~60 inboxes was
+~4,100 to Slack, which split it at the line that crossed 4,000. Reply sizes are now measured as Slack counts them
+(slack_len), and the composer packs whole items into replies (pack): an item that does not fit is shortened inside
+its reply (its list, never its How), and what does not fit at all is one pointer line, not another reply.
 """
 from __future__ import annotations
 
@@ -22,8 +30,10 @@ TOP_CHARS = 1400       # characters in the top post: about one laptop screen of 
 ITEM_CHARS = 280       # one numbered item in the top post: two lines in Slack's message pane on a laptop
 MAX_NAMES = 6          # addresses or domains named on one line; the rest are "and N more" (a list, not a dump)
 LINE_CHARS = 420       # one thread line: three lines in Slack; a longer one is a dump
-REPLY_CHARS = 3500     # one thread reply: Slack cuts a message at 4,000 characters and splits it into more posts
+REPLY_CHARS = 3500     # one thread reply AS SLACK COUNTS IT (slack_len): Slack shows a message over 4,000 as more posts
 REPLY_LINES = 40       # one thread reply in lines (notify._THREAD_CHUNK: one part is one Slack reply)
+ROOM_LINES = REPLY_LINES - 2    # what the packer (pack) puts in one reply: room left for the guard's pointer line
+ROOM_CHARS = REPLY_CHARS - 120
 MAX_REPLIES = 3        # thread replies in all (19 Nov 2026, "long spammy")
 REPEATS = 2            # the same "(...)" note on more names than this in one line is said once for the group
 
@@ -87,6 +97,30 @@ def leaks(text: str) -> list[str]:
 def _in_url(text: str, i: int) -> bool:
     start = text.rfind("<", 0, i)
     return start != -1 and text.find(">", start) > i and text[start + 1:start + 5] == "http"
+
+
+_MARKUP = re.compile(r"(<[^<>]+>)")
+_LINK_EXTRA = len("<mailto:|>")             # == len("<http://|>"): what Slack adds around a name besides the name again
+
+
+def slack_len(text: str) -> int:
+    """The length of a message as Slack counts it when it decides to show it as more than one post: outside the links
+    we wrote, '&', '<' and '>' are escaped and every address and bare domain becomes a link that holds the name twice
+    (24 Nov 2026: 3,195 characters we sent were ~4,100 to Slack, so it split the reply)."""
+    n = 0
+    for piece in _MARKUP.split(str(text or "")):
+        if piece.startswith("<") and piece.endswith(">"):
+            n += len(piece)
+            continue
+        n += len(piece) + 4 * piece.count("&") + 3 * (piece.count("<") + piece.count(">"))
+        taken: set[int] = set()
+        for m in _EMAIL.finditer(piece):
+            n += _LINK_EXTRA + len(m.group(0))
+            taken.update(range(m.start(), m.end()))
+        for m in _DOMAIN.finditer(piece):
+            if m.start() not in taken and m.group(0).rsplit(".", 1)[-1].lower() not in _FILE_ENDS:
+                n += _LINK_EXTRA + len(m.group(0))
+    return n
 
 
 # --- names on a line --------------------------------------------------------------------------------------------------
@@ -182,6 +216,143 @@ def fit(text: str, limit: int, tail: str = " … (the rest is in the thread)") -
     return text[:cut if cut > room // 2 else room].rstrip(" ,;:") + tail
 
 
+# --- thread replies: whole items (t403) --------------------------------------------------------------------------------
+
+def reply_lines(lines: list[str]) -> list[str]:
+    """Thread lines as they are posted: internal names cleaned, an ending a run of lines shares said once, a repeated
+    note said once, at most MAX_NAMES names and LINE_CHARS characters on a line."""
+    return [fit(cap_names(group_notes(clean(x))), LINE_CHARS, " …") for x in shared_tail(list(lines))]
+
+
+def fits(lines: list[str]) -> bool:
+    """True when the lines fit the room of one packed reply (ROOM_LINES, ROOM_CHARS as Slack counts them)."""
+    return len(lines) <= ROOM_LINES and slack_len("\n".join(lines)) <= ROOM_CHARS
+
+
+_MORE = re.compile(r"^• and (\d+) more\b")
+_STEP = ("How:", "Careful:")
+_NUM = re.compile(r"^(\d+)(?: above:|\. )")
+STARTS_INSIDE = ("How:", "Careful:", "• ", "Each:", "… and")      # lines that belong to an item above them
+
+
+def _split_block(block: list[str]) -> tuple[list[str], list[str], list[str], int]:
+    """(first line, list, How and Careful lines, how many list lines an '• and N more' line already stands for)."""
+    end = next((i for i, x in enumerate(block) if i and x.startswith(_STEP)), len(block))
+    head, rows, tail = block[:1], block[1:end], block[end:]
+    hidden = 0
+    if rows and _MORE.match(rows[-1]):
+        hidden, rows = int(_MORE.match(rows[-1]).group(1)), rows[:-1]
+    return head, rows, tail, hidden
+
+
+def cut_list(block: list[str], keep: int) -> list[str]:
+    """One item's block with at most ``keep`` lines of its list (the lines between its first line and its How) and
+    one '• and N more (the inbox sheet)' line for the rest; its first line and its How and Careful lines stay."""
+    head, rows, tail, hidden = _split_block(block)
+    if keep >= len(rows):
+        return block
+    more = hidden + sum(1 for x in rows[keep:] if x.strip() and not x.startswith("Each:"))
+    return head + rows[:keep] + [f"• and {more} more (the inbox sheet)"] + tail
+
+
+def shorten(block: list[str], ok=fits) -> list[str] | None:
+    """The longest version of one item's block (cut_list) that passes ``ok``; None when even the item without its
+    list does not."""
+    if ok(block):
+        return block
+    for keep in range(len(_split_block(block)[1]) - 1, -1, -1):
+        out = cut_list(block, keep)
+        if ok(out):
+            return out
+    return None
+
+
+def _ranges(nums: list[int]) -> str:
+    nums, out, i = sorted(set(nums)), [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+def _pointer(left: list[list[str]]) -> str:
+    """The one line that stands for the blocks that did not fit (never a reply of their own)."""
+    nums = [int(m.group(1)) for b in left if b for m in [_NUM.match(str(b[0]))] if m]
+    if nums:
+        many = len(set(nums)) != 1
+        return (f"… item{'s' if many else ''} {_ranges(nums)} did not fit here: {'their lists are' if many else 'its list is'}"
+                f" in the inbox sheet.")
+    k = sum(1 for b in left for x in b if str(x).strip())
+    return f"… and {k} more line{'s' if k != 1 else ''} (the inbox sheet)"
+
+
+def _greedy(blks: list[list[str]], k: int, last: bool) -> tuple[list[list[str]], list[list[str]]]:
+    """(replies, blocks left over): whole blocks in order, a new reply when the next one does not fit, at most ``k``.
+    ``last``: a block that does not fit the last reply is shortened there (its list), and what still does not fit is
+    left over."""
+    parts: list[list[str]] = []
+    cur: list[str] = []
+    for n, blk in enumerate(blks):
+        sep = [""] if cur else []
+        if fits(cur + sep + blk):
+            cur += sep + blk
+            continue
+        if cur and len(parts) < k - 1:
+            parts.append(cur)
+            cur, sep = [], []
+            if fits(blk):
+                cur = list(blk)
+                continue
+        if not last:
+            return parts + ([cur] if cur else []), blks[n:]
+        small = shorten(blk, lambda b: fits(cur + sep + b))
+        if small is not None:
+            cur += sep + small
+            continue
+        if not cur:                            # one block too big even without its list: its lines while they fit
+            for x in blk:
+                if not fits(cur + [x]):
+                    break
+                cur.append(x)
+            return parts + [cur], [blk[len(cur):]] + blks[n + 1:]
+        return parts + [cur], blks[n:]
+    return parts + ([cur] if cur else []), []
+
+
+def pack(blocks: list[list[str]], k: int, ready: bool = False) -> list[str]:
+    """Blocks (one per item, or per section) as at most ``k`` replies that each fit as Slack counts them (fits), in
+    order, never one block in two replies. When they do not all fit, every item's list is cut to the same number of
+    lines (the most that fit) before any item is left out, so each item keeps its first line and its How; only when even
+    that does not fit, the last reply shortens what it can and one pointer line names the items left out (never a
+    reply of their own). ``ready``: the lines are already as posted (reply_lines)."""
+    blks = [b for b in ((list(r) if ready else reply_lines(r)) for r in blocks) if b]
+    longest = max((len(_split_block(b)[1]) for b in blks), default=0)
+    for keep in [None] + list(range(longest - 1, -1, -1)):      # the most list lines every item can keep
+        trial = blks if keep is None else [cut_list(b, keep) for b in blks]
+        parts, left = _greedy(trial, k, last=False)
+        if not left:
+            return ["\n".join(p) for p in parts]
+    parts, left = _greedy(blks, k, last=True)
+    if left:
+        if not parts:
+            parts = [[]]
+        parts[-1].append(_pointer(left))
+    return ["\n".join(p) for p in parts if p]
+
+
+def blocks_of(lines: list[str]) -> list[list[str]]:
+    out: list[list[str]] = [[]]
+    for x in lines:
+        if x.strip():
+            out[-1].append(x)
+        elif out[-1]:
+            out.append([])
+    return [b for b in out if b]
+
+
 # --- the whole post ---------------------------------------------------------------------------------------------------
 
 def _lines(head: list[str]) -> list[str]:
@@ -218,16 +389,11 @@ def enforce(head: list[str], parts: list[str]) -> tuple[list[str], list[str]]:
         out_head.pop(-2 if len(out_head) > 2 else -1)
     out_parts = []
     for p in parts[:MAX_REPLIES]:
-        lines = [fit(cap_names(group_notes(clean(x))), LINE_CHARS, " …") for x in shared_tail(str(p).split("\n"))]
-        kept, size = [], 0
-        for i, x in enumerate(lines):
-            more = len(lines) - i
-            if len(kept) >= REPLY_LINES - 1 and more > 1 or size + len(x) + 1 > REPLY_CHARS - 60:
-                kept.append(f"… and {more} more line{'s' if more != 1 else ''} (the inbox sheet)")
-                break
-            kept.append(x)
-            size += len(x) + 1
-        out_parts.append("\n".join(kept))
+        lines = reply_lines(str(p).split("\n"))
+        if len(lines) > REPLY_LINES or slack_len("\n".join(lines)) > REPLY_CHARS:
+            out_parts += pack(blocks_of(lines), 1, ready=True)      # cut at an item's end, sized as Slack counts
+        else:
+            out_parts.append("\n".join(lines))
     return out_head, out_parts
 
 
@@ -247,8 +413,11 @@ def problems(head: list[str], parts: list[str]) -> list[str]:
     if len(parts) > MAX_REPLIES:
         out.append(f"{len(parts)} thread replies (max {MAX_REPLIES})")
     for k, p in enumerate(parts, 1):
-        if len(p) > REPLY_CHARS:
-            out.append(f"reply {k} has {len(p)} characters (max {REPLY_CHARS})")
+        if slack_len(p) > REPLY_CHARS:
+            out.append(f"reply {k} has {slack_len(p)} characters as Slack counts them (max {REPLY_CHARS})")
+        first = next((x for x in p.split("\n") if x.strip()), "")
+        if first.startswith(STARTS_INSIDE):
+            out.append(f"reply {k} starts inside an item: {first[:60]}…")
         if len(p.split("\n")) > REPLY_LINES:
             out.append(f"reply {k} has {len(p.split(chr(10)))} lines (max {REPLY_LINES})")
         for x in p.split("\n"):

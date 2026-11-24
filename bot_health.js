@@ -75,8 +75,10 @@ const JOBS = [
     codes: { 1: 'no Smartlead account could be read' } },
   { job: 'fleet-scorecard', cron: '50 10 * * 1', title: 'Fleet scorecard' },
   { job: 'retest', cron: '0 11 * * *', title: 'Auto placement test' },
-  // After the 10:00 sync has written the list. Posts only when a check disagrees, and every Monday.
-  { job: 'gate-selftest', cron: '30 11 * * *', title: 'Gate self-test', when: env => env.GATE_SELFTEST !== 'off' },
+  // 10:45, before the 11:00 digest (t403, 24 Nov 2026: at 11:30 the digest posted the day before's result as today's
+  // problems). gate_selftest.py --save waits for a sync still running; the digest waits for the self-test and uses
+  // its result only when it ran after that sync (digest_post.fresh_selftest).
+  { job: 'gate-selftest', cron: '45 10 * * *', title: 'Gate self-test', when: env => env.GATE_SELFTEST !== 'off' },
   { job: 'placement-batch', cron: '0 10,12,14,16 * * 4', title: 'Weekly placement batch' },
   { job: 'placement-report', cron: '0 8-12 * * 1,2', title: 'Placement report' },
   { job: 'placement-report-final', cron: '0 13 * * 1,2', title: 'Placement report (final run)' },

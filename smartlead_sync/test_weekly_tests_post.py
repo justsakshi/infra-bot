@@ -250,7 +250,11 @@ def test_bad_day_stays_within_the_limits():
     assert "…" not in t                                     # no sentence cut in half: long paragraphs go short
     assert "Melior: 60 passed, 3 borderline, 48 failed, 100 did not send (details in the thread)." in t
     assert len(parts) == 1 and "*Precise Leads*" in parts[0] and "• Passed" not in parts[0]
-    assert re.search(r"\(inboxes per domain\): .* and \d+ more domains\n", parts[0])   # not read as inboxes
+    # t403: this reply was 3,324 characters sent but 5,142 as Slack counts them (every address and domain a link), so
+    # Slack would have shown it as two posts. The guard now cuts each client's list evenly to fit one Slack message.
+    from smartlead import digest_guard as guard
+    assert guard.slack_len(parts[0]) <= guard.REPLY_CHARS and "*Northwind*" in parts[0]
+    assert "more (the inbox sheet)" in parts[0] and "Full lists: the All Inboxes tab" in parts[0]
 
 
 def test_problems_catch_a_broken_post():

@@ -1394,7 +1394,8 @@ async function start() {
     // via Google DoH against Spamhaus DBL / SURBL / URIBL) — no enable flag needed.
     at('blacklist', ({ slot }) => runJob('blacklist', ['blacklist_monitor.py'], { slot }));
 
-    // Gate self-test, daily 11:30 IST, after the 10:00 sync has written the inbox list. Read-only for
+    // Gate self-test, daily 10:45 IST: after the 10:00 sync has written the inbox list (it waits for a sync still
+    // running) and before the 11:00 digest, which waits for it (t403). Read-only for
     // Smartlead. It reads the tags, the v2 verdicts, the published list and the live campaigns again and
     // checks that they agree; it posts only when one does not, and every Monday. GATE_SELFTEST=off stops it.
     at('gate-selftest', ({ slot }) => {
