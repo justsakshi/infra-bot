@@ -211,7 +211,8 @@ def main(argv=None) -> int:
     ap.add_argument("--claude", choices=("windows", "wsl"), default="windows",
                     help="whose Claude Code login runs claude -p: Windows (default) or WSL Ubuntu")
     args = ap.parse_args(argv)
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stdout is not None:  # pythonw under Task Scheduler has no console: stdout is None (24 Nov run died here)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     from dotenv import load_dotenv
     load_dotenv(args.env_file)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -279,5 +280,22 @@ def main(argv=None) -> int:
     return 0 if sent else 1
 
 
+def _crash_to_log(argv) -> None:
+    """A crash before log() exists is invisible under pythonw (no console): write the traceback to the log dir."""
+    import traceback
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--log-dir" in args and args.index("--log-dir") + 1 < len(args):
+        d = Path(args[args.index("--log-dir") + 1])
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / "blind-test.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now(IST):%Y-%m-%d %H:%M} IST  CRASH: {traceback.format_exc()}\n")
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException:
+        _crash_to_log(None)
+        raise
