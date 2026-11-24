@@ -161,6 +161,7 @@ def buy(dd, names: list[str], *, target: int, ledger: Ledger, approve: bool,
                 why = "premium" if s.get("premium") else s.get("error") or (
                     "not available" if not s.get("available") else f"price not in USD: {s.get('price_text')}")
                 ledger.set(domain, status="skipped", reason=str(why)[:200])
+                log(f"skipped {domain}: {str(why)[:120]}")
                 s = None
                 break
             if s["price_usd"] <= price_ceiling:
