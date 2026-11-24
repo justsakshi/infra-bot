@@ -54,6 +54,11 @@ def _is_victim(row: dict) -> bool:
 
 
 def _is_bench(row: dict) -> bool:
+    # Never swap in an inbox All Inboxes holds back (usable.send_verdict, t396): before, a DO NOT USE or failed-v2
+    # inbox with an "inbox" grid result, 90%+ warm-up and capacity left could replace a failing sender.
+    from smartlead.usable import send_verdict
+    if send_verdict(row.get("busy_reason", ""), row.get("type") or row.get("provider") or "")[0] != "send":
+        return False
     status = str(row.get("test_sheet_status", "")).strip().lower()
     return (
         status == "inbox"
