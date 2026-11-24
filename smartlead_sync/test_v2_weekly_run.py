@@ -24,6 +24,7 @@ DT_PL_1 = {"pl-ok1@x.com": (4, 4), "pl-ok2@x.com": (4, 4), "pl-bad@x.com": (0, 4
 DT_MELIOR_1 = {"mel-bad@y.com": (4, 0), "mel-ok@w.com": (4, 4)}
 TYPES = {}          # email: Smartlead inbox type (GMAIL / OUTLOOK), for the tests that need one; else unknown
 EXTRA_DT = {}       # more "DT ..." campaigns for one test, e.g. a copy-check campaign
+INBOX_EXTRA = {}    # email: more fleet fields for one test (connected, warmup, warmup_blocked, tags)
 WED11 = "2026-11-11T05:00:00.000Z"           # Wednesday 11 Nov, 10:30 IST
 
 
@@ -143,8 +144,8 @@ class FakeV2:
 
 
 def fleet_from(sl):
-    inboxes = {e: {"id": i, "client": c, "tags": [wk.TAG] if i in sl.tagged else [], "type": TYPES.get(e, "")}
-               for e, (i, c) in INBOXES.items()}
+    inboxes = {e: {"id": i, "client": c, "tags": [wk.TAG] if i in sl.tagged else [], "type": TYPES.get(e, ""),
+                   **INBOX_EXTRA.get(e, {})} for e, (i, c) in INBOXES.items()}
     return {"PRECISE_LEADS": {"key": "k", "inboxes": inboxes,
                               "camps": {cid: {"name": sl.names[cid], "status": "ACTIVE", "senders": set(ids)}
                                         for cid, ids in sl.senders.items()},
@@ -1160,3 +1161,50 @@ def test_with_the_api_off_the_reminder_still_asks_for_the_csv(job, monkeypatch):
     assert job.run() == 0
     head, _ = job.posts[-1]
     assert head[1] == "\nMissing: DT PL #2." and "Download its CSV from Smart Delivery v2" in head[2]
+
+
+# --- t411: one pass at Microsoft takes the job's own tag off an Outlook inbox it pulled ----------------------------
+
+def _pulled_last_week(job, monkeypatch, kind):
+    monkeypatch.setitem(TYPES, "pl-bad@x.com", kind)
+    monkeypatch.setitem(INBOX_EXTRA, "pl-bad@x.com", {"connected": True, "warmup": "ACTIVE", "warmup_blocked": False})
+    st = job.state()
+    st["results"]["pl-bad@x.com"] = [{"night": "2026-11-02", "verdict": v2.FAIL, "history": False,
+                                      "google": v2.provider_verdict(["Spam"] * 4),
+                                      "microsoft": v2.provider_verdict(["Spam"] * 4)}]
+    st["pulled"]["pl-bad@x.com"] = {"on": "2026-11-03", "account": "PRECISE_LEADS", "id": 20, "campaigns": [1]}
+    wk.save_state(job.state_dir, st)
+    job.sl.tagged.add(20)
+    job.sl.senders[1].discard(20)
+    job.sl.tags = [{"id": 77, "name": wk.TAG}]
+    write_csv(job.downloads, "dt-pl-1.csv", {**DT_PL_1, "pl-bad@x.com": (0, 4)})   # 4/4 at Microsoft, 0/4 at Google
+    job.run()
+    job.clock = at(10, 10, 31)
+    return job.run()
+
+
+def test_an_outlook_inbox_that_passes_after_its_pull_loses_the_tag_and_the_post_says_so_t411(job, monkeypatch):
+    assert _pulled_last_week(job, monkeypatch, "OUTLOOK") == 0
+    assert ("DELETE", "/email-accounts/tag-mapping", {"email_account_ids": [20], "tag_ids": [77]}) in job.sl.calls
+    assert not [c for c in job.sl.calls if c[0] == "add"]                          # campaigns stay a person's call
+    st = job.state()
+    assert "pl-bad@x.com" not in st["pulled"] and st["returned"][-1]["untagged"] is True
+    assert st["log"][-1]["untagged"] == {"pl-bad@x.com": [1]}
+    head, parts = job.posts[-1]
+    assert head[2].endswith("removed the tag from 1 that passed")
+    assert any(p.startswith("*DO NOT USE tag removed*") and "pl-bad@x.com → passed Mon 9 Nov at Microsoft (4/4)" in p
+               for p in parts)
+
+
+def test_a_google_inbox_that_passes_after_its_pull_keeps_the_tag_t411(job, monkeypatch):
+    monkeypatch.setitem(INBOX_EXTRA, "pl-bad@x.com", {})
+    assert _pulled_last_week(job, monkeypatch, "GMAIL") == 0                       # 0/4 at Google: no pass anyway
+    assert not [c for c in job.sl.calls if c[1:2] == ("/email-accounts/tag-mapping",)]
+    write_csv(job.downloads, "dt-pl-1b.csv", {"pl-bad@x.com": (4, 4)}, sent="2026-11-10T14:31:00.000Z",
+              when=at(11, 8, 0))
+    job.clock = at(11, 10, 0)
+    job.run()
+    job.clock = at(11, 12, 0)
+    job.run()
+    assert not [c for c in job.sl.calls if c[1:2] == ("/email-accounts/tag-mapping",)]   # a Google seed pass never frees
+    assert "pl-bad@x.com" in job.state()["pulled"]

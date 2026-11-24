@@ -20,6 +20,9 @@ result that is not complete):
   * FAIL -> pull it from live campaigns. WATCH twice running -> pull, but only when both are weekly
     tests (Sat/Sun/Mon start) from new files, 6+ days apart; a one-off or history result never counts.
   * a pulled inbox comes back after two passes, at least 6 days apart, both after the pull.
+  * a pulled OUTLOOK inbox loses the job's tag after one pass at Microsoft after the pull (UNTAG; t411, 24 Nov 2026:
+    inboxes that had passed sat out a live campaign waiting for a second pass, the tests between them short). The
+    tag comes off; its campaigns stay a person's call. Never a Google inbox: a Google seed result frees nothing.
   * if nearly every inbox in one night's tests, or in one test file, is below 4 of 4 at one provider, the
     test is suspect: hold (inboxes already known bad are left out of that count). Only when those inboxes are on
     two or more sending domains, though: a broken seed panel hits every domain alike. When every inbox below
@@ -52,7 +55,7 @@ FINAL = REPORTED | {"BOUNCED"}                  # a seed whose result will not c
 PASS, WATCH, FAIL = "PASS", "WATCH", "FAIL"
 UNKNOWN, INCOMPLETE, NOT_SENT = "UNKNOWN", "INCOMPLETE", "NOT_SENT"
 JUDGED = {PASS, WATCH, FAIL}
-PULL, RETURN = "PULL", "RETURN"
+PULL, RETURN, UNTAG = "PULL", "RETURN", "UNTAG"
 
 PASS_SEEDS = 4              # seeds per provider; a test that sent another number is reported, never judged
 FAIL_SPAM = 3               # this many of 4 seeds in spam: fail
@@ -426,9 +429,10 @@ def two_weeks_running(a: dict, b: dict) -> bool:
     return (date.fromisoformat(b["night"]) - date.fromisoformat(a["night"])).days >= RETURN_GAP_DAYS
 
 
-def decide(results: list[dict], pulled: dict | None) -> dict:
+def decide(results: list[dict], pulled: dict | None, untag_on_pass: bool = False) -> dict:
     """results: oldest first, each {night, verdict, history}. pulled: {on: date} if the bot pulled it.
-    Only a result from a new file (not history) can start an action."""
+    Only a result from a new file (not history) can start an action. ``untag_on_pass`` (OUTLOOK inboxes): a pulled
+    inbox whose newest judged result after the pull is a pass loses the job's tag (UNTAG, ``night`` = that pass)."""
     judged = [x for x in results if x["verdict"] in JUDGED]
     if not judged:
         return {"action": None, "why": "no judged result"}
@@ -440,6 +444,8 @@ def decide(results: list[dict], pulled: dict | None) -> dict:
             gap = (date.fromisoformat(b["night"]) - date.fromisoformat(a["night"])).days
             if a["verdict"] == PASS and b["verdict"] == PASS and gap >= RETURN_GAP_DAYS:
                 return {"action": RETURN, "why": f"passed {a['night']} and {b['night']}"}
+        if untag_on_pass and after and after[-1]["verdict"] == PASS and not after[-1].get("history"):
+            return {"action": UNTAG, "why": f"passed {after[-1]['night']}", "night": after[-1]["night"]}
         return {"action": None, "why": "pulled; waiting for two passes"}
     if last.get("history"):
         return {"action": None, "why": "latest result is history"}

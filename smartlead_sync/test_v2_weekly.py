@@ -1545,3 +1545,94 @@ def test_post_goes_to_the_digest_and_falls_back_to_slack_when_mongo_fails(monkey
 
 def v2w_done(x):
     return wk._done_words(x)
+
+
+# --- t411: the job's own tag comes off an Outlook inbox after one pass at Microsoft -----------------------------
+
+def _pulled_then_passed(tmp_path, kind="OUTLOOK", m=4):
+    st = fresh_state(tmp_path)
+    st["types"] = {"o@one.com": kind}
+    st["results"]["o@one.com"] = [result(v2.FAIL, 4, 0, "2026-11-09"), result(v2.PASS if m == 4 else v2.FAIL, 4, m, "2026-11-16")]
+    st["pulled"]["o@one.com"] = {"on": "2026-11-10", "account": "PRECISE_LEADS", "id": 10, "campaigns": [1]}
+    wk.compute_holds(st, None)
+    return st
+
+
+def test_a_pulled_outlook_inbox_that_passed_at_microsoft_is_planned_for_untag_t411(tmp_path):
+    d = wk.plan(_pulled_then_passed(tmp_path), {"2026-11-16"})
+    assert d["o@one.com"]["action"] == v2.UNTAG and d["o@one.com"]["night"] == "2026-11-16"
+    for kind in ("GMAIL", "SMTP", ""):                           # Google: never on a seed result; others: two passes
+        assert wk.plan(_pulled_then_passed(tmp_path, kind), {"2026-11-16"})["o@one.com"]["action"] is None
+    assert wk.plan(_pulled_then_passed(tmp_path, m=0), {"2026-11-16"})["o@one.com"]["action"] is None
+
+
+def test_an_untag_waits_while_its_domain_fails_t411(tmp_path):
+    st = _pulled_then_passed(tmp_path)
+    st["clients"] = {e: "Precise Leads" for e in ("o@one.com", "x@one.com")}
+    st["types"]["x@one.com"] = "OUTLOOK"
+    st["results"]["x@one.com"] = [result(v2.FAIL, 4, 0, "2026-11-16")]
+    d = wk.plan(st, {"2026-11-16"})
+    assert d["o@one.com"]["action"] is None and d["o@one.com"]["waits"]
+    _, parts = wk.build_report(st, {**GOT, "nights": {"2026-11-16"}}, d, None, acted(), True, {"o@one.com"})
+    assert ("• one.com still fails (1 of 2 inboxes in spam at their own provider), so 1 inbox that passed keeps "
+            "the DO NOT USE tag until it no longer does.") in "\n".join(parts)
+
+
+def untag_fleet(tags=(wk.TAG,), connected=True, warmup="ACTIVE", blocked=False):
+    f = fleet(tags=list(tags), senders={11})
+    f["PRECISE_LEADS"]["inboxes"]["bad@x.com"].update(type="OUTLOOK", connected=connected, warmup=warmup,
+                                                      warmup_blocked=blocked)
+    return f["PRECISE_LEADS"]
+
+
+def test_untag_removes_only_the_jobs_own_tag_and_releases_the_inbox_t411(tmp_path, fake):
+    sl = fake(senders=(11,))
+    sl.tags = [{"id": 77, "name": wk.TAG}, {"id": 78, "name": "DO NOT USE - Google spam (Nov 2026)"}]
+    st, saves = fresh_state(tmp_path), []
+    st["pulled"]["bad@x.com"] = {"on": "2026-11-10", "campaigns": [1]}
+    f = untag_fleet()
+    rep = asyncio.run(wk.do_untags("PRECISE_LEADS", f, ["bad@x.com"], True, "2026-11-24", st, lambda: saves.append(1)))
+    assert sl.calls == [("DELETE", "/email-accounts/tag-mapping", {"email_account_ids": [10], "tag_ids": [77]})]
+    assert rep["untagged"] == {"bad@x.com": [1]} and not rep["added"]            # never put back in a campaign
+    assert "bad@x.com" not in st["pulled"] and st["returned"][-1] == {"email": "bad@x.com", "on": "2026-11-24",
+                                                                       "campaigns": [], "untagged": True}
+    assert wk.TAG not in f["inboxes"]["bad@x.com"]["tags"] and saves
+
+
+@pytest.mark.parametrize("kw, words", [
+    ({"tags": (wk.TAG, "DO NOT USE - pulled from roundtable by Manveen 16 Nov (t235)")}, "also has the tag"),
+    ({"connected": False}, "can't log in"), ({"connected": None}, "can't log in"),
+    ({"warmup": "PAUSED"}, "warm-up"), ({"blocked": True}, "warm-up")])
+def test_untag_leaves_the_tag_on_when_anything_else_says_no_t411(tmp_path, fake, kw, words):
+    sl = fake(senders=(11,))
+    sl.tags = [{"id": 77, "name": wk.TAG}]
+    st = fresh_state(tmp_path)
+    st["pulled"]["bad@x.com"] = {"on": "2026-11-10", "campaigns": [1]}
+    rep = asyncio.run(wk.do_untags("PRECISE_LEADS", untag_fleet(**kw), ["bad@x.com"], True, "2026-11-24", st, lambda: None))
+    assert sl.calls == [] and not rep["untagged"] and "bad@x.com" in st["pulled"]
+    assert len(rep["skipped"]) == 1 and words in rep["skipped"][0]
+
+
+def test_untag_dry_run_changes_nothing_t411(tmp_path, fake):
+    sl = fake(senders=(11,))
+    st = fresh_state(tmp_path)
+    st["pulled"]["bad@x.com"] = {"on": "2026-11-10", "campaigns": [1]}
+    rep = asyncio.run(wk.do_untags("PRECISE_LEADS", untag_fleet(), ["bad@x.com"], False, "2026-11-24", st, lambda: None))
+    assert sl.calls == [] and rep["untagged"] == {"bad@x.com": [1]} and "bad@x.com" in st["pulled"]
+
+
+def test_the_report_names_each_untag_and_the_digest_counts_them_t411(tmp_path):
+    st = _pulled_then_passed(tmp_path)
+    d = wk.plan(st, {"2026-11-16"})
+    f = fleet()
+    head, parts = wk.build_report(st, {**GOT, "nights": {"2026-11-16"}}, d, f, acted(untagged={"o@one.com": [1]}),
+                                  True, {"o@one.com"})
+    assert head[2].endswith(" · removed the tag from 1 that passed")
+    assert ("*DO NOT USE tag removed* (taken out after a failed test, passed at its own provider since)\n\n"
+            "• o@one.com → passed Mon 16 Nov at Microsoft (4/4); tag removed, not put back in PL | A") in parts
+    assert "removed the DO NOT USE tag from 1 inbox that passed at its own provider" in wk._done_words(head[2])
+    head, _ = wk.build_report(st, {**GOT, "nights": {"2026-11-16"}}, d, f, acted(untagged={"o@one.com": [1]}),
+                              False, {"o@one.com"})
+    assert head[2].endswith(" · would remove the tag from 1 that passed")
+    head, _ = wk.build_report(st, {**GOT, "nights": {"2026-11-16"}}, d, f, acted(), True, {"o@one.com"})
+    assert "tag from" not in head[2]                             # no untag: the line reads as before

@@ -25,6 +25,10 @@ What it does (rules in smartlead/v2_results.py):
     PL's and BettrData's; its Google inboxes stay report-only under the rule above);
   * a campaign left with no good sender is not touched (sending or scheduled: the post asks a person);
   * an inbox the job pulled comes back (same campaigns, tag removed) after two passes 6+ days apart;
+  * an OUTLOOK inbox the job pulled loses the job's tag after one pass at Microsoft, its own provider (t411, 24 Nov
+    2026): only that tag, only when it carries no other DO NOT USE tag, Smartlead can log in to it and its warm-up is
+    on and not blocked. It is not put back in campaigns (a person's call) and the post names it. Never a Google
+    inbox: a Google seed result frees nothing (Google real-send rule);
   * if nearly every inbox in a night, or in one test file, is below 4/4 at one provider, on two or more sending
     domains, that provider is held (test problem); when they are all on one domain (a test of one domain's senders)
     the result is judged and recorded like any other, and the post says those inboxes failed and asks for a re-run
@@ -640,7 +644,7 @@ def plan(state: dict, nights=None) -> dict[str, dict]:
     out, shown = {}, {}
     for mb, rs in state["results"].items():
         eff = effective(rs, state, types.get(mb))
-        d = v2.decide(eff, state["pulled"].get(mb))
+        d = v2.decide(eff, state["pulled"].get(mb), untag_on_pass=types.get(mb) == "OUTLOOK")
         judged = judged_nights(state, mb)
         if d["action"] == v2.PULL and judged and judged[-1] <= str(state["overrides"].get(mb) or ""):
             d = {"action": None, "why": "override"}
@@ -664,8 +668,9 @@ def plan(state: dict, nights=None) -> dict[str, dict]:
         dom = {"name": key(mb)[1], "failed": n, "inboxes": m}
         why = f"its domain failed ({n} of {_inboxes(m)} in spam at their own provider)"
         d = out.get(mb) or {"action": None, "why": "no result"}
-        if d["action"] == v2.RETURN:
-            out[mb] = {"action": None, "why": f"{d['why']}, but {why}", "domain": dom, "waits": True}
+        if d["action"] in (v2.RETURN, v2.UNTAG):
+            out[mb] = {"action": None, "why": f"{d['why']}, but {why}", "domain": dom, "waits": True,
+                       "untag": d["action"] == v2.UNTAG}
         elif d["action"] == v2.PULL:
             continue                                     # pulled for its own results (two weeks below 4/4)
         elif mb in state["pulled"]:
@@ -740,8 +745,10 @@ async def load_fleet() -> dict:
                 e = str(a.get("from_email") or "").strip().lower()
                 if e and a.get("id") is not None:
                     tags = [str(t.get("tag_name") or t.get("name") or "") for t in (a.get("tags") or []) if isinstance(t, dict)]
+                    w = a.get("warmup_details") or {}
                     inboxes[e] = {"id": int(a["id"]), "client": client_label(acc.name, a.get("client_id")), "tags": tags,
-                                  "type": str(a.get("type") or "").strip().upper(), "connected": _connected(a)}
+                                  "type": str(a.get("type") or "").strip().upper(), "connected": _connected(a),
+                                  "warmup": str(w.get("status") or "").upper(), "warmup_blocked": bool(w.get("is_warmup_blocked"))}
             if not inboxes:
                 raise FleetIncomplete(f"{name}: Smartlead returned no inboxes")
             camps, dt = {}, {}
@@ -813,7 +820,7 @@ async def finish_move(c, job: dict, status: str, rep: dict) -> bool:
 def _new_rep() -> dict:
     return {"removed": defaultdict(list), "blocked": defaultdict(list), "parked": defaultdict(list),
             "tagged": [], "failed": [], "added": defaultdict(list), "skipped": [], "errors": [], "notes": [],
-            "leads": Counter(), "report_only": {}}
+            "leads": Counter(), "report_only": {}, "untagged": {}}
 
 
 async def do_pulls(account: str, f: dict, emails: list[str], write: bool, today: str, state: dict, save) -> dict:
@@ -939,6 +946,51 @@ async def do_returns(account: str, f: dict, emails: list[str], write: bool, toda
                 continue
             state["returned"].append({"email": e, "on": today, "campaigns": rep["added"].get(e, [])})
             state["pulled"].pop(e, None)
+            save()
+    return rep
+
+
+async def do_untags(account: str, f: dict, emails: list[str], write: bool, today: str, state: dict, save) -> dict:
+    """Outlook inboxes the job pulled that passed at Microsoft since (v2.UNTAG): remove the job's own tag, nothing
+    else. Left tagged, with a line for the post: another DO NOT USE tag (a person's), Smartlead can't log in, or
+    warm-up off or blocked. Not put back in campaigns. ``rep["untagged"]``: {email: campaigns it was taken out of}."""
+    rep = _new_rep()
+    ok = []
+    for e in emails:
+        inf = f["inboxes"][e]
+        if TAG not in inf["tags"]:
+            continue
+        others = other_dnu(inf["tags"])
+        if others:
+            rep["skipped"].append(f"{e} passed but also has the tag \"{others[0]}\", so the job left its own tag on.")
+        elif inf.get("connected") is not True:
+            rep["skipped"].append(f"{e} passed but Smartlead can't log in to it, so the job left its tag on.")
+        elif inf.get("warmup") != "ACTIVE" or inf.get("warmup_blocked"):
+            rep["skipped"].append(f"{e} passed but its warm-up is off or blocked, so the job left its tag on.")
+        else:
+            ok.append(e)
+    if not write:
+        rep["untagged"] = {e: list((state["pulled"].get(e) or {}).get("campaigns") or []) for e in ok}
+        return rep
+    if not ok:
+        return rep
+    async with _client(account, f["key"]) as c:
+        tid = await _tag_id(c, create=False)
+        if not tid:
+            rep["errors"].append(f"{account}: the DO NOT USE tag was not found, so no tag was removed; retried next run")
+            return rep
+        for e in ok:
+            inf = f["inboxes"][e]
+            try:
+                await c._request_json("DELETE", "/email-accounts/tag-mapping",
+                                      {"email_account_ids": [inf["id"]], "tag_ids": [int(tid)]})
+            except Exception as exc:  # noqa: BLE001
+                rep["errors"].append(f"{e}: removing the tag failed ({type(exc).__name__}); retried next run")
+                continue
+            rep["untagged"][e] = list((state["pulled"].get(e) or {}).get("campaigns") or [])
+            state["returned"].append({"email": e, "on": today, "campaigns": [], "untagged": True})
+            state["pulled"].pop(e, None)
+            inf["tags"] = [t for t in inf["tags"] if t != TAG]
             save()
     return rep
 
@@ -1276,6 +1328,7 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     else:
         camps_text = f"{n_camps} live campaign{'s' if n_camps != 1 else ''}"
     n_tag = len([e for e in acted["tagged"] if e not in acted["blocked"] and e not in acted["parked"]])
+    untagged = acted.get("untagged") or {}
     n_park = len([e for e in acted["parked"] if e not in acted["removed"]])
     no_full = count[v2.INCOMPLETE] + count[v2.NOT_SENT]
     when = " and ".join(f"{date.fromisoformat(n):%a} {date.fromisoformat(n).day} {date.fromisoformat(n):%b}" for n in nights)
@@ -1285,7 +1338,9 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
             f"{'Took' if write else 'Would take'} {n_out} inbox{'es' if n_out != 1 else ''} out of {camps_text} "
             f"· {'tagged' if write else 'would tag'} "
             + (f"{n_park} left in paused/draft campaigns and " if n_park else "")
-            + f"{n_tag} in no campaign · {'returned' if write else 'would return'} {len(acted['added'])}"]
+            + f"{n_tag} in no campaign · {'returned' if write else 'would return'} {len(acted['added'])}"
+            + (f" · {'removed the tag from' if write else 'would remove the tag from'} {len(untagged)} that passed"
+               if untagged else "")]
     if not write and act_from:
         ro_note = f" ({', '.join(sorted(report_only_clients))} stays report-only)" if report_only_clients else ""
         head.append(f"Watch week: nothing is changed in Smartlead until {act_from}, then the job acts on its own{ro_note}.")
@@ -1544,10 +1599,14 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     waits = defaultdict(list)
     for e, d in decisions.items():
         if d.get("waits"):
-            waits[(d["domain"]["name"], d["domain"]["failed"], d["domain"]["inboxes"])].append(e)
-    for (name, n, m), es in sorted(waits.items()):
-        info.append(f"{name} still fails ({n} of {_inboxes(m)} in spam at their own provider), so {_inboxes(len(es))} that passed twice "
-                    f"stay{'s' if len(es) == 1 else ''} out of campaigns until it no longer does.")
+            waits[(d["domain"]["name"], d["domain"]["failed"], d["domain"]["inboxes"], bool(d.get("untag")))].append(e)
+    for (name, n, m, untag), es in sorted(waits.items()):
+        if untag:
+            info.append(f"{name} still fails ({n} of {_inboxes(m)} in spam at their own provider), so {_inboxes(len(es))} that passed "
+                        f"keep{'s' if len(es) == 1 else ''} the DO NOT USE tag until it no longer does.")
+        else:
+            info.append(f"{name} still fails ({n} of {_inboxes(m)} in spam at their own provider), so {_inboxes(len(es))} that passed twice "
+                        f"stay{'s' if len(es) == 1 else ''} out of campaigns until it no longer does.")
     out_before = defaultdict(lambda: [0, set()])
     order = {"pull_failed": -1, "pulled": 0, "report_only_removed": 0.5, "blocked": 1, "report_only_blocked": 1.5,
              "parked": 2, "report_only_parked": 2.5, "tagged": 3, "report_only_tagged": 3.5, "held": 4,
@@ -1634,6 +1693,18 @@ def build_report(state: dict, got: dict, decisions: dict, fleet: dict | None, ac
     if acted["added"]:
         parts.append("*Back in campaigns* (passed twice, 6+ days apart)\n\n"
                      + "\n".join(f"• {e} → {_names(c, names) or 'no live campaign left'}" for e, c in sorted(acted["added"].items())))
+    if untagged:
+        lines = []
+        for e, cids in sorted(untagged.items()):
+            night = (decisions.get(e) or {}).get("night")
+            x = next((r for r in state["results"].get(e, []) if r["night"] == night), None)
+            ms = (x or {}).get("microsoft") or {}
+            seen = (f"passed {_day(night)} at Microsoft ({ms.get('inbox')}/{ms.get('sent') or v2.PASS_SEEDS})" if x
+                    else "passed at Microsoft")
+            back = f"not put back in {_names(cids, names)}" if cids else "it was in no campaign"
+            lines.append(f"• {e} → {seen}; {'tag removed' if write else 'tag would be removed'}, {back}")
+        parts.append("*DO NOT USE tag removed* (taken out after a failed test, passed at its own provider since)\n\n"
+                     + "\n".join(lines))
     if missed:
         parts.append("*In a DT campaign but missing from its v2 test*\n\n" + "\n".join(
             f"• {dom} ({client}): {len(v)} inbox{'es' if len(v) != 1 else ''}, last v2 {max(v)}"
@@ -1699,6 +1770,9 @@ def _done_words(changed: str) -> str:
             p = f"tagged {m.group(1)} failed inboxes left in paused or draft campaigns and {m.group(2)} in no campaign"
         elif m := re.match(r"tagged (\d+) in no campaign", p):
             p = f"tagged {m.group(1)} failed inbox{'es' if m.group(1) != '1' else ''} that {'are' if m.group(1) != '1' else 'is'} in no campaign DO NOT USE"
+        elif m := re.match(r"removed the tag from (\d+) that passed", p):
+            one = m.group(1) == "1"
+            p = f"removed the DO NOT USE tag from {m.group(1)} inbox{'' if one else 'es'} that passed at {'its' if one else 'their'} own provider"
         elif m := re.match(r"returned (\d+)", p):
             p = f"returned {m.group(1)} inbox{'es' if m.group(1) != '1' else ''} that passed again to their campaigns"
         out.append(p)
@@ -2066,6 +2140,7 @@ def _merge(into: dict, rep: dict) -> None:
         into[k] += rep[k]
     into["leads"].update(rep["leads"])
     into["report_only"].update(rep.get("report_only") or {})
+    into["untagged"].update(rep.get("untagged") or {})
 
 
 def _writes(args, today: str) -> bool:
@@ -2297,14 +2372,17 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     compute_holds(state, fleet)
     decisions = plan(state, got["nights"])
     where = {e: acc for acc, f in fleet.items() for e in f["inboxes"]}
-    pulls, returns = defaultdict(list), defaultdict(list)
+    pulls, returns, untags = defaultdict(list), defaultdict(list), defaultdict(list)
     for mb, d in sorted(decisions.items()):
         if d["action"] == v2.PULL and mb in where:
             pulls[where[mb]].append(mb)
         elif d["action"] == v2.RETURN and mb in where:
             returns[where[mb]].append(mb)
+        elif d["action"] == v2.UNTAG and mb in where:
+            untags[where[mb]].append(mb)
     for acc, emails in still_attached(state, fleet).items():
-        pulls[acc] += [e for e in emails if e not in pulls[acc] and decisions.get(e, {}).get("action") != v2.RETURN]
+        pulls[acc] += [e for e in emails if e not in pulls[acc]
+                       and decisions.get(e, {}).get("action") not in (v2.RETURN, v2.UNTAG)]
 
     # Report-only clients: planned like any other inbox, but nothing in Smartlead changes for them.
     ro, client_of = report_only_clients(args), state["clients"]
@@ -2323,6 +2401,10 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     for acc in list(returns):
         ro_back += [e for e in returns[acc] if why_ro_back(e)]
         returns[acc] = [e for e in returns[acc] if not why_ro_back(e)]
+    ro_untag = []
+    for acc in list(untags):
+        ro_untag += [e for e in untags[acc] if why_ro_back(e)]
+        untags[acc] = [e for e in untags[acc] if not why_ro_back(e)]
 
     for acc, emails in pulls.items():
         if emails:
@@ -2336,6 +2418,13 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     for acc, emails in returns.items():
         if emails:
             _merge(acted, await do_returns(acc, fleet[acc], emails, write, today, state, save))
+    for acc, emails in untags.items():
+        if emails:
+            _merge(acted, await do_untags(acc, fleet[acc], emails, write, today, state, save))
+    for e in ro_untag:
+        r = why_ro_back(e)
+        acted["notes"].append(f"{e} passed at its own provider and would lose the DO NOT USE tag, but {r['name']} "
+                              f"is report-only, so nothing was changed.")
     for e in ro_back:
         r = why_ro_back(e)
         acted["notes"].append(f"{e} passed twice and would go back into its campaigns, but {r['name']} "
@@ -2354,6 +2443,7 @@ async def _run(args, state_dir: Path, persist: bool, ctx: dict | None = None) ->
     print(text)
     state["log"].append({"at": now.isoformat(timespec="minutes"), "write": write, "nights": sorted(got["nights"]),
                          "pulled": dict(acted["removed"]), "tagged": acted["tagged"], "returned": dict(acted["added"]),
+                         "untagged": dict(acted["untagged"]),
                          "blocked": dict(acted["blocked"]), "report_only": sorted(acted["report_only"]),
                          "errors": acted["errors"]})
     state["needs_action"] = False

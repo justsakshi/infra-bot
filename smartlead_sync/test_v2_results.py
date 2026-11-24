@@ -587,3 +587,23 @@ def test_a_test_whose_first_run_is_still_ahead_is_not_expected_yet():
 def test_a_dt_campaign_the_job_has_no_id_for_is_still_named():
     assert v2.expected_missing(["DT PL #9"], {}, [_t(1)], NOW17) == \
         ([("DT PL #9", "no finished v2 run found")], [])
+
+
+# t411 (24 Nov 2026): Outlook inboxes that passed at Microsoft after being pulled kept the job's tag waiting for a
+# second pass (the tests between were short), and sat out a live campaign.
+def test_a_pulled_outlook_inbox_loses_the_tag_after_one_pass_at_its_own_provider_t411():
+    pulled = {"on": "2026-11-11"}
+    rs = [r("2026-11-05", v2.FAIL), r("2026-11-14", v2.INCOMPLETE), r("2026-11-16", v2.INCOMPLETE),
+          r("2026-11-21", v2.PASS)]
+    d = v2.decide(rs, pulled=pulled, untag_on_pass=True)
+    assert d["action"] == v2.UNTAG and d["night"] == "2026-11-21"
+    assert v2.decide(rs, pulled=pulled)["action"] is None                     # any other type: two passes, as before
+    assert v2.decide(rs[:3], pulled=pulled, untag_on_pass=True)["action"] is None    # short tests are no pass
+    before = [r("2026-11-09", v2.PASS), r("2026-11-10", v2.FAIL)]
+    assert v2.decide(before, pulled={"on": "2026-11-10"}, untag_on_pass=True)["action"] is None
+    again = [r("2026-11-16", v2.PASS), r("2026-11-23", v2.FAIL)]
+    assert v2.decide(again, pulled=pulled, untag_on_pass=True)["action"] is None     # failed again: stays out
+    hist = [r("2026-11-21", v2.PASS, history=True)]
+    assert v2.decide(hist, pulled=pulled, untag_on_pass=True)["action"] is None
+    two = [r("2026-11-14", v2.PASS), r("2026-11-21", v2.PASS)]
+    assert v2.decide(two, pulled=pulled, untag_on_pass=True)["action"] == v2.RETURN  # two passes still go back in
