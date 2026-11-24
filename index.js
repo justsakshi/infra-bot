@@ -1565,6 +1565,12 @@ async function start() {
     // Per-domain reply-rate early warning at 1:00 PM IST daily (read-only).
     at('reply-monitor', ({ slot }) => runJob('reply-monitor', ['reply_monitor.py'], { slot }));
 
+    // Do Not Contact -> global block list (Manveen, 24 Nov 2026), 1:15 PM IST daily: every lead tagged Do Not
+    // Contact or unsubscribed goes on the block list of every Smartlead account, and into Mongo opt_outs.
+    at('dnc-block', async ({ slot }) => {
+      if (process.env.DNC_BLOCK !== 'off' && (await onceToday('dnc-block'))) return runJob('dnc-block', ['dnc_block.py', '--apply'], { slot });
+    });
+
     // Simple one-line reminder at 4:00 PM IST, Mon–Fri only
     at('reminder', ({ slot }) => {
       if (digestOn()) return console.log('[reminder] the daily digest is on: no 4 PM reminder');
