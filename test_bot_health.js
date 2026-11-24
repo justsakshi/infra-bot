@@ -34,7 +34,8 @@ const BEFORE = {
   'real-recipients': ['0 7 * * 0'],    // 13 Nov 2026: weekly real-recipient reply check, Sunday morning
   'inbox-evidence': ['0 9 * * 0'],     // 17 Nov 2026: weekly per-inbox evidence from real sends (t17)
   digest: ['0 11 * * *'],              // 16 Nov 2026: the one daily digest
-  'weekly-tests-post': ['0 10 * * 1']  // 23 Nov 2026: the Monday weekly test results post (t420)
+  'weekly-tests-post': ['0 10 * * 1'], // 23 Nov 2026: the Monday weekly test results post (t420)
+  'dnc-block': ['15 13 * * *']         // 24 Nov 2026: Do Not Contact onto both block lists
 };
 const jobNames = [...new Set(h.JOBS.map(j => j.job))].sort();
 eq(jobNames, Object.keys(BEFORE).sort(), 'JOBS has exactly the scheduled jobs');
@@ -94,7 +95,7 @@ eq(slotsOf(wk, 'inbox-intake'), [], 'switched off: not expected');
 eq(slotsOf(wk, 'scaledmail-sync'), [], 'no ScaledMail key: not expected');
 eq(slotsOf(wk, 'provider-watch'), [], '10:40 Monday is after the window');
 const tue = h.expectedSlots(ist('2026-11-10T12:59:00'), ist('2026-11-10T14:05:00'), { ...OFF, VOLUME_REVIEW_ENABLED: 'true' });
-eq(tue.map(s => s.job), ['placement-report-final', 'reply-monitor', 'kill-report', 'volume-review', 'v2-watch', 'billing-watch'], 'Tue afternoon in order');
+eq(tue.map(s => s.job), ['placement-report-final', 'reply-monitor', 'dnc-block', 'kill-report', 'volume-review', 'v2-watch', 'billing-watch'], 'Tue afternoon in order');
 // The schedule here must mean the same to the scheduler that runs it. node-cron reads a stepped range such as
 // 9-21/2 as "the even hours in 9-21"; this file read it as 9, 11, 13 ... and called three real runs a day
 // missed (10 Nov 2026). Every cron in JOBS is expanded by both and compared.

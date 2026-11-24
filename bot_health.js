@@ -83,6 +83,9 @@ const JOBS = [
   { job: 'placement-collect', cron: '30 12,16 * * *', title: 'Placement collector' },
   { job: 'bounce-protect', cron: '30 12 * * *', title: 'Bounce protect' },
   { job: 'reply-monitor', cron: '0 13 * * *', title: 'Reply monitor' },
+  // 24 Nov 2026: Do Not Contact / unsubscribed leads onto both accounts' global block lists, kept in Mongo opt_outs.
+  { job: 'dnc-block', cron: '15 13 * * *', title: 'Do Not Contact block',
+    codes: { 2: 'an account, campaign or block list could not be read' } },
   { job: 'kill-report', cron: '30 13 * * 2', title: 'Kill warnings' },
   { job: 'volume-review', cron: '45 13 * * 2', title: 'Volume review', when: env => env.VOLUME_REVIEW_ENABLED === 'true' },
   { job: 'v2-watch', cron: '0 14 * * 2', title: 'v2 results check', when: env => digestOff(env) },
