@@ -34,6 +34,12 @@ and 95 of 96 Microsoft seeds in the inbox on v2, and 25 of that week's 46
 CHECK rows were CHECK for the listing alone. The v2 result decides; the
 listing is shown so a person can weigh it.
 
+Evidence (t396, 24 Nov 2026). Each row also carries what the review SAW, whatever its verdict: the newest judged v2
+result at the inbox's own provider (date, seeds in spam), its warm-up reputation against the 90% good mark, warm-up
+spam over 7 days (Mongo inbox_daily) and the All Inboxes answer (Mongo inbox_status, usable.team_group). It never
+changes a verdict; ``flag_reason`` puts it after the reason in the tracker flag the Daily Renewal Check shows, or says
+there was none. Until then a tagged inbox showed only its tag, under a footer that said "found it not delivering".
+
 Pure functions (unit-tested); ``renewal_review.py`` collects and posts.
 """
 
@@ -57,6 +63,9 @@ REPLY_SOURCE = "reply check"    # the daily reply check of the inbox's domain, r
 SECOND_FRESH_DAYS = 14          # a second test older than this is not used
 VERDICTS = ("KEEP", "CHECK", "RETIRE", "UNTESTED")
 NO_V2 = f"no v2 result in the last {V2_FRESH_DAYS} days"
+NO_TEST = "no test result"
+GOOD_WARMUP = 90.0       # config.MIN_WARMUP_REP_PCT: the good mark the All Inboxes list uses
+FLAG_REASON_MAX = 400    # the tracker's renewalFlagReason (renewal_labels.js shows it on the card)
 V2_DROP = "failed v2 on the weekly tests of "     # + "26 Oct and 2 Nov"
 
 
@@ -259,6 +268,97 @@ def with_second(verdict: str, why: str, s: dict | None, op: dict | None, today: 
     return verdict, f"{why}; {said}"
 
 
+# ── What the review saw (t396) ──────────────────────────────────────────────────────────────────────────────────
+
+def _wday(d: date) -> str:
+    return f"{d:%a} {d.day} {d:%b}"
+
+
+def test_words(docs: list[dict] | None, kind="") -> str:
+    """The newest judged v2 result of one inbox in words, at its OWN provider (own_provider rule, PR #95):
+    'weekly test Sat 21 Nov: spam at Google 4 of 4 (...)'. Both providers for an SMTP / unknown type; '' when no row
+    is a verdict (INCOMPLETE, NOT_SENT ...). ``kind``: its Smartlead type when the row does not carry one. Pure."""
+    from smartlead.own_provider import NAMES, judged_on
+    from smartlead.usable import real_send_rule
+    judged = [d for d in docs or [] if _iso(d.get("night")) and str(d.get("verdict") or "").upper() in JUDGED]
+    if not judged:
+        return ""
+    d = max(judged, key=lambda x: str(x.get("night"))[:10])
+    night = _iso(d.get("night"))
+    weekly = d.get("weekly") if isinstance(d.get("weekly"), bool) else is_weekly_night(night.isoformat())
+    k = d.get("type") or kind
+    parts = []
+    for prov in judged_on(k):
+        c = d.get(prov) or {}
+        seen, inbox = int(c.get("reported") or 0), int(c.get("inbox") or 0)
+        if seen:
+            spam = seen - inbox
+            parts.append(f"spam at {NAMES[prov]} {spam} of {seen}" if spam else f"inbox at {NAMES[prov]} {inbox} of {seen}")
+    out = f"{'weekly' if weekly else 'one-off'} test {_wday(night)}: " + (", ".join(parts) or str(d["verdict"]).upper())
+    if real_send_rule(k):            # the Google rule (t268): its seed result is shown, never the verdict
+        out += " (Google seeds are a signal only for Google inboxes)"
+    return out
+
+
+def warmup_words(facts: dict | None, daily: dict | None) -> str:
+    """'warm-up 55%, under the 90% good mark; 25 of 56 warm-up emails in spam in 7 days'. Reputation from Smartlead
+    (``facts``), else the newest inbox_daily reading; warm-up spam only from 30 warm-up emails up (the same floor as
+    the warm-up spam trigger). '' when nothing is known. Pure."""
+    from smartlead.config import WARMUP_SPAM_RETEST_MIN_SENT
+    f, dly = facts or {}, daily or {}
+    if f.get("warmup_by"):
+        return f"warm-up run by {f['warmup_by']}, not judged here"
+    rep = _rep(f.get("reputation"))
+    if rep is None:
+        rep = _rep(dly.get("rep"))
+    bits = []
+    if rep is not None:
+        bits.append(f"warm-up {rep:.0f}%, " + (f"under the {GOOD_WARMUP:.0f}% good mark" if rep < GOOD_WARMUP
+                                                else f"at or above the {GOOD_WARMUP:.0f}% good mark"))
+    try:
+        sent, spam = int(dly.get("warm_sent_7d") or 0), int(dly.get("warm_spam_7d") or 0)
+    except (TypeError, ValueError):
+        sent = spam = 0
+    if sent >= WARMUP_SPAM_RETEST_MIN_SENT:
+        bits.append(f"{spam} of {sent} warm-up emails in spam in 7 days")
+    return "; ".join(bits)
+
+
+def all_inboxes_words(status: dict | None) -> str:
+    """'All Inboxes: recovering': the inbox's group in the All Inboxes list (the one inbox verdict, usable.team_group
+    on its Busy Reason; the sync stores it in inbox_status). '' when not read. Pure."""
+    if not status:
+        return ""
+    from smartlead.usable import team_group
+    group = status.get("group") or team_group(status.get("busy_reason"), status.get("provider"), status.get("use_notes"))
+    return f"All Inboxes: {str(group).lower()}"
+
+
+def evidence(facts: dict | None, docs: list[dict] | None, daily: dict | None = None,
+             status: dict | None = None) -> str:
+    """Everything the review saw about one inbox, joined: test, warm-up, All Inboxes. Starts with NO_TEST when no v2
+    row is a verdict. Pure."""
+    kind = (facts or {}).get("type") or (status or {}).get("provider") or ""
+    bits = [test_words(docs, kind) or NO_TEST, warmup_words(facts, daily), all_inboxes_words(status)]
+    return "; ".join(b for b in bits if b)
+
+
+def flag_reason(row: dict) -> str:
+    """The tracker's renewalFlagReason: the row's reason, then what was seen. A tagged drop with no other evidence
+    says so ('No test result; dropped because tagged.'). Rows without an evidence line keep their reason. At most
+    FLAG_REASON_MAX characters, cut at a word. Pure."""
+    why, ev = str(row.get("why") or ""), str(row.get("evidence") or "")
+    if ev == NO_TEST:
+        out = f"{why}. No test result; dropped because tagged." if why.startswith('tagged "') else why
+    elif ev:
+        out = f"{why}. Seen: {ev}"
+    else:
+        out = why
+    if len(out) > FLAG_REASON_MAX:
+        out = out[:FLAG_REASON_MAX - 1].rsplit(" ", 1)[0].rstrip(";,:.") + "…"
+    return out
+
+
 def price_of(bill: dict) -> float | None:
     """The bill's price, or None when it is not known (missing, unreadable or zero)."""
     try:
@@ -270,13 +370,15 @@ def price_of(bill: dict) -> float | None:
 
 def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool = True,
                 v2: dict[str, list[dict]] | None = None, dbl: dict[str, dict] | None = None,
-                second: dict[str, dict] | None = None) -> dict:
+                second: dict[str, dict] | None = None, daily: dict[str, dict] | None = None,
+                status: dict[str, dict] | None = None) -> dict:
     """``bill`` = {provider, label, bills_on, price, inboxes:[emails], client(s), ...}.
     ``v2`` {email: v2_verdicts rows}; None means it could not be read, so nothing on the bill is
     KEEP. ``dbl`` {domain: dbl_status}; a listing adds the row's ``listed`` note and nothing else
     (None = not read: no notes). ``second`` {email: a second placement test's opinion, "@domain": a domain-wide
     opinion such as the reply check's} (with_second); the inbox's own opinion is used first. None or no entry =
-    no second opinion for that inbox."""
+    no second opinion for that inbox. ``daily`` {email: its newest inbox_daily reading} and ``status`` {email: its
+    inbox_status doc} only feed the row's ``evidence`` (None or no entry = not shown)."""
     # The kill rule pools a domain across ALL its known mailboxes, not just this bill's.
     kills = kr.judge_all({e: (f or {}).get("tests") or [] for e, f in facts.items()}, today)
     rows = []
@@ -293,7 +395,9 @@ def review_bill(bill: dict, facts: dict[str, dict], today: date, complete: bool 
         latest = v2_summary(docs, today)["latest_recent"] if docs else None
         row = {"email": email, "verdict": v, "why": why, "kind": "unused" if unused else "kill",
                "campaigns": (facts.get(email) or {}).get("campaigns") or [],
-               "passed_v2": bool(latest and latest["verdict"] == PASS)}
+               "passed_v2": bool(latest and latest["verdict"] == PASS),
+               "evidence": evidence(facts.get(email), docs, (daily or {}).get(email.lower()),
+                                    (status or {}).get(email.lower()))}
         k = kills.get(email) or {}
         if k.get("verdict") in (kr.KILL, kr.WATCH):          # early warning only, never the verdict
             row["watch"] = f"classic test: {k['why']}"

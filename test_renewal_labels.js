@@ -77,3 +77,26 @@ console.log(n + ' passed');
   assert2.ok(/names: groups\.flatMap/.test(src) && /reminderText\(baseUrl, count, names\)/.test(src), '4 PM reminder gets the names');
   console.log('renewal check layout: 18 passed');
 }
+
+// 24 Nov 2026 (t396): the flag says what the renewal review saw, and the legend claims no more than a drop is made of.
+{
+  const assert3 = require('assert');
+  const dayjs = require('dayjs');
+  const { renewalCheckBlocks, cardLine, assetLine } = require('./renewal_labels');
+  const reason = 'tagged "DO NOT USE - pulled by hand 16 Nov" in Smartlead. Seen: weekly test Sat 21 Nov: spam at '
+    + 'Google 4 of 4 (Google seeds are a signal only for Google inboxes); warm-up 55%, under the 90% good mark';
+  const a = { type: 'INBOX', name: 'ann@example.com', client: 'Example', provider: 'Zapmail', expiryDate: new Date(),
+    renewalFlag: 'DROP', renewalFlagReason: reason };
+  assert3.strictEqual(cardLine(a), `• ann@example.com (Example, Zapmail) ⛔ don't renew: ${reason}`);
+  // a DROP saved without a reason never claims "not delivering"
+  const bare = cardLine({ ...a, renewalFlagReason: '' });
+  assert3.ok(/don't renew: the renewal review said drop it \(no reason saved\)$/.test(bare), bare);
+  assert3.ok(!/not delivering/.test(bare) && !/not delivering/.test(assetLine({ ...a, renewalFlagReason: '' })));
+  const out = renewalCheckBlocks([{ assets: [a], label: 'Fri 27 Nov', icon: '🟡', key: 'noon_3', daysFilter: [3] }],
+    { channel: 'C1', baseUrl: 'https://h', now: dayjs('2026-11-24') });
+  const legend = out.blocks[2].text.text;
+  assert3.ok(!/not delivering/.test(legend), legend);
+  assert3.ok(/tagged it DO NOT USE in Smartlead, or it failed two weekly tests in a row/.test(legend), legend);
+  assert3.ok(/the newest test, warm-up and All Inboxes answer it saw, or that there was none/.test(legend), legend);
+  console.log('renewal evidence: 6 passed');
+}

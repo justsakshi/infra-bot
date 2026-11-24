@@ -342,7 +342,8 @@ def v2_results(domains: set[str], emails: set[str], today: date, errors: list[st
         since = (today - timedelta(days=V2_LOOKBACK_DAYS)).isoformat()
         query = {"night": {"$gte": since},
                  "$or": [{"domain": {"$in": sorted(domains)}}, {"email": {"$in": sorted(emails)}}]}
-        fields = {"_id": 0, "email": 1, "night": 1, "verdict": 1, "weekly": 1, "pulled_on": 1}
+        fields = {"_id": 0, "email": 1, "night": 1, "verdict": 1, "weekly": 1, "pulled_on": 1,
+                  "type": 1, "google": 1, "microsoft": 1}      # per-provider seeds: the flag's evidence (t396)
         out: dict[str, list[dict]] = {}
         for d in _collection(V2_COLLECTION).find(query, fields):
             email = str((d or {}).get("email") or "").strip().lower()
@@ -352,6 +353,44 @@ def v2_results(domains: set[str], emails: set[str], today: date, errors: list[st
     except Exception as exc:  # noqa: BLE001 - say so; never KEEP on a half read
         errors.append(f"v2 results (Mongo {V2_COLLECTION}): {str(exc)[:150]}")
         return None
+
+
+def daily_readings(emails: set[str], today: date) -> dict[str, dict]:
+    """{email: its newest inbox_daily reading (rep, 7-day warm-up sent/spam) of the last V2 fresh days}. Evidence only
+    (t396): a read failure is logged and the flags just say less; it is no read error of the review (no verdict, post
+    or digest ask depends on it)."""
+    if not emails:
+        return {}
+    try:
+        since = (today - timedelta(days=rr.V2_FRESH_DAYS)).isoformat()
+        fields = {"_id": 0, "email": 1, "date": 1, "rep": 1, "warm_sent_7d": 1, "warm_spam_7d": 1}
+        out: dict[str, dict] = {}
+        for d in _collection("inbox_daily").find({"email": {"$in": sorted(emails)}, "date": {"$gte": since},
+                                                  "rep": {"$exists": True}}, fields):
+            e = str((d or {}).get("email") or "").lower()
+            if e and str(d.get("date") or "") >= str((out.get(e) or {}).get("date") or ""):
+                out[e] = d
+        return out
+    except Exception as exc:  # noqa: BLE001
+        print(f"[renewal-review] warm-up readings (Mongo inbox_daily) not read: {type(exc).__name__}; "
+              "the flags' evidence leaves out warm-up spam")
+        return {}
+
+
+def inbox_verdicts(emails: set[str]) -> dict[str, dict]:
+    """{email: its inbox_status doc (busy_reason, provider, group)}: the All Inboxes answer the sync wrote today.
+    Evidence only (t396): a read failure is logged and the flags just say less."""
+    if not emails:
+        return {}
+    try:
+        from smartlead.inbox_status import STATUS_COLLECTION
+        fields = {"_id": 0, "email": 1, "busy_reason": 1, "provider": 1, "group": 1}
+        return {str(d.get("email") or "").lower(): d
+                for d in _collection(STATUS_COLLECTION).find({"email": {"$in": sorted(emails)}}, fields)}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[renewal-review] All Inboxes list (Mongo inbox_status) not read: {type(exc).__name__}; "
+              "the flags' evidence leaves out the All Inboxes answer")
+        return {}
 
 
 def dbl_listings(domains: set[str], errors: list[str]) -> dict[str, dict] | None:
@@ -423,15 +462,18 @@ def run(days: int) -> dict:
     # every account's /email-accounts was read (classic tests and campaign lists only add notes)
     complete = not any(e.startswith("Smartlead ") for e in errors[n_before:])
     today = date.today()
-    v2, dbl, second = {}, {}, {}
+    v2, dbl, second, daily, status = {}, {}, {}, {}, {}
     if bills:
         domains, emails = _targets(bills, facts)
         v2 = v2_results(domains, emails, today, errors)
         dbl = dbl_listings(domains, errors)
+        daily = daily_readings(emails, today)        # evidence for the tracker flags only (t396)
+        status = inbox_verdicts(emails)
         # With v2 unread nothing is kept or dropped on it, so the reply check has nothing to dispute: not read.
         replies = reply_opinions(domains, today, errors) if v2 is not None else {}
         second = {**replies, **second_opinions(bills, today, errors)}
-    reviews = sorted((rr.review_bill(b, facts, today, complete, v2=v2, dbl=dbl, second=second) for b in bills),
+    reviews = sorted((rr.review_bill(b, facts, today, complete, v2=v2, dbl=dbl, second=second, daily=daily,
+                                     status=status) for b in bills),
                      key=lambda r: r["bills_on"])
     from smartlead.zapmail_clients import infer_client
     for rv in reviews:          # whose inbox it is: retiring is per client
@@ -477,7 +519,7 @@ def flag_tracker(res: dict) -> dict:
             flag = {"RETIRE": "DROP", "CHECK": "CHECK", rr.UNTESTED: "CHECK"}.get(row["verdict"])
             if flag:
                 ops.append(UpdateOne({"name": row["email"]}, {"$set": {
-                    "renewalFlag": flag, "renewalFlagReason": row["why"][:200], "renewalFlagAt": now}}))
+                    "renewalFlag": flag, "renewalFlagReason": rr.flag_reason(row), "renewalFlagAt": now}}))
             else:
                 ops.append(UpdateOne({"name": row["email"]}, {"$unset": {
                     "renewalFlag": "", "renewalFlagReason": "", "renewalFlagAt": ""}}))

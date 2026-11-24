@@ -668,6 +668,9 @@ def grid_cell_status(value: str) -> str:
     return "inbox" if "inbox" in v else ""
 
 
+GOOGLE_SIGNAL_NOTE = "Google seed result: signal only"   # in the note of a Google inbox's own signal-only cell (t396)
+
+
 def own_test_status(entry: dict | None, kind) -> tuple[str, str, str]:
     """(status, date, signal note) of one inbox from its grid entry, judged at its OWN provider
     (smartlead/own_provider.py): a Google inbox on the G suite column, an Outlook inbox on the Outlook column.
@@ -676,7 +679,8 @@ def own_test_status(entry: dict | None, kind) -> tuple[str, str, str]:
     seeds landed in spam at Outlook only was BUSY "failed_test" and a P0 on the planning tab, though every
     campaign is ESP-matched. Now the other column is only a signal: it never makes the status "fail", and when it
     shows spam the note says so. With no own-provider result, the other column's "inbox" still counts (as before)
-    and its spam does not: the inbox is untested ("Unknown"). An SMTP or unknown-type inbox, and an entry with
+    and its spam does not: the inbox is untested ("Unknown"). A Google inbox whose own cell is the "Google seed result:
+    signal only" label is "Unknown" with that test's date, whatever the other column says (t396). An SMTP or unknown-type inbox, and an entry with
     no per-column values (an API result), keep the merged status. Pure."""
     from smartlead.own_provider import GOOGLE_SIGNAL_CELL, NAMES, SIGNAL, own_provider
     entry = entry if isinstance(entry, dict) else {}
@@ -691,12 +695,18 @@ def own_test_status(entry: dict | None, kind) -> tuple[str, str, str]:
         when = f" on {o_date}" if o_date else ""
         notes.append(f"{NAMES[other]} seeds in spam{when} (not its provider: {SIGNAL})")
     m_val, m_date = (entry.get(k, "") for k in _GRID_COLUMN[own])
-    if str(m_val or "").strip().lower() == GOOGLE_SIGNAL_CELL.lower():   # t269: shown, never a verdict
-        notes.insert(0, f"Google seeds in spam{f' on {m_date}' if m_date else ''} (Google seed result: signal only)")
+    google_signal = str(m_val or "").strip().lower() == GOOGLE_SIGNAL_CELL.lower()
+    if google_signal:                                                    # t269: shown, never a verdict
+        notes.insert(0, f"Google seeds in spam{f' on {m_date}' if m_date else ''} ({GOOGLE_SIGNAL_NOTE})")
     note = "; ".join(notes)
     mine = grid_cell_status(m_val)
     if mine:
         return mine, m_date or date, note
+    if google_signal:
+        # Its own seeds DID land in spam; that is no verdict (t269), and never a pass either: the other column's
+        # "Inbox" must not stand in for it (t396, 23 Nov 2026: three Google inboxes graded A / "inbox" on Inbox
+        # Health from Microsoft seeds while All Inboxes said do not use). Dated, so it reads as tested, not untested.
+        return "Unknown", m_date or date, note
     if grid_cell_status(o_val) == "inbox":
         return "inbox", o_date or date, note
     return "Unknown", "", note
@@ -1182,9 +1192,10 @@ class SheetsWriter:
             # ── Inbox Health (the workbook) ──────────────────
             ["Inbox Health", "Priority", "Urgency of the row", "P0 = today, P1 = this week, P2 = routine, blank = healthy"],
             ["", "Health Score", "Daily 0-100 health score", "placement 40 + warmup 25 + bounce 20 + connection 15"],
-            ["", "Grade", "Score band, color-coded", "A 90+ (green), B 70-89, C 50-69 (yellow), D <50 (red)"],
+            ["", "Grade", "Score band, color-coded; never better than All Inboxes",
+             "A 90+ (green), B 70-89, C 50-69 (yellow), D <50 (red); do not use / cannot send = D, held back = C at best"],
             ["", "Trend (7d)", "Score change vs 7 days ago", "↑ improving, ↓ declining (act before it fails), — no history yet"],
-            ["", "Status", "One-word state", "healthy / needs_action / broken"],
+            ["", "Status", "One-word state", "healthy / needs_action / broken / held (All Inboxes keeps it out)"],
             ["", "Top Problem", "The #1 thing wrong with this inbox", ""],
             ["", "What To Do", "The exact fix instruction - follow it as written", ""],
             ["", "Owner", "Who handles it", "\U0001F916 Auto = robot fixes it (skip), \U0001F464 You = human action needed"],

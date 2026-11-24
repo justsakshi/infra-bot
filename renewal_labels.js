@@ -10,6 +10,9 @@
  */
 const dayjs = require('dayjs');
 
+/** A DROP flag saved without a reason (older rows): say only that, never "not delivering". */
+const NO_REASON = 'the renewal review said drop it (no reason saved)';
+
 /** How sure are we of this asset's expiry? 'saved' | 'estimated' | null. */
 function expirySource(asset) {
   if (asset.expiryDate) return 'saved';
@@ -24,7 +27,7 @@ function assetLine(asset) {
   let line = `${icon} ${asset.name}${provider}`;
   // From the renewal review (placement tests + Smartlead): don't pay for a dead inbox again.
   if (asset.renewalFlag === 'DROP') {
-    line += ` · ⛔ *don't renew*: ${asset.renewalFlagReason || 'not delivering'}`;
+    line += ` · ⛔ *don't renew*: ${asset.renewalFlagReason || NO_REASON}`;
   } else if (asset.renewalFlag === 'CHECK') {
     line += ' · ❔ check before renewing' + (asset.renewalFlagReason ? `: ${asset.renewalFlagReason}` : '');
   }
@@ -78,7 +81,7 @@ function costText(a) {
 function cardLine(a) {
   const bits = [a.client || 'no client', a.provider || 'vendor not saved', costText(a)].filter(Boolean);
   let line = `• ${a.name} (${bits.join(', ')})`;
-  if (a.renewalFlag === 'DROP') line += ` ⛔ don't renew: ${a.renewalFlagReason || 'not delivering'}`;
+  if (a.renewalFlag === 'DROP') line += ` ⛔ don't renew: ${a.renewalFlagReason || NO_REASON}`;
   else if (a.renewalFlag === 'CHECK') line += ' ❔ check first' + (a.renewalFlagReason ? `: ${a.renewalFlagReason}` : '');
   if (expirySource(a) === 'estimated') line += ' (date estimated, check it)';
   return line;
@@ -86,9 +89,12 @@ function cardLine(a) {
 
 const CARD_LINES = 8;      // assets named per group on the card; *Read more* lists them all
 
-/** The decision the card asks for, said once under the groups. */
+/** The decision the card asks for, said once under the groups. 24 Nov 2026 (t396): it said ⛔ meant "found it not
+ *  delivering" while the flag held only a DO NOT USE tag; the owner had to ask whether last week's test was checked.
+ *  The legend now claims only what a drop is made of; each flag says what the review saw. */
 const CARD_STEP = 'Renew each one in its vendor before its date, or let it go on purpose. ⛔ means the renewal '
-  + 'review found it not delivering: don\'t renew it.';
+  + 'review says don\'t renew it: a person tagged it DO NOT USE in Smartlead, or it failed two weekly tests in a row. '
+  + 'After each one: the newest test, warm-up and All Inboxes answer it saw, or that there was none.';
 
 /**
  * The Daily Renewal Check (index.js runNoonSummary, 10:00 IST weekdays).
