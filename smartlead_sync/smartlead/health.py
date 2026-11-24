@@ -12,6 +12,18 @@ from smartlead.config import (
 )
 
 _FAIL = {"fail", "spam"}
+# The grade never shows a better state than All Inboxes (usable.send_verdict, the one inbox verdict, t320). t396,
+# 23 Nov 2026: three Google inboxes tagged DO NOT USE, failed v2 and recovering graded A / 90 here. "never" (tagged,
+# failed v2) and "cannot" (disconnected, DNS, warm-up blocked) are D at best; "hold" (not proven yet, listed domain,
+# Google quiet / low warm-up) C at best.
+VERDICT_CAP = {"never": 25, "cannot": 25, "hold": 69}
+VERDICT_WORDS = {"never": "do not use", "cannot": "cannot send", "hold": "held back"}
+
+
+def all_inboxes(snapshot: dict) -> tuple[str, list[str]]:
+    """The row's All Inboxes answer: usable.send_verdict on its Busy Reason and type. Pure."""
+    from smartlead.usable import send_verdict
+    return send_verdict(snapshot.get("busy_reason", ""), snapshot.get("type") or snapshot.get("provider") or "")
 
 
 def _num(v) -> float:
@@ -149,7 +161,10 @@ def compute_health_score(snapshot: dict, today: date) -> dict:
     # a failed placement test is a measured, reproduced delivery failure.
     if str(snapshot.get("test_sheet_status", "")).strip().lower() in _FAIL:
         score = min(score, 25)
-    return {"score": score, "grade": _grade(score), "drivers": drivers}
+    verdict, _codes = all_inboxes(snapshot)
+    if verdict in VERDICT_CAP:
+        score = min(score, VERDICT_CAP[verdict])
+    return {"score": score, "grade": _grade(score), "drivers": drivers, "send_verdict": verdict}
 
 
 WARMUP_SPAM_PROBLEM = "Warm-up mail landing in spam"   # retest_targets matches this text
@@ -254,7 +269,11 @@ def resolve_action(snapshot: dict, score: int) -> dict:
                     "Keep out of campaigns; auto-warmup sets RECOVERING profile "
                     "(15/day + reply rate 30% — boost replies, not volume); retest after recovery.",
                     "3-14 days", "human", "smartlead-inbox-manager")
-    if "untested" in reasons or status in {"", "unknown"}:
+    # A Google inbox's own seed result labelled signal only (t269) is a test on record that is no verdict (t396): it
+    # reads "Unknown", but it is not untested, so no auto-retest is ordered for it.
+    from smartlead.sheets import GOOGLE_SIGNAL_NOTE
+    google_signal = status == "unknown" and GOOGLE_SIGNAL_NOTE in str(snapshot.get("test_signal", ""))
+    if ("untested" in reasons or status in {"", "unknown"}) and not google_signal:
         return item("P1", "No placement test on record",
                     "Auto-run initial GSuite + Outlook placement test.",
                     "auto", "auto", "deliverability-test-public")
@@ -272,6 +291,13 @@ def resolve_action(snapshot: dict, score: int) -> dict:
         return item("P2", f"Sending above 2026 safe volume (>{VOLUME_SAFE_MAX}/day)",
                     "Lower this inbox's campaign daily cap to 30-40; scale with more inboxes, not volume.",
                     "minutes", "human", "smartlead-inbox-manager")
+    # Nothing to fix here, but All Inboxes holds it back: say so instead of "healthy". No priority: a decided item
+    # (a person's tag, a failed test) is not a new task for the Inbox Health post.
+    verdict, codes = all_inboxes(snapshot)
+    if verdict != "send":
+        return {**item("", f"All Inboxes: {VERDICT_WORDS[verdict]} ({', '.join(codes)})",
+                       "Nothing to fix here: All Inboxes keeps it out of campaigns until its evidence changes.",
+                       "", "", ""), "status": "held"}
     return item("", "", "", "", "", "")
 
 
@@ -328,6 +354,7 @@ def build_health_rows(inbox_rows: list[dict], today, store, resolve_manager) -> 
             "campaigns": snap.get("campaigns", 0),
             "campaign_name": snap.get("campaign_name", ""),
             "owner_skill": act["owner_skill"],
+            "send_verdict": hs["send_verdict"],
             "_declining": tr["declining"],
         })
     priority_order = {"P0": 0, "P1": 1, "P2": 2, "": 9}
@@ -345,5 +372,6 @@ def health_records_for_store(rows: list[dict], today) -> list[dict]:
             "date": ds, "score": r["score"], "grade": r["grade"],
             "placement_status": r["test_sheet_status"], "placement_date": r["test_date"],
             "warmup_rep_pct": r["warmup_rep_pct"], "campaigns": r["campaigns"],
+            "send_verdict": r.get("send_verdict", ""),
         })
     return out

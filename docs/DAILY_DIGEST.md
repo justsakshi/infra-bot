@@ -4,32 +4,50 @@ The inbox channel gets one post a day, at 11:00 IST, addressed to Manveen. Befor
 own report (about 15 posts a day). Manveen, 16 Nov: "if you would just spam that every check 15 minutes or 30
 minutes throughout the day nobody will read that and nothing will happen".
 
-## What the post says
+## What the post says (since t409, 23 Nov 2026)
 
-Since 19 Nov 2026 (Manveen, on the 11:00 digest: "i got this and it's long spammy i can not unserstand anything") the
-post is at most about 8 lines:
+Manveen, 23 Nov 2026: "why does it fail to be readable again and again", "make sure you fix them from root". The post
+now holds only things a person must do, each one of eight sentences he approved (`smartlead/digest_sentences.py`);
+code fills only their [brackets]:
 
-1. **N things need you today**, one paragraph each: what, where (the one line of its list, or the first three things
-   it lists and "N more"), and the one step ("Do: ..."). At most 4 in the post; the rest are in the thread. An item
-   open for more than a day says since when. Asks about the same inboxes or domains, from different jobs, are one
-   item ("The same inboxes are also flagged by ..."). A broken check whose step is Manveen's (deploy Render, switch
-   the PC job back on) is one of these things.
-2. **Nothing needs you today**, when that is so, with the numbers that matter: inboxes safe to send per client, and
-   how many are recovering, waiting for a test or not usable (the All Inboxes groups, `usable.team_group`). No
-   @mention on a quiet day.
-3. **One line for jobs that failed**: "N jobs failed or could not check: X, Y. Being looked at." One line per job
-   in the thread. A job whose latest run (not counting one still going) ended fine is left out, so yesterday's
-   "never finished" does not come back after a good run.
-4. **In the thread: ...**: how many more things, decided items left out on purpose, and things the bot did.
+```
+Inbox digest · Mon 23 Nov · 4 things to do
 
-The thread has at most 3 replies: the full lists of today's items (up to 12 lines each) and what broke; what was left
-out on purpose (one line per decision: what, why, owner, until) and what the bot did by itself; where the inboxes
-stand per client, with the sheet link. Each job's own report is no longer copied into the thread (the inbox sheet
-has the lists). The bot's own words are put plainly in every line (`digest.plain`: "v2 test" is "weekly test",
-"dt_senders" is "the test-campaign job", "BUSY" is "held back").
+1. BettrData: retire 3 Google inboxes on bill.example in Zapmail before 27 Nov, or they renew ($14.25).
+2. Melior: forum.example failed its weekly test (0 of 100 reached the inbox at Outlook). Keep its 25 inboxes out of campaigns and don't renew the domain.
+3. BettrData: delete 8 inboxes in Smartlead that Zapmail already removed (list in thread).
+4. BettrData: sam@fixed.example finished warm-up repair. Remove its DO NOT USE tag if you want it back.
+
+Watching, nothing to do: peer.example replies are low (6 vs 21 expected); the next weekly test on Sat 28 Nov decides.
+```
+
+- At most 5 numbered items; dated ones (bills) first, soonest first. The rest are in the thread, the one opened first
+  first, then the person-only asks that have no approved sentence yet, in the closest sentence's shape and marked
+  "(wording not approved yet)". "N more in the thread." says how many.
+- One line per item: client, what, by when. Lists, steps ("How: ...") and where to do it are in the thread, in item
+  order ("1 above:" ...). A list of more than 3 addresses is "N inboxes, list in thread".
+- A day with nothing to do posts one line, "Inbox digest · <day> · nothing to do today", so a missing post always
+  means the bot did not run. No @mention.
+- Never in the post: "For info" facts and "Done by the bot" (thread, last reply), what was left out on purpose
+  (thread), inbox counts (the All Inboxes tab), and the bot's own problems.
+
+Where every ask kind goes is one table, `smartlead/digest_items.py` (`KEYMAP`, `TEXTMAP`, `KINDS`;
+`mapping_table()` prints it): a sentence, a Watching line, a read-only lookup the bot does itself (the domain's latest
+weekly verdict, Mongo `v2_verdicts`; its next weekly test, Mongo `test_coverage`), the dev channel, or the thread. A
+lookup that cannot read its data never guesses: the ask goes to the thread as the job wrote it. A new ask kind with no
+row goes to the thread, never the post.
+
+**The bot's own problems** (a job failed or never finished, a check could not read, Render behind main, the PC job
+silent or in warn mode) are one separate message, "Bot jobs · <day> · N problems", in the bot-health channel
+(`BOT_HEALTH_CHANNEL`, else the infra channel, as `index.js` healthChannel), never in Manveen's digest.
+
+**Facts for the blind test**: with `--post`, the digest saves what it was made from to Mongo `digest_facts` (one doc per
+IST day). `digest_blind_test.py` (a PC scheduled task, 7 days from 24 Nov 2026) has headless Claude write the same
+digest from those facts, checks it against them (`digest_sentences.check`), and DMs Manveen both, unlabelled: "Which
+would you act on faster? Reply 1 or 2." The AI design replaces the templates only if it wins 4 of 7 and he says yes.
 
 The digest posts once a day: a second `--post` run the same IST day does nothing (`--again` to repeat it).
-No asks, nothing done, nothing broken and no inbox numbers: no post that day.
+Since t409 a day with nothing to do still posts its one-line header.
 
 **Urgent** items post at once and stay in the digest until fixed: a payment failed, a subscription not renewed or
 cancelled, a Smartlead key rejected, a live campaign losing half its inboxes or left with only failed ones. Each
@@ -38,7 +56,7 @@ posts once; if it is fixed and comes back later, it posts again.
 Every ask carries its own list: which campaigns, inboxes, domains, bills or batches it is about (17 Nov 2026,
 Manveen, on an urgent post that named no campaign: "what was the point of this message if it's not gonna give me
 the complete info"). The digest shows its list in the thread (12 lines, "and N more"); an urgent post shows up to 10 ("and N more"). A step says "each campaign listed", never "in the thread": an urgent post has no thread.
-A broken check shows its error under it. A bill ask names the vendor, bill date, amount, inboxes and domains, and
+A broken check shows its error under it (in the dev-channel message since t409). A bill ask names the vendor, bill date, amount, inboxes and domains, and
 one bill is one ask (a failed payment is not asked about again as "not renewed").
 
 An urgent post reads: what is wrong, the list, then `@Manveen` and the step, then "It stays in the daily digest
@@ -89,6 +107,24 @@ Not in the digest, on purpose: campaign stats and the Microsoft/Proofpoint watch
 not the inbox channel. Capacity, placement summary/batch/collector, bounce protect, auto retest and the tracker
 syncs post nothing themselves.
 
+## Weekly test results post: Mondays 10:00 IST (t420, 23 Nov 2026)
+
+Manveen: "usually on the monday there should be a message for deliverbility tests". The PC job's weekly report went
+into this digest from 16 Nov, and by 22 Nov it was one line. Now it has its own post, every Monday at 10:00 IST in the
+digest's channel. The post gives results only: one paragraph per client, then "What the bot did", "Not judged yet",
+and one line saying any step for a person is in this digest. One thread reply carries the lists: at most 6 names a
+line, and the full lists are on the sheet.
+- It reads Mongo only: v2_verdicts, inbox_status, provider_inventory, external_warmup, test_coverage, and the v2
+  job's own report line. It makes no Smartlead calls.
+- It counts what the v2 job recorded at each inbox's own provider and adds no rule of its own.
+- A week with no weekly results gets a one-line post, and the reason goes to the bot-health channel.
+
+Code:
+- `smartlead_sync/smartlead/weekly_results.py`: the wording and the limits.
+- `smartlead_sync/weekly_tests_post.py`: `--post`; without it, a dry run. It posts once a week; `--again` posts again.
+
+Schedule: `bot_health.JOBS` `weekly-tests-post`. After a restart, the bot catches up a missed post until 13:00.
+
 ## Classic seed test: retired as a signal (16 Nov 2026)
 
 The v2 weekly test is the one the pipeline acts on. The October Google batch passed the classic test and warm-up
@@ -111,6 +147,11 @@ is never lost.
 ## Code
 
 - `smartlead_sync/smartlead/digest.py`: `Ask`, `Done`, `report(source, asks, done, detail)`; urgent posting.
-- `smartlead_sync/digest_post.py`: builds and posts the digest (`--post`; without it a dry run).
-- Mongo: `digest_asks` (one doc per source), `digest_done`, `digest_urgent`, `digest_meta`.
+- `smartlead_sync/digest_post.py`: builds and posts the digest (`--post`; without it a dry run): `plan` (where
+  every ask goes), `compose` (the post and thread), `dev_post` (the bot's own problems), `day_facts`.
+- `smartlead_sync/smartlead/digest_sentences.py`: the approved sentences, the header, the blind test's checker.
+- `smartlead_sync/smartlead/digest_items.py`: where every ask kind goes, and the read-only lookups.
+- `smartlead_sync/digest_blind_test.py`: the 7-day blind test (PC task).
+- Mongo: `digest_asks` (one doc per source), `digest_done`, `digest_urgent`, `digest_meta`, `digest_facts`,
+  `digest_blind`.
 - Each job's mapping: its `digest_items` / `digest_asks` function, with tests for digest on, fallback and off.

@@ -43,7 +43,9 @@ def _removed(n_now=8, n_check=7, n_unchecked=97, errors=None, as_of=None):
               "campaigns": [], "notes": [pr.NO_CAMPAIGNS, pr.NO_REPLY_CHECK]} for i in range(n_unchecked)]
     a = pr.ask(rows, {"gone1.test", "gone2.test"}, check + later, errors)
     doc = a.doc(pr.SOURCE) | {"since": NOW.isoformat(), "where": "", "lines": pr.LIST_LINES,
-                              "inboxes": sorted(r["email"] for r in rows + check + later), "domains": []}
+                              "inboxes": sorted(r["email"] for r in rows + check + later), "domains": [],
+                              "facts": {"type": "removed", "groups": pr.groups(rows, check + later,
+                                                                              {"gone1.test", "gone2.test"})}}
     return {"_id": pr.SOURCE, "at": NOW.isoformat(), "asks": [doc]}
 
 
@@ -114,10 +116,18 @@ def _bad_day():
     holds = [{"_id": "h1", "domains": ["heldco.test"], "reason": "A teammate handles these.", "owner": "Teammate",
               "until": None}]
     ctx = {"verdicts": {KILL_DOM: "never", "peerhost.test": "send", "fixed.test": "never"},
-           "v2": [{"domain": KILL_DOM, "client": "Melior", "night": "2026-11-21",
-                   "microsoft": "{'inbox': 0, 'reported': 4, 'sent': 4}", "google": "{'inbox': 4, 'reported': 4, 'sent': 4}"},
-                  {"domain": "fine.test", "client": "Melior", "night": "2026-11-21",
-                   "microsoft": "{'inbox': 4, 'reported': 4, 'sent': 4}"}]}
+           # the weekly test of 21 Nov: every inbox on the kill domain 0 of 4 at Outlook (counts stored as text, as
+           # older rows are); a passing domain elsewhere
+           "v2": [{"email": f"{u}@{KILL_DOM}", "domain": KILL_DOM, "client": "Melior", "night": "2026-11-21",
+                   "verdict": "FAIL", "type": "OUTLOOK", "weekly": True,
+                   "microsoft": "{'inbox': 0, 'reported': 4, 'sent': 4}", "google": "{'inbox': 4, 'reported': 4, 'sent': 4}"}
+                  for u in USERS] +
+                  [{"domain": "fine.test", "client": "Melior", "night": "2026-11-21", "verdict": "PASS",
+                    "microsoft": "{'inbox': 4, 'reported': 4, 'sent': 4}"}],
+           "status": [{"email": "sam.k@fixed.test", "domain": "fixed.test", "client": "Melior", "state": "do_not_use"}],
+           "tests": [{"campaign": "DT Melior #1", "senders": ["a@peerhost.test"], "next_run": "2026-11-28T02:30:00.000Z"},
+                     {"campaign": "DT Melior copy check", "senders": [], "next_run": "2026-11-28T05:00:00.000Z"},
+                     {"campaign": "DT PL copy check", "senders": [], "next_run": "2026-11-28T04:00:00.000Z"}]}
     return sources, done, holds, ctx
 
 
@@ -148,33 +158,47 @@ def test_every_day_keeps_every_limit(name):
 
 
 def test_the_bad_day_reads_as_one_item_per_domain_in_todays_words():
-    head, parts = _build(_bad_day())
+    """t409: on the 23 Nov shape the post is the approved sentences only; the held test is folded into the failed
+    domain's item; the bot's own problems are one dev-channel message."""
+    sources, done, holds, ctx = _bad_day()
+    p = dp.plan(sources, done, [], NOW, holds, (), ctx)
+    head, parts = dp.compose(p, NOW)
     top, thread = "\n".join(head), "\n".join(parts)
-    items = [x for x in top.split("\n") if guard.is_item(x)]
-    # one item per domain: the kill list is the one item about the domain; the held test went into it as a clause
-    assert sum(KILL_DOM in x for x in items) == 1 and items[0].startswith("1. 25 inboxes on 1 domain are on the kill list")
-    assert "looks like a test problem" not in top + thread and "re-run that test" not in (top + thread).lower()
-    assert f"Also: No re-run of the test \"melior-weekly-test-4\" (Sat 21 Nov) is needed: it first " \
-           f"looked like a broken test, but All Inboxes now marks the inboxes of {KILL_DOM} \"do not use\"." in thread
-    assert "Also on these inboxes, from a bot check (Gate self-test), nothing for you to do: All Inboxes does not yet " \
-           "give" in thread                                       # a bot check never reads as a second "Do:" (t386)
-    # no internal names; the not-yet-in test is said in today's words with the test's own name
+    assert top == (
+        "Inbox digest · Mon 23 Nov · 6 things to do\n\n"
+        "1. Clientco: retire 3 Google inboxes on billone.test in Zapmail before 27 Nov, or they renew ($14.25).\n"
+        "2. Clientco: retire 3 inboxes on billtwo.test in Zapmail before 30 Nov, or they renew.\n"
+        f"3. Melior: {KILL_DOM} failed its weekly test (0 of 100 reached the inbox at Outlook). Keep its 25 inboxes out "
+        "of campaigns and don't renew the domain.\n"
+        "4. BettrData: delete 8 inboxes in Smartlead that Zapmail already removed (list in thread).\n"
+        "5. BettrData: 7 removed inboxes are still in Client push. Take them out, then delete them (list in thread).\n\n"
+        "Watching, nothing to do: peerhost.test replies are low (6 vs 21 expected); the next weekly test on Sat 28 Nov "
+        "decides.\n\n1 more in the thread.")
+    assert "6. Melior: sam.k@fixed.test finished warm-up repair. Remove its DO NOT USE tag if you want it back." in thread
+    # one item per domain: the held test is covered by the failed item, and the thread says it was left out
+    assert "melior-weekly-test-4" not in thread and "first looked like a broken test" not in thread
+    assert f"Left out: an older ask to re-run the weekly test of {KILL_DOM} (it looked like a broken test); All " \
+           "Inboxes now marks its inboxes do not use, so no re-run is needed." in thread
+    assert "Weekly test of Sat 21 Nov: 25 of 25 inboxes failed; 0 of 100 test emails reached the inbox at Outlook" in thread
+    assert "classic" not in thread.split("For info")[0]
+    assert f"How: In Melior's Smartlead account, search {KILL_DOM} and take any of its inboxes still in a " \
+           "campaign out" in thread
     for leak in (".csv", "run-1", "2026-11-21", "failed_v2", "(last checked", "→10/day"):
         assert leak not in top + thread, leak
-    assert 'The test "pl-weekly-test-2" (Sat 21 Nov) was read before all its results were in (1 ' \
-           'missing)' in top + thread
-    assert 'No weekly test result this week for the test campaigns "DT Melior copy check" and "DT PL copy check" ' \
-           '(9 inboxes)' in top + thread
-    # the 'Which: <domain>, <local part>' bug: a user name is never a domain
-    assert "j.doe." not in top and "Which: " + KILL_DOM + ", m" not in top
-    # the delete reminder: unchecked inboxes are counted in one line, never listed address by address
-    assert "97 not checked yet (Precise Leads 97; Smartlead's rate limit)" in top + thread
+    # the delete reminder: unchecked inboxes are never listed address by address
     assert "pl1@plhost1.test" not in thread and "could not check replies" not in thread
-    assert "• Not checked yet, Precise Leads 97:" in thread
-    # nothing said twice: the info sentence is in the post only, a shown item's sentence is not repeated in the thread
-    assert thread.count("24 inboxes in a weekly test") == 0 and "For info above, the list:" in thread
-    for x in items:
-        assert x.split(". ", 1)[1][:60] not in thread
+    # the bot's own problems: the dev channel, never the digest
+    dev = dp.dev_post(p, NOW)
+    for x in ("PRECISE_LEADS key (HTTP 429)", "Gate self-test", 'the test "pl-weekly-test-2" was read before all its '
+              "results were in (1 missing)", "DT Melior copy check, DT PL copy check (9 inboxes)",
+              "did not finish for 97 Precise Leads inboxes"):
+        assert x in dev, x
+    for x in ("429", "Gate self-test", "Not checked yet"):
+        assert x not in top + thread, x
+    # the facts the post was made from (blind test): every bracket filled from data
+    f = dp.day_facts(p, NOW, head, parts)
+    assert f["_id"] == "2026-11-23" and f["n"] == 6 and [i["s"] for i in f["items"]] == ["2", "2", "1", "3", "4", "5"]
+    assert f["watch"][0]["f"] == {"domain": "peerhost.test", "a": 6, "b": 21, "date": "Sat 28 Nov"}
 
 
 def test_a_failed_read_keeps_the_last_good_split():
@@ -290,8 +314,8 @@ def test_a_429_is_not_an_unreachable_key(monkeypatch):
 
 def test_a_user_name_is_never_a_domain():
     assert dg.items_of({"text": f"{KILL_DOM}: j-doe@, j.doe@, j_doe@ and 21 more"}) == (set(), {KILL_DOM})
-    item = {"text": "25 inboxes are on the kill list.", "detail": [f"{KILL_DOM}: j-doe@, j.doe@ and 23 more"]}
-    assert dp._what(item) == f"25 inboxes are on the kill list. Which: {KILL_DOM}."
+    head, parts = _build(_bad_day())
+    assert "j.doe" not in "\n".join(head)
 
 
 def test_clean_removes_internal_names():
@@ -373,14 +397,14 @@ def test_a_stored_warm_up_repair_line_is_in_todays_words():
 
 
 def test_a_stored_gate_step_for_manveen_becomes_a_thing_to_do():
-    """23 Nov: 'Check the PC is on ...' (no "Manveen:") sat under "What broke"; readers took it for an engineer's line."""
+    """23 Nov: 'Check the PC is on ...' sat under "What broke". t409: the PC job's set-up is the bot's own problem:
+    the dev channel, with the step."""
     gate = _src("gate-selftest", [{"text": "Gate self-test: the v2 job runs in warn mode, so it does not take failed "
                                            "inboxes out.", "kind": "broken", "key": "gate-selftest:v2_job_alive",
                                    "step": "Check the PC is on and the task 'InfraBot v2 weekly' is enabled."}])
-    head, _ = dp.build([gate], [], [], NOW)
-    top = "\n".join(head)
-    assert "1 thing needs you today" in top and "Do: Check the PC is on and the task 'InfraBot v2 weekly'" in top
-    assert "failed or could not check" not in top
+    p = dp.plan([gate], [], [], NOW)
+    assert dp.compose(p, NOW) == (["Inbox digest · Mon 23 Nov · nothing to do today"], [])
+    assert "the task 'InfraBot v2 weekly'" in dp.dev_post(p, NOW)
 
 
 def test_the_post_never_drops_an_item_the_thread_does_not_have():

@@ -24,10 +24,14 @@ def _rep(row: dict) -> float:
 
 
 def _healthy(row: dict) -> bool:
+    """Counts as sending supply. Also may send by All Inboxes (usable.send_verdict, t396): a tagged or failed-v2 inbox
+    with an "inbox" grid result and 90%+ warm-up was counted as supply, so the planner ordered too little."""
+    from smartlead.usable import send_verdict
     external = str(row.get("warmup_state", "")).lower() == "external"    # the vendor warms it (t248)
     return (bool(row.get("connection_ok"))
             and (external or (str(row.get("warmup_state", "")).lower() in _ON_STATES and _rep(row) >= 90.0))
-            and str(row.get("test_sheet_status", "")).lower() == "inbox")
+            and str(row.get("test_sheet_status", "")).lower() == "inbox"
+            and send_verdict(row.get("busy_reason", ""), row.get("type") or row.get("provider") or "")[0] == "send")
 
 
 def _active(row: dict) -> bool:

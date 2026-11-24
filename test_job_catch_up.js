@@ -37,6 +37,13 @@ eq(jobs(ist('2026-11-10T10:30:00')), ['campaign-stats-post 2026-11-10T10:15+05:3
 eq(missedRuns(ist('2026-11-10T10:30:00'), { CAMPAIGN_STATS_POST: 'off' }), []);
 eq(jobs(ist('2026-11-07T10:30:00')), [], 'Saturday: nothing');
 
+// Weekly test results post: Mon 10:00, caught up until 13:00 (t420).
+eq(jobs(ist('2026-11-23T09:59:00')), [], 'Monday before 10:00: its own cron is still ahead');
+eq(jobs(ist('2026-11-23T10:20:00')), ['campaign-stats-post 2026-11-23T10:15+05:30', 'weekly-tests-post 2026-11-23T10:00+05:30']);
+eq(jobs(ist('2026-11-23T12:59:00')), ['weekly-tests-post 2026-11-23T10:00+05:30'], 'the stats post window ended at 12:00');
+eq(jobs(ist('2026-11-23T13:00:00')), ['placement-report-final 2026-11-23T13:00+05:30'], 'after 13:00: too late');
+eq(jobs(ist('2026-11-24T10:20:00')), ['campaign-stats-post 2026-11-24T10:15+05:30'], 'Tuesday: no weekly post');
+
 // Every catch-up slot is a real slot of that job, so the bot-health check counts it as run.
 const { parseCron, cronMatches } = require('./bot_health');
 for (const c of CATCH_UPS) {

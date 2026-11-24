@@ -51,6 +51,10 @@ const JOBS = [
   { job: 'smartlead-sync', cron: '0 10 * * *', title: 'Smartlead sync',
     codes: { 0: 'all tabs written', 2: 'one or more sheet tabs NOT written, see the Last Sync tab' } },
   { job: 'noon-summary', cron: '0 10 * * 1-5', title: 'Daily Renewal Check' },
+  // Mondays 10:00 IST (t420, Manveen 23 Nov 2026: "usually on the monday there should be a message for deliverbility
+  // tests"): what the Saturday v2 tests found, per client. Results only; Mongo reads only, no Smartlead calls.
+  { job: 'weekly-tests-post', cron: '0 10 * * 1', title: 'Weekly test results post',
+    codes: { 1: 'Mongo not reachable, or Slack refused the post' } },
   // With the daily digest on (DIGEST_MODE not off, 16 Nov 2026), bot health, the 4 PM reminder and the v2 check do
   // not post: their findings are in the 11:00 digest. when() false = not expected, so not reported as missed.
   { job: 'bot-health', cron: '5 10 * * 1-5', title: 'Bot health post', when: env => digestOff(env) },
