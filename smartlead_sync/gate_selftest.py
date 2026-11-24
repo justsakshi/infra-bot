@@ -29,6 +29,11 @@ Checks (smartlead/gate_selftest.checks):
     python gate_selftest.py --save --post    # daily on Render: record it; hand the daily digest one line per
                                              # check that disagrees (nothing when all agree). DIGEST_MODE=off or
                                              # Mongo down: post when a check disagrees, and always on Monday
+
+When (t403, 24 Nov 2026): daily at 10:45 IST, before the 11:00 digest. With --save it first waits for a sheet sync
+that is still running (digest_post.SELFTEST_WAITS_FOR), so it compares the list the sync has just written; the
+digest waits for the self-test, and uses its result only when it ran after that sync (digest_post.fresh_selftest).
+Until 24 Nov it ran at 11:30, so the 11:00 digest posted the day before's result as today's problems.
 """
 from __future__ import annotations
 
@@ -119,6 +124,16 @@ def tracker_names(errors: list[str]) -> set[str]:
     return names
 
 
+def wait_for_sync() -> None:
+    """Wait for a sheet sync (and fleet watch, which shares Smartlead's rate limit) still running. Never raises: the
+    self-test runs anyway, and the digest leaves out a result older than the sync (digest_post.fresh_selftest)."""
+    try:
+        from digest_post import SELFTEST_WAITS_FOR, wait_for_jobs
+        wait_for_jobs(usable._db(), jobs=SELFTEST_WAITS_FOR)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gate-selftest] did not wait for the sync ({type(exc).__name__})", file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Gate self-test (read-only for Smartlead)")
     ap.add_argument("--post", action="store_true", help="post when a check disagrees, and always on Monday")
@@ -126,6 +141,8 @@ def main() -> int:
     ap.add_argument("--save", action="store_true", help="record the result in Mongo gate_selftest")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+    if args.save:
+        wait_for_sync()
     now = datetime.now(IST)
     errors: list[str] = []
     inboxes, campaigns = asyncio.run(smartlead_side(errors))

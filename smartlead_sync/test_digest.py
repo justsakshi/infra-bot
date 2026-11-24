@@ -466,7 +466,8 @@ def test_asks_about_the_same_inboxes_are_one_item():
     gate = _src("gate-selftest", [{"text": "Gate self-test: 9 inboxes have no row in the asset tracker.",
                                    "kind": "broken", "key": "gate-selftest:tracker",
                                    "step": "Add the inboxes listed to the asset tracker.",
-                                   "detail": dg.by_domain([f"{u}@{d}" for d in doms for u in ("a", "b", "c")])}])
+                                   "detail": dg.by_domain([f"{u}@{d}" for d in doms for u in ("a", "b", "c")])}],
+                at=NOW)                          # today's self-test (t403: one from the day before is not used)
     other = _src("reply-monitor", [{"text": "1 domain gets far fewer replies than expected.", "key": "r:1",
                                     "step": "Check it.", "detail": ["november.test (Client B): 0 replies on 200 sends"]}])
     head, parts = dp.build([sheet, gate, other], [], [], NOW)

@@ -30,6 +30,13 @@ Watching, nothing to do: peer.example replies are low (6 vs 21 expected); the ne
   means the bot did not run. No @mention.
 - Never in the post: "For info" facts and "Done by the bot" (thread, last reply), what was left out on purpose
   (thread), inbox counts (the All Inboxes tab), and the bot's own problems.
+- The thread is at most 3 replies, and an item never spans two (t403, 24 Nov 2026: Slack showed a lone "How:" line as
+  a fourth reply). Reply sizes are counted as Slack counts them, with every address and domain as a link
+  (`digest_guard.slack_len`, at most 3,500 of Slack's 4,000). When the items do not all fit, every list is cut to the
+  same length first ("and N more (the inbox sheet)"); an item keeps its first line and its How. Only if even that
+  does not fit, one line names the items left out ("items 11-13 did not fit here"), never another reply.
+- A line that asks Manveen to act rests on a fresh result: the gate self-test's findings are used only when it ran
+  today after the sheet sync it compares (`digest_post.fresh_selftest`).
 
 Where every ask kind goes is one table, `smartlead/digest_items.py` (`KEYMAP`, `TEXTMAP`, `KINDS`;
 `mapping_table()` prints it): a sentence, a Watching line, a read-only lookup the bot does itself (the domain's latest
@@ -91,7 +98,7 @@ Bot health leaves out a missed run nobody can act on: the digest's own slot, and
 | Fleet scorecard (`fleet-scorecard`) | Mon 10:50 | post | thread only |
 | Inbox evidence (`inbox-evidence`) | Sun 09:00 | new (17 Nov 2026) | one done line per client (emails, sender known %, replies, out-of-office, team reply log matched, quiet, not enough data); a partial read: broken line; base rates, reply-log misses and quiet inboxes in the thread. Report only. Rules: `docs/INBOX_EVIDENCE.md` |
 | Warm-up repair (`warmup-repair`, inside fleet watch) | 10:30 | new (17 Nov 2026) | Mondays one done line per client ("Warm-up repair, BettrData: N repairing, N recovered this week, N worse."); inboxes 3 weeks in repair without improving: one ask (cancel candidates, his call); per-inbox lines in the thread. Report-only: changes no warm-up setting. Mongo `warmup_repair`; seed and preview: `warmup_repair_cli.py` |
-| Gate self-test (`gate-selftest`) | 11:30 | Monday post, and on a disagreement | silent when all agree; held-back inboxes still sending: ask; other disagreements: broken line |
+| Gate self-test (`gate-selftest`) | 10:45 (waits for a running sync; 11:30 until 24 Nov) | Monday post, and on a disagreement | silent when all agree; held-back inboxes still sending: ask; other disagreements: broken line. Used only when it ran today after the sheet sync; an older result with findings is one dated dev line, nothing for Manveen (t403) |
 | Reply check (`reply-monitor`) | 13:00 | ALERT posts, Monday summary | ALERT domains: one ask; summary in the thread |
 | Kill warnings (`kill-report`) | Tue 13:30 | post | asks (still sending, idle in live campaigns, domains to stop using) |
 | Volume review (`volume-review`) | Tue 13:45 (when `VOLUME_REVIEW_ENABLED=true`) | own post (a count of idle inboxes named nobody) | a pilot domain stepped back: done line; a pilot change that did not write, or a domain outside the pilot that should step back: ask, each domain or inbox listed with its client; an account it could not read: broken line. A domain on hold and the inboxes that sent nothing in 7 days (by client and domain, DO NOT USE ones marked) are thread only: nothing to do. SMTP IP and hand-changed limits point at fleet watch, which asks about them. Never raises a limit |

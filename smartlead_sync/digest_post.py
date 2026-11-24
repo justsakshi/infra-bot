@@ -47,14 +47,15 @@ IST = dg.IST
 MAX_ASK_AGE = timedelta(days=8)      # a job that stopped reporting for longer than this: its asks are dropped
 STALE = timedelta(hours=30)          # older than this, an ask says when its job last checked
 MAX_PARTS = 3                        # thread replies, at most
-PART_LINES = 38                      # lines per reply (notify._THREAD_CHUNK is 40: one part is one reply)
+PART_LINES = guard.ROOM_LINES        # lines per reply (notify._THREAD_CHUNK is 40: one part is one reply)
 LIST_LINES = 12                      # lines of one item's list in the thread
 INFO_LINES = 8                       # lines of a "For info" item's list in the thread (3 until t386, when the
                                      # short facts got a reply of their own and readers asked for the whole list)
 
 PC_STALE = timedelta(hours=3)
 REPO = os.getenv("RENDER_GIT_REPO_SLUG") or "justsakshi/infra-bot"
-WAIT_FOR = ("smartlead-sync", "fleet-watch")   # jobs whose asks the digest waits for when they are still running
+WAIT_FOR = ("smartlead-sync", "fleet-watch", "gate-selftest")   # jobs whose asks the digest waits for while they run
+SELFTEST_WAITS_FOR = ("smartlead-sync", "fleet-watch")          # what the gate self-test waits for before it reads
 WAIT_MAX_S = 30 * 60
 FACTS = "digest_facts"              # one doc per IST day: what the post was made from (blind test, t409)
 
@@ -173,16 +174,41 @@ def _held_part(held: list[dict]) -> list[str]:
     return lines
 
 
-def _cap(lines: list[str], n: int = 0) -> list[str]:
-    n = n or PART_LINES
-    return lines if len(lines) <= n else lines[:n - 1] + [f"… and {len(lines) - n + 1} more lines (the inbox sheet)"]
-
-
 def _sentence_or_none(it: dict) -> str | None:
     try:
         return sentences.sentence(it)
     except KeyError:
         return None
+
+
+SELFTEST = "gate-selftest"          # compares All Inboxes (the sheet sync) with Smartlead and the weekly test verdicts
+
+
+def fresh_selftest(sources: list[dict], now: datetime) -> tuple[list[dict], list[dict]]:
+    """(sources, checks): the gate self-test's findings only when its result is fresh: it ran today (IST) and after
+    the sheet sync it compares against finished (the sync's report time). Otherwise its findings are left out, and
+    one broken line (the dev channel, no step for Manveen) names when that result is from, when it had any.
+
+    24 Nov 2026 (t403): the self-test ran at 11:30 and the digest at 11:00, so the digest posted the 23 Nov result
+    ("the weekly test job runs in warn mode ... Manveen: check the PC is on", "25 of the 37 ...") as today's
+    problems, while the 24 Nov self-test passed every check. A line that asks someone to act must rest on a fresh
+    result; the self-test now runs at 10:45 after the sync (bot_health.js) and the digest waits for it."""
+    doc = next((s for s in sources if s.get("_id") == SELFTEST), None)
+    at = _parse((doc or {}).get("at"))
+    if not doc or not at:
+        return sources, []
+    sync = _parse(next((s.get("at") for s in sources if s.get("_id") == SYNC_SOURCE), None))
+    today = at.astimezone(IST).date() == now.astimezone(IST).date()
+    if today and (sync is None or at >= sync):
+        return sources, []
+    n = len(doc.get("asks") or [])
+    out = [s for s in sources if s is not doc] + [{**doc, "asks": []}]
+    if not n:
+        return out, []
+    why = "ran before today's sheet sync" if today else "is not from today"
+    return out, [{"kind": "broken", "key": "digest:selftest-stale", "name": "Gate self-test",
+                  "text": f"Gate self-test: its last result ({_day(at)} {at.astimezone(IST):%H:%M} IST) {why}, so its "
+                          f"{n} finding{'s are' if n != 1 else ' is'} not repeated here; its next run checks again."}]
 
 
 def plan(sources: list[dict], done: list[dict], checks: list[dict], now: datetime, holds=(), runs=(), ctx=None
@@ -192,7 +218,8 @@ def plan(sources: list[dict], done: list[dict], checks: list[dict], now: datetim
     removed inboxes only in their delete reminder, the kill list as one item, an item All Inboxes overrules folded.
     ``checks``: the digest's own findings (kind broken). Returns the route's plan plus held, superseded, done."""
     ctx = ctx or {}
-    asks, broken = collect(sources + [{"_id": "digest", "at": now.isoformat(), "asks": checks}], now)
+    sources, stale = fresh_selftest(sources, now)
+    asks, broken = collect(sources + [{"_id": "digest", "at": now.isoformat(), "asks": list(checks) + stale}], now)
     asks = [render.render(a, ctx.get("v2") or ()) for a in asks]        # today's words, whenever it was stored
     broken = [render.render(b, ctx.get("v2") or ()) for b in broken]
     broken = one_per_job([b for b in broken if not recovered(b.get("key"), runs, now)])
@@ -259,20 +286,6 @@ def _item_domains(it: dict) -> set[str]:
     return {d for x in it.get("detail") or [] for d in items._doms(x)}
 
 
-def _split(blocks: list[list[str]], k: int) -> list[str]:
-    """Blocks (one per item) as at most ``k`` replies of at most PART_LINES lines, never splitting a block unless it is
-    longer than a reply. The last reply takes what is left (the guard cuts it)."""
-    parts, cur = [], []
-    for blk in blocks:
-        if cur and len(cur) + 1 + len(blk) > PART_LINES and len(parts) < k - 1:
-            parts.append(cur)
-            cur = []
-        cur += ([""] if cur else []) + blk
-    if cur:
-        parts.append(cur)
-    return ["\n".join(_cap(x)) for x in parts]
-
-
 def compose(p: dict, now: datetime) -> tuple[list[str], list[str]]:
     """(post lines, thread replies). The post: the header, the first MAX_ITEMS items (one approved sentence each), the
     Watching lines, and how many more are in the thread. The thread: first what the post could not hold (the items
@@ -334,9 +347,11 @@ def compose(p: dict, now: datetime) -> tuple[list[str], list[str]]:
     if p.get("done"):
         other += ([""] if other else []) + ["Done by the bot since the last digest"] + \
                  [f"• {dg.plain(d['text'])}" for d in p["done"]]
-    parts = _split(blocks, MAX_PARTS - (1 if other else 0)) if blocks else []
+    # Whole items into the replies, sized as Slack counts them (t403, 24 Nov 2026: a reply within our limits was over
+    # 4,000 to Slack once it had linked every address, so Slack split it and a How line stood alone in a fourth reply).
+    parts = guard.pack(blocks, MAX_PARTS - (1 if other else 0)) if blocks else []
     if other:
-        parts.append("\n".join(_cap(other)))
+        parts += guard.pack(guard.blocks_of(other), 1)       # its sections whole
     return guard.enforce(head, parts[:MAX_PARTS])
 
 
@@ -501,13 +516,15 @@ def load_ctx(db, now: datetime) -> dict:
     return out
 
 
-def wait_for_jobs(db, now_fn=lambda: datetime.now(timezone.utc), sleep=time.sleep, max_s: int = WAIT_MAX_S) -> None:
-    """Wait (up to 30 minutes) for a morning job that is still running, so its asks are in today's digest."""
+def wait_for_jobs(db, now_fn=lambda: datetime.now(timezone.utc), sleep=time.sleep, max_s: int = WAIT_MAX_S,
+                  jobs=WAIT_FOR) -> None:
+    """Wait (up to 30 minutes) for a morning job that is still running, so its asks are in today's digest (and, for
+    the gate self-test, so it reads the sheet the sync has just written: SELFTEST_WAITS_FOR)."""
     waited = 0
     while waited < max_s:
         since = now_fn() - timedelta(hours=3)
         # A run a restart killed never ends; index.js marks it lost when the bot starts again (17-18 Nov 2026).
-        running = [r for r in db.cron_runs.find({"job": {"$in": list(WAIT_FOR)}, "started": {"$gte": since},
+        running = [r for r in db.cron_runs.find({"job": {"$in": list(jobs)}, "started": {"$gte": since},
                                                  "ended": {"$exists": False}}) if not r.get("lost")]
         if not running:
             return

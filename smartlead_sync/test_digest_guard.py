@@ -417,3 +417,185 @@ def test_the_post_never_drops_an_item_the_thread_does_not_have():
     for k in range(6):
         assert f"Thing {k} on host{k}.test" in top + thread
     assert guard.problems(head, parts) == []
+
+
+# --- 24 Nov 2026: the thread Slack cut into four replies (t403) -------------------------------------------------------
+# The digest sent three replies (3,195, 3,214 and 1,117 characters, all inside the limits above), and Slack showed
+# four: a reply of item 1-4 lists, a lone "How: ... remove its DO NOT USE tag ..." line, items 7-10, and the "Left
+# out / For info / Done" reply. Slack turns every address into <mailto:a@x|a@x> and every bare domain into
+# <http://x|x> before it counts a message's 4,000 characters, so the first reply was about 4,100 to Slack and it
+# split it at the line that crossed 4,000. The oracle below counts the way Slack does, on its own (not the guard's
+# code), so a guard that measures the wrong text fails here.
+
+_SL_EMAIL = r"[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+"
+_SL_DOMAIN = r"(?<![\w@.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?![\w.-]*\w)(?!@)"
+SLACK_SPLIT = 4000                       # Slack shows a longer message as more than one post
+
+
+def _as_slack_counts(text):
+    """The text as Slack stores it: & < > escaped outside links, every address and bare domain a link."""
+    import re
+    out = []
+    for piece in re.split(r"(<[^<>]+>)", text):
+        if piece.startswith("<") and piece.endswith(">"):
+            out.append(piece)
+            continue
+        piece = piece.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        piece = re.sub(_SL_EMAIL, lambda m: f"\x00mailto:{m.group(0)}|{m.group(0)}\x01", piece, flags=re.I)
+        bits = re.split(r"(\x00[^\x01]*\x01)", piece)
+        piece = "".join(b if b.startswith("\x00") else
+                        re.sub(_SL_DOMAIN, lambda m: f"<http://{m.group(0)}|{m.group(0)}>", b, flags=re.I) for b in bits)
+        out.append(piece.replace("\x00", "<").replace("\x01", ">"))
+    return len("".join(out))
+
+
+def _thread_day():
+    """The 24 Nov shape: twelve things to do, each with a full list of inboxes (two per line, as the take-out and
+    delete lists are) and a How step, plus the untag ask whose How line Slack cut off, info and done lines."""
+    sources = []
+    for k in range(12):
+        dom = f"host{k}.example.com"
+        sources.append(_src(f"job{k}", [{
+            "text": f"{12} inboxes on {dom} need a look today before their campaigns send again.",
+            "step": f"In the Clientco Smartlead account, open each campaign named and take the inboxes on {dom} out "
+                    f"(its Email Accounts tab).", "key": f"job{k}:x",
+            "detail": [f"• rep{i}.sales@{dom}, rep{i}.team@{dom}: in Clientco | Outbound {i}" for i in range(12)]}],
+            at=NOW - timedelta(hours=k)))
+    sources.append(_src("warmup-repair", [{"text": "1 inbox on fixed.example.com finished warm-up repair (score "
+                                                   "90%+), but a DO NOT USE tag still keeps it out of campaigns.",
+                                           "step": "if you want it back, remove the DO NOT USE tag in Smartlead.",
+                                           "key": "warmup-repair:ready-to-untag",
+                                           "detail": ["• sam.k@fixed.example.com · google · 61% → 93% (good from 90%) "
+                                                      "· day 6 · warm-up 20→10/day, reply 20→35%"]}]))
+    done = [{"_id": f"d{i}", "text": f"Warm-up repair: inbox {i} on done{i}.example.com is back above 90%."}
+            for i in range(6)]
+    holds = [{"_id": "h1", "domains": ["heldco.example.com"], "reason": "A teammate handles these.",
+              "owner": "Teammate", "until": None}]
+    ctx = {"verdicts": {"fixed.example.com": "never"},
+           "status": [{"email": "sam.k@fixed.example.com", "domain": "fixed.example.com", "client": "Melior",
+                       "state": "do_not_use"}]}
+    return sources, done, holds, ctx
+
+
+DAYS["24 Nov shape (twelve items with long lists)"] = _thread_day
+
+
+def _starts(line):
+    return line.startswith(("How:", "• ", "Careful:", "Each:", "… and"))
+
+
+@pytest.mark.parametrize("name", DAYS)
+def test_no_reply_is_one_slack_would_split_and_no_item_is_cut_from_its_how(name):
+    head, parts = _build(DAYS[name]())
+    assert len(parts) <= guard.MAX_REPLIES, name
+    for k, p in enumerate(parts, 1):
+        assert _as_slack_counts(p) <= guard.REPLY_CHARS < SLACK_SPLIT, (name, k, _as_slack_counts(p))
+        assert not _starts(p.split("\n")[0]), (name, k, p.split("\n")[0][:80])     # a reply starts with its item
+
+
+def test_on_the_24_nov_shape_every_item_is_in_the_post_or_the_thread_with_its_how():
+    """Twelve items: five in the post, the rest in the thread with their sentence. An item whose list does not fit
+    is shortened inside its own reply (its How stays with it); one that does not fit at all is named in a pointer
+    line, never sent as a fourth reply."""
+    import re
+    head, parts = _build(_thread_day())
+    shown = sum(1 for x in head if re.match(r"\n?\d+\. ", x))
+    n = int(re.search(r"(\d+) more in the thread", "\n".join(head)).group(1)) + shown
+    for p in parts:
+        blocks = [b.split("\n") for b in p.split("\n\n")]
+        for b in blocks:
+            if re.match(r"\d+(?: above:|\. )", b[0]) and any(x.startswith("How:") for x in b):
+                assert b.index(next(x for x in b if x.startswith("How:"))) > 0
+    thread = "\n".join(parts)
+    named = {int(m.group(1)) for m in re.finditer(r"(?m)^(\d+)(?: above:|\. )", thread)}
+    pointed = set()
+    for m in re.finditer(r"items? ([\d, -]+?) (?:did|do) not fit", thread):
+        for a, b in re.findall(r"(\d+)(?:-(\d+))?", m.group(1)):
+            pointed |= set(range(int(a), int(b or a) + 1))
+    assert set(range(6, n + 1)) <= named | pointed
+
+
+# --- 24 Nov 2026: the digest posted the day before's gate self-test as today's problems (t403) -----------------------
+# The self-test ran at 11:30 IST and the digest at 11:00, so on 24 Nov the "Bot jobs" message carried the 23 Nov result
+# (warn mode, "Manveen: check the PC is on"; 25 of 37 not marked) while the 24 Nov self-test passed every check.
+
+TUE = datetime(2026, 11, 24, 5, 30, tzinfo=timezone.utc)                  # Tue 24 Nov 11:00 IST
+SYNC_DONE = datetime(2026, 11, 24, 5, 7, tzinfo=timezone.utc)             # Tue 24 Nov 10:37 IST
+
+
+def _gate(at, with_findings=True):
+    asks = [{"text": "Gate self-test: the weekly test job runs in warn mode, so it does not take failed inboxes out.",
+             "kind": "broken", "key": "gate-selftest:v2_job_alive",
+             "step": "Manveen: check the PC is on and the task 'InfraBot v2 weekly' is enabled."},
+            {"text": "Gate self-test: All Inboxes does not yet give 'failed the weekly test' as the reason for 25 of "
+                     "the 37 inboxes that failed it.", "kind": "broken", "key": "gate-selftest:list_marks_failed_v2"},
+            {"text": "3 inboxes tagged or failed are still attached to sending campaigns.", "key":
+             "gate-selftest:held_back_not_sending", "step": "Take them out of the campaigns listed.",
+             "detail": ["• a@held.example.com: Clientco | Outbound"]}] if with_findings else []
+    return _src("gate-selftest", asks, at=at)
+
+
+def _sync(at=SYNC_DONE):
+    return _src("smartlead-sync", [], at=at)
+
+
+def _said(sources):
+    p = dp.plan(sources, [], [], TUE)
+    head, _ = dp.compose(p, TUE)
+    return "\n".join(head), dp.dev_post(p, TUE) or ""
+
+
+def test_yesterdays_self_test_is_not_posted_as_todays_problems():
+    head, dev = _said([_gate(datetime(2026, 11, 23, 6, 0, tzinfo=timezone.utc)), _sync()])    # Mon 23 Nov 11:30 IST
+    assert "warn mode" not in dev and "Manveen" not in dev and "25 of the 37" not in dev
+    assert "held.example.com" not in head and "attached to sending campaigns" not in head
+    assert dev.count("Mon 23 Nov 11:30 IST") == 1 and "not repeated here" in dev
+
+
+def test_a_self_test_from_before_todays_sync_is_not_used_either():
+    early = _gate(datetime(2026, 11, 24, 4, 45, tzinfo=timezone.utc))                         # 10:15 IST
+    head, dev = _said([early, _sync()])
+    assert "warn mode" not in dev and "ran before today's sheet sync" in dev
+
+
+def test_todays_self_test_after_the_sync_is_used():
+    head, dev = _said([_gate(datetime(2026, 11, 24, 5, 16, tzinfo=timezone.utc)), _sync()])    # 10:46 IST
+    assert "warn mode" in dev and "not repeated" not in dev
+
+
+def test_an_old_self_test_with_nothing_to_say_says_nothing():
+    _, dev = _said([_gate(datetime(2026, 11, 23, 6, 0, tzinfo=timezone.utc), with_findings=False), _sync()])
+    assert dev == ""
+
+
+def test_the_digest_waits_for_the_self_test_and_the_self_test_waits_for_the_sync(monkeypatch):
+    asked = []
+
+    class Runs:
+        def find(self, q):
+            asked.append(set(q["job"]["$in"]))
+            return []
+    db = type("D", (), {"cron_runs": Runs()})()
+    dp.wait_for_jobs(db, now_fn=lambda: TUE, sleep=lambda s: None)
+    dp.wait_for_jobs(db, now_fn=lambda: TUE, sleep=lambda s: None, jobs=dp.SELFTEST_WAITS_FOR)
+    assert {"smartlead-sync", "gate-selftest"} <= asked[0]
+    assert "smartlead-sync" in asked[1] and "gate-selftest" not in asked[1]
+
+    import gate_selftest as cli
+    order = []
+    monkeypatch.setattr(cli, "wait_for_sync", lambda: order.append("wait"))
+
+    async def side(errors):
+        order.append("smartlead")
+        return [], []
+    monkeypatch.setattr(cli, "smartlead_side", side)
+    monkeypatch.setattr(cli, "list_rows", lambda errors: [])
+    monkeypatch.setattr(cli, "mongo_side", lambda errors: ({}, None, None))
+    monkeypatch.setattr(cli, "tracker_names", lambda errors: set())
+    monkeypatch.setattr("sys.argv", ["gate_selftest.py", "--save"])
+    cli.main()
+    assert order == ["wait", "smartlead"]                        # it reads the list after the sync has written it
+    order.clear()
+    monkeypatch.setattr("sys.argv", ["gate_selftest.py"])        # a hand run prints at once
+    cli.main()
+    assert order == ["smartlead"]
