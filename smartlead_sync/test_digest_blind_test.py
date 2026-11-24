@@ -70,3 +70,32 @@ def test_claude_runs_on_windows_or_in_wsl_with_the_long_lived_login(monkeypatch)
     cmd, env = bt.claude_cmd("wsl")
     assert cmd[:5] == ["wsl.exe", "-d", "Ubuntu", "--", "bash"] and cmd[-1].startswith("claude -p")
     assert env["WSLENV"] == "CLAUDE_CODE_OAUTH_TOKEN/u"
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_runs_with_no_console(monkeypatch):
+    """pythonw under Task Scheduler sets sys.stdout to None; main must get past its setup (24 Nov run crashed there)."""
+    import sys
+    import dotenv
+
+    def stop(*a, **k):
+        raise _Stop
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(dotenv, "load_dotenv", stop)
+    try:
+        bt.main(["--env-file", "x.env"])
+    except _Stop:
+        pass
+
+
+def test_a_crash_is_written_to_the_log_dir(tmp_path):
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        bt._crash_to_log(["--env-file", "x", "--log-dir", str(tmp_path)])
+    log = (tmp_path / "blind-test.log").read_text(encoding="utf-8")
+    assert "CRASH" in log and "RuntimeError: boom" in log
